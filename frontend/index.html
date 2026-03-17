@@ -1,0 +1,833 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The Human Fund — Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/ethers@6.13.4/dist/ethers.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0a0a0f;
+    --surface: #12121a;
+    --surface2: #1a1a25;
+    --border: #2a2a3a;
+    --text: #e0e0e8;
+    --text-dim: #8888a0;
+    --accent: #6c8cff;
+    --green: #4caf7c;
+    --red: #e05555;
+    --orange: #e0a040;
+    --mono: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+    padding: 20px;
+    max-width: 1200px;
+    margin: 0 auto;
+  }
+
+  header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px 0;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 24px;
+  }
+
+  header h1 {
+    font-size: 20px;
+    font-weight: 600;
+    letter-spacing: -0.3px;
+  }
+
+  header h1 span { color: var(--text-dim); font-weight: 400; }
+
+  #status {
+    font-size: 12px;
+    font-family: var(--mono);
+    color: var(--text-dim);
+  }
+
+  #status.connected { color: var(--green); }
+  #status.error { color: var(--red); }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+  }
+
+  .card h2 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 12px;
+  }
+
+  .stat {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 4px 0;
+  }
+
+  .stat-label {
+    font-size: 13px;
+    color: var(--text-dim);
+  }
+
+  .stat-value {
+    font-family: var(--mono);
+    font-size: 14px;
+    color: var(--text);
+  }
+
+  .stat-value.highlight { color: var(--accent); font-size: 22px; font-weight: 600; }
+  .stat-value.green { color: var(--green); }
+  .stat-value.orange { color: var(--orange); }
+
+  .nonprofit-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .nonprofit-row:last-child { border-bottom: none; }
+
+  .nonprofit-name {
+    font-size: 14px;
+    font-weight: 500;
+  }
+
+  .nonprofit-addr {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+
+  .nonprofit-donated {
+    font-family: var(--mono);
+    font-size: 13px;
+    text-align: right;
+    color: var(--green);
+  }
+
+  .nonprofit-count {
+    font-size: 11px;
+    color: var(--text-dim);
+    text-align: right;
+  }
+
+  /* Diary section */
+  #diary-section {
+    margin-top: 24px;
+  }
+
+  #diary-section h2 {
+    font-size: 16px;
+    font-weight: 600;
+    margin-bottom: 16px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .diary-entry {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-bottom: 16px;
+    overflow: hidden;
+  }
+
+  .diary-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px;
+    background: var(--surface2);
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .diary-header:hover { background: #22222f; }
+
+  .diary-epoch {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--accent);
+    font-weight: 600;
+  }
+
+  .diary-action-badge {
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: var(--border);
+    color: var(--text);
+  }
+
+  .diary-action-badge.donate { background: #1a3a2a; color: var(--green); }
+  .diary-action-badge.noop { background: #2a2a30; color: var(--text-dim); }
+  .diary-action-badge.set_commission_rate { background: #3a2a1a; color: var(--orange); }
+  .diary-action-badge.set_max_bid { background: #1a2a3a; color: var(--accent); }
+
+  .diary-meta {
+    display: flex;
+    gap: 16px;
+    font-size: 11px;
+    color: var(--text-dim);
+    font-family: var(--mono);
+  }
+
+  .diary-body {
+    padding: 16px;
+    display: none;
+  }
+
+  .diary-body.open { display: block; }
+
+  .diary-reasoning {
+    font-size: 13px;
+    line-height: 1.7;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 16px;
+    max-height: 500px;
+    overflow-y: auto;
+  }
+
+  .diary-action-detail {
+    margin-top: 12px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text-dim);
+    padding: 8px 12px;
+    background: var(--surface2);
+    border-radius: 4px;
+  }
+
+  .diary-treasury-change {
+    margin-top: 8px;
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+
+  .no-entries {
+    text-align: center;
+    color: var(--text-dim);
+    padding: 40px;
+    font-size: 14px;
+  }
+
+  /* Events log */
+  #events-section {
+    margin-top: 24px;
+  }
+
+  #events-section h2 {
+    font-size: 16px;
+    font-weight: 600;
+    margin-bottom: 16px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .event-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 12px;
+    font-size: 12px;
+    font-family: var(--mono);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .event-type {
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 10px;
+    min-width: 100px;
+    text-align: center;
+  }
+
+  .event-type.DiaryEntry { background: #1a1a3a; color: var(--accent); }
+  .event-type.DonationReceived { background: #1a3a2a; color: var(--green); }
+  .event-type.NonprofitDonation { background: #1a3a1a; color: #6adf6a; }
+  .event-type.CommissionRateChanged { background: #3a2a1a; color: var(--orange); }
+  .event-type.MaxBidChanged { background: #1a2a3a; color: var(--accent); }
+  .event-type.ReferralCodeMinted { background: #2a1a3a; color: #b080e0; }
+
+  .event-detail {
+    color: var(--text-dim);
+    flex: 1;
+  }
+
+  .event-block {
+    color: var(--text-dim);
+    font-size: 11px;
+  }
+
+  .btn {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 6px 14px;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 12px;
+    font-family: inherit;
+  }
+
+  .btn:hover { background: var(--border); }
+
+  .refresh-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+  }
+
+  .refresh-bar .last-refresh {
+    font-size: 11px;
+    color: var(--text-dim);
+    font-family: var(--mono);
+  }
+
+  .loading {
+    color: var(--text-dim);
+    font-size: 13px;
+    text-align: center;
+    padding: 20px;
+  }
+
+  .loading::after {
+    content: '';
+    animation: dots 1.4s infinite;
+  }
+
+  @keyframes dots {
+    0%, 20% { content: '.'; }
+    40% { content: '..'; }
+    60%, 100% { content: '...'; }
+  }
+
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .contract-link {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>The Human Fund <span>/ dashboard</span></h1>
+    <a class="contract-link" id="contract-link" href="#" target="_blank"></a>
+  </div>
+  <div id="status">connecting...</div>
+</header>
+
+<div class="refresh-bar">
+  <span class="last-refresh" id="last-refresh"></span>
+  <button class="btn" onclick="refresh()">Refresh</button>
+</div>
+
+<div class="grid" id="stats-grid">
+  <div class="card">
+    <h2>Treasury</h2>
+    <div id="treasury-stats"><div class="loading">Loading</div></div>
+  </div>
+  <div class="card">
+    <h2>Epoch</h2>
+    <div id="epoch-stats"><div class="loading">Loading</div></div>
+  </div>
+  <div class="card">
+    <h2>Agent Parameters</h2>
+    <div id="param-stats"><div class="loading">Loading</div></div>
+  </div>
+  <div class="card">
+    <h2>Flows</h2>
+    <div id="flow-stats"><div class="loading">Loading</div></div>
+  </div>
+</div>
+
+<div class="card" style="margin-bottom: 24px;">
+  <h2>Nonprofits</h2>
+  <div id="nonprofits"><div class="loading">Loading</div></div>
+</div>
+
+<div id="diary-section">
+  <h2>Diary Entries</h2>
+  <div id="diary"><div class="loading">Loading</div></div>
+</div>
+
+<div id="events-section">
+  <h2>Recent Events</h2>
+  <div id="events"><div class="loading">Loading</div></div>
+</div>
+
+<script>
+const CONTRACT_ADDRESS = '0x2F213Ea0D3F6D8349e2162b37Cc8cE6605dc9420';
+const RPC_URL = 'https://sepolia.base.org';
+const EXPLORER = 'https://sepolia.basescan.org';
+
+const ABI = [
+  "function treasuryBalance() view returns (uint256)",
+  "function currentEpoch() view returns (uint256)",
+  "function commissionRateBps() view returns (uint256)",
+  "function maxBid() view returns (uint256)",
+  "function effectiveMaxBid() view returns (uint256)",
+  "function totalInflows() view returns (uint256)",
+  "function totalDonatedToNonprofits() view returns (uint256)",
+  "function totalCommissionsPaid() view returns (uint256)",
+  "function totalBountiesPaid() view returns (uint256)",
+  "function consecutiveMissedEpochs() view returns (uint256)",
+  "function lastDonationEpoch() view returns (uint256)",
+  "function lastCommissionChangeEpoch() view returns (uint256)",
+  "function deployTimestamp() view returns (uint256)",
+  "function owner() view returns (address)",
+  "function currentEpochInflow() view returns (uint256)",
+  "function currentEpochDonationCount() view returns (uint256)",
+  "function currentEpochCommissions() view returns (uint256)",
+  "function nextReferralCodeId() view returns (uint256)",
+  "function pendingCommissionsCount() view returns (uint256)",
+  "function getNonprofit(uint256 id) view returns (string name, address addr, uint256 totalDonated, uint256 donationCount)",
+  "function getEpochRecord(uint256 epoch) view returns (uint256 timestamp, bytes action, bytes reasoning, uint256 treasuryBefore, uint256 treasuryAfter, uint256 bountyPaid, bool executed)",
+  "function balanceSnapshots(uint256) view returns (uint256)",
+  "event DiaryEntry(uint256 indexed epoch, bytes reasoning, bytes action, uint256 treasuryBefore, uint256 treasuryAfter)",
+  "event DonationReceived(address indexed donor, uint256 amount, uint256 indexed referralCode, uint256 commissionAmount)",
+  "event NonprofitDonation(uint256 indexed epoch, uint256 indexed nonprofitId, uint256 amount)",
+  "event CommissionRateChanged(uint256 indexed epoch, uint256 newRateBps)",
+  "event MaxBidChanged(uint256 indexed epoch, uint256 newMaxBid)",
+  "event ReferralCodeMinted(uint256 indexed codeId, address indexed owner)",
+];
+
+let provider, contract;
+
+function fmtEth(wei) {
+  const eth = ethers.formatEther(wei);
+  const num = parseFloat(eth);
+  if (num === 0) return '0 ETH';
+  if (num < 0.0001) return num.toExponential(2) + ' ETH';
+  if (num < 1) return num.toFixed(6) + ' ETH';
+  return num.toFixed(4) + ' ETH';
+}
+
+function fmtAddr(addr) {
+  return addr.slice(0, 6) + '...' + addr.slice(-4);
+}
+
+function fmtTime(ts) {
+  if (ts === 0n) return 'never';
+  return new Date(Number(ts) * 1000).toLocaleString();
+}
+
+function fmtDuration(seconds) {
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  if (d > 0) return `${d}d ${h}h`;
+  const m = Math.floor((seconds % 3600) / 60);
+  return `${h}h ${m}m`;
+}
+
+function decodeAction(actionBytes) {
+  if (!actionBytes || actionBytes === '0x' || actionBytes.length < 4) {
+    return { type: 'unknown', label: 'unknown', detail: '' };
+  }
+
+  const bytes = ethers.getBytes(actionBytes);
+  const actionType = bytes[0];
+
+  if (actionType === 0) {
+    return { type: 'noop', label: 'noop', detail: 'No action taken' };
+  } else if (actionType === 1 && bytes.length >= 65) {
+    const decoded = ethers.AbiCoder.defaultAbiCoder().decode(['uint256', 'uint256'], bytes.slice(1));
+    const npId = decoded[0];
+    const amount = decoded[1];
+    return {
+      type: 'donate',
+      label: 'donate',
+      detail: `Donated ${fmtEth(amount)} to nonprofit #${npId}`
+    };
+  } else if (actionType === 2 && bytes.length >= 33) {
+    const decoded = ethers.AbiCoder.defaultAbiCoder().decode(['uint256'], bytes.slice(1));
+    const rateBps = decoded[0];
+    return {
+      type: 'set_commission_rate',
+      label: 'set_commission',
+      detail: `Set commission rate to ${Number(rateBps) / 100}%`
+    };
+  } else if (actionType === 3 && bytes.length >= 33) {
+    const decoded = ethers.AbiCoder.defaultAbiCoder().decode(['uint256'], bytes.slice(1));
+    const amount = decoded[0];
+    return {
+      type: 'set_max_bid',
+      label: 'set_max_bid',
+      detail: `Set max bid to ${fmtEth(amount)}`
+    };
+  }
+
+  return { type: 'unknown', label: '???', detail: 'Unknown action type' };
+}
+
+function decodeReasoning(reasoningBytes) {
+  if (!reasoningBytes || reasoningBytes === '0x') return '(no reasoning)';
+  try {
+    return ethers.toUtf8String(reasoningBytes);
+  } catch {
+    return '(binary data, could not decode)';
+  }
+}
+
+async function loadState() {
+  const [
+    treasury, epoch, commRate, maxBidVal, effectiveBid,
+    inflows, donated, commPaid, bountiesPaid,
+    missedEpochs, lastDonation, lastCommChange,
+    deployTs, ownerAddr,
+    epochInflow, epochDonations, epochComm,
+    nextRefCode, pendingCommCount,
+  ] = await Promise.all([
+    contract.treasuryBalance(),
+    contract.currentEpoch(),
+    contract.commissionRateBps(),
+    contract.maxBid(),
+    contract.effectiveMaxBid(),
+    contract.totalInflows(),
+    contract.totalDonatedToNonprofits(),
+    contract.totalCommissionsPaid(),
+    contract.totalBountiesPaid(),
+    contract.consecutiveMissedEpochs(),
+    contract.lastDonationEpoch(),
+    contract.lastCommissionChangeEpoch(),
+    contract.deployTimestamp(),
+    contract.owner(),
+    contract.currentEpochInflow(),
+    contract.currentEpochDonationCount(),
+    contract.currentEpochCommissions(),
+    contract.nextReferralCodeId(),
+    contract.pendingCommissionsCount(),
+  ]);
+
+  const age = Math.floor(Date.now() / 1000) - Number(deployTs);
+
+  // Treasury card
+  document.getElementById('treasury-stats').innerHTML = `
+    <div class="stat">
+      <span class="stat-label">Balance</span>
+      <span class="stat-value highlight">${fmtEth(treasury)}</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Total inflows</span>
+      <span class="stat-value green">${fmtEth(inflows)}</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Total donated</span>
+      <span class="stat-value">${fmtEth(donated)}</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Commissions paid</span>
+      <span class="stat-value">${fmtEth(commPaid)}</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Bounties paid</span>
+      <span class="stat-value">${fmtEth(bountiesPaid)}</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Owner</span>
+      <span class="stat-value"><a href="${EXPLORER}/address/${ownerAddr}" target="_blank">${fmtAddr(ownerAddr)}</a></span>
+    </div>
+  `;
+
+  // Epoch card
+  document.getElementById('epoch-stats').innerHTML = `
+    <div class="stat">
+      <span class="stat-label">Current epoch</span>
+      <span class="stat-value highlight">${epoch.toString()}</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Fund age</span>
+      <span class="stat-value">${fmtDuration(age)}</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Epochs executed</span>
+      <span class="stat-value">${(epoch - 1n).toString()}</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Missed epochs (consecutive)</span>
+      <span class="stat-value ${Number(missedEpochs) > 0 ? 'orange' : ''}">${missedEpochs.toString()}</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Last donation epoch</span>
+      <span class="stat-value">${lastDonation.toString() === '0' ? 'never' : lastDonation.toString()}</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Last commission change</span>
+      <span class="stat-value">${lastCommChange.toString() === '0' ? 'never' : 'epoch ' + lastCommChange.toString()}</span>
+    </div>
+  `;
+
+  // Agent params card
+  document.getElementById('param-stats').innerHTML = `
+    <div class="stat">
+      <span class="stat-label">Commission rate</span>
+      <span class="stat-value highlight">${(Number(commRate) / 100).toFixed(1)}%</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Max bid (set)</span>
+      <span class="stat-value">${fmtEth(maxBidVal)}</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Effective max bid</span>
+      <span class="stat-value ${effectiveBid > maxBidVal ? 'orange' : ''}">${fmtEth(effectiveBid)}</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Referral codes minted</span>
+      <span class="stat-value">${(nextRefCode - 1n).toString()}</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Pending commissions</span>
+      <span class="stat-value">${pendingCommCount.toString()}</span>
+    </div>
+  `;
+
+  // Flows card
+  document.getElementById('flow-stats').innerHTML = `
+    <div class="stat">
+      <span class="stat-label">This epoch inflow</span>
+      <span class="stat-value green">${fmtEth(epochInflow)}</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">This epoch donations</span>
+      <span class="stat-value">${epochDonations.toString()}</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">This epoch commissions</span>
+      <span class="stat-value">${fmtEth(epochComm)}</span>
+    </div>
+    <div class="stat" style="margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border);">
+      <span class="stat-label">Max donation allowed</span>
+      <span class="stat-value">${fmtEth(treasury / 10n)}</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Max bid ceiling</span>
+      <span class="stat-value">${fmtEth(treasury * 2n / 100n)}</span>
+    </div>
+  `;
+
+  // Nonprofits
+  const nps = await Promise.all([1, 2, 3].map(id => contract.getNonprofit(id)));
+  document.getElementById('nonprofits').innerHTML = nps.map((np, i) => `
+    <div class="nonprofit-row">
+      <div>
+        <div class="nonprofit-name">#${i + 1} ${np.name}</div>
+        <div class="nonprofit-addr"><a href="${EXPLORER}/address/${np.addr}" target="_blank">${np.addr}</a></div>
+      </div>
+      <div>
+        <div class="nonprofit-donated">${fmtEth(np.totalDonated)}</div>
+        <div class="nonprofit-count">${np.donationCount.toString()} donations</div>
+      </div>
+    </div>
+  `).join('');
+
+  // Diary entries (load all executed epochs)
+  const currentEpochNum = Number(epoch);
+  const diaryEntries = [];
+
+  for (let e = currentEpochNum - 1; e >= 1; e--) {
+    try {
+      const record = await contract.getEpochRecord(e);
+      if (record.executed) {
+        const action = decodeAction(record.action);
+        const reasoning = decodeReasoning(record.reasoning);
+        diaryEntries.push({
+          epoch: e,
+          timestamp: record.timestamp,
+          action,
+          reasoning,
+          treasuryBefore: record.treasuryBefore,
+          treasuryAfter: record.treasuryAfter,
+          bountyPaid: record.bountyPaid,
+        });
+      }
+    } catch {
+      // Epoch not found — skip
+    }
+  }
+
+  if (diaryEntries.length === 0) {
+    document.getElementById('diary').innerHTML = '<div class="no-entries">No diary entries yet</div>';
+  } else {
+    document.getElementById('diary').innerHTML = diaryEntries.map((entry, idx) => `
+      <div class="diary-entry">
+        <div class="diary-header" onclick="this.nextElementSibling.classList.toggle('open')">
+          <div style="display:flex;align-items:center;gap:12px;">
+            <span class="diary-epoch">Epoch ${entry.epoch}</span>
+            <span class="diary-action-badge ${entry.action.type}">${entry.action.label}</span>
+          </div>
+          <div class="diary-meta">
+            <span>${fmtTime(entry.timestamp)}</span>
+            <span>${fmtEth(entry.treasuryBefore)} -> ${fmtEth(entry.treasuryAfter)}</span>
+          </div>
+        </div>
+        <div class="diary-body ${idx === 0 ? 'open' : ''}">
+          <div class="diary-reasoning">${escapeHtml(entry.reasoning)}</div>
+          <div class="diary-action-detail">${entry.action.detail}</div>
+          <div class="diary-treasury-change">
+            Treasury: ${fmtEth(entry.treasuryBefore)} <span style="color:var(--text-dim)">-></span>
+            ${fmtEth(entry.treasuryAfter)}
+            ${entry.treasuryAfter < entry.treasuryBefore
+              ? `<span style="color:var(--red)">(-${fmtEth(entry.treasuryBefore - entry.treasuryAfter)})</span>`
+              : entry.treasuryAfter > entry.treasuryBefore
+                ? `<span style="color:var(--green)">(+${fmtEth(entry.treasuryAfter - entry.treasuryBefore)})</span>`
+                : '<span style="color:var(--text-dim)">(no change)</span>'
+            }
+          </div>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  // Load recent events
+  await loadEvents();
+}
+
+async function loadEvents() {
+  try {
+    const currentBlock = await provider.getBlockNumber();
+    const fromBlock = Math.max(0, currentBlock - 10000);
+
+    const eventFilters = [
+      { filter: contract.filters.DiaryEntry(), name: 'DiaryEntry' },
+      { filter: contract.filters.DonationReceived(), name: 'DonationReceived' },
+      { filter: contract.filters.NonprofitDonation(), name: 'NonprofitDonation' },
+      { filter: contract.filters.CommissionRateChanged(), name: 'CommissionRateChanged' },
+      { filter: contract.filters.MaxBidChanged(), name: 'MaxBidChanged' },
+      { filter: contract.filters.ReferralCodeMinted(), name: 'ReferralCodeMinted' },
+    ];
+
+    const allEvents = [];
+
+    for (const { filter, name } of eventFilters) {
+      try {
+        const logs = await contract.queryFilter(filter, fromBlock, currentBlock);
+        for (const log of logs) {
+          let detail = '';
+          try {
+            if (name === 'DiaryEntry') {
+              const action = decodeAction(log.args[2]);
+              detail = `Epoch ${log.args[0]}: ${action.label} | treasury ${fmtEth(log.args[3])} -> ${fmtEth(log.args[4])}`;
+            } else if (name === 'DonationReceived') {
+              detail = `${fmtAddr(log.args[0])} donated ${fmtEth(log.args[1])}${log.args[2] > 0n ? ` (ref #${log.args[2]})` : ''}`;
+            } else if (name === 'NonprofitDonation') {
+              detail = `Epoch ${log.args[0]}: ${fmtEth(log.args[2])} to nonprofit #${log.args[1]}`;
+            } else if (name === 'CommissionRateChanged') {
+              detail = `Epoch ${log.args[0]}: rate set to ${Number(log.args[1]) / 100}%`;
+            } else if (name === 'MaxBidChanged') {
+              detail = `Epoch ${log.args[0]}: max bid set to ${fmtEth(log.args[1])}`;
+            } else if (name === 'ReferralCodeMinted') {
+              detail = `Code #${log.args[0]} minted by ${fmtAddr(log.args[1])}`;
+            }
+          } catch { detail = 'could not decode'; }
+
+          allEvents.push({
+            name,
+            detail,
+            blockNumber: log.blockNumber,
+            txHash: log.transactionHash,
+          });
+        }
+      } catch {
+        // Skip events that error
+      }
+    }
+
+    allEvents.sort((a, b) => b.blockNumber - a.blockNumber);
+
+    if (allEvents.length === 0) {
+      document.getElementById('events').innerHTML = '<div class="no-entries">No events found in recent blocks</div>';
+    } else {
+      document.getElementById('events').innerHTML = allEvents.map(ev => `
+        <div class="event-row">
+          <span class="event-type ${ev.name}">${ev.name}</span>
+          <span class="event-detail">${ev.detail}</span>
+          <span class="event-block">
+            <a href="${EXPLORER}/tx/${ev.txHash}" target="_blank">block ${ev.blockNumber}</a>
+          </span>
+        </div>
+      `).join('');
+    }
+  } catch (err) {
+    document.getElementById('events').innerHTML = `<div class="no-entries">Error loading events: ${err.message}</div>`;
+  }
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+async function refresh() {
+  try {
+    document.getElementById('status').textContent = 'refreshing...';
+    document.getElementById('status').className = '';
+    await loadState();
+    document.getElementById('status').textContent = 'connected';
+    document.getElementById('status').className = 'connected';
+    document.getElementById('last-refresh').textContent = 'Last refresh: ' + new Date().toLocaleTimeString();
+  } catch (err) {
+    console.error('Refresh error:', err);
+    document.getElementById('status').textContent = 'error: ' + err.message.slice(0, 50);
+    document.getElementById('status').className = 'error';
+  }
+}
+
+async function init() {
+  try {
+    provider = new ethers.JsonRpcProvider(RPC_URL);
+    contract = new ethers.Contract(CONTRACT_ADDRESS, ABI, provider);
+
+    document.getElementById('contract-link').textContent = CONTRACT_ADDRESS;
+    document.getElementById('contract-link').href = `${EXPLORER}/address/${CONTRACT_ADDRESS}`;
+
+    await refresh();
+  } catch (err) {
+    console.error('Init error:', err);
+    document.getElementById('status').textContent = 'failed to connect';
+    document.getElementById('status').className = 'error';
+  }
+}
+
+init();
+</script>
+</body>
+</html>

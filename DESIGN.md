@@ -457,11 +457,19 @@ The agent's `set_max_bid` action creates a feedback loop: as treasury shrinks, t
 - [x] Implement the core smart contract: treasury, referral system, epoch state computation, input hashing, action validation, diary event emission. No auction or attestation — just a single authorized caller for testing.
 - [x] Deploy to Base Sepolia testnet.
 - [x] Build a minimal script that reads contract state, constructs the prompt, calls llama.cpp, parses output, and submits the action.
-- [ ] Run 10–20 simulated epochs. Tune the prompt based on observed behavior. Validate that the agent produces diverse, non-obvious decisions.
+- [x] Run 10–20 simulated epochs. Tune the prompt based on observed behavior. Validate that the agent produces diverse, non-obvious decisions.
 
 **Deliverable:** Working end-to-end loop on testnet with a trusted operator, no TEE.
 
-**Status:** Contract deployed at `0x2F213Ea0D3F6D8349e2162b37Cc8cE6605dc9420` on Base Sepolia. First epoch executed successfully (noop). Prompt evaluation framework built with 5 synthetic scenarios. Two-pass inference pattern established for reliable structured output. Remaining: run more epochs to tune prompt and validate decision diversity.
+**Status:** Contract deployed at `0x2F213Ea0D3F6D8349e2162b37Cc8cE6605dc9420` on Base Sepolia. 21 epochs executed on-chain. Agent used 3 of 4 action types (donate, set_commission_rate, set_max_bid) plus noop. 0.004018 ETH donated to GiveDirectly across 11 donations. Commission rate adjusted from 10% to 20%. Internal dashboard built for contract observation.
+
+**Lessons learned:**
+- Two-pass inference essential for structured output (DeepSeek R1 hits EOS before JSON)
+- Reasoning calldata is expensive (~16 gas/byte); 3KB reasoning needs ~2M gas
+- Agent needs pre-submission bounds validation (float→wei rounding causes 10% limit reverts)
+- Model tends toward conservative noop with small treasury; donate dominates when treasury is larger
+- All donations went to nonprofit #1 — prompt may need diversity nudging
+- History context with `<think>` tags can confuse model into replicating history format instead of generating new output
 
 ### Phase 1: TEE Integration (Weeks 3–4)
 **Goal:** Run inference inside a TEE and verify attestation on-chain.

@@ -131,8 +131,15 @@ def read_contract_state(contract, w3):
 # ─── Prompt Construction ─────────────────────────────────────────────────
 
 def format_eth(wei_amount):
-    """Format wei as ETH string."""
-    return f"{wei_amount / 1e18:.4f}"
+    """Format wei as ETH string with enough precision."""
+    eth = wei_amount / 1e18
+    if eth == 0:
+        return "0.0000"
+    if eth < 0.0001:
+        return f"{eth:.8f}"
+    if eth < 0.01:
+        return f"{eth:.6f}"
+    return f"{eth:.4f}"
 
 
 def build_epoch_context(state):
@@ -203,11 +210,23 @@ def build_epoch_context(state):
     if not state["history"]:
         lines.append("No previous decisions.")
     else:
-        for entry in state["history"]:
+        # History window sized for context budget
+        # With -c 16384 (16K context), system prompt (~500 tok) + epoch context (~400 tok) = ~900
+        # Leaves ~15K for history. Each entry is ~300-600 tokens, so ~25-50 entries fit.
+        max_history = 20
+        history_to_show = state["history"][:max_history]
+        if len(state["history"]) > max_history:
+            lines.append(f"(Showing last {max_history} of {len(state['history'])} epochs)")
+            lines.append("")
+
+        for entry in history_to_show:
             lines.append(f"--- Epoch {entry['epoch']} ---")
             # Decode reasoning
             try:
                 reasoning_text = entry["reasoning"].decode("utf-8") if isinstance(entry["reasoning"], bytes) else entry["reasoning"]
+                # Truncate very long individual entries to keep total prompt manageable
+                if len(reasoning_text) > 1500:
+                    reasoning_text = reasoning_text[:1500] + "... [truncated]"
             except Exception:
                 reasoning_text = "(could not decode)"
             lines.append(f"[Your reasoning]:")
@@ -387,8 +406,9 @@ def encode_action(parsed):
 
     elif action == "donate":
         nonprofit_id = int(params["nonprofit_id"])
-        amount_eth = float(params["amount_eth"])
-        amount_wei = int(amount_eth * 1e18)
+        amount_eth = str(params["amount_eth"])
+        # Use Web3.to_wei for precise conversion
+        amount_wei = Web3.to_wei(float(amount_eth), 'ether')
         encoded_params = Web3.to_bytes(nonprofit_id).rjust(32, b'\x00') + \
                          Web3.to_bytes(amount_wei).rjust(32, b'\x00')
         return bytes([1]) + encoded_params
@@ -410,40 +430,66 @@ def encode_action(parsed):
 
 # ─── Main ────────────────────────────────────────────────────────────────
 
-def main():
-    parser = argparse.ArgumentParser(description="The Human Fund — Phase 0 Runner")
-    parser.add_argument("--dry-run", action="store_true", help="Don't submit to contract")
-    parser.add_argument("--prompt", default=str(DEFAULT_PROMPT), help="System prompt file")
-    parser.add_argument("--max-tokens", type=int, default=4096)
-    args = parser.parse_args()
+def _validate_and_fix_action(parsed, state):
+    """Validate action bounds against current state. Fix or downgrade to noop if invalid."""
+    action = parsed["action"]
+    params = parsed["action_json"].get("params", {})
+    treasury = state["treasury_balance"]
 
-    # Load config from env
-    private_key = os.environ.get("PRIVATE_KEY")
-    rpc_url = os.environ.get("RPC_URL")
-    contract_address = os.environ.get("CONTRACT_ADDRESS")
+    if action == "donate":
+        amount_eth = float(params.get("amount_eth", 0))
+        amount_wei = int(amount_eth * 1e18)
+        max_donation = (treasury * 1000) // 10000  # 10% of treasury, conservative floor
 
-    if not args.dry_run:
-        if not all([private_key, rpc_url, contract_address]):
-            print("Error: Set PRIVATE_KEY, RPC_URL, and CONTRACT_ADDRESS env vars")
-            print("       Or use --dry-run to skip contract submission")
-            sys.exit(1)
+        if amount_wei > max_donation:
+            # Use 9.9% to avoid any rounding issues at the boundary
+            safe_amount = (treasury * 990) // 10000
+            fixed_eth = safe_amount / 1e18
+            print(f"⚠️  Donate {amount_eth} ETH exceeds 10% of treasury ({treasury/1e18:.6f} ETH).")
+            print(f"   Clamping to {fixed_eth:.8f} ETH (9.9%)")
+            parsed["action_json"]["params"]["amount_eth"] = fixed_eth
 
-    # Load system prompt
-    system_prompt = Path(args.prompt).read_text().strip()
-    print(f"📄 System prompt: {Path(args.prompt).name} ({len(system_prompt.split())} words)")
+        if amount_wei <= 0:
+            print(f"⚠️  Donate amount <= 0, downgrading to noop")
+            parsed["action"] = "noop"
+            parsed["action_json"] = {"action": "noop", "params": {}}
 
-    # Connect to contract
-    if not args.dry_run:
-        w3 = Web3(Web3.HTTPProvider(rpc_url))
-        if not w3.is_connected():
-            print("❌ Cannot connect to RPC")
-            sys.exit(1)
-        print(f"🔗 Connected to {rpc_url}")
+        nonprofit_id = int(params.get("nonprofit_id", 0))
+        if nonprofit_id < 1 or nonprofit_id > 3:
+            print(f"⚠️  Invalid nonprofit_id {nonprofit_id}, downgrading to noop")
+            parsed["action"] = "noop"
+            parsed["action_json"] = {"action": "noop", "params": {}}
 
-        contract = load_contract(w3, Web3.to_checksum_address(contract_address))
-        account = Account.from_key(private_key)
-        print(f"👤 Runner: {account.address}")
+    elif action == "set_commission_rate":
+        rate = int(params.get("rate_bps", 0))
+        if rate < 100 or rate > 9000:
+            clamped = max(100, min(9000, rate))
+            print(f"⚠️  Commission {rate} bps out of bounds, clamping to {clamped}")
+            parsed["action_json"]["params"]["rate_bps"] = clamped
 
+    elif action == "set_max_bid":
+        amount_eth = float(params.get("amount_eth", 0))
+        amount_wei = int(amount_eth * 1e18)
+        min_bid = int(0.0001 * 1e18)  # 0.0001 ETH
+        max_bid = (treasury * 200) // 10000  # 2% of treasury
+
+        if amount_wei < min_bid:
+            print(f"⚠️  Max bid too low, clamping to 0.0001 ETH")
+            parsed["action_json"]["params"]["amount_eth"] = 0.0001
+        elif amount_wei > max_bid:
+            fixed = max_bid / 1e18
+            print(f"⚠️  Max bid exceeds 2% of treasury, clamping to {fixed:.6f} ETH")
+            parsed["action_json"]["params"]["amount_eth"] = fixed
+
+    return parsed
+
+
+def run_single_epoch(w3, contract, account, system_prompt, max_tokens, dry_run=False, log_file=None):
+    """Execute a single epoch: read state, infer, submit.
+
+    Returns a dict with epoch results, or None on failure.
+    """
+    if not dry_run:
         # Read contract state
         print("📖 Reading contract state...")
         state = read_contract_state(contract, w3)
@@ -452,7 +498,6 @@ def main():
     else:
         # Dry run: use a minimal synthetic context
         print("🏃 Dry run mode — using synthetic context")
-        # Load the first scenario from scenarios.json if available, else use minimal context
         scenarios_file = AGENT_DIR / "scenarios" / "scenarios.json"
         if scenarios_file.exists():
             scenarios = json.loads(scenarios_file.read_text())
@@ -481,16 +526,27 @@ def main():
                 "=== YOUR DECISION HISTORY (most recent first) ===\n\n"
                 "No previous decisions."
             )
+        state = {"epoch": 0, "treasury_balance": 0}
 
     # Construct full prompt and run inference (with retry on parse failure)
     full_prompt = system_prompt + "\n\n" + epoch_context + "\n\n<think>\n"
 
     max_retries = 3
     parsed = None
+    inference = None
     for attempt in range(1, max_retries + 1):
-        print(f"\n⏳ Running inference (attempt {attempt}/{max_retries}, {args.max_tokens} max tokens)...")
+        print(f"\n⏳ Running inference (attempt {attempt}/{max_retries}, {max_tokens} max tokens)...")
 
-        inference = run_inference(full_prompt, max_tokens=args.max_tokens)
+        try:
+            inference = run_inference(full_prompt, max_tokens=max_tokens)
+        except Exception as e:
+            print(f"❌ Inference error: {e}")
+            if attempt < max_retries:
+                print(f"   Retrying...")
+                continue
+            else:
+                return None
+
         print(f"⏱️  {inference['elapsed_seconds']}s, {inference['tokens']['completion_tokens']} tokens, finish: {inference['finish_reason']}")
 
         parsed = parse_model_output(inference["text"])
@@ -508,8 +564,9 @@ def main():
 
     if not parsed or not parsed["action"]:
         print("❌ Could not parse action after all retries")
-        print(f"Last raw output:\n{inference['text'][:2000]}")
-        sys.exit(1)
+        if inference:
+            print(f"Last raw output:\n{inference['text'][:2000]}")
+        return None
 
     # Display result
     think_preview = (parsed["think"] or "")[:500]
@@ -517,13 +574,40 @@ def main():
     print(f"   {think_preview}...")
     print(f"\n🎯 Action: {json.dumps(parsed['action_json'], indent=2)}")
 
-    if args.dry_run:
+    epoch_result = {
+        "epoch": state["epoch"],
+        "treasury_before": state["treasury_balance"],
+        "action": parsed["action"],
+        "action_json": parsed["action_json"],
+        "reasoning_words": len((parsed["think"] or "").split()),
+        "inference_seconds": inference["elapsed_seconds"],
+        "completion_tokens": inference["tokens"]["completion_tokens"],
+        "reasoning_preview": (parsed["think"] or "")[:300],
+    }
+
+    if dry_run:
         print("\n✅ Dry run complete — action not submitted to contract")
-        return
+        if log_file:
+            with open(log_file, "a") as f:
+                f.write(json.dumps(epoch_result) + "\n")
+        return epoch_result
+
+    # Pre-submission bounds check — fix actions that would revert
+    parsed = _validate_and_fix_action(parsed, state)
 
     # Encode and submit
     action_bytes = encode_action(parsed)
-    reasoning_bytes = (parsed["think"] or "").encode("utf-8")
+    reasoning_text = (parsed["think"] or "")
+    reasoning_bytes = reasoning_text.encode("utf-8")
+
+    # Cap reasoning to stay within gas budget (16 gas per non-zero byte of calldata)
+    # At 5M gas limit we can afford ~8KB of reasoning comfortably
+    MAX_REASONING_BYTES = 8000
+    if len(reasoning_bytes) > MAX_REASONING_BYTES:
+        # Truncate at character boundary
+        truncated = reasoning_text.encode("utf-8")[:MAX_REASONING_BYTES]
+        reasoning_bytes = truncated.decode("utf-8", errors="ignore").encode("utf-8")
+        print(f"   Reasoning truncated from {len((parsed['think'] or '').encode('utf-8'))} to {len(reasoning_bytes)} bytes")
 
     print(f"\n📤 Submitting to contract...")
     print(f"   Action bytes: {action_bytes.hex()}")
@@ -536,7 +620,7 @@ def main():
     ).build_transaction({
         "from": account.address,
         "nonce": w3.eth.get_transaction_count(account.address),
-        "gas": 2_000_000,
+        "gas": 5_000_000,
         "maxFeePerGas": w3.eth.gas_price * 2,
         "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
     })
@@ -550,16 +634,162 @@ def main():
     receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
 
     if receipt["status"] == 1:
+        new_balance = contract.functions.treasuryBalance().call()
         print(f"   ✅ Epoch {state['epoch']} executed successfully!")
         print(f"   Gas used: {receipt['gasUsed']}")
         print(f"   Block: {receipt['blockNumber']}")
-
-        # Read updated state
-        new_balance = contract.functions.treasuryBalance().call()
         print(f"   Treasury: {format_eth(state['treasury_balance'])} → {format_eth(new_balance)} ETH")
+
+        epoch_result["treasury_after"] = new_balance
+        epoch_result["gas_used"] = receipt["gasUsed"]
+        epoch_result["block"] = receipt["blockNumber"]
+        epoch_result["tx_hash"] = tx_hash.hex()
+        epoch_result["status"] = "success"
     else:
         print(f"   ❌ Transaction reverted!")
         print(f"   Receipt: {receipt}")
+        epoch_result["status"] = "reverted"
+
+    if log_file:
+        with open(log_file, "a") as f:
+            f.write(json.dumps(epoch_result, default=str) + "\n")
+
+    return epoch_result
+
+
+def print_run_summary(results):
+    """Print a summary of all epochs run."""
+    print("\n" + "=" * 60)
+    print("RUN SUMMARY")
+    print("=" * 60)
+
+    if not results:
+        print("No epochs completed.")
+        return
+
+    # Count actions
+    action_counts = {}
+    for r in results:
+        a = r.get("action", "unknown")
+        action_counts[a] = action_counts.get(a, 0) + 1
+
+    total = len(results)
+    print(f"\nEpochs run: {total}")
+    print(f"Action distribution:")
+    for action, count in sorted(action_counts.items()):
+        pct = count / total * 100
+        bar = "#" * int(pct / 2)
+        print(f"  {action:25s} {count:3d} ({pct:5.1f}%) {bar}")
+
+    # Unique actions (diversity)
+    unique = len(action_counts)
+    print(f"\nAction diversity: {unique}/4 action types used")
+
+    # Check for donate targets
+    donate_targets = {}
+    for r in results:
+        if r.get("action") == "donate":
+            np_id = r.get("action_json", {}).get("params", {}).get("nonprofit_id")
+            if np_id:
+                donate_targets[np_id] = donate_targets.get(np_id, 0) + 1
+    if donate_targets:
+        print(f"Donation targets: {donate_targets}")
+
+    # Commission rate changes
+    comm_changes = [r for r in results if r.get("action") == "set_commission_rate"]
+    if comm_changes:
+        rates = [r["action_json"]["params"]["rate_bps"] for r in comm_changes]
+        print(f"Commission rate changes: {[f'{r/100}%' for r in rates]}")
+
+    # Timing
+    times = [r.get("inference_seconds", 0) for r in results if r.get("inference_seconds")]
+    if times:
+        print(f"\nInference time: avg {sum(times)/len(times):.1f}s, min {min(times):.1f}s, max {max(times):.1f}s")
+
+    # Treasury trajectory
+    successes = [r for r in results if r.get("status") == "success"]
+    if successes and successes[0].get("treasury_before") and successes[-1].get("treasury_after"):
+        start = successes[0]["treasury_before"]
+        end = successes[-1]["treasury_after"]
+        print(f"Treasury: {start/1e18:.6f} → {end/1e18:.6f} ETH")
+
+    print("=" * 60)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="The Human Fund — Phase 0 Runner")
+    parser.add_argument("--dry-run", action="store_true", help="Don't submit to contract")
+    parser.add_argument("--prompt", default=str(DEFAULT_PROMPT), help="System prompt file")
+    parser.add_argument("--max-tokens", type=int, default=4096)
+    parser.add_argument("--epochs", type=int, default=1, help="Number of epochs to run (default: 1)")
+    parser.add_argument("--log", default=None, help="JSONL log file for results (default: agent/results/run_<timestamp>.jsonl)")
+    args = parser.parse_args()
+
+    # Load config from env
+    private_key = os.environ.get("PRIVATE_KEY")
+    rpc_url = os.environ.get("RPC_URL")
+    contract_address = os.environ.get("CONTRACT_ADDRESS")
+
+    if not args.dry_run:
+        if not all([private_key, rpc_url, contract_address]):
+            print("Error: Set PRIVATE_KEY, RPC_URL, and CONTRACT_ADDRESS env vars")
+            print("       Or use --dry-run to skip contract submission")
+            sys.exit(1)
+
+    # Load system prompt
+    system_prompt = Path(args.prompt).read_text().strip()
+    print(f"📄 System prompt: {Path(args.prompt).name} ({len(system_prompt.split())} words)")
+
+    # Set up log file
+    log_file = args.log
+    if not log_file:
+        results_dir = AGENT_DIR / "results"
+        results_dir.mkdir(exist_ok=True)
+        log_file = str(results_dir / f"run_{int(time.time())}.jsonl")
+    print(f"📋 Logging to: {log_file}")
+
+    # Connect to contract
+    w3 = None
+    contract = None
+    account = None
+    if not args.dry_run:
+        w3 = Web3(Web3.HTTPProvider(rpc_url))
+        if not w3.is_connected():
+            print("❌ Cannot connect to RPC")
+            sys.exit(1)
+        print(f"🔗 Connected to {rpc_url}")
+
+        contract = load_contract(w3, Web3.to_checksum_address(contract_address))
+        account = Account.from_key(private_key)
+        print(f"👤 Runner: {account.address}")
+
+    # Run epochs
+    results = []
+    for i in range(args.epochs):
+        if args.epochs > 1:
+            print(f"\n{'━' * 50}")
+            print(f"  EPOCH RUN {i + 1} of {args.epochs}")
+            print(f"{'━' * 50}")
+
+        result = run_single_epoch(
+            w3, contract, account, system_prompt, args.max_tokens,
+            dry_run=args.dry_run, log_file=log_file,
+        )
+
+        if result:
+            results.append(result)
+        else:
+            print(f"\n⚠️  Epoch run {i + 1} failed — stopping")
+            break
+
+        # Brief pause between epochs to avoid nonce issues
+        if i < args.epochs - 1 and not args.dry_run:
+            print("\n⏸️  Pausing 5s before next epoch...")
+            time.sleep(5)
+
+    # Print summary
+    if args.epochs > 1:
+        print_run_summary(results)
 
 
 if __name__ == "__main__":
