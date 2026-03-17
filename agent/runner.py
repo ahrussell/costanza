@@ -1,27 +1,34 @@
 #!/usr/bin/env python3
 """
-The Human Fund — Phase 0 Runner
+The Human Fund — Runner (Phase 0 + Phase 1)
 
 Reads contract state, constructs the prompt, calls the AI model,
 parses the output, and submits the action to the contract.
 
+Supports two modes:
+  - Direct mode (Phase 0): Calls llama-server directly via LLAMA_SERVER_URL
+  - TEE mode (Phase 1):    Sends epoch context to TEE enclave's /run_epoch endpoint
+                           and receives action + TDX attestation quote
+
 Usage:
-    # Run a single epoch
+    # Run a single epoch (direct mode)
     python agent/runner.py
+
+    # Run via TEE enclave
+    python agent/runner.py --tee-url http://<tee-host>:8090
 
     # Dry run (don't submit to contract)
     python agent/runner.py --dry-run
-
-    # Use a custom prompt
-    python agent/runner.py --prompt agent/prompts/system_v2.txt
 
 Environment variables:
     PRIVATE_KEY       - Runner's private key (hex, with or without 0x prefix)
     RPC_URL           - Base Sepolia RPC URL
     CONTRACT_ADDRESS  - Deployed TheHumanFund contract address
     LLAMA_SERVER_URL  - llama-server URL (default: RunPod proxy)
+    TEE_URL           - TEE enclave URL (alternative to --tee-url flag)
 """
 
+import hashlib
 import json
 import os
 import re
@@ -391,6 +398,60 @@ def parse_model_output(text):
     return result
 
 
+# ─── TEE Inference ──────────────────────────────────────────────────────
+
+def run_tee_inference(tee_url, epoch_context, input_hash_hex="0x" + "00" * 32):
+    """Call the TEE enclave's /run_epoch endpoint.
+
+    Returns a dict with:
+        - reasoning, action_json, action_bytes, attestation_quote,
+          report_data, inference_seconds, tokens
+    """
+    body = {
+        "epoch_context": epoch_context,
+        "input_hash": input_hash_hex,
+    }
+    payload = json.dumps(body).encode()
+    req = Request(
+        f"{tee_url.rstrip('/')}/run_epoch",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+    )
+
+    print(f"   Calling TEE enclave at {tee_url}...")
+    start = time.time()
+    resp = urlopen(req, timeout=900)  # CPU inference can be slow
+    elapsed = time.time() - start
+
+    result = json.loads(resp.read())
+
+    if "error" in result:
+        raise RuntimeError(f"TEE enclave error: {result['error']}")
+
+    return {
+        "reasoning": result["reasoning"],
+        "action_json": result["action"],
+        "action_bytes_hex": result["action_bytes"],
+        "attestation_quote_hex": result["attestation_quote"],
+        "report_data_hex": result["report_data"],
+        "input_hash_hex": result["input_hash"],
+        "inference_seconds": result["inference_seconds"],
+        "tokens": result["tokens"],
+        "elapsed_total": round(elapsed, 1),
+    }
+
+
+def check_tee_health(tee_url):
+    """Check if the TEE enclave is healthy and ready."""
+    try:
+        req = Request(f"{tee_url.rstrip('/')}/health")
+        resp = urlopen(req, timeout=10)
+        result = json.loads(resp.read())
+        return result
+    except Exception as e:
+        return {"status": "unreachable", "error": str(e)}
+
+
 # ─── Action Encoding ─────────────────────────────────────────────────────
 
 def encode_action(parsed):
@@ -484,8 +545,11 @@ def _validate_and_fix_action(parsed, state):
     return parsed
 
 
-def run_single_epoch(w3, contract, account, system_prompt, max_tokens, dry_run=False, log_file=None):
+def run_single_epoch(w3, contract, account, system_prompt, max_tokens, dry_run=False, log_file=None, tee_url=None):
     """Execute a single epoch: read state, infer, submit.
+
+    Args:
+        tee_url: If set, use TEE enclave for inference instead of direct llama-server.
 
     Returns a dict with epoch results, or None on failure.
     """
@@ -528,77 +592,157 @@ def run_single_epoch(w3, contract, account, system_prompt, max_tokens, dry_run=F
             )
         state = {"epoch": 0, "treasury_balance": 0}
 
-    # Construct full prompt and run inference (with retry on parse failure)
-    full_prompt = system_prompt + "\n\n" + epoch_context + "\n\n<think>\n"
+    # ── TEE Mode vs Direct Mode ──────────────────────────────────────────
+    if tee_url:
+        # TEE mode: send epoch_context to enclave, get back action + attestation
+        print(f"\n🔒 TEE mode — calling enclave at {tee_url}")
 
-    max_retries = 3
-    parsed = None
-    inference = None
-    for attempt in range(1, max_retries + 1):
-        print(f"\n⏳ Running inference (attempt {attempt}/{max_retries}, {max_tokens} max tokens)...")
+        # Compute input hash for attestation binding
+        input_hash = hashlib.sha256(epoch_context.encode("utf-8")).digest()
+        input_hash_hex = "0x" + input_hash.hex()
 
-        try:
-            inference = run_inference(full_prompt, max_tokens=max_tokens)
-        except Exception as e:
-            print(f"❌ Inference error: {e}")
+        tee_result = None
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            print(f"\n⏳ TEE inference (attempt {attempt}/{max_retries})...")
+            try:
+                tee_result = run_tee_inference(tee_url, epoch_context, input_hash_hex)
+                break
+            except Exception as e:
+                print(f"❌ TEE error: {e}")
+                if attempt < max_retries:
+                    print(f"   Retrying in 10s...")
+                    time.sleep(10)
+                else:
+                    return None
+
+        print(f"⏱️  TEE inference: {tee_result['inference_seconds']}s (total roundtrip: {tee_result['elapsed_total']}s)")
+
+        reasoning = tee_result["reasoning"]
+        action_json = tee_result["action_json"]
+        action_bytes_hex = tee_result["action_bytes_hex"]
+        attestation_hex = tee_result["attestation_quote_hex"]
+
+        # Display result
+        think_preview = reasoning[:500]
+        print(f"\n📝 Reasoning ({len(reasoning.split())} words):")
+        print(f"   {think_preview}...")
+        print(f"\n🎯 Action: {json.dumps(action_json, indent=2)}")
+
+        is_mock = attestation_hex.startswith("0x4d4f434b")  # "MOCK" in hex
+        if is_mock:
+            print(f"\n⚠️  Mock attestation (not running in TEE)")
+        else:
+            print(f"\n🔐 TDX attestation: {len(attestation_hex) // 2 - 1} bytes")
+
+        epoch_result = {
+            "epoch": state["epoch"],
+            "treasury_before": state["treasury_balance"],
+            "action": action_json.get("action", "unknown"),
+            "action_json": action_json,
+            "reasoning_words": len(reasoning.split()),
+            "inference_seconds": tee_result["inference_seconds"],
+            "completion_tokens": tee_result["tokens"].get("completion_tokens", 0),
+            "reasoning_preview": reasoning[:300],
+            "tee_mode": True,
+            "has_attestation": not is_mock,
+        }
+
+        if dry_run:
+            print("\n✅ Dry run complete — action not submitted to contract")
+            if log_file:
+                with open(log_file, "a") as f:
+                    f.write(json.dumps(epoch_result) + "\n")
+            return epoch_result
+
+        # In TEE mode, the enclave already encoded the action bytes
+        action_bytes = bytes.fromhex(action_bytes_hex.replace("0x", ""))
+        reasoning_text = reasoning
+        reasoning_bytes = reasoning_text.encode("utf-8")
+
+        # Pre-submission bounds check
+        parsed = {"action": action_json.get("action"), "action_json": action_json, "think": reasoning}
+        parsed = _validate_and_fix_action(parsed, state)
+
+        # Re-encode if bounds check changed the action
+        if parsed["action_json"] != action_json:
+            print("   ⚠️  Action modified by bounds check — re-encoding")
+            action_bytes = encode_action(parsed)
+
+    else:
+        # Direct mode: call llama-server locally
+        # Construct full prompt and run inference (with retry on parse failure)
+        full_prompt = system_prompt + "\n\n" + epoch_context + "\n\n<think>\n"
+
+        max_retries = 3
+        parsed = None
+        inference = None
+        for attempt in range(1, max_retries + 1):
+            print(f"\n⏳ Running inference (attempt {attempt}/{max_retries}, {max_tokens} max tokens)...")
+
+            try:
+                inference = run_inference(full_prompt, max_tokens=max_tokens)
+            except Exception as e:
+                print(f"❌ Inference error: {e}")
+                if attempt < max_retries:
+                    print(f"   Retrying...")
+                    continue
+                else:
+                    return None
+
+            print(f"⏱️  {inference['elapsed_seconds']}s, {inference['tokens']['completion_tokens']} tokens, finish: {inference['finish_reason']}")
+
+            parsed = parse_model_output(inference["text"])
+
+            if parsed["action"]:
+                if parsed["errors"]:
+                    print(f"⚠️  Parse notes: {parsed['errors']}")
+                break
+
+            print(f"⚠️  Attempt {attempt} failed to produce valid action")
+            if parsed["errors"]:
+                print(f"   Errors: {parsed['errors']}")
             if attempt < max_retries:
                 print(f"   Retrying...")
-                continue
-            else:
-                return None
 
-        print(f"⏱️  {inference['elapsed_seconds']}s, {inference['tokens']['completion_tokens']} tokens, finish: {inference['finish_reason']}")
+        if not parsed or not parsed["action"]:
+            print("❌ Could not parse action after all retries")
+            if inference:
+                print(f"Last raw output:\n{inference['text'][:2000]}")
+            return None
 
-        parsed = parse_model_output(inference["text"])
+        # Display result
+        think_preview = (parsed["think"] or "")[:500]
+        print(f"\n📝 Reasoning ({len((parsed['think'] or '').split())} words):")
+        print(f"   {think_preview}...")
+        print(f"\n🎯 Action: {json.dumps(parsed['action_json'], indent=2)}")
 
-        if parsed["action"]:
-            if parsed["errors"]:
-                print(f"⚠️  Parse notes: {parsed['errors']}")
-            break
+        epoch_result = {
+            "epoch": state["epoch"],
+            "treasury_before": state["treasury_balance"],
+            "action": parsed["action"],
+            "action_json": parsed["action_json"],
+            "reasoning_words": len((parsed["think"] or "").split()),
+            "inference_seconds": inference["elapsed_seconds"],
+            "completion_tokens": inference["tokens"]["completion_tokens"],
+            "reasoning_preview": (parsed["think"] or "")[:300],
+            "tee_mode": False,
+        }
 
-        print(f"⚠️  Attempt {attempt} failed to produce valid action")
-        if parsed["errors"]:
-            print(f"   Errors: {parsed['errors']}")
-        if attempt < max_retries:
-            print(f"   Retrying...")
+        if dry_run:
+            print("\n✅ Dry run complete — action not submitted to contract")
+            if log_file:
+                with open(log_file, "a") as f:
+                    f.write(json.dumps(epoch_result) + "\n")
+            return epoch_result
 
-    if not parsed or not parsed["action"]:
-        print("❌ Could not parse action after all retries")
-        if inference:
-            print(f"Last raw output:\n{inference['text'][:2000]}")
-        return None
+        # Pre-submission bounds check — fix actions that would revert
+        parsed = _validate_and_fix_action(parsed, state)
 
-    # Display result
-    think_preview = (parsed["think"] or "")[:500]
-    print(f"\n📝 Reasoning ({len((parsed['think'] or '').split())} words):")
-    print(f"   {think_preview}...")
-    print(f"\n🎯 Action: {json.dumps(parsed['action_json'], indent=2)}")
-
-    epoch_result = {
-        "epoch": state["epoch"],
-        "treasury_before": state["treasury_balance"],
-        "action": parsed["action"],
-        "action_json": parsed["action_json"],
-        "reasoning_words": len((parsed["think"] or "").split()),
-        "inference_seconds": inference["elapsed_seconds"],
-        "completion_tokens": inference["tokens"]["completion_tokens"],
-        "reasoning_preview": (parsed["think"] or "")[:300],
-    }
-
-    if dry_run:
-        print("\n✅ Dry run complete — action not submitted to contract")
-        if log_file:
-            with open(log_file, "a") as f:
-                f.write(json.dumps(epoch_result) + "\n")
-        return epoch_result
-
-    # Pre-submission bounds check — fix actions that would revert
-    parsed = _validate_and_fix_action(parsed, state)
-
-    # Encode and submit
-    action_bytes = encode_action(parsed)
-    reasoning_text = (parsed["think"] or "")
-    reasoning_bytes = reasoning_text.encode("utf-8")
+        # Encode and submit
+        action_bytes = encode_action(parsed)
+        reasoning_text = (parsed["think"] or "")
+        reasoning_bytes = reasoning_text.encode("utf-8")
 
     # Cap reasoning to stay within gas budget (16 gas per non-zero byte of calldata)
     # At 5M gas limit we can afford ~8KB of reasoning comfortably
@@ -717,12 +861,13 @@ def print_run_summary(results):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="The Human Fund — Phase 0 Runner")
+    parser = argparse.ArgumentParser(description="The Human Fund — Runner")
     parser.add_argument("--dry-run", action="store_true", help="Don't submit to contract")
     parser.add_argument("--prompt", default=str(DEFAULT_PROMPT), help="System prompt file")
     parser.add_argument("--max-tokens", type=int, default=4096)
     parser.add_argument("--epochs", type=int, default=1, help="Number of epochs to run (default: 1)")
     parser.add_argument("--log", default=None, help="JSONL log file for results (default: agent/results/run_<timestamp>.jsonl)")
+    parser.add_argument("--tee-url", default=os.environ.get("TEE_URL"), help="TEE enclave URL (e.g., http://host:8090). Enables TEE mode.")
     args = parser.parse_args()
 
     # Load config from env
@@ -763,6 +908,20 @@ def main():
         account = Account.from_key(private_key)
         print(f"👤 Runner: {account.address}")
 
+    # Check TEE health if in TEE mode
+    if args.tee_url:
+        print(f"\n🔒 TEE mode enabled: {args.tee_url}")
+        health = check_tee_health(args.tee_url)
+        if health.get("status") == "ok":
+            print(f"   ✅ TEE enclave healthy")
+            print(f"   Llama: {health.get('llama', {}).get('status', 'unknown')}")
+            print(f"   TEE: {health.get('tee', 'unknown')}")
+        else:
+            print(f"   ⚠️  TEE enclave status: {health}")
+            if health.get("status") == "unreachable":
+                print(f"   ❌ Cannot reach TEE enclave — aborting")
+                sys.exit(1)
+
     # Run epochs
     results = []
     for i in range(args.epochs):
@@ -773,7 +932,7 @@ def main():
 
         result = run_single_epoch(
             w3, contract, account, system_prompt, args.max_tokens,
-            dry_run=args.dry_run, log_file=log_file,
+            dry_run=args.dry_run, log_file=log_file, tee_url=args.tee_url,
         )
 
         if result:

@@ -10,6 +10,14 @@ broadcast/
 # Agent results (large, regeneratable)
 agent/results/
 
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Models (large, downloaded separately)
+models/
+
 # OS
 .DS_Store
 

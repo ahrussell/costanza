@@ -5,8 +5,9 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 ## Project Overview
 
 - **Smart contract** (Solidity, Base L2): Treasury, referral system, epoch actions, diary events
-- **Agent inference**: DeepSeek R1 Distill Llama 70B (Q4_K_M, 42.5GB GGUF) via llama.cpp on RunPod
-- **Runner software**: Python script that reads contract state, runs inference, parses output, submits on-chain
+- **Agent inference**: DeepSeek R1 Distill Llama 70B (Q4_K_M, 42.5GB GGUF) via llama.cpp on RunPod (Phase 0); DeepSeek R1 Distill Qwen 14B in TDX TEE (Phase 1)
+- **Runner software**: Python script that reads contract state, runs inference (direct or via TEE), parses output, submits on-chain
+- **TEE enclave**: Docker image with llama.cpp + model + Flask API, runs in TDX Confidential VM on Phala Cloud
 - **Frontend**: Diary viewer, treasury dashboard, donation/referral interface (Phase 4)
 
 ## Current Status
@@ -49,10 +50,24 @@ Each epoch (24 hours in production, manual in Phase 0):
 ## Tech Stack
 
 - **Chain**: Base (Coinbase L2), Solidity ^0.8.20
-- **Inference**: llama.cpp + DeepSeek R1 Distill Llama 70B Q4_K_M
-- **TEE**: Intel TDX (Phase 1+)
+- **Inference**: llama.cpp + DeepSeek R1 Distill Llama 70B Q4_K_M (RunPod, Phase 0); 14B Q4_K_M (TEE, Phase 1)
+- **TEE**: Intel TDX via Phala Cloud / dstack
 - **Attestation**: Automata Network DCAP contracts (Phase 1+)
-- **Tooling**: Foundry (Solidity), Python (runner script)
+- **Tooling**: Foundry (Solidity), Python 3.9+ with venv (runner + enclave)
+
+## Python Environment
+
+```bash
+# Set up venv (first time)
+python3 -m venv .venv
+source .venv/bin/activate
+pip install flask web3 requests
+
+# Activate venv (each session)
+source .venv/bin/activate
+```
+
+All Python commands (runner, enclave runner, etc.) should be run inside the venv.
 
 ## Project Structure
 
@@ -61,6 +76,7 @@ thehumanfund/
 ├── CLAUDE.md                    # This file — project context for Claude
 ├── DESIGN.md                    # Full design specification (living document)
 ├── foundry.toml                 # Foundry configuration
+├── .venv/                       # Python virtual environment (gitignored)
 ├── src/
 │   └── TheHumanFund.sol         # Main smart contract
 ├── test/
@@ -68,15 +84,24 @@ thehumanfund/
 ├── script/
 │   └── Deploy.s.sol             # Foundry deployment script
 ├── agent/
-│   ├── runner.py                # Phase 0 runner (state → prompt → inference → submit)
+│   ├── runner.py                # Runner: state → prompt → inference → submit (Phase 0 + 1)
 │   ├── run_eval.py              # Prompt evaluation framework
 │   ├── prompts/
 │   │   └── system_v1.txt        # System prompt v1
 │   └── scenarios/
 │       └── scenarios.json       # 5 synthetic test scenarios
+├── tee/                         # Phase 1: TEE enclave image
+│   ├── Dockerfile               # Multi-stage: llama.cpp + model + enclave runner
+│   ├── docker-compose.yaml      # Phala Cloud / dstack deployment config
+│   ├── enclave_runner.py        # Flask API: /health, /run_epoch (inference + attestation)
+│   ├── start.sh                 # Container entrypoint
+│   └── system_prompt.txt        # Copy of agent/prompts/system_v1.txt
+├── frontend/
+│   └── index.html               # Internal dashboard (reads contract state)
+├── models/                      # Local model files (gitignored)
 ├── scripts/
-│   ├── rpod                     # SSH wrapper for RunPod (expect-based, handles PTY)
-│   ├── runpod-setup.sh          # First-time RunPod pod setup (idempotent)
+│   ├── rpod                     # SSH wrapper for RunPod
+│   ├── runpod-setup.sh          # First-time RunPod pod setup
 │   └── runpod-ssh.exp           # Low-level expect script for RunPod SSH
 └── .env                         # Secrets (gitignored)
 ```
@@ -101,10 +126,16 @@ thehumanfund/
 
 **`agent/runner.py`** — Reads contract state, builds prompt, runs inference, submits action.
 
+Supports two modes:
+- **Direct mode** (Phase 0): `python agent/runner.py` — calls llama-server directly
+- **TEE mode** (Phase 1): `python agent/runner.py --tee-url http://host:8090` — sends epoch context to TEE enclave
+
 Key implementation details:
 - **Two-pass inference**: Pass 1 generates reasoning with `stop=["</think>"]`, Pass 2 generates JSON action with `temperature=0.3`
 - **JSON parsing**: Custom `_extract_json_object()` with brace depth tracking (regex fails on nested JSON)
-- **Gas limit**: 2,000,000 (reasoning calldata is expensive — 2,593+ bytes)
+- **Gas limit**: 5,000,000 (reasoning calldata can be 3KB+, ~16 gas per non-zero byte)
+- **Reasoning cap**: 8KB on-chain to stay within gas budget
+- **Pre-submission bounds check**: Clamps donate to 9.9%, commission 100-9000 bps, max_bid to valid range
 - **Retry logic**: Up to 3 attempts on parse failure
 - **Custom User-Agent**: `TheHumanFund/1.0` to bypass Cloudflare blocking on RunPod proxy
 
@@ -165,6 +196,9 @@ Performance: ~14.9 tok/s generation, ~27ms/tok prompt processing.
 ## Commands
 
 ```bash
+# Python environment (always activate first)
+source .venv/bin/activate
+
 # Smart contracts
 forge build                                    # Compile contracts
 forge test                                     # Run all tests (26 tests)
@@ -172,9 +206,17 @@ forge test -vvv                                # Verbose test output
 forge script script/Deploy.s.sol \
   --rpc-url $RPC_URL --broadcast              # Deploy to testnet
 
-# Runner
+# Runner (direct mode — Phase 0)
 python agent/runner.py                         # Run one epoch (reads .env)
-python agent/run_eval.py                       # Run prompt evaluation
+python agent/runner.py --epochs 5              # Run 5 epochs in sequence
+python agent/runner.py --dry-run               # Inference only, no submission
+
+# Runner (TEE mode — Phase 1)
+python agent/runner.py --tee-url http://host:8090
+
+# TEE enclave (local testing)
+llama-server -m models/DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf -c 4096 --port 8080 &
+cd tee && python enclave_runner.py             # Starts on :8090
 
 # RunPod
 ./scripts/rpod "command"                       # Run command on RunPod pod
