@@ -1,0 +1,8 @@
+{
+  "lib/automata-dcap-attestation": {
+    "tag": {
+      "name": "v1.1.0",
+      "rev": "9c96312657f2a905003f6ebf565d5742422f24a2"
+    }
+  }
+}

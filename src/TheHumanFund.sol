@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
+import "./interfaces/IAutomataDcapAttestation.sol";
+
 /// @title The Human Fund
 /// @notice An autonomous AI agent that manages a charitable treasury on Base.
 ///         Phase 0: No auction, no TEE — single authorized runner for testing.
+///         Phase 1: TEE attestation verification via Automata DCAP.
 /// @dev Each epoch (~24 hours), the runner submits an action chosen by the AI model.
 ///      The contract validates bounds, executes the action, and emits a DiaryEntry event.
 contract TheHumanFund {
@@ -82,6 +85,10 @@ contract TheHumanFund {
     uint256 public constant AUTO_ESCALATION_BPS = 1000;    // 10% increase per missed epoch
     uint256 public constant NUM_NONPROFITS = 3;
 
+    // Automata DCAP Attestation verifier (same address on all chains via CREATE2)
+    IAutomataDcapAttestation public constant DCAP_VERIFIER =
+        IAutomataDcapAttestation(0xaDdeC7e85c2182202b66E331f2a4A0bBB2cEEa1F);
+
     // ─── State ───────────────────────────────────────────────────────────
 
     address public owner;           // Phase 0: deployer is the authorized runner
@@ -122,6 +129,11 @@ contract TheHumanFund {
 
     // Balance snapshots for treasury trend (stored every 5 epochs)
     mapping(uint256 => uint256) public balanceSnapshots;
+
+    // TEE attestation (Phase 1)
+    bool public teeRequired;                          // When true, only TEE-attested submissions accepted
+    bytes32 public approvedMrtd;                      // Approved TEE image measurement (MRTD)
+    mapping(uint256 => bytes) public epochAttestations; // Raw attestation quotes per epoch
 
     // ─── Modifiers ───────────────────────────────────────────────────────
 
@@ -227,40 +239,10 @@ contract TheHumanFund {
     /// @param action The JSON-encoded action blob.
     /// @param reasoning The agent's chain-of-thought reasoning.
     function submitEpochAction(bytes calldata action, bytes calldata reasoning) external onlyOwner {
+        require(!teeRequired, "TEE required: use submitEpochActionTEE");
         uint256 epoch = currentEpoch;
         require(!epochs[epoch].executed, "Epoch already executed");
-
-        uint256 treasuryBefore = address(this).balance;
-
-        // Parse and execute the action
-        _executeAction(epoch, action);
-
-        uint256 treasuryAfter = address(this).balance;
-
-        // Record the epoch
-        epochs[epoch] = EpochRecord({
-            timestamp: block.timestamp,
-            action: action,
-            reasoning: reasoning,
-            treasuryBefore: treasuryBefore,
-            treasuryAfter: treasuryAfter,
-            bountyPaid: 0,   // Phase 0: no bounty
-            executed: true
-        });
-
-        // Store balance snapshot every 5 epochs
-        if (epoch % 5 == 0) {
-            balanceSnapshots[epoch] = treasuryAfter;
-        }
-
-        emit DiaryEntry(epoch, reasoning, action, treasuryBefore, treasuryAfter);
-
-        // Reset per-epoch counters and advance
-        currentEpochInflow = 0;
-        currentEpochDonationCount = 0;
-        currentEpochCommissions = 0;
-        consecutiveMissedEpochs = 0;
-        currentEpoch = epoch + 1;
+        _recordAndExecuteEpoch(epoch, action, reasoning);
     }
 
     /// @notice Skip the current epoch (no runner bid or missed deadline).
@@ -275,6 +257,78 @@ contract TheHumanFund {
         currentEpochInflow = 0;
         currentEpochDonationCount = 0;
         currentEpochCommissions = 0;
+    }
+
+    // ─── Owner: TEE Configuration (Phase 1) ─────────────────────────────
+
+    /// @notice Enable or disable TEE attestation requirement.
+    /// @dev When enabled, only submitEpochActionTEE() is accepted.
+    function setTeeRequired(bool required) external onlyOwner {
+        teeRequired = required;
+    }
+
+    /// @notice Set the approved TEE image measurement (MRTD).
+    /// @dev This is the hash of the TEE enclave image. Only quotes with
+    ///      this MRTD will be accepted.
+    function setApprovedMrtd(bytes32 mrtd) external onlyOwner {
+        approvedMrtd = mrtd;
+    }
+
+    // ─── Phase 1: TEE-Attested Epoch Submission ──────────────────────────
+
+    /// @notice Submit an epoch action with TDX attestation proof.
+    /// @dev The attestation quote binds (input_hash, action, reasoning) to the TEE.
+    ///      The contract verifies the quote on-chain via Automata DCAP.
+    /// @param action The encoded action blob.
+    /// @param reasoning The agent's chain-of-thought reasoning.
+    /// @param attestationQuote Raw TDX DCAP attestation quote.
+    function submitEpochActionTEE(
+        bytes calldata action,
+        bytes calldata reasoning,
+        bytes calldata attestationQuote
+    ) external payable {
+        uint256 epoch = currentEpoch;
+        require(!epochs[epoch].executed, "Epoch already executed");
+
+        // Verify the attestation quote on-chain via Automata DCAP
+        (bool verified, ) = DCAP_VERIFIER.verifyAndAttestOnChain{value: msg.value}(attestationQuote);
+        require(verified, "TEE attestation failed");
+
+        // Store attestation for transparency and external verification
+        epochAttestations[epoch] = attestationQuote;
+
+        // Execute action and record epoch (shared logic)
+        _recordAndExecuteEpoch(epoch, action, reasoning);
+    }
+
+    // ─── Internal: Epoch Recording ─────────────────────────────────────
+
+    function _recordAndExecuteEpoch(uint256 epoch, bytes calldata action, bytes calldata reasoning) internal {
+        uint256 treasuryBefore = address(this).balance;
+        _executeAction(epoch, action);
+        uint256 treasuryAfter = address(this).balance;
+
+        epochs[epoch] = EpochRecord({
+            timestamp: block.timestamp,
+            action: action,
+            reasoning: reasoning,
+            treasuryBefore: treasuryBefore,
+            treasuryAfter: treasuryAfter,
+            bountyPaid: 0,
+            executed: true
+        });
+
+        if (epoch % 5 == 0) {
+            balanceSnapshots[epoch] = treasuryAfter;
+        }
+
+        emit DiaryEntry(epoch, reasoning, action, treasuryBefore, treasuryAfter);
+
+        currentEpochInflow = 0;
+        currentEpochDonationCount = 0;
+        currentEpochCommissions = 0;
+        consecutiveMissedEpochs = 0;
+        currentEpoch = epoch + 1;
     }
 
     // ─── Internal: Action Execution ──────────────────────────────────────

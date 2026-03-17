@@ -1,0 +1,3 @@
+[submodule "lib/automata-dcap-attestation"]
+	path = lib/automata-dcap-attestation
+	url = https://github.com/automata-network/automata-dcap-attestation
