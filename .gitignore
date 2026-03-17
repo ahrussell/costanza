@@ -1,0 +1,17 @@
+# Foundry
+out/
+cache/
+broadcast/
+
+# Environment / secrets
+.env
+.env.*
+
+# Agent results (large, regeneratable)
+agent/results/
+
+# OS
+.DS_Store
+
+# Node (for future frontend)
+node_modules/

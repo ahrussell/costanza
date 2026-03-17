@@ -1,0 +1,566 @@
+#!/usr/bin/env python3
+"""
+The Human Fund — Phase 0 Runner
+
+Reads contract state, constructs the prompt, calls the AI model,
+parses the output, and submits the action to the contract.
+
+Usage:
+    # Run a single epoch
+    python agent/runner.py
+
+    # Dry run (don't submit to contract)
+    python agent/runner.py --dry-run
+
+    # Use a custom prompt
+    python agent/runner.py --prompt agent/prompts/system_v2.txt
+
+Environment variables:
+    PRIVATE_KEY       - Runner's private key (hex, with or without 0x prefix)
+    RPC_URL           - Base Sepolia RPC URL
+    CONTRACT_ADDRESS  - Deployed TheHumanFund contract address
+    LLAMA_SERVER_URL  - llama-server URL (default: RunPod proxy)
+"""
+
+import json
+import os
+import re
+import sys
+import time
+import argparse
+from pathlib import Path
+from urllib.request import urlopen, Request
+
+from web3 import Web3
+from eth_account import Account
+
+# ─── Config ──────────────────────────────────────────────────────────────
+
+PROJECT_ROOT = Path(__file__).parent.parent
+AGENT_DIR = PROJECT_ROOT / "agent"
+DEFAULT_PROMPT = AGENT_DIR / "prompts" / "system_v1.txt"
+ABI_PATH = PROJECT_ROOT / "out" / "TheHumanFund.sol" / "TheHumanFund.json"
+
+LLAMA_SERVER_URL = os.environ.get(
+    "LLAMA_SERVER_URL",
+    "https://xabf55irwjp075-8080.proxy.runpod.net"
+)
+
+
+def _headers():
+    return {"User-Agent": "TheHumanFund/1.0", "Content-Type": "application/json"}
+
+
+# ─── Contract Interface ─────────────────────────────────────────────────
+
+def load_contract(w3, address):
+    """Load the contract ABI and return a web3 contract instance."""
+    artifact = json.loads(ABI_PATH.read_text())
+    abi = artifact["abi"]
+    return w3.eth.contract(address=address, abi=abi)
+
+
+def read_contract_state(contract, w3):
+    """Read all relevant state from the contract for prompt construction."""
+    state = {}
+
+    # Basic state
+    state["epoch"] = contract.functions.currentEpoch().call()
+    state["treasury_balance"] = contract.functions.treasuryBalance().call()
+    state["commission_rate_bps"] = contract.functions.commissionRateBps().call()
+    state["max_bid"] = contract.functions.maxBid().call()
+    state["effective_max_bid"] = contract.functions.effectiveMaxBid().call()
+    state["deploy_timestamp"] = contract.functions.deployTimestamp().call()
+    state["total_inflows"] = contract.functions.totalInflows().call()
+    state["total_donated"] = contract.functions.totalDonatedToNonprofits().call()
+    state["total_commissions"] = contract.functions.totalCommissionsPaid().call()
+    state["total_bounties"] = contract.functions.totalBountiesPaid().call()
+    state["last_donation_epoch"] = contract.functions.lastDonationEpoch().call()
+    state["last_commission_change_epoch"] = contract.functions.lastCommissionChangeEpoch().call()
+    state["consecutive_missed"] = contract.functions.consecutiveMissedEpochs().call()
+
+    # Per-epoch counters
+    state["epoch_inflow"] = contract.functions.currentEpochInflow().call()
+    state["epoch_donation_count"] = contract.functions.currentEpochDonationCount().call()
+
+    # Nonprofits
+    state["nonprofits"] = []
+    for i in range(1, 4):
+        name, addr, total_donated, donation_count = contract.functions.getNonprofit(i).call()
+        state["nonprofits"].append({
+            "id": i,
+            "name": name,
+            "address": addr,
+            "total_donated": total_donated,
+            "donation_count": donation_count,
+        })
+
+    # Decision history (read executed epoch records, most recent first)
+    state["history"] = []
+    for ep in range(state["epoch"] - 1, max(0, state["epoch"] - 20), -1):
+        try:
+            ts, action, reasoning, tb, ta, bounty, executed = contract.functions.getEpochRecord(ep).call()
+            if executed:
+                state["history"].append({
+                    "epoch": ep,
+                    "action": action,
+                    "reasoning": reasoning,
+                    "treasury_before": tb,
+                    "treasury_after": ta,
+                    "bounty_paid": bounty,
+                })
+        except Exception:
+            continue
+
+    # Balance snapshots (every 5 epochs, last 30 epochs)
+    state["snapshots"] = []
+    epoch = state["epoch"]
+    for ep in range(max(1, epoch - 30), epoch, 5):
+        snap_ep = ep - (ep % 5) + 5  # Round to nearest 5
+        if snap_ep < epoch:
+            try:
+                balance = contract.functions.balanceSnapshots(snap_ep).call()
+                if balance > 0:
+                    state["snapshots"].append({"epoch": snap_ep, "balance": balance})
+            except Exception:
+                continue
+
+    return state
+
+
+# ─── Prompt Construction ─────────────────────────────────────────────────
+
+def format_eth(wei_amount):
+    """Format wei as ETH string."""
+    return f"{wei_amount / 1e18:.4f}"
+
+
+def build_epoch_context(state):
+    """Build the epoch context string from contract state."""
+    epoch = state["epoch"]
+    balance = state["treasury_balance"]
+    commission = state["commission_rate_bps"]
+    max_bid = state["max_bid"]
+    epochs_since_donation = epoch - state["last_donation_epoch"] if state["last_donation_epoch"] > 0 else epoch
+    epochs_since_commission = epoch - state["last_commission_change_epoch"] if state["last_commission_change_epoch"] > 0 else epoch
+
+    # Calculate fund age in approximate years
+    fund_age_years = epoch / 365.0
+
+    lines = []
+    lines.append(f"=== EPOCH {epoch} STATE ===")
+    lines.append("")
+    lines.append(f"Treasury balance: {format_eth(balance)} ETH")
+    lines.append(f"Commission rate: {commission / 100:.0f}%")
+    lines.append(f"Max bid ceiling: {format_eth(max_bid)} ETH")
+    if state["effective_max_bid"] != state["max_bid"]:
+        lines.append(f"Effective bid ceiling (auto-escalated): {format_eth(state['effective_max_bid'])} ETH")
+    lines.append(f"Fund age: {epoch} epochs ({fund_age_years:.1f} years)")
+    lines.append(f"Epochs since last donation: {epochs_since_donation}")
+    lines.append(f"Epochs since last commission change: {epochs_since_commission}")
+    lines.append(f"Consecutive missed epochs: {state['consecutive_missed']}")
+
+    # External data (Phase 0: placeholder — oracles not yet integrated)
+    lines.append("")
+    lines.append("--- External ---")
+    lines.append("ETH/USD: (oracle not yet integrated)")
+    lines.append("Base avg gas: (not yet tracked)")
+
+    # This epoch activity
+    lines.append("")
+    lines.append("--- This Epoch Activity ---")
+    lines.append(f"Inflows: {format_eth(state['epoch_inflow'])} ETH ({state['epoch_donation_count']} donations)")
+    lines.append(f"Outflows: 0.0000 ETH (Phase 0: no bounty)")
+
+    # Referral codes (Phase 0: basic info)
+    lines.append("")
+    lines.append("--- Referral Codes ---")
+    lines.append("(Referral tracking available but limited in Phase 0)")
+
+    # Nonprofit totals
+    lines.append("")
+    lines.append("--- Nonprofit Totals (lifetime) ---")
+    for np in state["nonprofits"]:
+        lines.append(
+            f"#{np['id']} ({np['name']}, {np['address'][:6]}...{np['address'][-4:]}): "
+            f"{format_eth(np['total_donated'])} ETH across {np['donation_count']} donations"
+        )
+
+    # Treasury trend
+    lines.append("")
+    lines.append("--- Treasury Trend (last 30 epochs, every 5) ---")
+    if state["snapshots"]:
+        for snap in state["snapshots"]:
+            lines.append(f"Epoch {snap['epoch']}: {format_eth(snap['balance'])} ETH")
+    else:
+        lines.append("No history yet.")
+
+    # Decision history
+    lines.append("")
+    lines.append("=== YOUR DECISION HISTORY (most recent first) ===")
+    lines.append("")
+
+    if not state["history"]:
+        lines.append("No previous decisions.")
+    else:
+        for entry in state["history"]:
+            lines.append(f"--- Epoch {entry['epoch']} ---")
+            # Decode reasoning
+            try:
+                reasoning_text = entry["reasoning"].decode("utf-8") if isinstance(entry["reasoning"], bytes) else entry["reasoning"]
+            except Exception:
+                reasoning_text = "(could not decode)"
+            lines.append(f"[Your reasoning]:")
+            lines.append(f"<think>")
+            lines.append(reasoning_text)
+            lines.append(f"</think>")
+
+            # Decode action
+            try:
+                action_bytes = entry["action"] if isinstance(entry["action"], bytes) else bytes.fromhex(entry["action"])
+                action_type = action_bytes[0]
+                action_names = {0: "noop", 1: "donate", 2: "set_commission_rate", 3: "set_max_bid"}
+                action_name = action_names.get(action_type, f"unknown({action_type})")
+                lines.append(f"[Your action]: {action_name}")
+            except Exception:
+                lines.append(f"[Your action]: (could not decode)")
+
+            lines.append(f"[Treasury]: {format_eth(entry['treasury_before'])} → {format_eth(entry['treasury_after'])} ETH")
+            lines.append("")
+
+    return "\n".join(lines)
+
+
+# ─── Inference ───────────────────────────────────────────────────────────
+
+def _call_llama(prompt, max_tokens=4096, temperature=0.6, stop=None):
+    """Low-level call to the llama-server."""
+    body = {
+        "prompt": prompt,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }
+    if stop:
+        body["stop"] = stop
+
+    payload = json.dumps(body).encode()
+
+    req = Request(
+        f"{LLAMA_SERVER_URL}/v1/completions",
+        data=payload,
+        headers=_headers(),
+    )
+
+    start = time.time()
+    resp = urlopen(req, timeout=300)
+    elapsed = time.time() - start
+
+    result = json.loads(resp.read())
+    choice = result["choices"][0]
+
+    return {
+        "text": choice["text"],
+        "finish_reason": choice.get("finish_reason", "unknown"),
+        "elapsed_seconds": round(elapsed, 1),
+        "tokens": result["usage"],
+    }
+
+
+def run_inference(prompt, max_tokens=4096, temperature=0.6):
+    """Two-pass inference: generate reasoning (stop at </think>), then generate action JSON.
+
+    This avoids the issue where the model hits EOS before producing the JSON output.
+    """
+    # Pass 1: Generate reasoning, stop at </think>
+    result1 = _call_llama(prompt, max_tokens=max_tokens, temperature=temperature, stop=["</think>"])
+
+    reasoning = result1["text"].strip()
+
+    # Pass 2: Generate the JSON action with the full context
+    # Feed back the full prompt + reasoning + </think> and ask for the JSON
+    prompt2 = prompt + reasoning + "\n</think>\n"
+    result2 = _call_llama(prompt2, max_tokens=256, temperature=0.3, stop=["\n\n"])
+
+    # Combine into a single response
+    combined_text = reasoning + "\n</think>\n" + result2["text"]
+    total_elapsed = result1["elapsed_seconds"] + result2["elapsed_seconds"]
+    total_tokens = {
+        "prompt_tokens": result1["tokens"]["prompt_tokens"] + result2["tokens"]["prompt_tokens"],
+        "completion_tokens": result1["tokens"]["completion_tokens"] + result2["tokens"]["completion_tokens"],
+        "total_tokens": result1["tokens"]["total_tokens"] + result2["tokens"]["total_tokens"],
+    }
+
+    return {
+        "text": combined_text,
+        "finish_reason": result2["finish_reason"],
+        "elapsed_seconds": total_elapsed,
+        "tokens": total_tokens,
+    }
+
+
+def _extract_json_object(text):
+    """Extract a complete JSON object from text, handling nested braces."""
+    start = text.find("{")
+    if start == -1:
+        return None
+
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(start, len(text)):
+        c = text[i]
+        if escape:
+            escape = False
+            continue
+        if c == "\\":
+            escape = True
+            continue
+        if c == '"' and not escape:
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(text[start:i + 1])
+                except json.JSONDecodeError:
+                    return None
+    return None
+
+
+def parse_model_output(text):
+    """Parse the model output into reasoning + action."""
+    result = {"think": None, "action": None, "action_json": None, "errors": []}
+
+    # Extract think block (we prime with <think>\n so text starts with reasoning)
+    close_idx = text.find("</think>")
+    if close_idx >= 0:
+        result["think"] = text[:close_idx].strip()
+        # Extract JSON from everything after </think>
+        after_think = text[close_idx + len("</think>"):].strip()
+        obj = _extract_json_object(after_think)
+        if obj and "action" in obj:
+            result["action_json"] = obj
+            result["action"] = obj["action"]
+    else:
+        think_match = re.search(r"<think>(.*?)</think>", text, re.DOTALL)
+        if think_match:
+            result["think"] = think_match.group(1).strip()
+        else:
+            result["errors"].append("No </think> tag found")
+            result["think"] = text.strip()
+
+    # Fallback: search the whole text for action JSON
+    if not result["action"]:
+        # Look for any JSON object containing "action" key
+        for match in re.finditer(r'\{', text):
+            obj = _extract_json_object(text[match.start():])
+            if obj and "action" in obj:
+                result["action_json"] = obj
+                result["action"] = obj["action"]
+                if close_idx < 0:
+                    result["errors"].append("JSON found but no </think> tag")
+                break
+
+    if not result["action"]:
+        result["errors"].append("No action JSON found")
+
+    return result
+
+
+# ─── Action Encoding ─────────────────────────────────────────────────────
+
+def encode_action(parsed):
+    """Encode the parsed action into the contract's expected byte format.
+
+    Format: uint8 action_type + ABI-encoded params
+    """
+    action = parsed["action"]
+    params = parsed["action_json"].get("params", {})
+
+    if action == "noop":
+        return bytes([0])
+
+    elif action == "donate":
+        nonprofit_id = int(params["nonprofit_id"])
+        amount_eth = float(params["amount_eth"])
+        amount_wei = int(amount_eth * 1e18)
+        encoded_params = Web3.to_bytes(nonprofit_id).rjust(32, b'\x00') + \
+                         Web3.to_bytes(amount_wei).rjust(32, b'\x00')
+        return bytes([1]) + encoded_params
+
+    elif action == "set_commission_rate":
+        rate_bps = int(params["rate_bps"])
+        encoded_params = Web3.to_bytes(rate_bps).rjust(32, b'\x00')
+        return bytes([2]) + encoded_params
+
+    elif action == "set_max_bid":
+        amount_eth = float(params["amount_eth"])
+        amount_wei = int(amount_eth * 1e18)
+        encoded_params = Web3.to_bytes(amount_wei).rjust(32, b'\x00')
+        return bytes([3]) + encoded_params
+
+    else:
+        raise ValueError(f"Unknown action: {action}")
+
+
+# ─── Main ────────────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(description="The Human Fund — Phase 0 Runner")
+    parser.add_argument("--dry-run", action="store_true", help="Don't submit to contract")
+    parser.add_argument("--prompt", default=str(DEFAULT_PROMPT), help="System prompt file")
+    parser.add_argument("--max-tokens", type=int, default=4096)
+    args = parser.parse_args()
+
+    # Load config from env
+    private_key = os.environ.get("PRIVATE_KEY")
+    rpc_url = os.environ.get("RPC_URL")
+    contract_address = os.environ.get("CONTRACT_ADDRESS")
+
+    if not args.dry_run:
+        if not all([private_key, rpc_url, contract_address]):
+            print("Error: Set PRIVATE_KEY, RPC_URL, and CONTRACT_ADDRESS env vars")
+            print("       Or use --dry-run to skip contract submission")
+            sys.exit(1)
+
+    # Load system prompt
+    system_prompt = Path(args.prompt).read_text().strip()
+    print(f"📄 System prompt: {Path(args.prompt).name} ({len(system_prompt.split())} words)")
+
+    # Connect to contract
+    if not args.dry_run:
+        w3 = Web3(Web3.HTTPProvider(rpc_url))
+        if not w3.is_connected():
+            print("❌ Cannot connect to RPC")
+            sys.exit(1)
+        print(f"🔗 Connected to {rpc_url}")
+
+        contract = load_contract(w3, Web3.to_checksum_address(contract_address))
+        account = Account.from_key(private_key)
+        print(f"👤 Runner: {account.address}")
+
+        # Read contract state
+        print("📖 Reading contract state...")
+        state = read_contract_state(contract, w3)
+        epoch_context = build_epoch_context(state)
+        print(f"📊 Epoch {state['epoch']}, Treasury: {format_eth(state['treasury_balance'])} ETH")
+    else:
+        # Dry run: use a minimal synthetic context
+        print("🏃 Dry run mode — using synthetic context")
+        # Load the first scenario from scenarios.json if available, else use minimal context
+        scenarios_file = AGENT_DIR / "scenarios" / "scenarios.json"
+        if scenarios_file.exists():
+            scenarios = json.loads(scenarios_file.read_text())
+            epoch_context = scenarios[0]["context"]
+            print(f"   Using scenario: {scenarios[0]['name']}")
+        else:
+            epoch_context = (
+                "=== EPOCH 1 STATE ===\n\n"
+                "Treasury balance: 5.0000 ETH\n"
+                "Commission rate: 10%\n"
+                "Max bid ceiling: 0.0050 ETH\n"
+                "Fund age: 1 epochs (0.0 years)\n"
+                "Epochs since last donation: 0 (never donated)\n"
+                "Epochs since last commission change: 0 (initial setting)\n"
+                "Consecutive missed epochs: 0\n\n"
+                "--- External ---\n"
+                "ETH/USD: $3,200.00\n"
+                "Base avg gas: 0.01 gwei\n\n"
+                "--- This Epoch Activity ---\n"
+                "Inflows: 5.0000 ETH (1 donation — initial seed)\n"
+                "Outflows: 0.0000 ETH\n\n"
+                "--- Nonprofit Totals (lifetime) ---\n"
+                "#1 (GiveDirectly): 0.0000 ETH across 0 donations\n"
+                "#2 (Against Malaria Foundation): 0.0000 ETH across 0 donations\n"
+                "#3 (Helen Keller International): 0.0000 ETH across 0 donations\n\n"
+                "=== YOUR DECISION HISTORY (most recent first) ===\n\n"
+                "No previous decisions."
+            )
+
+    # Construct full prompt and run inference (with retry on parse failure)
+    full_prompt = system_prompt + "\n\n" + epoch_context + "\n\n<think>\n"
+
+    max_retries = 3
+    parsed = None
+    for attempt in range(1, max_retries + 1):
+        print(f"\n⏳ Running inference (attempt {attempt}/{max_retries}, {args.max_tokens} max tokens)...")
+
+        inference = run_inference(full_prompt, max_tokens=args.max_tokens)
+        print(f"⏱️  {inference['elapsed_seconds']}s, {inference['tokens']['completion_tokens']} tokens, finish: {inference['finish_reason']}")
+
+        parsed = parse_model_output(inference["text"])
+
+        if parsed["action"]:
+            if parsed["errors"]:
+                print(f"⚠️  Parse notes: {parsed['errors']}")
+            break
+
+        print(f"⚠️  Attempt {attempt} failed to produce valid action")
+        if parsed["errors"]:
+            print(f"   Errors: {parsed['errors']}")
+        if attempt < max_retries:
+            print(f"   Retrying...")
+
+    if not parsed or not parsed["action"]:
+        print("❌ Could not parse action after all retries")
+        print(f"Last raw output:\n{inference['text'][:2000]}")
+        sys.exit(1)
+
+    # Display result
+    think_preview = (parsed["think"] or "")[:500]
+    print(f"\n📝 Reasoning ({len((parsed['think'] or '').split())} words):")
+    print(f"   {think_preview}...")
+    print(f"\n🎯 Action: {json.dumps(parsed['action_json'], indent=2)}")
+
+    if args.dry_run:
+        print("\n✅ Dry run complete — action not submitted to contract")
+        return
+
+    # Encode and submit
+    action_bytes = encode_action(parsed)
+    reasoning_bytes = (parsed["think"] or "").encode("utf-8")
+
+    print(f"\n📤 Submitting to contract...")
+    print(f"   Action bytes: {action_bytes.hex()}")
+    print(f"   Reasoning: {len(reasoning_bytes)} bytes")
+
+    # Build and send transaction
+    tx = contract.functions.submitEpochAction(
+        action_bytes,
+        reasoning_bytes,
+    ).build_transaction({
+        "from": account.address,
+        "nonce": w3.eth.get_transaction_count(account.address),
+        "gas": 2_000_000,
+        "maxFeePerGas": w3.eth.gas_price * 2,
+        "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
+    })
+
+    signed = account.sign_transaction(tx)
+    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+    print(f"   Tx hash: {tx_hash.hex()}")
+
+    # Wait for receipt
+    print("   Waiting for confirmation...")
+    receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+
+    if receipt["status"] == 1:
+        print(f"   ✅ Epoch {state['epoch']} executed successfully!")
+        print(f"   Gas used: {receipt['gasUsed']}")
+        print(f"   Block: {receipt['blockNumber']}")
+
+        # Read updated state
+        new_balance = contract.functions.treasuryBalance().call()
+        print(f"   Treasury: {format_eth(state['treasury_balance'])} → {format_eth(new_balance)} ETH")
+    else:
+        print(f"   ❌ Transaction reverted!")
+        print(f"   Receipt: {receipt}")
+
+
+if __name__ == "__main__":
+    main()
