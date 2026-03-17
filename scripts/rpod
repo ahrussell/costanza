@@ -1,0 +1,81 @@
+#!/usr/bin/expect -f
+# rpod - Run commands on RunPod via SSH with proper PTY handling
+#
+# Usage:
+#   rpod "ls -la /workspace"
+#   rpod "nvidia-smi"
+#   RUNPOD_HOST=user@host rpod "whoami"
+#
+# The SSH destination can be set via RUNPOD_HOST env var or defaults to
+# the value below. Update it when your pod ID changes.
+
+set timeout 600
+set dest $env(RUNPOD_HOST)
+if {$dest eq ""} {
+    set dest "xabf55irwjp075-644112cf@ssh.runpod.io"
+}
+
+set cmd [lindex $argv 0]
+
+if {$cmd eq ""} {
+    puts "Usage: rpod <command>"
+    puts "  e.g.: rpod \"ls -la /workspace\""
+    exit 1
+}
+
+log_user 0
+spawn ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new $dest
+
+# Wait for shell prompt
+expect {
+    -re {[#\$%]\s*$} {}
+    timeout {
+        puts "ERROR: Timed out waiting for prompt"
+        exit 1
+    }
+}
+
+# Use a unique marker to delimit command output
+set marker "___RPOD_END_[pid]___"
+
+log_user 0
+send -- "$cmd; EXIT_CODE=\$?; echo $marker \$EXIT_CODE\r"
+
+# Capture everything between our command and the marker
+log_user 0
+set output ""
+expect {
+    -re "(.*)$marker (\\d+)" {
+        set output $expect_out(1,string)
+        set exit_code $expect_out(2,string)
+    }
+    timeout {
+        puts "ERROR: Command timed out (${timeout}s)"
+        send "exit\r"
+        expect eof
+        exit 1
+    }
+}
+
+send "exit\r"
+expect eof
+
+# Clean up output: remove the echoed command line and ANSI escape codes
+# Split into lines, skip the first line (which is the echoed command)
+set lines [split $output "\n"]
+set cleaned_lines [lrange $lines 1 end]
+set cleaned [join $cleaned_lines "\n"]
+
+# Remove ANSI escape codes
+regsub -all {\x1b\[[0-9;]*[a-zA-Z]} $cleaned "" cleaned
+regsub -all {\x1b\][^\x07]*\x07} $cleaned "" cleaned
+# Remove carriage returns
+regsub -all {\r} $cleaned "" cleaned
+# Remove readline bracket paste markers
+regsub -all {\[(\?2004[hl])} $cleaned "" cleaned
+# Trim leading/trailing whitespace
+set cleaned [string trim $cleaned]
+
+puts $cleaned
+
+exit $exit_code

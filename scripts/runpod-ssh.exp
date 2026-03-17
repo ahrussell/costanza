@@ -1,0 +1,39 @@
+#!/usr/bin/expect -f
+# Usage: expect runpod-ssh.exp <ssh-destination> <command>
+# Handles RunPod's PTY requirement by using expect to provide a real PTY
+
+set timeout 300
+set dest [lindex $argv 0]
+set cmd [lindex $argv 1]
+
+spawn ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new $dest
+
+# Wait for shell prompt (common patterns: #, $, %)
+expect {
+    -re {[#\$%]\s*$} {
+        # Got a prompt, send our command
+    }
+    "PTY" {
+        # RunPod's error message - shouldn't happen with expect's PTY
+        puts "ERROR: Still getting PTY error"
+        exit 1
+    }
+    timeout {
+        puts "ERROR: Timed out waiting for prompt"
+        exit 1
+    }
+}
+
+# Send command with an exit marker so we know when output is done
+send -- "$cmd; echo __RUNPOD_CMD_DONE__\r"
+
+expect {
+    "__RUNPOD_CMD_DONE__" {}
+    timeout {
+        puts "ERROR: Command timed out"
+        exit 1
+    }
+}
+
+send "exit\r"
+expect eof
