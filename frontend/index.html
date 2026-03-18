@@ -280,6 +280,24 @@
   .event-type.CommissionRateChanged { background: #3a2a1a; color: var(--orange); }
   .event-type.MaxBidChanged { background: #1a2a3a; color: var(--accent); }
   .event-type.ReferralCodeMinted { background: #2a1a3a; color: #b080e0; }
+  .event-type.AuctionOpened { background: #1a2a2a; color: #40c0c0; }
+  .event-type.BidSubmitted { background: #2a2a1a; color: #c0c040; }
+  .event-type.AuctionClosed { background: #1a3a2a; color: var(--green); }
+  .event-type.EpochExecuted { background: #1a3a1a; color: #6adf6a; }
+  .event-type.BondForfeited { background: #3a1a1a; color: var(--red); }
+
+  .phase-badge {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 4px;
+  }
+
+  .phase-badge.idle { background: #2a2a30; color: var(--text-dim); }
+  .phase-badge.bidding { background: #2a2a1a; color: #c0c040; }
+  .phase-badge.execution { background: #1a2a3a; color: var(--accent); }
+  .phase-badge.settled { background: #1a3a2a; color: var(--green); }
 
   .event-detail {
     color: var(--text-dim);
@@ -377,6 +395,10 @@
     <h2>Flows</h2>
     <div id="flow-stats"><div class="loading">Loading</div></div>
   </div>
+  <div class="card">
+    <h2>Auction</h2>
+    <div id="auction-stats"><div class="loading">Loading</div></div>
+  </div>
 </div>
 
 <div class="card" style="margin-bottom: 24px;">
@@ -395,7 +417,7 @@
 </div>
 
 <script>
-const CONTRACT_ADDRESS = '0x2F213Ea0D3F6D8349e2162b37Cc8cE6605dc9420';
+const CONTRACT_ADDRESS = '0x3C390f3cA2f0aB5614c33F74FcBc53a5aDBae275';
 const RPC_URL = 'https://sepolia.base.org';
 const EXPLORER = 'https://sepolia.basescan.org';
 
@@ -422,7 +444,18 @@ const ABI = [
   "function getNonprofit(uint256 id) view returns (string name, address addr, uint256 totalDonated, uint256 donationCount)",
   "function getEpochRecord(uint256 epoch) view returns (uint256 timestamp, bytes action, bytes reasoning, uint256 treasuryBefore, uint256 treasuryAfter, uint256 bountyPaid, bool executed)",
   "function balanceSnapshots(uint256) view returns (uint256)",
+  "function auctionEnabled() view returns (bool)",
+  "function epochDuration() view returns (uint256)",
+  "function biddingWindow() view returns (uint256)",
+  "function executionWindow() view returns (uint256)",
+  "function getAuctionState(uint256 epoch) view returns (uint256 epochStartTime, uint8 phase, uint256 bidCount, address winner, uint256 winningBid, uint256 bondAmount)",
+  "function computeInputHash() view returns (bytes32)",
   "event DiaryEntry(uint256 indexed epoch, bytes reasoning, bytes action, uint256 treasuryBefore, uint256 treasuryAfter)",
+  "event AuctionOpened(uint256 indexed epoch, bytes32 inputHash, uint256 maxBidCeiling)",
+  "event BidSubmitted(uint256 indexed epoch, address indexed runner, uint256 bidAmount)",
+  "event AuctionClosed(uint256 indexed epoch, address indexed winner, uint256 winningBid)",
+  "event EpochExecuted(uint256 indexed epoch, address indexed runner, uint256 bountyPaid)",
+  "event BondForfeited(uint256 indexed epoch, address indexed runner, uint256 bondAmount)",
   "event DonationReceived(address indexed donor, uint256 amount, uint256 indexed referralCode, uint256 commissionAmount)",
   "event NonprofitDonation(uint256 indexed epoch, uint256 indexed nonprofitId, uint256 amount)",
   "event CommissionRateChanged(uint256 indexed epoch, uint256 newRateBps)",
@@ -643,6 +676,84 @@ async function loadState() {
     </div>
   `;
 
+  // Auction card
+  try {
+    const [auctionOn, epochDur, bidWin, execWin] = await Promise.all([
+      contract.auctionEnabled(),
+      contract.epochDuration(),
+      contract.biddingWindow(),
+      contract.executionWindow(),
+    ]);
+
+    let auctionHtml = `
+      <div class="stat">
+        <span class="stat-label">Mode</span>
+        <span class="stat-value ${auctionOn ? 'green' : ''}">${auctionOn ? 'Auction' : 'Phase 0 (owner)'}</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">Epoch duration</span>
+        <span class="stat-value">${fmtDuration(Number(epochDur))}</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">Bidding / Execution</span>
+        <span class="stat-value">${fmtDuration(Number(bidWin))} / ${fmtDuration(Number(execWin))}</span>
+      </div>
+    `;
+
+    if (auctionOn) {
+      const phaseNames = ['IDLE', 'BIDDING', 'EXECUTION', 'SETTLED'];
+      const phaseClasses = ['idle', 'bidding', 'execution', 'settled'];
+      const aState = await contract.getAuctionState(epoch);
+      const phase = Number(aState.phase);
+
+      auctionHtml += `
+        <div class="stat" style="margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border);">
+          <span class="stat-label">Phase</span>
+          <span class="phase-badge ${phaseClasses[phase]}">${phaseNames[phase]}</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Bids</span>
+          <span class="stat-value">${aState.bidCount.toString()}</span>
+        </div>
+      `;
+
+      if (aState.winner !== '0x0000000000000000000000000000000000000000') {
+        auctionHtml += `
+          <div class="stat">
+            <span class="stat-label">Leader</span>
+            <span class="stat-value"><a href="${EXPLORER}/address/${aState.winner}" target="_blank">${fmtAddr(aState.winner)}</a></span>
+          </div>
+          <div class="stat">
+            <span class="stat-label">Winning bid</span>
+            <span class="stat-value green">${fmtEth(aState.winningBid)}</span>
+          </div>
+          <div class="stat">
+            <span class="stat-label">Bond held</span>
+            <span class="stat-value">${fmtEth(aState.bondAmount)}</span>
+          </div>
+        `;
+      }
+
+      if (phase === 1 && aState.epochStartTime > 0n) {
+        const closeTime = Number(aState.epochStartTime) + Number(bidWin);
+        const now = Math.floor(Date.now() / 1000);
+        const remaining = closeTime - now;
+        if (remaining > 0) {
+          auctionHtml += `
+            <div class="stat">
+              <span class="stat-label">Bidding closes in</span>
+              <span class="stat-value orange">${fmtDuration(remaining)}</span>
+            </div>
+          `;
+        }
+      }
+    }
+
+    document.getElementById('auction-stats').innerHTML = auctionHtml;
+  } catch (err) {
+    document.getElementById('auction-stats').innerHTML = `<div class="stat"><span class="stat-label">Error</span><span class="stat-value" style="color:var(--red)">${err.message.slice(0, 40)}</span></div>`;
+  }
+
   // Nonprofits
   const nps = await Promise.all([1, 2, 3].map(id => contract.getNonprofit(id)));
   document.getElementById('nonprofits').innerHTML = nps.map((np, i) => `
@@ -732,6 +843,11 @@ async function loadEvents() {
       { filter: contract.filters.CommissionRateChanged(), name: 'CommissionRateChanged' },
       { filter: contract.filters.MaxBidChanged(), name: 'MaxBidChanged' },
       { filter: contract.filters.ReferralCodeMinted(), name: 'ReferralCodeMinted' },
+      { filter: contract.filters.AuctionOpened(), name: 'AuctionOpened' },
+      { filter: contract.filters.BidSubmitted(), name: 'BidSubmitted' },
+      { filter: contract.filters.AuctionClosed(), name: 'AuctionClosed' },
+      { filter: contract.filters.EpochExecuted(), name: 'EpochExecuted' },
+      { filter: contract.filters.BondForfeited(), name: 'BondForfeited' },
     ];
 
     const allEvents = [];
@@ -755,6 +871,16 @@ async function loadEvents() {
               detail = `Epoch ${log.args[0]}: max bid set to ${fmtEth(log.args[1])}`;
             } else if (name === 'ReferralCodeMinted') {
               detail = `Code #${log.args[0]} minted by ${fmtAddr(log.args[1])}`;
+            } else if (name === 'AuctionOpened') {
+              detail = `Epoch ${log.args[0]}: ceiling ${fmtEth(log.args[2])}`;
+            } else if (name === 'BidSubmitted') {
+              detail = `Epoch ${log.args[0]}: ${fmtAddr(log.args[1])} bid ${fmtEth(log.args[2])}`;
+            } else if (name === 'AuctionClosed') {
+              detail = `Epoch ${log.args[0]}: winner ${fmtAddr(log.args[1])} at ${fmtEth(log.args[2])}`;
+            } else if (name === 'EpochExecuted') {
+              detail = `Epoch ${log.args[0]}: ${fmtAddr(log.args[1])} earned ${fmtEth(log.args[2])}`;
+            } else if (name === 'BondForfeited') {
+              detail = `Epoch ${log.args[0]}: ${fmtAddr(log.args[1])} forfeited ${fmtEth(log.args[2])}`;
             }
           } catch { detail = 'could not decode'; }
 
