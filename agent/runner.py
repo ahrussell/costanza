@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """
-The Human Fund — Runner (Phase 0 + Phase 1)
+The Human Fund — Runner (Phase 0 + Phase 1 + Phase 2)
 
 Reads contract state, constructs the prompt, calls the AI model,
 parses the output, and submits the action to the contract.
 
-Supports two modes:
+Supports three modes:
   - Direct mode (Phase 0): Calls llama-server directly via LLAMA_SERVER_URL
   - TEE mode (Phase 1):    Sends epoch context to TEE enclave's /run_epoch endpoint
                            and receives action + TDX attestation quote
+  - Auction mode (Phase 2): Monitors auction state, bids, runs TEE inference,
+                            submits via submitAuctionResult()
 
 Usage:
     # Run a single epoch (direct mode)
@@ -16,6 +18,9 @@ Usage:
 
     # Run via TEE enclave
     python agent/runner.py --tee-url http://<tee-host>:8090
+
+    # Auction mode (Phase 2) — continuous monitoring
+    python agent/runner.py --auction --tee-url http://<tee-host>:8090
 
     # Dry run (don't submit to contract)
     python agent/runner.py --dry-run
@@ -26,6 +31,7 @@ Environment variables:
     CONTRACT_ADDRESS  - Deployed TheHumanFund contract address
     LLAMA_SERVER_URL  - llama-server URL (default: RunPod proxy)
     TEE_URL           - TEE enclave URL (alternative to --tee-url flag)
+    BID_AMOUNT        - Bid amount in ETH for auction mode (default: 0.001)
 """
 
 import hashlib
@@ -860,6 +866,300 @@ def print_run_summary(results):
     print("=" * 60)
 
 
+# ─── Phase 2: Auction Runner ─────────────────────────────────────────────
+
+def get_auction_state(contract, epoch):
+    """Get the auction state for a given epoch."""
+    start_time, phase, bid_count, winner, winning_bid, bond = contract.functions.getAuctionState(epoch).call()
+    # Phase enum: 0=IDLE, 1=BIDDING, 2=EXECUTION, 3=SETTLED
+    phase_names = {0: "IDLE", 1: "BIDDING", 2: "EXECUTION", 3: "SETTLED"}
+    return {
+        "epoch_start_time": start_time,
+        "phase": phase,
+        "phase_name": phase_names.get(phase, f"UNKNOWN({phase})"),
+        "bid_count": bid_count,
+        "winner": winner,
+        "winning_bid": winning_bid,
+        "bond": bond,
+    }
+
+
+def run_auction_epoch(w3, contract, account, tee_url, bid_amount_wei, log_file=None):
+    """Run a single epoch through the auction mechanism.
+
+    Flow:
+    1. Check current epoch and auction phase
+    2. If IDLE: call startEpoch() to open bidding
+    3. If BIDDING: submit our bid
+    4. If EXECUTION and we're the winner: run TEE inference, submit result
+    5. If EXECUTION and window expired: call forfeitBond()
+    6. Wait for phase transitions as needed
+
+    Returns epoch result dict or None on failure.
+    """
+    epoch = contract.functions.currentEpoch().call()
+    auction = get_auction_state(contract, epoch)
+
+    print(f"\n📊 Epoch {epoch}, Phase: {auction['phase_name']}")
+    print(f"   Treasury: {format_eth(contract.functions.treasuryBalance().call())} ETH")
+    print(f"   Max bid ceiling: {format_eth(contract.functions.effectiveMaxBid().call())} ETH")
+
+    # ─── Phase: IDLE — Start the epoch ─────────────────────────────────
+    if auction["phase"] == 0:  # IDLE
+        print("\n🏁 Starting epoch auction...")
+        try:
+            tx = contract.functions.startEpoch().build_transaction({
+                "from": account.address,
+                "nonce": w3.eth.get_transaction_count(account.address),
+                "gas": 200_000,
+                "maxFeePerGas": w3.eth.gas_price * 2,
+                "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
+            })
+            signed = account.sign_transaction(tx)
+            tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+            receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+            if receipt["status"] == 1:
+                print(f"   ✅ Epoch {epoch} auction opened (gas: {receipt['gasUsed']})")
+            else:
+                print(f"   ❌ startEpoch() reverted")
+                return None
+        except Exception as e:
+            print(f"   ❌ startEpoch() failed: {e}")
+            return None
+
+        # Refresh auction state
+        auction = get_auction_state(contract, epoch)
+
+    # ─── Phase: BIDDING — Submit our bid ───────────────────────────────
+    if auction["phase"] == 1:  # BIDDING
+        effective_max = contract.functions.effectiveMaxBid().call()
+        if bid_amount_wei > effective_max:
+            bid_amount_wei = effective_max
+            print(f"   ⚠️  Bid clamped to effective max: {format_eth(bid_amount_wei)} ETH")
+
+        already_bid = contract.functions.hasBid(epoch, account.address).call()
+        if already_bid:
+            print(f"   Already bid this epoch, waiting for auction to close...")
+        else:
+            bond_amount = (bid_amount_wei * 2000) // 10000  # 20% bond
+            print(f"\n💰 Bidding {format_eth(bid_amount_wei)} ETH (bond: {format_eth(bond_amount)} ETH)")
+
+            try:
+                tx = contract.functions.bid(bid_amount_wei).build_transaction({
+                    "from": account.address,
+                    "nonce": w3.eth.get_transaction_count(account.address),
+                    "gas": 200_000,
+                    "value": bond_amount,
+                    "maxFeePerGas": w3.eth.gas_price * 2,
+                    "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
+                })
+                signed = account.sign_transaction(tx)
+                tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+                receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+                if receipt["status"] == 1:
+                    print(f"   ✅ Bid submitted (gas: {receipt['gasUsed']})")
+                else:
+                    print(f"   ❌ bid() reverted")
+                    return None
+            except Exception as e:
+                print(f"   ❌ bid() failed: {e}")
+                return None
+
+        # Wait for bidding window to close
+        auction = get_auction_state(contract, epoch)
+        bidding_window = contract.functions.biddingWindow().call()
+        close_time = auction["epoch_start_time"] + bidding_window
+        now = w3.eth.get_block("latest")["timestamp"]
+
+        if now < close_time:
+            wait_secs = close_time - now + 2  # +2s buffer
+            print(f"\n⏳ Waiting {wait_secs}s for bidding window to close...")
+            time.sleep(wait_secs)
+
+        # Close the auction
+        print("\n🔨 Closing auction...")
+        try:
+            tx = contract.functions.closeAuction().build_transaction({
+                "from": account.address,
+                "nonce": w3.eth.get_transaction_count(account.address),
+                "gas": 200_000,
+                "maxFeePerGas": w3.eth.gas_price * 2,
+                "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
+            })
+            signed = account.sign_transaction(tx)
+            tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+            receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+            if receipt["status"] == 1:
+                print(f"   ✅ Auction closed (gas: {receipt['gasUsed']})")
+            else:
+                print(f"   ❌ closeAuction() reverted")
+                return None
+        except Exception as e:
+            print(f"   ❌ closeAuction() failed: {e}")
+            return None
+
+        # Refresh state — epoch may have advanced if no bids
+        new_epoch = contract.functions.currentEpoch().call()
+        if new_epoch != epoch:
+            print(f"   ℹ️  No bids — epoch skipped ({epoch} → {new_epoch})")
+            return {"epoch": epoch, "action": "skipped", "status": "no_bids"}
+
+        auction = get_auction_state(contract, epoch)
+
+    # ─── Phase: EXECUTION — We won, run inference and submit ───────────
+    if auction["phase"] == 2:  # EXECUTION
+        if auction["winner"].lower() != account.address.lower():
+            print(f"   ℹ️  We are not the winner (winner: {auction['winner'][:10]}...)")
+            return {"epoch": epoch, "action": "lost_auction", "status": "not_winner"}
+
+        print(f"\n🏆 We won the auction! Bounty: {format_eth(auction['winning_bid'])} ETH")
+
+        # Read contract state and build prompt
+        print("📖 Reading contract state...")
+        state = read_contract_state(contract, w3)
+        epoch_context = build_epoch_context(state)
+
+        # Compute input hash
+        input_hash = hashlib.sha256(epoch_context.encode("utf-8")).digest()
+        input_hash_hex = "0x" + input_hash.hex()
+
+        # Run TEE inference
+        print(f"\n🔒 Running TEE inference at {tee_url}...")
+        tee_result = None
+        for attempt in range(1, 4):
+            print(f"⏳ TEE inference (attempt {attempt}/3)...")
+            try:
+                tee_result = run_tee_inference(tee_url, epoch_context, input_hash_hex)
+                break
+            except Exception as e:
+                print(f"❌ TEE error: {e}")
+                if attempt < 3:
+                    time.sleep(10)
+                else:
+                    print("❌ TEE inference failed after 3 attempts")
+                    return None
+
+        print(f"⏱️  Inference: {tee_result['inference_seconds']}s")
+        print(f"🎯 Action: {json.dumps(tee_result['action_json'], indent=2)}")
+
+        # Prepare submission
+        action_bytes = bytes.fromhex(tee_result["action_bytes_hex"].replace("0x", ""))
+        reasoning_bytes = tee_result["reasoning"].encode("utf-8")
+        attestation_bytes = bytes.fromhex(tee_result["attestation_quote_hex"].replace("0x", ""))
+
+        # Cap reasoning
+        MAX_REASONING_BYTES = 8000
+        if len(reasoning_bytes) > MAX_REASONING_BYTES:
+            reasoning_bytes = reasoning_bytes[:MAX_REASONING_BYTES].decode("utf-8", errors="ignore").encode("utf-8")
+            print(f"   Reasoning truncated to {len(reasoning_bytes)} bytes")
+
+        print(f"\n📤 Submitting auction result...")
+        print(f"   Action: {action_bytes.hex()}")
+        print(f"   Reasoning: {len(reasoning_bytes)} bytes")
+        print(f"   Attestation: {len(attestation_bytes)} bytes")
+
+        try:
+            tx = contract.functions.submitAuctionResult(
+                action_bytes,
+                reasoning_bytes,
+                attestation_bytes,
+            ).build_transaction({
+                "from": account.address,
+                "nonce": w3.eth.get_transaction_count(account.address),
+                "gas": 6_000_000,  # Higher gas for attestation verification
+                "maxFeePerGas": w3.eth.gas_price * 2,
+                "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
+            })
+            signed = account.sign_transaction(tx)
+            tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+            print(f"   Tx hash: {tx_hash.hex()}")
+
+            receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+            if receipt["status"] == 1:
+                new_balance = contract.functions.treasuryBalance().call()
+                print(f"   ✅ Epoch {epoch} executed via auction!")
+                print(f"   Gas used: {receipt['gasUsed']}")
+                print(f"   Treasury: {format_eth(state['treasury_balance'])} → {format_eth(new_balance)} ETH")
+
+                result = {
+                    "epoch": epoch,
+                    "action": tee_result["action_json"].get("action", "unknown"),
+                    "action_json": tee_result["action_json"],
+                    "bounty": auction["winning_bid"],
+                    "inference_seconds": tee_result["inference_seconds"],
+                    "gas_used": receipt["gasUsed"],
+                    "tx_hash": tx_hash.hex(),
+                    "status": "success",
+                    "mode": "auction",
+                }
+                if log_file:
+                    with open(log_file, "a") as f:
+                        f.write(json.dumps(result, default=str) + "\n")
+                return result
+            else:
+                print(f"   ❌ submitAuctionResult() reverted")
+                return {"epoch": epoch, "status": "reverted"}
+
+        except Exception as e:
+            print(f"   ❌ submitAuctionResult() failed: {e}")
+            return None
+
+    # ─── Phase: SETTLED — Nothing to do ────────────────────────────────
+    if auction["phase"] == 3:  # SETTLED
+        print(f"   Epoch {epoch} already settled")
+        return {"epoch": epoch, "status": "already_settled"}
+
+    return None
+
+
+def run_auction_loop(w3, contract, account, tee_url, bid_amount_wei, log_file=None, max_epochs=None):
+    """Continuously monitor and participate in auctions.
+
+    Runs until max_epochs is reached or interrupted.
+    """
+    results = []
+    epoch_count = 0
+
+    print(f"\n🔄 Starting auction loop (bid: {format_eth(bid_amount_wei)} ETH)")
+    if max_epochs:
+        print(f"   Will run {max_epochs} epoch(s)")
+    else:
+        print(f"   Running continuously (Ctrl+C to stop)")
+
+    while True:
+        if max_epochs and epoch_count >= max_epochs:
+            break
+
+        result = run_auction_epoch(w3, contract, account, tee_url, bid_amount_wei, log_file)
+        if result:
+            results.append(result)
+            if result.get("status") in ("success", "no_bids", "not_winner", "already_settled"):
+                epoch_count += 1
+
+        # Wait before checking again
+        epoch_duration = contract.functions.epochDuration().call()
+        current_epoch = contract.functions.currentEpoch().call()
+        auction = get_auction_state(contract, current_epoch)
+
+        if auction["phase"] == 0:  # IDLE
+            # Check if we need to wait for epoch duration
+            if current_epoch > 1:
+                prev_auction = get_auction_state(contract, current_epoch - 1)
+                if prev_auction["epoch_start_time"] > 0:
+                    next_start = prev_auction["epoch_start_time"] + epoch_duration
+                    now = w3.eth.get_block("latest")["timestamp"]
+                    if now < next_start:
+                        wait = next_start - now + 2
+                        print(f"\n⏳ Waiting {wait}s for next epoch window...")
+                        time.sleep(wait)
+                        continue
+
+        # Brief pause between iterations
+        time.sleep(5)
+
+    return results
+
+
 def main():
     parser = argparse.ArgumentParser(description="The Human Fund — Runner")
     parser.add_argument("--dry-run", action="store_true", help="Don't submit to contract")
@@ -868,6 +1168,8 @@ def main():
     parser.add_argument("--epochs", type=int, default=1, help="Number of epochs to run (default: 1)")
     parser.add_argument("--log", default=None, help="JSONL log file for results (default: agent/results/run_<timestamp>.jsonl)")
     parser.add_argument("--tee-url", default=os.environ.get("TEE_URL"), help="TEE enclave URL (e.g., http://host:8090). Enables TEE mode.")
+    parser.add_argument("--auction", action="store_true", help="Phase 2: auction mode (requires --tee-url)")
+    parser.add_argument("--bid", type=float, default=float(os.environ.get("BID_AMOUNT", "0.001")), help="Bid amount in ETH for auction mode (default: 0.001)")
     args = parser.parse_args()
 
     # Load config from env
@@ -922,7 +1224,35 @@ def main():
                 print(f"   ❌ Cannot reach TEE enclave — aborting")
                 sys.exit(1)
 
-    # Run epochs
+    # ─── Auction Mode (Phase 2) ────────────────────────────────────────
+    if args.auction:
+        if not args.tee_url:
+            print("❌ Auction mode requires --tee-url")
+            sys.exit(1)
+        if args.dry_run:
+            print("❌ Auction mode is not compatible with --dry-run")
+            sys.exit(1)
+
+        bid_wei = Web3.to_wei(args.bid, "ether")
+        print(f"\n🏛️  Auction mode (Phase 2)")
+        print(f"   Bid amount: {args.bid} ETH")
+        print(f"   TEE enclave: {args.tee_url}")
+
+        # Verify auction is enabled on-chain
+        auction_enabled = contract.functions.auctionEnabled().call()
+        if not auction_enabled:
+            print("❌ Auction not enabled on contract. Owner must call setAuctionEnabled(true).")
+            sys.exit(1)
+
+        results = run_auction_loop(
+            w3, contract, account, args.tee_url, bid_wei,
+            log_file=log_file, max_epochs=args.epochs,
+        )
+        if len(results) > 1:
+            print_run_summary(results)
+        return
+
+    # ─── Direct / TEE Mode (Phase 0 / 1) ──────────────────────────────
     results = []
     for i in range(args.epochs):
         if args.epochs > 1:
