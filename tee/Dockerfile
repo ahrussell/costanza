@@ -39,23 +39,23 @@ RUN apt-get update && apt-get install -y \
 
 RUN pip3 install flask requests
 
-# Copy llama.cpp server binary
+# Copy llama.cpp server binary and its shared libraries
 COPY --from=builder /build/llama.cpp/build/bin/llama-server /usr/local/bin/llama-server
+COPY --from=builder /build/llama.cpp/build/bin/*.so* /usr/local/lib/
+RUN ldconfig
 
 # Copy agent files
 COPY enclave_runner.py /app/enclave_runner.py
 COPY system_prompt.txt /app/system_prompt.txt
 COPY start.sh /app/start.sh
 
-# Model weights will be downloaded at build time or mounted
-# For the 14B Q4_K_M model (~8.7 GB), we download during build
-ARG MODEL_URL="https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-14B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf"
-ARG MODEL_FILE="DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf"
-
-RUN mkdir -p /models && \
-    curl -L -o /models/${MODEL_FILE} ${MODEL_URL}
-
-ENV MODEL_PATH=/models/${MODEL_FILE}
+# Model downloaded at startup, verified against hardcoded SHA-256.
+# The hash is baked into the image and covered by the RTMR attestation chain,
+# so a tampered download is caught before loading.
+ENV MODEL_URL="https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-14B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf"
+ENV MODEL_PATH=/models/DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf
+ENV MODEL_SHA256="0b319bd0572f2730bfe11cc751defe82045fad5085b4e60591ac2cd2d9633181"
+RUN mkdir -p /models
 ENV LLAMA_SERVER_PORT=8080
 ENV ENCLAVE_PORT=8090
 

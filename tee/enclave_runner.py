@@ -65,7 +65,7 @@ def _call_llama(prompt, max_tokens=4096, temperature=0.6, stop=None):
     )
 
     start = time.time()
-    resp = urlopen(req, timeout=600)
+    resp = urlopen(req, timeout=1800)  # CPU inference on 14B can take 20+ min per pass
     elapsed = time.time() - start
 
     result = json.loads(resp.read())

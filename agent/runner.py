@@ -420,7 +420,7 @@ def run_tee_inference(tee_url, epoch_context, input_hash_hex="0x" + "00" * 32):
 
     print(f"   Calling TEE enclave at {tee_url}...")
     start = time.time()
-    resp = urlopen(req, timeout=900)  # CPU inference can be slow
+    resp = urlopen(req, timeout=3600)  # CPU inference on 14B can take 30+ min
     elapsed = time.time() - start
 
     result = json.loads(resp.read())
