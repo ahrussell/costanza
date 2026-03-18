@@ -5,12 +5,19 @@ import "./interfaces/IAutomataDcapAttestation.sol";
 
 /// @title The Human Fund
 /// @notice An autonomous AI agent that manages a charitable treasury on Base.
-///         Phase 0: No auction, no TEE — single authorized runner for testing.
-///         Phase 1: TEE attestation verification via Automata DCAP.
-///         Phase 2: Reverse auction for permissionless runner participation.
 /// @dev Each epoch (~24 hours), the runner submits an action chosen by the AI model.
 ///      The contract validates bounds, executes the action, and emits a DiaryEntry event.
 contract TheHumanFund {
+    // ─── Errors ──────────────────────────────────────────────────────────
+
+    error Unauthorized();
+    error InvalidParams();
+    error WrongPhase();
+    error TimingError();
+    error TransferFailed();
+    error AlreadyDone();
+    error AttestationFailed();
+
     // ─── Types ───────────────────────────────────────────────────────────
 
     struct Nonprofit {
@@ -168,7 +175,7 @@ contract TheHumanFund {
     // ─── Modifiers ───────────────────────────────────────────────────────
 
     modifier onlyOwner() {
-        require(msg.sender == owner, "Not authorized");
+        if (msg.sender != owner) revert Unauthorized();
         _;
     }
 
@@ -180,8 +187,8 @@ contract TheHumanFund {
         uint256 _initialCommissionBps,
         uint256 _initialMaxBid
     ) payable {
-        require(_initialCommissionBps >= MIN_COMMISSION_BPS && _initialCommissionBps <= MAX_COMMISSION_BPS, "Invalid commission");
-        require(_initialMaxBid >= MIN_MAX_BID, "Max bid too low");
+        if (_initialCommissionBps < MIN_COMMISSION_BPS || _initialCommissionBps > MAX_COMMISSION_BPS) revert InvalidParams();
+        if (_initialMaxBid < MIN_MAX_BID) revert InvalidParams();
 
         owner = msg.sender;
         deployTimestamp = block.timestamp;
@@ -196,7 +203,7 @@ contract TheHumanFund {
         executionWindow = 2 hours;
 
         for (uint256 i = 0; i < NUM_NONPROFITS; i++) {
-            require(_addrs[i] != address(0), "Zero address nonprofit");
+            if (_addrs[i] == address(0)) revert InvalidParams();
             nonprofits[i + 1] = Nonprofit({
                 name: _names[i],
                 addr: _addrs[i],
@@ -215,7 +222,7 @@ contract TheHumanFund {
     /// @notice Donate ETH to the fund, optionally with a referral code.
     /// @param referralCodeId The referral code ID (0 for no referral).
     function donate(uint256 referralCodeId) external payable {
-        require(msg.value >= MIN_DONATION_AMOUNT, "Below minimum donation");
+        if (msg.value < MIN_DONATION_AMOUNT) revert InvalidParams();
 
         uint256 commission = 0;
 
@@ -261,10 +268,10 @@ contract TheHumanFund {
                 totalClaimed += pc.amount;
             }
         }
-        require(totalClaimed > 0, "No claimable commissions");
+        if (totalClaimed == 0) revert InvalidParams();
         totalCommissionsPaid += totalClaimed;
         (bool sent, ) = payable(msg.sender).call{value: totalClaimed}("");
-        require(sent, "Commission transfer failed");
+        if (!sent) revert TransferFailed();
     }
 
     // ─── Owner: Epoch Execution (Phase 0) ────────────────────────────────
@@ -274,18 +281,18 @@ contract TheHumanFund {
     /// @param action The JSON-encoded action blob.
     /// @param reasoning The agent's chain-of-thought reasoning.
     function submitEpochAction(bytes calldata action, bytes calldata reasoning) external onlyOwner {
-        require(!auctionEnabled, "Auction enabled: use auction path");
-        require(!teeRequired, "TEE required: use submitEpochActionTEE");
+        if (auctionEnabled) revert WrongPhase();
+        if (teeRequired) revert WrongPhase();
         uint256 epoch = currentEpoch;
-        require(!epochs[epoch].executed, "Epoch already executed");
+        if (epochs[epoch].executed) revert AlreadyDone();
         _recordAndExecuteEpoch(epoch, action, reasoning, 0);
     }
 
     /// @notice Skip the current epoch (no runner bid or missed deadline).
     function skipEpoch() external onlyOwner {
-        require(!auctionEnabled, "Auction enabled: epochs managed by auction");
+        if (auctionEnabled) revert WrongPhase();
         uint256 epoch = currentEpoch;
-        require(!epochs[epoch].executed, "Epoch already executed");
+        if (epochs[epoch].executed) revert AlreadyDone();
 
         consecutiveMissedEpochs += 1;
         currentEpoch = epoch + 1;
@@ -324,13 +331,13 @@ contract TheHumanFund {
         bytes calldata reasoning,
         bytes calldata attestationQuote
     ) external payable {
-        require(!auctionEnabled, "Auction enabled: use auction path");
+        if (auctionEnabled) revert WrongPhase();
         uint256 epoch = currentEpoch;
-        require(!epochs[epoch].executed, "Epoch already executed");
+        if (epochs[epoch].executed) revert AlreadyDone();
 
         // Verify the attestation quote on-chain via Automata DCAP
         (bool verified, ) = DCAP_VERIFIER.verifyAndAttestOnChain{value: msg.value}(attestationQuote);
-        require(verified, "TEE attestation failed");
+        if (!verified) revert AttestationFailed();
 
         // Store attestation for transparency and external verification
         epochAttestations[epoch] = attestationQuote;
@@ -358,8 +365,8 @@ contract TheHumanFund {
         uint256 _biddingWindow,
         uint256 _executionWindow
     ) external onlyOwner {
-        require(_biddingWindow + _executionWindow <= _epochDuration, "Windows exceed epoch duration");
-        require(_biddingWindow > 0 && _executionWindow > 0, "Windows must be nonzero");
+        if (_biddingWindow + _executionWindow > _epochDuration) revert InvalidParams();
+        if (_biddingWindow == 0 || _executionWindow == 0) revert InvalidParams();
         epochDuration = _epochDuration;
         biddingWindow = _biddingWindow;
         executionWindow = _executionWindow;
@@ -370,23 +377,16 @@ contract TheHumanFund {
     ///      Computes and commits the epoch input hash, which runners use to verify
     ///      their input matches the contract state.
     function startEpoch() external {
-        require(auctionEnabled, "Auction not enabled");
+        if (!auctionEnabled) revert WrongPhase();
         uint256 epoch = currentEpoch;
-        require(auctions[epoch].phase == EpochPhase.IDLE, "Epoch already started");
+        if (auctions[epoch].phase != EpochPhase.IDLE) revert AlreadyDone();
 
         // Enforce timing: previous epoch must have finished
         if (epoch > 1) {
             AuctionState storage prevAuction = auctions[epoch - 1];
-            // Previous epoch must be settled (or never started, which is IDLE)
             if (prevAuction.phase != EpochPhase.IDLE) {
-                require(
-                    prevAuction.phase == EpochPhase.SETTLED,
-                    "Previous epoch not settled"
-                );
-                require(
-                    block.timestamp >= prevAuction.epochStartTime + epochDuration,
-                    "Epoch duration not elapsed"
-                );
+                if (prevAuction.phase != EpochPhase.SETTLED) revert WrongPhase();
+                if (block.timestamp < prevAuction.epochStartTime + epochDuration) revert TimingError();
             }
         }
 
@@ -414,18 +414,18 @@ contract TheHumanFund {
     ///      bond is refunded immediately. One bid per runner per epoch.
     /// @param amount The bounty amount the runner is willing to accept (in wei).
     function bid(uint256 amount) external payable {
-        require(auctionEnabled, "Auction not enabled");
+        if (!auctionEnabled) revert WrongPhase();
         uint256 epoch = currentEpoch;
         AuctionState storage auction = auctions[epoch];
 
-        require(auction.phase == EpochPhase.BIDDING, "Not in bidding phase");
-        require(block.timestamp < auction.epochStartTime + biddingWindow, "Bidding window closed");
-        require(amount > 0, "Bid must be positive");
-        require(amount <= effectiveMaxBid(), "Bid exceeds max bid ceiling");
-        require(!hasBid[epoch][msg.sender], "Already bid this epoch");
+        if (auction.phase != EpochPhase.BIDDING) revert WrongPhase();
+        if (block.timestamp >= auction.epochStartTime + biddingWindow) revert TimingError();
+        if (amount == 0) revert InvalidParams();
+        if (amount > effectiveMaxBid()) revert InvalidParams();
+        if (hasBid[epoch][msg.sender]) revert AlreadyDone();
 
         uint256 requiredBond = (amount * BOND_BPS) / 10000;
-        require(msg.value >= requiredBond, "Insufficient bond");
+        if (msg.value < requiredBond) revert InvalidParams();
 
         // Refund excess ETH sent
         uint256 excess = msg.value - requiredBond;
@@ -459,7 +459,7 @@ contract TheHumanFund {
 
             if (previousWinner != address(0) && previousBond > 0) {
                 (bool refunded, ) = payable(previousWinner).call{value: previousBond}("");
-                require(refunded, "Bond refund failed");
+                if (!refunded) revert TransferFailed();
             }
         } else {
             // Not the new leader — refund bond immediately
@@ -469,7 +469,7 @@ contract TheHumanFund {
         // Refund any excess ETH
         if (excess > 0) {
             (bool sent, ) = payable(msg.sender).call{value: excess}("");
-            require(sent, "Excess refund failed");
+            if (!sent) revert TransferFailed();
         }
 
         emit BidSubmitted(epoch, msg.sender, amount);
@@ -479,12 +479,12 @@ contract TheHumanFund {
     /// @dev Anyone can call this after the bidding window has elapsed.
     ///      If no bids were received, the epoch is skipped.
     function closeAuction() external {
-        require(auctionEnabled, "Auction not enabled");
+        if (!auctionEnabled) revert WrongPhase();
         uint256 epoch = currentEpoch;
         AuctionState storage auction = auctions[epoch];
 
-        require(auction.phase == EpochPhase.BIDDING, "Not in bidding phase");
-        require(block.timestamp >= auction.epochStartTime + biddingWindow, "Bidding window not closed");
+        if (auction.phase != EpochPhase.BIDDING) revert WrongPhase();
+        if (block.timestamp < auction.epochStartTime + biddingWindow) revert TimingError();
 
         if (auction.bidCount == 0) {
             // No bids — skip this epoch
@@ -515,20 +515,17 @@ contract TheHumanFund {
         bytes calldata reasoning,
         bytes calldata attestationQuote
     ) external payable {
-        require(auctionEnabled, "Auction not enabled");
+        if (!auctionEnabled) revert WrongPhase();
         uint256 epoch = currentEpoch;
         AuctionState storage auction = auctions[epoch];
 
-        require(auction.phase == EpochPhase.EXECUTION, "Not in execution phase");
-        require(msg.sender == auction.winner, "Not the auction winner");
-        require(
-            block.timestamp < auction.epochStartTime + biddingWindow + executionWindow,
-            "Execution window expired"
-        );
+        if (auction.phase != EpochPhase.EXECUTION) revert WrongPhase();
+        if (msg.sender != auction.winner) revert Unauthorized();
+        if (block.timestamp >= auction.epochStartTime + biddingWindow + executionWindow) revert TimingError();
 
         // Verify TEE attestation
         (bool verified, ) = DCAP_VERIFIER.verifyAndAttestOnChain{value: msg.value}(attestationQuote);
-        require(verified, "TEE attestation failed");
+        if (!verified) revert AttestationFailed();
         epochAttestations[epoch] = attestationQuote;
 
         // Capture bounty and bond amounts before state changes
@@ -547,7 +544,7 @@ contract TheHumanFund {
         totalBountiesPaid += bountyAmount;
 
         (bool paid, ) = payable(winner).call{value: totalPayout}("");
-        require(paid, "Bounty payment failed");
+        if (!paid) revert TransferFailed();
 
         emit EpochExecuted(epoch, winner, bountyAmount);
     }
@@ -556,15 +553,12 @@ contract TheHumanFund {
     /// @dev Anyone can call this to advance the epoch when the winner fails to deliver.
     ///      The bond stays in the contract as additional treasury.
     function forfeitBond() external {
-        require(auctionEnabled, "Auction not enabled");
+        if (!auctionEnabled) revert WrongPhase();
         uint256 epoch = currentEpoch;
         AuctionState storage auction = auctions[epoch];
 
-        require(auction.phase == EpochPhase.EXECUTION, "Not in execution phase");
-        require(
-            block.timestamp >= auction.epochStartTime + biddingWindow + executionWindow,
-            "Execution window not expired"
-        );
+        if (auction.phase != EpochPhase.EXECUTION) revert WrongPhase();
+        if (block.timestamp < auction.epochStartTime + biddingWindow + executionWindow) revert TimingError();
 
         address forfeitedRunner = auction.winner;
         uint256 forfeitedBond = auction.bondAmount;
@@ -623,7 +617,7 @@ contract TheHumanFund {
     // ─── Internal: Action Execution ──────────────────────────────────────
 
     function _executeAction(uint256 epoch, bytes calldata action) internal {
-        require(action.length >= 1, "Empty action");
+        if (action.length < 1) revert InvalidParams();
 
         uint8 actionType = uint8(action[0]);
 
@@ -632,34 +626,34 @@ contract TheHumanFund {
             return;
         } else if (actionType == 1) {
             // donate
-            require(action.length >= 65, "Invalid donate params");
+            if (action.length < 65) revert InvalidParams();
             (uint256 nonprofitId, uint256 amount) = abi.decode(action[1:], (uint256, uint256));
             _executeDonate(epoch, nonprofitId, amount);
         } else if (actionType == 2) {
             // set_commission_rate
-            require(action.length >= 33, "Invalid commission params");
+            if (action.length < 33) revert InvalidParams();
             uint256 rateBps = abi.decode(action[1:], (uint256));
             _executeSetCommissionRate(epoch, rateBps);
         } else if (actionType == 3) {
             // set_max_bid
-            require(action.length >= 33, "Invalid max bid params");
+            if (action.length < 33) revert InvalidParams();
             uint256 amount = abi.decode(action[1:], (uint256));
             _executeSetMaxBid(epoch, amount);
         } else {
-            revert("Unknown action type");
+            revert InvalidParams();
         }
     }
 
     function _executeDonate(uint256 epoch, uint256 nonprofitId, uint256 amount) internal {
-        require(nonprofitId >= 1 && nonprofitId <= NUM_NONPROFITS, "Invalid nonprofit ID");
-        require(amount > 0, "Donation must be positive");
+        if (nonprofitId < 1 || nonprofitId > NUM_NONPROFITS) revert InvalidParams();
+        if (amount == 0) revert InvalidParams();
 
         uint256 maxDonation = (address(this).balance * MAX_DONATION_BPS) / 10000;
-        require(amount <= maxDonation, "Exceeds max donation (10% of treasury)");
+        if (amount > maxDonation) revert InvalidParams();
 
         Nonprofit storage np = nonprofits[nonprofitId];
         (bool sent, ) = np.addr.call{value: amount}("");
-        require(sent, "Donation transfer failed");
+        if (!sent) revert TransferFailed();
 
         np.totalDonated += amount;
         np.donationCount += 1;
@@ -670,16 +664,16 @@ contract TheHumanFund {
     }
 
     function _executeSetCommissionRate(uint256 epoch, uint256 rateBps) internal {
-        require(rateBps >= MIN_COMMISSION_BPS && rateBps <= MAX_COMMISSION_BPS, "Commission out of bounds");
+        if (rateBps < MIN_COMMISSION_BPS || rateBps > MAX_COMMISSION_BPS) revert InvalidParams();
         commissionRateBps = rateBps;
         lastCommissionChangeEpoch = epoch;
         emit CommissionRateChanged(epoch, rateBps);
     }
 
     function _executeSetMaxBid(uint256 epoch, uint256 amount) internal {
-        require(amount >= MIN_MAX_BID, "Below minimum bid");
+        if (amount < MIN_MAX_BID) revert InvalidParams();
         uint256 maxAllowed = (address(this).balance * MAX_BID_BPS) / 10000;
-        require(amount <= maxAllowed, "Exceeds max bid ceiling (2% of treasury)");
+        if (amount > maxAllowed) revert InvalidParams();
         maxBid = amount;
         emit MaxBidChanged(epoch, amount);
     }
@@ -752,7 +746,7 @@ contract TheHumanFund {
 
     /// @notice Get nonprofit info by ID.
     function getNonprofit(uint256 id) external view returns (string memory name, address addr, uint256 totalDonated, uint256 donationCount) {
-        require(id >= 1 && id <= NUM_NONPROFITS, "Invalid nonprofit ID");
+        if (id < 1 || id > NUM_NONPROFITS) revert InvalidParams();
         Nonprofit storage np = nonprofits[id];
         return (np.name, np.addr, np.totalDonated, np.donationCount);
     }

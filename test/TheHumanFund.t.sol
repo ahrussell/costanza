@@ -44,10 +44,10 @@ contract TheHumanFundTest is Test {
         string[3] memory names = ["A", "B", "C"];
         address payable[3] memory addrs = [np1, np2, np3];
 
-        vm.expectRevert("Invalid commission");
+        vm.expectRevert(TheHumanFund.InvalidParams.selector);
         new TheHumanFund{value: 1 ether}(names, addrs, 50, 0.005 ether); // 0.5% — too low
 
-        vm.expectRevert("Invalid commission");
+        vm.expectRevert(TheHumanFund.InvalidParams.selector);
         new TheHumanFund{value: 1 ether}(names, addrs, 9500, 0.005 ether); // 95% — too high
     }
 
@@ -55,7 +55,7 @@ contract TheHumanFundTest is Test {
         string[3] memory names = ["A", "B", "C"];
         address payable[3] memory addrs = [np1, np2, payable(address(0))];
 
-        vm.expectRevert("Zero address nonprofit");
+        vm.expectRevert(TheHumanFund.InvalidParams.selector);
         new TheHumanFund{value: 1 ether}(names, addrs, 1000, 0.005 ether);
     }
 
@@ -90,7 +90,7 @@ contract TheHumanFundTest is Test {
     function test_donate_rejects_dust() public {
         vm.deal(donor, 1 ether);
         vm.prank(donor);
-        vm.expectRevert("Below minimum donation");
+        vm.expectRevert(TheHumanFund.InvalidParams.selector);
         fund.donate{value: 0.0005 ether}(0);
     }
 
@@ -106,7 +106,7 @@ contract TheHumanFundTest is Test {
 
         // Cannot claim before delay
         vm.prank(referrer);
-        vm.expectRevert("No claimable commissions");
+        vm.expectRevert(TheHumanFund.InvalidParams.selector);
         fund.claimCommissions();
 
         // Fast-forward 7 days
@@ -156,7 +156,7 @@ contract TheHumanFundTest is Test {
         bytes memory action = abi.encodePacked(uint8(1), abi.encode(uint256(1), uint256(0.6 ether)));
         bytes memory reasoning = bytes("Trying to donate too much.");
 
-        vm.expectRevert("Exceeds max donation (10% of treasury)");
+        vm.expectRevert(TheHumanFund.InvalidParams.selector);
         fund.submitEpochAction(action, reasoning);
     }
 
@@ -164,7 +164,7 @@ contract TheHumanFundTest is Test {
         bytes memory action = abi.encodePacked(uint8(1), abi.encode(uint256(4), uint256(0.1 ether)));
         bytes memory reasoning = bytes("Bad nonprofit.");
 
-        vm.expectRevert("Invalid nonprofit ID");
+        vm.expectRevert(TheHumanFund.InvalidParams.selector);
         fund.submitEpochAction(action, reasoning);
     }
 
@@ -183,12 +183,12 @@ contract TheHumanFundTest is Test {
     function test_set_commission_rate_rejects_out_of_bounds() public {
         // Too low
         bytes memory action = abi.encodePacked(uint8(2), abi.encode(uint256(50)));
-        vm.expectRevert("Commission out of bounds");
+        vm.expectRevert(TheHumanFund.InvalidParams.selector);
         fund.submitEpochAction(action, bytes(""));
 
         // Too high
         action = abi.encodePacked(uint8(2), abi.encode(uint256(9500)));
-        vm.expectRevert("Commission out of bounds");
+        vm.expectRevert(TheHumanFund.InvalidParams.selector);
         fund.submitEpochAction(action, bytes(""));
     }
 
@@ -205,14 +205,14 @@ contract TheHumanFundTest is Test {
 
     function test_set_max_bid_rejects_too_low() public {
         bytes memory action = abi.encodePacked(uint8(3), abi.encode(uint256(0.00005 ether)));
-        vm.expectRevert("Below minimum bid");
+        vm.expectRevert(TheHumanFund.InvalidParams.selector);
         fund.submitEpochAction(action, bytes(""));
     }
 
     function test_set_max_bid_rejects_over_2_percent() public {
         // 2% of 5 ETH = 0.1 ETH. Try 0.15 ETH.
         bytes memory action = abi.encodePacked(uint8(3), abi.encode(uint256(0.15 ether)));
-        vm.expectRevert("Exceeds max bid ceiling (2% of treasury)");
+        vm.expectRevert(TheHumanFund.InvalidParams.selector);
         fund.submitEpochAction(action, bytes(""));
     }
 
@@ -289,13 +289,13 @@ contract TheHumanFundTest is Test {
         bytes memory action = abi.encodePacked(uint8(0));
 
         vm.prank(donor);
-        vm.expectRevert("Not authorized");
+        vm.expectRevert(TheHumanFund.Unauthorized.selector);
         fund.submitEpochAction(action, bytes("unauthorized"));
     }
 
     function test_only_owner_can_skip() public {
         vm.prank(donor);
-        vm.expectRevert("Not authorized");
+        vm.expectRevert(TheHumanFund.Unauthorized.selector);
         fund.skipEpoch();
     }
 

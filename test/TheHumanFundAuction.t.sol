@@ -202,7 +202,7 @@ contract TheHumanFundAuctionTest is Test {
 
         // Max bid is 0.01 ETH. Bid 0.02 ETH.
         vm.prank(runner1);
-        vm.expectRevert("Bid exceeds max bid ceiling");
+        vm.expectRevert(TheHumanFund.InvalidParams.selector);
         fund.bid{value: 0.004 ether}(0.02 ether);
     }
 
@@ -213,7 +213,7 @@ contract TheHumanFundAuctionTest is Test {
         fund.bid{value: 0.001 ether}(0.005 ether);
 
         vm.prank(runner1);
-        vm.expectRevert("Already bid this epoch");
+        vm.expectRevert(TheHumanFund.AlreadyDone.selector);
         fund.bid{value: 0.001 ether}(0.004 ether);
     }
 
@@ -222,7 +222,7 @@ contract TheHumanFundAuctionTest is Test {
 
         // Bid 0.005 ETH requires 0.001 ETH bond. Send only 0.0005.
         vm.prank(runner1);
-        vm.expectRevert("Insufficient bond");
+        vm.expectRevert(TheHumanFund.InvalidParams.selector);
         fund.bid{value: 0.0005 ether}(0.005 ether);
     }
 
@@ -232,7 +232,7 @@ contract TheHumanFundAuctionTest is Test {
         vm.warp(block.timestamp + BID_WIN);
 
         vm.prank(runner1);
-        vm.expectRevert("Bidding window closed");
+        vm.expectRevert(TheHumanFund.TimingError.selector);
         fund.bid{value: 0.001 ether}(0.005 ether);
     }
 
@@ -253,7 +253,7 @@ contract TheHumanFundAuctionTest is Test {
     function test_auction_cannot_close_before_window() public {
         fund.startEpoch();
 
-        vm.expectRevert("Bidding window not closed");
+        vm.expectRevert(TheHumanFund.TimingError.selector);
         fund.closeAuction();
     }
 
@@ -266,7 +266,7 @@ contract TheHumanFundAuctionTest is Test {
         vm.warp(block.timestamp + BID_WIN);
         fund.closeAuction();
 
-        vm.expectRevert("Execution window not expired");
+        vm.expectRevert(TheHumanFund.TimingError.selector);
         fund.forfeitBond();
     }
 
@@ -277,7 +277,7 @@ contract TheHumanFundAuctionTest is Test {
         fund.closeAuction(); // No bids → epoch skipped, settled
 
         // Try to start epoch 2 before epoch duration elapsed
-        vm.expectRevert("Epoch duration not elapsed");
+        vm.expectRevert(TheHumanFund.TimingError.selector);
         fund.startEpoch();
 
         // Fast-forward past epoch duration
@@ -291,10 +291,10 @@ contract TheHumanFundAuctionTest is Test {
     function test_phase0_blocked_when_auction_enabled() public {
         bytes memory action = _noopAction();
 
-        vm.expectRevert("Auction enabled: use auction path");
+        vm.expectRevert(TheHumanFund.WrongPhase.selector);
         fund.submitEpochAction(action, bytes("nope"));
 
-        vm.expectRevert("Auction enabled: epochs managed by auction");
+        vm.expectRevert(TheHumanFund.WrongPhase.selector);
         fund.skipEpoch();
     }
 
@@ -363,7 +363,7 @@ contract TheHumanFundAuctionTest is Test {
 
         // Runner2 (not the winner) tries to submit
         vm.prank(runner2);
-        vm.expectRevert("Not the auction winner");
+        vm.expectRevert(TheHumanFund.Unauthorized.selector);
         fund.submitAuctionResult(_noopAction(), bytes("hax"), _mockAttestation());
     }
 
@@ -388,7 +388,7 @@ contract TheHumanFundAuctionTest is Test {
     function test_auction_cannot_start_twice() public {
         fund.startEpoch();
 
-        vm.expectRevert("Epoch already started");
+        vm.expectRevert(TheHumanFund.AlreadyDone.selector);
         fund.startEpoch();
     }
 
@@ -396,24 +396,24 @@ contract TheHumanFundAuctionTest is Test {
         fund.startEpoch();
 
         vm.prank(runner1);
-        vm.expectRevert("Bid must be positive");
+        vm.expectRevert(TheHumanFund.InvalidParams.selector);
         fund.bid{value: 0}(0);
     }
 
     function test_auction_requires_enabled() public {
         fund.setAuctionEnabled(false);
 
-        vm.expectRevert("Auction not enabled");
+        vm.expectRevert(TheHumanFund.WrongPhase.selector);
         fund.startEpoch();
     }
 
     function test_auction_close_requires_bidding_phase() public {
-        vm.expectRevert("Not in bidding phase");
+        vm.expectRevert(TheHumanFund.WrongPhase.selector);
         fund.closeAuction();
     }
 
     function test_auction_forfeit_requires_execution_phase() public {
-        vm.expectRevert("Not in execution phase");
+        vm.expectRevert(TheHumanFund.WrongPhase.selector);
         fund.forfeitBond();
     }
 
@@ -421,11 +421,11 @@ contract TheHumanFundAuctionTest is Test {
 
     function test_auction_timing_validation() public {
         // Windows exceed epoch duration
-        vm.expectRevert("Windows exceed epoch duration");
+        vm.expectRevert(TheHumanFund.InvalidParams.selector);
         fund.setAuctionTiming(100, 60, 60); // 60+60=120 > 100
 
         // Zero windows
-        vm.expectRevert("Windows must be nonzero");
+        vm.expectRevert(TheHumanFund.InvalidParams.selector);
         fund.setAuctionTiming(100, 0, 50);
     }
 }

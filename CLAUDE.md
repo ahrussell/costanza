@@ -12,12 +12,12 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 
 ## Current Status
 
-**Phases 0-2 contract work is complete.** Next: redeploy contract and update runner for auction mode.
+**Phases 0-2 contract work is complete.** Next: update runner for auction mode.
 
-- Phase 0 contract deployed at `0x2F213Ea0D3F6D8349e2162b37Cc8cE6605dc9420` (Base Sepolia) — 21 epochs executed
-- Phase 1 TEE enclave running on Phala Cloud — real TDX attestation quotes generated
+- Phase 0 original contract: `0x2F213Ea0D3F6D8349e2162b37Cc8cE6605dc9420` (Base Sepolia) — 21 epochs executed
+- **Phase 1+2 contract deployed at `0x3C390f3cA2f0aB5614c33F74FcBc53a5aDBae275`** (Base Sepolia) — TEE attestation + auction
+- Phase 1 TEE enclave running on Phala Cloud — real TDX attestation quotes generated (14B model, CPU)
 - Phase 2 auction mechanism implemented and tested (55 tests pass)
-- **Contract needs redeployment** to Base Sepolia with Phase 1+2 features
 - **Runner needs Phase 2 update** for auction bidding/monitoring
 - Deployer address: `0xffea30B0DbDAd460B9b6293fb51a059129fCCdAf`
 
@@ -57,7 +57,7 @@ Each epoch (24 hours in production, configurable for testnet):
 
 - **Phase 0** (COMPLETE): End-to-end loop on testnet with trusted operator, no TEE
 - **Phase 1** (COMPLETE): TEE integration — enclave on Phala Cloud, real TDX attestation, on-chain DCAP verification code
-- **Phase 2** (CONTRACT COMPLETE): Reverse auction mechanism — smart contract done (55 tests), runner update pending
+- **Phase 2** (CONTRACT COMPLETE, DEPLOYED): Reverse auction — contract deployed to Base Sepolia, 55 tests pass, runner update pending
 - **Phase 3**: Oracle integration (Chainlink ETH/USD, gas price), prompt refinement
 - **Phase 4**: Frontend (diary viewer, treasury dashboard, donation UI)
 - **Phase 5**: Audit and mainnet deployment
