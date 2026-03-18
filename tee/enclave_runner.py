@@ -424,4 +424,6 @@ if __name__ == "__main__":
     else:
         print("WARNING: llama-server not ready after 5 minutes, starting anyway")
 
-    app.run(host="0.0.0.0", port=port)
+    # threaded=True prevents a stuck/dropped request from blocking all others.
+    # Flask dev server is fine for the TEE enclave (single client, not public).
+    app.run(host="0.0.0.0", port=port, threaded=True)

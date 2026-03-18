@@ -18,7 +18,8 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 - **Phase 1+2 contract deployed at `0x3C390f3cA2f0aB5614c33F74FcBc53a5aDBae275`** (Base Sepolia) — TEE attestation + auction
 - Phase 1 TEE enclave running on Phala Cloud — real TDX attestation quotes generated (14B model, CPU)
 - Phase 2 auction mechanism implemented and tested (55 tests pass)
-- **Runner needs Phase 2 update** for auction bidding/monitoring
+- Phase 2 auction verified on-chain: startEpoch, bid, closeAuction, forfeitBond, auto-escalation all working
+- **Remaining**: `submitAuctionResult()` with real TEE attestation (needs Phala credit top-up)
 - Deployer address: `0xffea30B0DbDAd460B9b6293fb51a059129fCCdAf`
 
 **DESIGN.md is a living document** — see it for the full specification and implementation checklist.
@@ -175,7 +176,20 @@ Key implementation details:
 - **Retry logic**: Up to 3 attempts on parse failure
 - **Custom User-Agent**: `TheHumanFund/1.0` to bypass Cloudflare blocking on RunPod proxy
 
-**TODO**: Phase 2 auction mode — runner needs to monitor `AuctionOpened` events, submit bids, and call `submitAuctionResult()`.
+**Auction mode** (Phase 2): `python agent/runner.py --auction --tee-url http://host:8090 --bid 0.0001`
+- Monitors auction state, calls `startEpoch()`, bids, `closeAuction()`
+- On win: reads state, runs TEE inference, submits via `submitAuctionResult()`
+
+**Known issue**: The Phala gateway has HTTP timeouts (~60s), so long CPU inference (~22 min) fails through the gateway. Use an SSH tunnel or run inference directly on the CVM:
+```bash
+# SSH tunnel (bypasses gateway timeout)
+phala ssh humanfund-tee -- -L 18090:localhost:8091 -N &
+python agent/runner.py --auction --tee-url http://localhost:18090 --bid 0.0001
+
+# Or launch inference directly on CVM (survives wifi drops)
+phala cp payload.json humanfund-tee:/tmp/payload.json
+phala ssh humanfund-tee -- 'docker exec -d dstack-agent-1 python3 /tmp/run_inference.py'
+```
 
 ## TEE Enclave
 
@@ -269,8 +283,12 @@ python agent/runner.py                         # Run one epoch (reads .env)
 python agent/runner.py --epochs 5              # Run 5 epochs in sequence
 python agent/runner.py --dry-run               # Inference only, no submission
 
-# Runner (TEE mode — Phase 1)
+# Runner (TEE mode -- Phase 1)
 python agent/runner.py --tee-url http://host:8090
+
+# Runner (auction mode -- Phase 2)
+python agent/runner.py --auction --tee-url http://host:8090 --bid 0.0001
+python agent/runner.py --auction --tee-url http://localhost:18090 --bid 0.0001  # via SSH tunnel
 
 # TEE enclave (local testing with 1.5B model)
 llama-server -m models/DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf -c 4096 --port 8080 &
