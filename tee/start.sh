@@ -1,16 +1,21 @@
 #!/bin/bash
 # Start llama-server and the enclave runner inside the TEE container.
-# Downloads model on first boot, verifies SHA-256 against the hash baked into
-# the image (which is covered by the RTMR attestation chain).
+# The model must be mounted at $MODEL_PATH by the runner before boot.
+# Verifies SHA-256 against the hash baked into the image (covered by RTMR
+# attestation chain). The runner provides the model file however they want —
+# the binary only cares that sha256(file) == expected hash.
 
 set -e
 
 echo "=== The Human Fund — TEE Enclave ==="
 
-# Download model if not already present
+# Verify model is present
 if [ ! -f "$MODEL_PATH" ]; then
-  echo "Downloading model from $MODEL_URL ..."
-  curl -L -o "$MODEL_PATH" "$MODEL_URL"
+  echo "FATAL: Model not found at $MODEL_PATH"
+  echo "  The runner must mount the model file before booting the TEE."
+  echo "  Expected: $MODEL_PATH"
+  echo "  SHA-256:  $MODEL_SHA256"
+  exit 1
 fi
 
 # Verify model integrity
@@ -20,7 +25,6 @@ if [ "$ACTUAL_SHA" != "$MODEL_SHA256" ]; then
   echo "FATAL: model hash mismatch!"
   echo "  expected: $MODEL_SHA256"
   echo "  got:      $ACTUAL_SHA"
-  rm -f "$MODEL_PATH"
   exit 1
 fi
 echo "Model verified: $(du -h "$MODEL_PATH" | cut -f1)"

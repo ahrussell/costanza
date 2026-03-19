@@ -218,55 +218,97 @@ These bounds are hardcoded in the contract and cannot be modified by the agent o
 
 ### 8.1 Trust Model
 
-The system's integrity rests on three pillars:
-1. **TEE attestation** proves the correct model, prompt, and code ran on genuine hardware.
-2. **The contract** provides input integrity (committed hash) and output validation (bounded actions).
-3. **The auction** ensures liveness via economic incentives.
+The system's integrity rests on four pillars:
+1. **TEE attestation** proves the correct model, prompt, and code ran on genuine hardware (MRTD + RTMR[0..2] verification).
+2. **REPORTDATA binding** proves the attested code processed the correct inputs and produced the submitted outputs.
+3. **The contract** provides input integrity (committed hash), output validation (bounded actions), and history integrity (rolling hash).
+4. **The auction** ensures liveness via economic incentives and provides verifiable randomness (prevrandao seed).
 
-The runner is untrusted. They cannot modify the model, the prompt, or the input. They can only choose whether to participate.
+The runner is untrusted. They cannot modify the model, the prompt, or the input. They cannot re-roll inference (deterministic seed). They can only choose whether to participate.
+
+**See SECURITY.md** for the formal security model, threat analysis, proof sketch, and adversarial review passes.
 
 ### 8.2 TEE Configuration
 
 **Primary target:** Intel TDX (CPU TEE) with optional NVIDIA Confidential Computing (GPU TEE). The enclave image is a TDX VM containing:
 
-- Minimal Linux OS (Alpine or Ubuntu minimal)
-- llama.cpp (compiled for the target architecture)
-- DeepSeek R1 Distill Llama 70B — Q4_K_M quantization (42.5 GB GGUF)
-- Agent script: reads input blob, constructs prompt, runs inference, parses output, signs result
-- Attestation wrapper: generates TDX quote (and NVIDIA CC quote if GPU is present)
+- Ubuntu 22.04 minimal
+- llama.cpp (pinned to specific release tag for reproducible builds)
+- Enclave runner script: accepts epoch context + input hash + seed, runs two-pass inference, computes REPORTDATA, requests TDX attestation quote
+- System prompt (frozen, part of the attested image)
+- Model SHA-256 hash (hardcoded in image, model mounted from disk by runner)
 
-**Total image size:** ~43 GB (dominated by model weights).
+**Model is NOT baked into the image.** The runner mounts the model file at `/models/model.gguf`. The entrypoint script verifies `sha256sum(model) == MODEL_SHA256` (hardcoded in the image, covered by RTMR measurements). This keeps the image small (~500MB) while ensuring model integrity. Runners can cache the model file across epochs.
 
-**Image measurement:** The TDX RTMR values cover the entire boot chain including model weights. The contract stores the expected RTMR values. Any modification to any byte in the image produces different measurements, causing attestation verification to fail.
+**Image measurement:** MRTD covers the virtual firmware. RTMR[0] covers hardware config. RTMR[1] covers the kernel. RTMR[2] covers the rootfs (which includes the runner script, system prompt, model hash, and llama.cpp binary). Any modification to any file changes the measurements.
 
 ### 8.3 Approved Image Registry
 
-The contract maintains a list of approved `(rtmr_values, tee_type)` tuples. For the MVP, this includes:
+The `AttestationVerifier` contract (separate from TheHumanFund for bytecode size) maintains a registry of approved images:
 
-1. **GPU build (70B, TDX + NVIDIA CC):** For runners with H100/B100/B200 hardware. Fastest inference (~20 tok/s, ~4 min/epoch).
-2. **CPU build (70B, TDX only):** For runners with any TDX-capable Xeon. Slower (~3 tok/s, ~17 min/epoch) but broadly available.
+```solidity
+mapping(bytes32 => bool) public approvedImages;
+// key = keccak256(MRTD || RTMR[0] || RTMR[1] || RTMR[2])
+// Each field is 48 bytes (SHA-384), total 192 bytes hashed
+```
 
-Both builds use the same model (DeepSeek R1 Distill Llama 70B Q4_K_M), the same system prompt, and the same input format. They differ only in inference speed. The contract accepts a valid attestation from either approved image. This ensures the agent always reasons at full capacity — no degraded fallback mode that would produce inconsistent behavior or struggle with structured output.
+Multiple images can be approved simultaneously to support:
+1. **CPU build (14B, TDX only):** Development/testnet. Any TDX-capable Xeon. ~22 min/epoch.
+2. **CPU build (70B, TDX only):** Production CPU runners. ~17 min/epoch.
+3. **GPU build (70B, TDX + NVIDIA CC):** Production GPU runners. ~4 min/epoch.
+
+Each build produces different RTMR measurements. Different platforms (dstack, Azure, bare-metal) may also produce different MRTD/RTMR[0..1] values for the same application, requiring per-platform entries in the registry. RTMR[3] is NOT verified (platform-specific, instance-specific).
+
+To change models (e.g., upgrading from 70B to a larger model), build a new image with the new `MODEL_SHA256`, register its measurements, and optionally revoke the old image.
 
 ### 8.4 On-Chain Verification
 
-Attestation verification uses **Automata Network's DCAP Attestation** contracts, already deployed on multiple EVM chains. Two verification paths:
+Attestation verification uses a two-contract architecture:
 
-1. **Direct on-chain verification:** `verifyAndAttestOnChain(rawQuote)` — ~3M gas. Feasible on Base given low gas costs.
-2. **ZK-compressed verification:** `verifyAndAttestWithZKProof(output, zkCoprocessor, proofBytes)` — ~350K gas via RISC Zero or SP1. Lower cost but adds ~5 min proof generation time for the runner.
+1. **AttestationVerifier.sol** — Handles all attestation logic:
+   - Calls Automata DCAP verifier (`0xaDdeC7e85c2182202b66E331f2a4A0bBB2cEEa1F`) to verify quote authenticity
+   - Parses the DCAP output (595+ bytes, `abi.encodePacked` format) at documented byte offsets
+   - Extracts MRTD + RTMR[0..2] and checks against the approved image registry
+   - Extracts REPORTDATA and compares against the expected value
 
-For the MVP, direct verification is simpler. ZK compression can be added later if gas costs matter.
+2. **TheHumanFund.sol** — Computes expected REPORTDATA and delegates:
+   ```
+   expectedReportData = sha256(inputHash || sha256(action) || sha256(reasoning) || randomnessSeed)
+   verifier.verifyAttestation(rawQuote, expectedReportData)
+   ```
 
-### 8.5 Hardware Portability
+**Gas cost:** ~3M gas for DCAP verification + ~3,300 gas for REPORTDATA hashing. Feasible on Base.
 
-Because the contract verifies Intel DCAP attestations (not cloud-provider-specific proofs), runners can execute on any compatible infrastructure:
+### 8.5 Verifiable Randomness
 
-- Phala Cloud (TDX + NVIDIA CC)
-- Azure Confidential VMs (SEV-SNP + NVIDIA CC)
+LLM inference with temperature > 0 is non-deterministic. To prevent runners from cherry-picking favorable outputs:
+
+1. `closeAuction()` captures `block.prevrandao` as the randomness seed
+2. The seed is passed to the enclave, which uses it for llama.cpp's RNG (`--seed`)
+3. The seed is included in the REPORTDATA hash, so the contract can verify the enclave used the correct seed
+4. With a fixed seed, inference is deterministic — one input produces exactly one output
+
+`block.prevrandao` is determined by the Ethereum beacon chain validators (on L2s like Base, inherited from L1). The runner cannot predict it at bid time or change it after.
+
+### 8.6 Rolling History Hash
+
+The contract maintains a rolling hash of all epoch reasoning:
+```
+historyHash = keccak256(historyHash || keccak256(reasoning))
+```
+This is included in `_computeInputHash()`, binding the model's "memory" to the on-chain commitment. A runner cannot fabricate decision history while keeping the input hash valid.
+
+### 8.7 Hardware Portability
+
+The verification scheme is platform-agnostic. Only MRTD + RTMR[0..2] are checked (not RTMR[3], which is platform/instance-specific). Runners can execute on any TDX infrastructure:
+
+- Phala Cloud (dstack, TDX)
 - Any bare-metal TDX server (OVH, Equinix, colocation)
 - Any TDX-capable Xeon for CPU-only inference
 
-The agent is not locked to any provider, cloud, or GPU vendor.
+Different platforms may produce different MRTD/RTMR values for the same image (different firmware/kernel). The approved registry supports per-platform entries.
+
+**Note:** Azure Confidential VMs use a vTPM abstraction where REPORTDATA is not directly application-controlled. Supporting Azure would require a different verification flow. Currently not targeted.
 
 ---
 
@@ -422,29 +464,29 @@ The agent's `set_max_bid` action creates a feedback loop: as treasury shrinks, t
 
 ## 12. Security Analysis
 
-### 12.1 Threat: Malicious Runner Tampers with Inference
-**Mitigation:** TEE attestation proves the correct image (model + code) ran on genuine hardware. The runner cannot modify the model, prompt, or execution logic.
+**See SECURITY.md** for the comprehensive formal security model, including:
+- Formal goal statement and assumptions
+- 5 verification properties (genuine hardware, approved image, correct inputs, output integrity, temporal validity)
+- Detailed threat analysis (10 threats with mitigations and residual risks)
+- Informal proof sketch
+- 8 adversarial review passes
+- Implementation status of all security properties
 
-### 12.2 Threat: Malicious Runner Provides False Input
-**Mitigation:** The contract computes and commits the input hash from its own state. The submitted input must match this hash. The runner can only pass the exact input the contract computed.
+### Summary of Key Mitigations
 
-### 12.3 Threat: Prompt Injection via Referral Data
-**Mitigation:** All input fields are structured numeric/address data. There are no free-text fields in the epoch context. Referral codes are addresses, not user-generated strings. The model has no exposure to attacker-controlled text.
-
-### 12.4 Threat: Model Produces Pathological Output
-**Mitigation:** The contract enforces hard bounds on all actions. Maximum 10% of treasury donated per epoch. Commission rate bounded 1–90%. Max bid bounded 0.0001 ETH to 2% of treasury. Invalid JSON or out-of-bounds actions cause the transaction to revert.
-
-### 12.5 Threat: Runner Wins Auction but Doesn't Execute (Griefing)
-**Mitigation:** 20% bond forfeited on non-delivery. Epoch is skipped, not bricked. Next epoch proceeds normally.
-
-### 12.6 Threat: All Runners Disappear
-**Mitigation:** The agent sleeps through missed epochs. Auto-escalation automatically raises the max bid ceiling by 10% per consecutive missed epoch (up to the 2% of treasury hard cap), increasing the economic incentive until runners find it profitable. The CPU build ensures the agent can run on any TDX-capable Xeon without a GPU. The agent doesn't die from skipped epochs — only from treasury depletion.
-
-### 12.7 Threat: TEE Hardware Compromise (e.g., Speculative Execution Attack)
-**Mitigation:** The approved image registry can include multiple TEE types. If Intel TDX is compromised, AMD SEV-SNP builds can be added. The verifier interface is modular — swap verification backends without changing the core contract. Note: for the fully-immutable MVP, the initial registry must include all intended TEE types at deploy time.
-
-### 12.8 Threat: Smart Contract Bug
-**Mitigation:** Formal verification of the action validation logic. Comprehensive test suite. Audit before mainnet deployment. The contract is intentionally simple — the only state mutations are ETH transfers to whitelisted addresses and numeric parameter updates.
+| Threat | Mitigation | Status |
+|---|---|---|
+| Runner tampers with inference | MRTD + RTMR[0..2] verify approved image | Implemented |
+| Runner provides false input | REPORTDATA binds `inputHash` from contract | Implemented |
+| Runner tampers with output | REPORTDATA binds `sha256(action) + sha256(reasoning)` | Implemented |
+| Runner cherry-picks outputs | Verifiable randomness seed (`block.prevrandao`) | Implemented |
+| Runner fabricates history | Rolling `historyHash` in `_computeInputHash()` | Implemented |
+| Runner substitutes model | SHA-256 hash baked into image, verified at boot | Implemented |
+| Prompt injection | No free-text fields — all structured numeric/address data | By design |
+| Pathological model output | Hard bounds enforced by contract (10% donation, 1-90% commission, etc.) | By design |
+| Griefing (non-delivery) | 20% bond forfeited, epoch skipped not bricked | By design |
+| All runners disappear | Auto-escalation raises bid ceiling 10%/epoch until runners return | By design |
+| TEE hardware compromise | Modular verifier interface, multi-platform registry | By design |
 
 ---
 
@@ -477,42 +519,48 @@ The agent's `set_max_bid` action creates a feedback loop: as treasury shrinks, t
 - [x] Build the TDX enclave image: Ubuntu 22.04 + llama.cpp + DeepSeek R1 Distill Qwen 14B Q4_K_M + enclave runner script.
 - [x] Deploy on a TDX-capable instance (Phala Cloud, tdx.2xlarge CVM — 16 vCPU, 32 GB RAM).
 - [x] Generate a TDX DCAP quote from the enclave. Real 5KB quote returned from hardware.
-- [x] Add `submitEpochActionTEE()` to the smart contract with Automata DCAP on-chain verification.
 - [x] Build the CPU-only 14B image (TDX only, no GPU dependency). Inference at 0.33 tok/s, ~22 min/epoch.
-- [ ] Test attestation verification on Base Sepolia using Automata DCAP contracts (end-to-end on-chain — quote generated, contract needs redeployment).
+- [ ] Test attestation verification on Base Sepolia using Automata DCAP contracts (end-to-end on-chain).
 - [ ] Build the GPU 70B image for production runners.
 
 **Deliverable:** Attested inference running in a TEE, verified on-chain.
 
-**Status:** Enclave image deployed to Phala Cloud (`ghcr.io/ahrussell/humanfund-tee:v3`). Model downloaded at runtime with SHA-256 verification (hash baked into image, covered by RTMR attestation chain). Full inference + attestation pipeline tested — real TDX DCAP quote generated. On-chain verification code complete but contract not yet redeployed.
+**Status:** Enclave image deployed to Phala Cloud (`ghcr.io/ahrussell/humanfund-tee:v3`). Full inference + attestation pipeline tested — real TDX DCAP quote generated. Old `submitEpochActionTEE()` replaced by `submitAuctionResult()` with full MRTD/RTMR/REPORTDATA verification via `AttestationVerifier.sol`. Model now mounted from disk (no runtime download). llama.cpp pinned to tag `b5170`.
 
 **Lessons learned:**
 - 14B model on 16 CPU cores: 0.33 tok/s — functional but slow (~22 min/epoch). Production needs GPU runners.
 - dstack API: `POST /GetQuote` on `/var/run/dstack.sock` (v0.5.x+). Legacy socket at `/var/run/tappd.sock`.
-- dstack double-hashes report_data (SHA-256 applied by guest agent before TDX driver).
-- Runtime model download + SHA-256 verification is a good compromise: small image (~500MB), attested hash catches tampering.
+- dstack v0.5.x passes report_data verbatim (NO double-hashing — the old v0.3.x tappd API did hash, but that's deprecated).
+- Model mounted from disk + SHA-256 verification is better than runtime download: no network dependency, faster boot, simpler TCB.
 - Phala gateway has HTTP timeouts; SSH tunnel or on-CVM curl needed for long inference.
 - Two-pass inference timeout must account for CPU speed: 1800s per pass minimum for 14B.
 
 **Current attested model:** DeepSeek R1 Distill Qwen 14B Q4_K_M (8.99 GB GGUF, SHA-256: `0b319bd0572f2730bfe11cc751defe82045fad5085b4e60591ac2cd2d9633181`). CPU-only, TDX enclave. The 70B model is used in Phase 0 (RunPod, no TEE) but not yet in a TEE build.
 
-### Phase 2: Auction Mechanism (Weeks 5–6) ✅ CONTRACT COMPLETE
-**Goal:** Permissionless runner participation with economic incentives.
+### Phase 2: Auction + Attestation Verification (Weeks 5–6) ✅ CONTRACT COMPLETE
+**Goal:** Permissionless runner participation with economic incentives and full attestation verification.
 
 - [x] Implement the reverse auction: bidding, winner selection, bond mechanics, execution window, timeout/forfeiture.
 - [x] Implement auto-escalation for missed epochs (was already in Phase 0; integrated with auction).
 - [x] Configurable timing windows (epochDuration, biddingWindow, executionWindow) for testnet.
 - [x] Input hash commitment at epoch start for runner verification (`computeInputHash()`).
-- [x] Phase 0/1 compatibility toggle (`auctionEnabled`).
-- [x] 29 auction tests, all 55 tests pass (26 existing + 29 new).
-- [ ] Build runner software: a daemon that monitors for `AuctionOpened` events, auto-bids, manages TEE execution, and submits results via `submitAuctionResult()`.
-- [ ] Redeploy contract to Base Sepolia with auction + attestation features.
+- [x] Phase 0 compatibility toggle (`auctionEnabled`).
+- [x] `AttestationVerifier.sol` — separate contract for DCAP output parsing, MRTD/RTMR verification, REPORTDATA checking, approved image registry.
+- [x] `submitAuctionResult()` computes expected REPORTDATA and delegates to verifier.
+- [x] Rolling `historyHash` — Merkle chain over all epoch reasoning, included in `_computeInputHash()`.
+- [x] Verifiable randomness — `block.prevrandao` captured in `closeAuction()`, included in REPORTDATA.
+- [x] Model mounted from disk, SHA-256 verified at boot (no runtime download).
+- [x] llama.cpp pinned to specific release tag for reproducible builds.
+- [x] 74 tests pass (28 Phase 0 + 34 auction/attestation + 12 verifier unit tests).
+- [x] Runner software supports auction mode (bidding, monitoring, `submitAuctionResult`).
+- [ ] Redeploy contract to Base Sepolia with new verifier.
+- [ ] Build production TEE image, register RTMR measurements in verifier.
+- [ ] End-to-end test with real TDX attestation quote on Base Sepolia.
 - [ ] Test with 2–3 independent runner instances on testnet competing for epochs.
-- [ ] Stress-test edge cases on testnet: no bids, single bidder, winner timeout, consecutive missed epochs.
 
-**Deliverable:** Fully permissionless epoch execution with competitive auction.
+**Deliverable:** Fully permissionless epoch execution with competitive auction and verified attestation.
 
-**Status:** Smart contract auction mechanism complete and tested. Epoch state machine (IDLE → BIDDING → EXECUTION → SETTLED) with inline bond refunds, permissionless lifecycle triggers, and configurable timing. Runner software needs Phase 2 auction support (bidding, monitoring, `submitAuctionResult`).
+**Status:** All contract and runner code complete. `TheHumanFund.sol` (20.8KB) delegates attestation to `AttestationVerifier.sol` (3.4KB). The verifier checks: (1) DCAP quote authenticity via Automata, (2) MRTD + RTMR[0..2] against approved image registry, (3) REPORTDATA matches `sha256(inputHash || sha256(action) || sha256(reasoning) || seed)`. Needs redeployment and end-to-end test with real TDX quotes.
 
 ### Phase 3: Oracle Integration & Prompt Refinement (Week 7)
 **Goal:** Add external data feeds and finalize the prompt.
@@ -567,11 +615,11 @@ The agent's `set_max_bid` action creates a feedback loop: as treasury shrinks, t
 
 1. **Contract upgradeability.** The MVP targets full immutability. However, this means the nonprofit list, image registry, and all parameters are frozen at deploy. If we need to update any of these (e.g., a nonprofit changes their address, a TEE platform is compromised), we would need to deploy a new contract and migrate the treasury. A multisig-governed upgrade path may be worth adding. Decision deferred.
 
-2. **Image registry governance.** Who can add new approved image hashes? At launch, the registry is fixed. Adding new builds (e.g., for a new model version or TEE platform) requires a new contract deployment under the immutable design. A registry governed by a multisig or DAO would allow evolution without redeployment.
+2. **Image registry governance.** The `AttestationVerifier` contract has an owner who can `approveImage()` and `revokeImage()`. For the MVP, this is the deployer. For production, a multisig or DAO should own the verifier to enable image updates (new model versions, new platforms) without redeploying the main contract. The main contract references the verifier via `setVerifier()`, which could also be governed.
 
 3. **Fund wind-down.** The agent's horizon is emergent — it may choose to donate everything and "die," or perpetually sustain itself. If the agent consistently chooses self-preservation over donation, is there a mechanism to override this? Under the immutable design, no. The contract's 10% per-epoch donation cap ensures the agent cannot empty the treasury in a single epoch, but it also cannot be forced to donate.
 
-4. **Model upgrades.** DeepSeek R1 70B will eventually be surpassed. Upgrading the model requires a new image with new RTMR measurements, which must be added to the approved registry. Under the immutable design, this requires a new contract. Under a governed design, the registry can be updated.
+4. **Model upgrades.** DeepSeek R1 70B will eventually be surpassed. Upgrading the model requires a new image with a new `MODEL_SHA256` and new RTMR measurements. The `AttestationVerifier` owner calls `approveImage(newImageKey)` and optionally `revokeImage(oldImageKey)`. No contract redeployment needed — the verifier is a separate, updatable contract.
 
 5. **Multi-action epochs.** The MVP limits the agent to one action per epoch. Allowing multiple actions (e.g., donate AND adjust commission rate) would enrich the decision space but complicates validation. Deferred to v2.
 

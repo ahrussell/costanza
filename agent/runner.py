@@ -406,8 +406,14 @@ def parse_model_output(text):
 
 # ─── TEE Inference ──────────────────────────────────────────────────────
 
-def run_tee_inference(tee_url, epoch_context, input_hash_hex="0x" + "00" * 32):
+def run_tee_inference(tee_url, epoch_context, input_hash_hex="0x" + "00" * 32, seed=0):
     """Call the TEE enclave's /run_epoch endpoint.
+
+    Args:
+        tee_url: TEE enclave URL
+        epoch_context: Formatted epoch context string
+        input_hash_hex: Contract's committed input hash (keccak256, hex with 0x prefix)
+        seed: Randomness seed from block.prevrandao (for deterministic inference)
 
     Returns a dict with:
         - reasoning, action_json, action_bytes, attestation_quote,
@@ -416,6 +422,7 @@ def run_tee_inference(tee_url, epoch_context, input_hash_hex="0x" + "00" * 32):
     body = {
         "epoch_context": epoch_context,
         "input_hash": input_hash_hex,
+        "seed": seed,
     }
     payload = json.dumps(body).encode()
     req = Request(
@@ -603,9 +610,18 @@ def run_single_epoch(w3, contract, account, system_prompt, max_tokens, dry_run=F
         # TEE mode: send epoch_context to enclave, get back action + attestation
         print(f"\n🔒 TEE mode — calling enclave at {tee_url}")
 
-        # Compute input hash for attestation binding
-        input_hash = hashlib.sha256(epoch_context.encode("utf-8")).digest()
-        input_hash_hex = "0x" + input_hash.hex()
+        # Read the committed input hash from the contract (keccak256 of state fields)
+        # In Phase 0/1 (non-auction), input hash may not be committed — fall back to SHA256
+        try:
+            input_hash_bytes = contract.functions.epochInputHashes(state["current_epoch"]).call()
+            input_hash_hex = "0x" + input_hash_bytes.hex()
+            if input_hash_bytes == b'\x00' * 32:
+                # Not committed (Phase 0 without auction) — fall back
+                input_hash = hashlib.sha256(epoch_context.encode("utf-8")).digest()
+                input_hash_hex = "0x" + input_hash.hex()
+        except Exception:
+            input_hash = hashlib.sha256(epoch_context.encode("utf-8")).digest()
+            input_hash_hex = "0x" + input_hash.hex()
 
         tee_result = None
         max_retries = 3
@@ -870,7 +886,7 @@ def print_run_summary(results):
 
 def get_auction_state(contract, epoch):
     """Get the auction state for a given epoch."""
-    start_time, phase, bid_count, winner, winning_bid, bond = contract.functions.getAuctionState(epoch).call()
+    start_time, phase, bid_count, winner, winning_bid, bond, seed = contract.functions.getAuctionState(epoch).call()
     # Phase enum: 0=IDLE, 1=BIDDING, 2=EXECUTION, 3=SETTLED
     phase_names = {0: "IDLE", 1: "BIDDING", 2: "EXECUTION", 3: "SETTLED"}
     return {
@@ -881,6 +897,7 @@ def get_auction_state(contract, epoch):
         "winner": winner,
         "winning_bid": winning_bid,
         "bond": bond,
+        "randomness_seed": seed,
     }
 
 
@@ -1013,15 +1030,20 @@ def run_auction_epoch(w3, contract, account, tee_url, bid_amount_wei, log_file=N
             return {"epoch": epoch, "action": "lost_auction", "status": "not_winner"}
 
         print(f"\n🏆 We won the auction! Bounty: {format_eth(auction['winning_bid'])} ETH")
+        print(f"   Randomness seed: {auction['randomness_seed']}")
 
         # Read contract state and build prompt
         print("📖 Reading contract state...")
         state = read_contract_state(contract, w3)
         epoch_context = build_epoch_context(state)
 
-        # Compute input hash
-        input_hash = hashlib.sha256(epoch_context.encode("utf-8")).digest()
-        input_hash_hex = "0x" + input_hash.hex()
+        # Read the committed input hash from the contract (keccak256 of state fields)
+        input_hash_bytes = contract.functions.epochInputHashes(epoch).call()
+        input_hash_hex = "0x" + input_hash_bytes.hex()
+        print(f"   Input hash (from contract): {input_hash_hex[:18]}...")
+
+        # Get randomness seed for deterministic inference
+        seed = auction["randomness_seed"]
 
         # Run TEE inference
         print(f"\n🔒 Running TEE inference at {tee_url}...")
@@ -1029,7 +1051,7 @@ def run_auction_epoch(w3, contract, account, tee_url, bid_amount_wei, log_file=N
         for attempt in range(1, 4):
             print(f"⏳ TEE inference (attempt {attempt}/3)...")
             try:
-                tee_result = run_tee_inference(tee_url, epoch_context, input_hash_hex)
+                tee_result = run_tee_inference(tee_url, epoch_context, input_hash_hex, seed=seed)
                 break
             except Exception as e:
                 print(f"❌ TEE error: {e}")

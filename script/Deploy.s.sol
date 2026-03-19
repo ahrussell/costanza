@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import "forge-std/Script.sol";
 import "../src/TheHumanFund.sol";
+import "../src/AttestationVerifier.sol";
 
 contract Deploy is Script {
     function run() external {
@@ -31,9 +32,19 @@ contract Deploy is Script {
             0.0001 ether    // initial max bid (minimum allowed)
         );
 
+        // Deploy attestation verifier and link to fund
+        AttestationVerifier verifier = new AttestationVerifier();
+        fund.setVerifier(address(verifier));
+
         console.log("TheHumanFund deployed at:", address(fund));
+        console.log("AttestationVerifier deployed at:", address(verifier));
         console.log("Seed amount:", seedAmount);
         console.log("Owner:", deployer);
+        console.log("");
+        console.log("Next steps:");
+        console.log("  1. Compute image key: verifier.computeImageKey(mrtd, rtmr0, rtmr1, rtmr2)");
+        console.log("  2. Approve image: verifier.approveImage(imageKey)");
+        console.log("  3. Enable auction: fund.setAuctionEnabled(true)");
 
         vm.stopBroadcast();
     }

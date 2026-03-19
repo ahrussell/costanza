@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import "./interfaces/IAutomataDcapAttestation.sol";
+import "./interfaces/IAttestationVerifier.sol";
 
 /// @title The Human Fund
 /// @notice An autonomous AI agent that manages a charitable treasury on Base.
@@ -62,6 +63,7 @@ contract TheHumanFund {
         uint256 winningBid;           // lowest bid amount in wei
         uint256 winningBidTimestamp;   // block.timestamp of winning bid (tie-breaking)
         uint256 bondAmount;           // bond held from winner (20% of bid)
+        uint256 randomnessSeed;       // block.prevrandao captured at closeAuction()
     }
 
     // ─── Events ──────────────────────────────────────────────────────────
@@ -114,9 +116,7 @@ contract TheHumanFund {
     uint256 public constant NUM_NONPROFITS = 3;
     uint256 public constant BOND_BPS = 2000;               // 20% bond on bids
 
-    // Automata DCAP Attestation verifier (same address on all chains via CREATE2)
-    IAutomataDcapAttestation public constant DCAP_VERIFIER =
-        IAutomataDcapAttestation(0xaDdeC7e85c2182202b66E331f2a4A0bBB2cEEa1F);
+    // Note: DCAP verification now handled by the AttestationVerifier contract (see setVerifier)
 
     // ─── State ───────────────────────────────────────────────────────────
 
@@ -159,10 +159,12 @@ contract TheHumanFund {
     // Balance snapshots for treasury trend (stored every 5 epochs)
     mapping(uint256 => uint256) public balanceSnapshots;
 
-    // TEE attestation (Phase 1)
-    bool public teeRequired;                          // When true, only TEE-attested submissions accepted
-    bytes32 public approvedMrtd;                      // Approved TEE image measurement (MRTD)
+    // TEE attestation verifier (separate contract — see AttestationVerifier.sol)
+    IAttestationVerifier public verifier;
     mapping(uint256 => bytes) public epochAttestations; // Raw attestation quotes per epoch
+
+    // Rolling history hash — Merkle chain over all epoch reasoning
+    bytes32 public historyHash;
 
     // Phase 2: Auction state
     bool public auctionEnabled;                              // false = Phase 0/1 mode, true = auction mode
@@ -282,7 +284,6 @@ contract TheHumanFund {
     /// @param reasoning The agent's chain-of-thought reasoning.
     function submitEpochAction(bytes calldata action, bytes calldata reasoning) external onlyOwner {
         if (auctionEnabled) revert WrongPhase();
-        if (teeRequired) revert WrongPhase();
         uint256 epoch = currentEpoch;
         if (epochs[epoch].executed) revert AlreadyDone();
         _recordAndExecuteEpoch(epoch, action, reasoning, 0);
@@ -303,47 +304,12 @@ contract TheHumanFund {
         currentEpochCommissions = 0;
     }
 
-    // ─── Owner: TEE Configuration (Phase 1) ─────────────────────────────
+    // ─── Owner: Attestation Verifier Configuration ──────────────────────
 
-    /// @notice Enable or disable TEE attestation requirement.
-    /// @dev When enabled, only submitEpochActionTEE() is accepted.
-    function setTeeRequired(bool required) external onlyOwner {
-        teeRequired = required;
-    }
-
-    /// @notice Set the approved TEE image measurement (MRTD).
-    /// @dev This is the hash of the TEE enclave image. Only quotes with
-    ///      this MRTD will be accepted.
-    function setApprovedMrtd(bytes32 mrtd) external onlyOwner {
-        approvedMrtd = mrtd;
-    }
-
-    // ─── Phase 1: TEE-Attested Epoch Submission ──────────────────────────
-
-    /// @notice Submit an epoch action with TDX attestation proof.
-    /// @dev The attestation quote binds (input_hash, action, reasoning) to the TEE.
-    ///      The contract verifies the quote on-chain via Automata DCAP.
-    /// @param action The encoded action blob.
-    /// @param reasoning The agent's chain-of-thought reasoning.
-    /// @param attestationQuote Raw TDX DCAP attestation quote.
-    function submitEpochActionTEE(
-        bytes calldata action,
-        bytes calldata reasoning,
-        bytes calldata attestationQuote
-    ) external payable {
-        if (auctionEnabled) revert WrongPhase();
-        uint256 epoch = currentEpoch;
-        if (epochs[epoch].executed) revert AlreadyDone();
-
-        // Verify the attestation quote on-chain via Automata DCAP
-        (bool verified, ) = DCAP_VERIFIER.verifyAndAttestOnChain{value: msg.value}(attestationQuote);
-        if (!verified) revert AttestationFailed();
-
-        // Store attestation for transparency and external verification
-        epochAttestations[epoch] = attestationQuote;
-
-        // Execute action and record epoch (shared logic)
-        _recordAndExecuteEpoch(epoch, action, reasoning, 0);
+    /// @notice Set the attestation verifier contract address.
+    /// @dev The verifier handles DCAP verification, image registry, and REPORTDATA checks.
+    function setVerifier(address _verifier) external onlyOwner {
+        verifier = IAttestationVerifier(_verifier);
     }
 
     // ─── Phase 2: Reverse Auction ────────────────────────────────────────
@@ -402,7 +368,8 @@ contract TheHumanFund {
             winner: address(0),
             winningBid: 0,
             winningBidTimestamp: 0,
-            bondAmount: 0
+            bondAmount: 0,
+            randomnessSeed: 0
         });
 
         emit AuctionOpened(epoch, inputHash, effectiveMaxBid());
@@ -499,6 +466,7 @@ contract TheHumanFund {
         } else {
             // Winner determined — enter execution phase
             auction.phase = EpochPhase.EXECUTION;
+            auction.randomnessSeed = block.prevrandao;
             emit AuctionClosed(epoch, auction.winner, auction.winningBid);
         }
     }
@@ -506,7 +474,10 @@ contract TheHumanFund {
     /// @notice Submit the auction result (winner only).
     /// @dev The winner submits the attested inference result. On success,
     ///      the action is executed, the bounty is paid from treasury, and
-    ///      the bond is refunded.
+    ///      the bond is refunded. Verifies:
+    ///      1. DCAP quote is genuine TDX hardware (via Automata)
+    ///      2. MRTD + RTMR[0..2] match an approved image
+    ///      3. REPORTDATA matches sha256(inputHash || sha256(action) || sha256(reasoning) || seed)
     /// @param action The encoded action blob.
     /// @param reasoning The agent's chain-of-thought reasoning.
     /// @param attestationQuote Raw TDX DCAP attestation quote.
@@ -523,8 +494,16 @@ contract TheHumanFund {
         if (msg.sender != auction.winner) revert Unauthorized();
         if (block.timestamp >= auction.epochStartTime + biddingWindow + executionWindow) revert TimingError();
 
-        // Verify TEE attestation
-        (bool verified, ) = DCAP_VERIFIER.verifyAndAttestOnChain{value: msg.value}(attestationQuote);
+        // Compute expected REPORTDATA: sha256(inputHash || sha256(action) || sha256(reasoning) || seed)
+        bytes32 expectedReportData = sha256(abi.encodePacked(
+            epochInputHashes[epoch],
+            sha256(action),
+            sha256(reasoning),
+            auction.randomnessSeed
+        ));
+
+        // Verify TEE attestation (DCAP + image measurements + REPORTDATA)
+        bool verified = verifier.verifyAttestation{value: msg.value}(attestationQuote, expectedReportData);
         if (!verified) revert AttestationFailed();
         epochAttestations[epoch] = attestationQuote;
 
@@ -606,6 +585,9 @@ contract TheHumanFund {
         }
 
         emit DiaryEntry(epoch, reasoning, action, treasuryBefore, treasuryAfter);
+
+        // Extend rolling history hash (Merkle chain over all reasoning)
+        historyHash = keccak256(abi.encodePacked(historyHash, keccak256(reasoning)));
 
         currentEpochInflow = 0;
         currentEpochDonationCount = 0;
@@ -699,7 +681,8 @@ contract TheHumanFund {
             currentEpochDonationCount,
             nonprofits[1].totalDonated,
             nonprofits[2].totalDonated,
-            nonprofits[3].totalDonated
+            nonprofits[3].totalDonated,
+            historyHash
         ));
     }
 
@@ -733,10 +716,11 @@ contract TheHumanFund {
         uint256 bidCount,
         address winner,
         uint256 winningBid,
-        uint256 bondAmount
+        uint256 bondAmount,
+        uint256 randomnessSeed
     ) {
         AuctionState storage a = auctions[epoch];
-        return (a.epochStartTime, a.phase, a.bidCount, a.winner, a.winningBid, a.bondAmount);
+        return (a.epochStartTime, a.phase, a.bidCount, a.winner, a.winningBid, a.bondAmount, a.randomnessSeed);
     }
 
     /// @notice Get the current treasury balance.

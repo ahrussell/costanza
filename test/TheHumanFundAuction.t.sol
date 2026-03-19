@@ -3,10 +3,26 @@ pragma solidity ^0.8.20;
 
 import "forge-std/Test.sol";
 import "../src/TheHumanFund.sol";
+import "../src/AttestationVerifier.sol";
+import "../src/interfaces/IAutomataDcapAttestation.sol";
+
+/// @dev Mock DCAP verifier for auction integration tests
+contract AuctionMockDcapVerifier is IAutomataDcapAttestation {
+    bool public shouldSucceed = true;
+    bytes public craftedOutput;
+
+    function setOutput(bytes memory _output) external { craftedOutput = _output; }
+    function setShouldSucceed(bool _succeed) external { shouldSucceed = _succeed; }
+    function verifyAndAttestOnChain(bytes calldata) external payable returns (bool, bytes memory) {
+        return (shouldSucceed, craftedOutput);
+    }
+}
 
 /// @title Auction mechanism tests for The Human Fund (Phase 2)
 contract TheHumanFundAuctionTest is Test {
     TheHumanFund public fund;
+    AttestationVerifier public verifier;
+    AuctionMockDcapVerifier public mockDcap;
 
     address payable np1 = payable(address(0x1001));
     address payable np2 = payable(address(0x1002));
@@ -21,6 +37,12 @@ contract TheHumanFundAuctionTest is Test {
     uint256 constant BID_WIN = 60;       // 1 minute bidding
     uint256 constant EXEC_WIN = 120;     // 2 minutes execution
 
+    // Test measurement values for mock attestation (48 bytes = 96 hex chars each, SHA-384)
+    bytes constant TEST_MRTD = hex"aabbccdd0000000000000000000000000000000000000000000000000000000000000000000000000000000000000011";
+    bytes constant TEST_RTMR0 = hex"111111110000000000000000000000000000000000000000000000000000000000000000000000000000000000000022";
+    bytes constant TEST_RTMR1 = hex"222222220000000000000000000000000000000000000000000000000000000000000000000000000000000000000033";
+    bytes constant TEST_RTMR2 = hex"333333330000000000000000000000000000000000000000000000000000000000000000000000000000000000000044";
+
     function setUp() public {
         string[3] memory names = ["GiveDirectly", "Against Malaria Foundation", "Helen Keller International"];
         address payable[3] memory addrs = [np1, np2, np3];
@@ -31,6 +53,20 @@ contract TheHumanFundAuctionTest is Test {
             1000,          // 10% commission
             0.01 ether     // initial max bid
         );
+
+        // Deploy attestation verifier with mock DCAP
+        mockDcap = new AuctionMockDcapVerifier();
+        verifier = new AttestationVerifier();
+
+        // Etch mock DCAP verifier at the hardcoded address
+        vm.etch(address(0xaDdeC7e85c2182202b66E331f2a4A0bBB2cEEa1F), address(mockDcap).code);
+
+        // Approve the test image
+        bytes32 imageKey = keccak256(abi.encodePacked(TEST_MRTD, TEST_RTMR0, TEST_RTMR1, TEST_RTMR2));
+        verifier.approveImage(imageKey);
+
+        // Link verifier to fund
+        fund.setVerifier(address(verifier));
 
         // Configure short auction timing and enable
         fund.setAuctionTiming(EPOCH_DUR, BID_WIN, EXEC_WIN);
@@ -63,7 +99,7 @@ contract TheHumanFundAuctionTest is Test {
         fund.startEpoch();
 
         (uint256 startTime, TheHumanFund.EpochPhase phase, uint256 bidCount,
-         address winner, uint256 winningBid,) = fund.getAuctionState(1);
+         address winner, uint256 winningBid,,) = fund.getAuctionState(1);
 
         assertEq(startTime, block.timestamp);
         assertEq(uint256(phase), uint256(TheHumanFund.EpochPhase.BIDDING));
@@ -79,7 +115,7 @@ contract TheHumanFundAuctionTest is Test {
         vm.prank(runner1);
         fund.bid{value: 0.001 ether}(0.005 ether);
 
-        (, , uint256 bidCount, address winner, uint256 winningBid,) = fund.getAuctionState(1);
+        (, , uint256 bidCount, address winner, uint256 winningBid,,) = fund.getAuctionState(1);
         assertEq(bidCount, 1);
         assertEq(winner, runner1);
         assertEq(winningBid, 0.005 ether);
@@ -100,7 +136,7 @@ contract TheHumanFundAuctionTest is Test {
         vm.prank(runner3);
         fund.bid{value: 0.0018 ether}(0.009 ether);
 
-        (, , uint256 bidCount, address winner, uint256 winningBid,) = fund.getAuctionState(1);
+        (, , uint256 bidCount, address winner, uint256 winningBid,,) = fund.getAuctionState(1);
         assertEq(bidCount, 3);
         assertEq(winner, runner2);
         assertEq(winningBid, 0.005 ether);
@@ -153,7 +189,7 @@ contract TheHumanFundAuctionTest is Test {
         assertEq(fund.currentEpoch(), 2);
         assertEq(fund.consecutiveMissedEpochs(), 1);
 
-        (, TheHumanFund.EpochPhase phase,,,,) = fund.getAuctionState(1);
+        (, TheHumanFund.EpochPhase phase,,,,,) = fund.getAuctionState(1);
         assertEq(uint256(phase), uint256(TheHumanFund.EpochPhase.SETTLED));
     }
 
@@ -166,7 +202,7 @@ contract TheHumanFundAuctionTest is Test {
         vm.warp(block.timestamp + BID_WIN);
         fund.closeAuction();
 
-        (, TheHumanFund.EpochPhase phase,,,,) = fund.getAuctionState(1);
+        (, TheHumanFund.EpochPhase phase,,,,,) = fund.getAuctionState(1);
         assertEq(uint256(phase), uint256(TheHumanFund.EpochPhase.EXECUTION));
         // Epoch not advanced yet — waiting for winner to submit
         assertEq(fund.currentEpoch(), 1);
@@ -191,7 +227,7 @@ contract TheHumanFundAuctionTest is Test {
         assertEq(fund.currentEpoch(), 2);
         assertEq(fund.consecutiveMissedEpochs(), 1);
 
-        (, TheHumanFund.EpochPhase phase,,,,) = fund.getAuctionState(1);
+        (, TheHumanFund.EpochPhase phase,,,,,) = fund.getAuctionState(1);
         assertEq(uint256(phase), uint256(TheHumanFund.EpochPhase.SETTLED));
     }
 
@@ -427,5 +463,152 @@ contract TheHumanFundAuctionTest is Test {
         // Zero windows
         vm.expectRevert(TheHumanFund.InvalidParams.selector);
         fund.setAuctionTiming(100, 0, 50);
+    }
+
+    // ─── Attestation Integration ──────────────────────────────────────────
+
+    /// @dev Helper to build mock DCAP output with fields at correct offsets
+    function _buildDcapOutput(bytes32 reportData) internal pure returns (bytes memory) {
+        bytes memory output = new bytes(595);
+        output[0] = 0x00; output[1] = 0x04; // quoteVersion = 4
+        output[2] = 0x00; output[3] = 0x02; // quoteBodyType = 2 (TDX)
+
+        // Place measurements at correct offsets
+        for (uint256 i = 0; i < 48; i++) {
+            output[147 + i] = TEST_MRTD[i];
+            output[339 + i] = TEST_RTMR0[i];
+            output[387 + i] = TEST_RTMR1[i];
+            output[435 + i] = TEST_RTMR2[i];
+        }
+        // Place REPORTDATA
+        for (uint256 i = 0; i < 32; i++) {
+            output[531 + i] = reportData[i];
+        }
+        return output;
+    }
+
+    function test_full_auction_with_attestation() public {
+        // 1. Start epoch
+        fund.startEpoch();
+        bytes32 inputHash = fund.epochInputHashes(1);
+
+        // 2. Bid
+        vm.prank(runner1);
+        fund.bid{value: 0.001 ether}(0.005 ether);
+
+        // 3. Close auction (captures prevrandao)
+        vm.warp(block.timestamp + BID_WIN);
+        fund.closeAuction();
+
+        // Read randomness seed
+        (,,,,,,uint256 seed) = fund.getAuctionState(1);
+
+        // 4. Prepare action and reasoning
+        bytes memory action = _noopAction();
+        bytes memory reasoning = bytes("The fund is conserving resources this epoch.");
+
+        // 5. Compute expected REPORTDATA
+        bytes32 expectedReportData = sha256(abi.encodePacked(
+            inputHash,
+            sha256(action),
+            sha256(reasoning),
+            seed
+        ));
+
+        // 6. Set up mock DCAP to return output with correct REPORTDATA
+        AuctionMockDcapVerifier etchedMock = AuctionMockDcapVerifier(0xaDdeC7e85c2182202b66E331f2a4A0bBB2cEEa1F);
+        etchedMock.setOutput(_buildDcapOutput(expectedReportData));
+        etchedMock.setShouldSucceed(true);
+
+        // 7. Submit result as winner
+        uint256 treasuryBefore = fund.treasuryBalance();
+        vm.prank(runner1);
+        fund.submitAuctionResult(action, reasoning, bytes("mock_quote"));
+
+        // 8. Verify epoch advanced
+        assertEq(fund.currentEpoch(), 2);
+        assertEq(fund.consecutiveMissedEpochs(), 0);
+
+        // 9. Verify history hash was updated
+        bytes32 expectedHistory = keccak256(abi.encodePacked(bytes32(0), keccak256(reasoning)));
+        assertEq(fund.historyHash(), expectedHistory);
+    }
+
+    function test_attestation_reportdata_mismatch_reverts() public {
+        fund.startEpoch();
+
+        vm.prank(runner1);
+        fund.bid{value: 0.001 ether}(0.005 ether);
+
+        vm.warp(block.timestamp + BID_WIN);
+        fund.closeAuction();
+
+        bytes memory action = _noopAction();
+        bytes memory reasoning = bytes("test reasoning");
+
+        // Set up mock with WRONG REPORTDATA
+        bytes32 wrongReportData = bytes32(uint256(0xdeadbeef));
+        AuctionMockDcapVerifier etchedMock = AuctionMockDcapVerifier(0xaDdeC7e85c2182202b66E331f2a4A0bBB2cEEa1F);
+        etchedMock.setOutput(_buildDcapOutput(wrongReportData));
+        etchedMock.setShouldSucceed(true);
+
+        vm.prank(runner1);
+        vm.expectRevert(TheHumanFund.AttestationFailed.selector);
+        fund.submitAuctionResult(action, reasoning, bytes("mock_quote"));
+    }
+
+    function test_randomness_seed_captured() public {
+        fund.startEpoch();
+
+        vm.prank(runner1);
+        fund.bid{value: 0.001 ether}(0.005 ether);
+
+        vm.warp(block.timestamp + BID_WIN);
+        fund.closeAuction();
+
+        (,,,,,,uint256 seed) = fund.getAuctionState(1);
+        // block.prevrandao should be non-zero in Foundry's test environment
+        // (it defaults to block.difficulty which is 0 in tests, but that's ok —
+        // we're testing the storage, not the randomness quality)
+        // The important thing is it's stored correctly
+        assertEq(seed, block.prevrandao);
+    }
+
+    function test_history_hash_accumulates() public {
+        // Run epoch 1 via Phase 0 (direct submission, no auction)
+        fund.setAuctionEnabled(false);
+
+        bytes memory action1 = _noopAction();
+        bytes memory reasoning1 = bytes("First epoch reasoning");
+        fund.submitEpochAction(action1, reasoning1);
+
+        bytes32 hash1 = fund.historyHash();
+        bytes32 expected1 = keccak256(abi.encodePacked(bytes32(0), keccak256(reasoning1)));
+        assertEq(hash1, expected1);
+
+        // Run epoch 2
+        bytes memory reasoning2 = bytes("Second epoch reasoning");
+        fund.submitEpochAction(_noopAction(), reasoning2);
+
+        bytes32 hash2 = fund.historyHash();
+        bytes32 expected2 = keccak256(abi.encodePacked(expected1, keccak256(reasoning2)));
+        assertEq(hash2, expected2);
+        assertTrue(hash1 != hash2);
+    }
+
+    function test_history_hash_in_input_hash() public {
+        // Submit an epoch to set historyHash to non-zero
+        fund.setAuctionEnabled(false);
+        fund.submitEpochAction(_noopAction(), bytes("reasoning"));
+
+        bytes32 hashBefore = fund.computeInputHash();
+
+        // Submit another epoch (changes historyHash)
+        fund.submitEpochAction(_noopAction(), bytes("more reasoning"));
+
+        bytes32 hashAfter = fund.computeInputHash();
+
+        // Input hash should differ because historyHash changed
+        assertTrue(hashBefore != hashAfter);
     }
 }

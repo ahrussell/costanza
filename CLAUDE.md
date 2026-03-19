@@ -12,17 +12,19 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 
 ## Current Status
 
-**Phases 0-2 contract work is complete.** Next: update runner for auction mode.
+**Attestation verification implemented (GAPs 1+2 closed).** Next: deploy new contracts, build production TEE image, register RTMR measurements.
 
 - Phase 0 original contract: `0x2F213Ea0D3F6D8349e2162b37Cc8cE6605dc9420` (Base Sepolia) — 21 epochs executed
-- **Phase 1+2 contract deployed at `0x3C390f3cA2f0aB5614c33F74FcBc53a5aDBae275`** (Base Sepolia) — TEE attestation + auction
+- **Phase 1+2 contract (old)**: `0x3C390f3cA2f0aB5614c33F74FcBc53a5aDBae275` (Base Sepolia) — needs redeployment with new verifier
 - Phase 1 TEE enclave running on Phala Cloud — real TDX attestation quotes generated (14B model, CPU)
-- Phase 2 auction mechanism implemented and tested (55 tests pass)
-- Phase 2 auction verified on-chain: startEpoch, bid, closeAuction, forfeitBond, auto-escalation all working
-- **Remaining**: `submitAuctionResult()` with real TEE attestation (needs Phala credit top-up)
+- **Attestation verifier**: `AttestationVerifier.sol` — separate contract, verifies MRTD + RTMR[0..2] + REPORTDATA
+- **74 tests pass** (28 Phase 0 + 34 auction + 12 attestation verifier)
+- Contract sizes: TheHumanFund 20,864 bytes, AttestationVerifier 3,360 bytes (both well within 24KB)
+- **Remaining**: redeploy contracts to Base Sepolia, build production TEE image, register approved RTMR measurements, end-to-end test with real TDX quote
 - Deployer address: `0xffea30B0DbDAd460B9b6293fb51a059129fCCdAf`
 
 **DESIGN.md is a living document** — see it for the full specification and implementation checklist.
+**SECURITY.md** — formal TEE attestation security model, threat analysis, and implementation spec for contract verification.
 
 ## Architecture
 
@@ -38,10 +40,14 @@ Each epoch (24 hours in production, configurable for testnet):
 ### Phase 2 (auction mode): Permissionless runners
 1. Anyone calls `startEpoch()` — opens bidding, commits input hash
 2. Runners submit bids during bidding window (1 hour production)
-3. Anyone calls `closeAuction()` — lowest bid wins, bond locked
-4. Winner runs TEE inference, submits via `submitAuctionResult()`
-5. Contract verifies attestation, executes action, pays bounty + refunds bond
-6. If winner doesn't deliver: anyone calls `forfeitBond()`, bond kept by treasury
+3. Anyone calls `closeAuction()` — lowest bid wins, bond locked, `prevrandao` captured for RNG seed
+4. Winner boots TEE, mounts model (verified via SHA-256), runs inference with deterministic seed
+5. Winner submits via `submitAuctionResult()` — contract verifies:
+   - Automata DCAP: quote is genuine TDX hardware
+   - MRTD + RTMR[0..2]: approved image was running
+   - REPORTDATA: `SHA256(inputHash || SHA256(action) || SHA256(reasoning))` matches
+6. Contract executes action, pays bounty + refunds bond
+7. If winner doesn't deliver: anyone calls `forfeitBond()`, bond kept by treasury
 
 ## Key Design Decisions
 
@@ -52,7 +58,12 @@ Each epoch (24 hours in production, configurable for testnet):
 - **Auto-escalation**: missed epochs automatically raise bid ceiling by 10% (compounding) until a runner accepts
 - **Reverse auction**: First-price sealed-bid, 20% bond, inline refunds when outbid
 - **Epoch state machine**: IDLE → BIDDING → EXECUTION → SETTLED with configurable timing
+- **Verifiable randomness**: RNG seed derived from `block.prevrandao` at auction close — runner cannot re-roll inference
+- **Model loaded from disk**: Runner provides model file, enclave verifies SHA-256 hash baked into image — no runtime download
+- **Platform-agnostic attestation**: Verify MRTD + RTMR[0..2] (skip RTMR[3] — platform/instance-specific)
+- **Rolling history hash**: On-chain `historyHash` extended each epoch, binds decision history to input commitment
 - **Full design doc**: See DESIGN.md for complete specification
+- **Security model**: See SECURITY.md for TEE attestation analysis and threat model
 
 ## Implementation Phases
 
@@ -91,15 +102,19 @@ All Python commands (runner, enclave runner, etc.) should be run inside the venv
 thehumanfund/
 ├── CLAUDE.md                    # This file — project context for Claude
 ├── DESIGN.md                    # Full design specification (living document)
+├── SECURITY.md                  # TEE attestation security model and threat analysis
 ├── foundry.toml                 # Foundry configuration
 ├── .venv/                       # Python virtual environment (gitignored)
 ├── src/
-│   ├── TheHumanFund.sol         # Main smart contract (Phase 0 + 1 + 2)
+│   ├── TheHumanFund.sol         # Main smart contract (Phase 0 + 2, 20.8KB)
+│   ├── AttestationVerifier.sol  # TEE attestation verification (3.4KB)
 │   └── interfaces/
-│       └── IAutomataDcapAttestation.sol  # Automata DCAP interface
+│       ├── IAutomataDcapAttestation.sol  # Automata DCAP interface
+│       └── IAttestationVerifier.sol     # Attestation verifier interface
 ├── test/
-│   ├── TheHumanFund.t.sol       # Phase 0 tests (26 tests)
-│   └── TheHumanFundAuction.t.sol # Phase 2 auction tests (29 tests)
+│   ├── TheHumanFund.t.sol       # Phase 0 tests (28 tests)
+│   ├── TheHumanFundAuction.t.sol # Phase 2 auction + attestation tests (34 tests)
+│   └── AttestationVerifier.t.sol # Verifier unit tests (12 tests)
 ├── script/
 │   └── Deploy.s.sol             # Foundry deployment script
 ├── agent/
@@ -137,10 +152,14 @@ thehumanfund/
 - `DiaryEntry` event emits reasoning + action on-chain
 - Balance snapshots every 5 epochs
 
-### TEE Attestation (Phase 1)
-- `submitEpochActionTEE()` — permissionless, verifies TDX DCAP quote on-chain
-- `setTeeRequired()` / `setApprovedMrtd()` — owner configures TEE requirements
+### TEE Attestation — see SECURITY.md for full model
+- `AttestationVerifier.sol` — separate contract handles all attestation verification
 - Automata DCAP verifier at `0xaDdeC7e85c2182202b66E331f2a4A0bBB2cEEa1F`
+- **GAPs 1+2 CLOSED**: contract now verifies MRTD + RTMR[0..2] (image identity) + REPORTDATA (input/output binding)
+- Approved image registry: `mapping(bytes32 => bool) approvedImages` (key = `keccak256(MRTD || RTMR[0..2])`)
+- REPORTDATA formula: `sha256(inputHash || sha256(action) || sha256(reasoning) || randomnessSeed)`
+- Rolling `historyHash` extends each epoch, included in `_computeInputHash()`
+- `block.prevrandao` captured in `closeAuction()` as verifiable randomness seed
 
 ### Reverse Auction (Phase 2)
 - **Epoch state machine**: `EpochPhase { IDLE, BIDDING, EXECUTION, SETTLED }`
@@ -195,10 +214,11 @@ phala ssh humanfund-tee -- 'docker exec -d dstack-agent-1 python3 /tmp/run_infer
 
 **Image**: `ghcr.io/ahrussell/humanfund-tee:v3` (amd64, Ubuntu 22.04)
 
-**Model**: DeepSeek R1 Distill Qwen 14B Q4_K_M (8.99 GB GGUF)
+**Model**: DeepSeek R1 Distill Qwen 14B Q4_K_M (8.99 GB GGUF) — development model
 - SHA-256: `0b319bd0572f2730bfe11cc751defe82045fad5085b4e60591ac2cd2d9633181`
-- Downloaded at runtime, verified against hash baked into image
+- Mounted from disk by runner, SHA-256 verified at boot (no network download)
 - CPU-only inference: ~0.33 tok/s on 16 vCPU, ~22 min/epoch
+- Production will use 70B model (or larger) — just change `MODEL_SHA256` in Dockerfile and register new RTMR measurements
 
 **Phala Cloud CVM**: `humanfund-tee` (tdx.2xlarge, 16 vCPU, 32 GB RAM)
 - App ID: `5dcad829680b2ea7a0ac01021da00fa913eea815`
@@ -208,7 +228,8 @@ phala ssh humanfund-tee -- 'docker exec -d dstack-agent-1 python3 /tmp/run_infer
 **dstack attestation API**: `POST /GetQuote` on Unix socket
 - Request: `{"report_data": "<hex>"}`
 - Response: `{"quote": "<hex>", "event_log": "<json>"}`
-- Note: dstack applies SHA-256 to report_data before TDX driver
+- dstack v0.5.x passes report_data **verbatim** to TDX driver (zero-padded to 64 bytes, no hashing)
+- The old v0.3.x `tappd` API applied SHA-256 — that behavior is deprecated
 
 ## RunPod Development Environment
 

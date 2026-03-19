@@ -47,7 +47,7 @@ DSTACK_SOCK_LEGACY = "/var/run/tappd.sock"    # v0.3.x fallback
 
 # ─── Inference ───────────────────────────────────────────────────────────
 
-def _call_llama(prompt, max_tokens=4096, temperature=0.6, stop=None):
+def _call_llama(prompt, max_tokens=4096, temperature=0.6, stop=None, seed=-1):
     """Call the local llama-server."""
     body = {
         "prompt": prompt,
@@ -56,6 +56,8 @@ def _call_llama(prompt, max_tokens=4096, temperature=0.6, stop=None):
     }
     if stop:
         body["stop"] = stop
+    if seed >= 0:
+        body["seed"] = seed
 
     payload = json.dumps(body).encode()
     req = Request(
@@ -79,15 +81,15 @@ def _call_llama(prompt, max_tokens=4096, temperature=0.6, stop=None):
     }
 
 
-def run_inference(prompt, max_tokens=4096, temperature=0.6):
+def run_inference(prompt, max_tokens=4096, temperature=0.6, seed=-1):
     """Two-pass inference: reasoning (stop at </think>), then JSON action."""
     # Pass 1: Generate reasoning
-    result1 = _call_llama(prompt, max_tokens=max_tokens, temperature=temperature, stop=["</think>"])
+    result1 = _call_llama(prompt, max_tokens=max_tokens, temperature=temperature, stop=["</think>"], seed=seed)
     reasoning = result1["text"].strip()
 
-    # Pass 2: Generate JSON action
+    # Pass 2: Generate JSON action (same seed for determinism)
     prompt2 = prompt + reasoning + "\n</think>\n"
-    result2 = _call_llama(prompt2, max_tokens=256, temperature=0.3, stop=["\n\n"])
+    result2 = _call_llama(prompt2, max_tokens=256, temperature=0.3, stop=["\n\n"], seed=seed)
 
     combined_text = reasoning + "\n</think>\n" + result2["text"]
     return {
@@ -176,8 +178,10 @@ def get_tdx_quote(report_data: bytes) -> bytes:
         sock_path = DSTACK_SOCK_LEGACY
     if not os.path.exists(sock_path):
         print(f"WARNING: dstack socket not found at {DSTACK_SOCK} or {DSTACK_SOCK_LEGACY}")
-        print("  Running outside TEE — returning mock attestation")
-        return b"MOCK_ATTESTATION_NOT_IN_TEE"
+        print("  Running outside TEE — returning report_data as mock attestation")
+        # In mock mode, return the report_data itself as the "quote"
+        # The mock DCAP verifier on-chain will place it in the REPORTDATA field
+        return report_data
 
     # dstack v0.5.x+ API: POST /GetQuote on Unix socket
     # Legacy (v0.3.x) used /var/run/tappd.sock and /prpc/Tappd.TdxQuote
@@ -240,23 +244,25 @@ def get_tdx_quote(report_data: bytes) -> bytes:
         return b"ATTESTATION_ERROR"
 
 
-def compute_report_data(input_hash: bytes, action_bytes: bytes, reasoning: str) -> bytes:
+def compute_report_data(input_hash: bytes, action_bytes: bytes, reasoning: str, seed: int = 0) -> bytes:
     """Compute the 64-byte report data that gets bound into the TDX quote.
 
     This creates a cryptographic binding between:
-    - The input (epoch context hash)
+    - The input (epoch context hash — keccak256 from the contract)
     - The output (action + reasoning)
+    - The randomness seed (block.prevrandao from the contract)
     - The TEE identity (via RTMR values in the quote)
 
-    The smart contract can verify: "this exact input produced this exact output
-    inside a genuine TEE running the approved image."
+    The smart contract verifies: sha256(inputHash || sha256(action) || sha256(reasoning) || seed)
+    matches the REPORTDATA in the TDX quote.
     """
     reasoning_hash = hashlib.sha256(reasoning.encode("utf-8")).digest()
     action_hash = hashlib.sha256(action_bytes).digest()
+    seed_bytes = seed.to_bytes(32, "big")
 
-    # Combine: SHA256(input_hash || action_hash || reasoning_hash)
+    # Must match contract: sha256(abi.encodePacked(inputHash, sha256(action), sha256(reasoning), seed))
     combined = hashlib.sha256(
-        input_hash + action_hash + reasoning_hash
+        input_hash + action_hash + reasoning_hash + seed_bytes
     ).digest()
 
     # Pad to 64 bytes (TDX report data is exactly 64 bytes)
@@ -311,6 +317,11 @@ def run_epoch():
     epoch_context = data["epoch_context"]
     input_hash_hex = data.get("input_hash", "0x" + "00" * 32)
     input_hash = bytes.fromhex(input_hash_hex.replace("0x", ""))
+    seed = int(data.get("seed", 0))
+
+    # Derive llama.cpp seed from the contract's randomness seed
+    # Use lower 32 bits (llama.cpp seed is uint32)
+    llama_seed = seed & 0xFFFFFFFF if seed > 0 else -1
 
     # Load system prompt
     system_prompt = SYSTEM_PROMPT_PATH.read_text().strip()
@@ -324,9 +335,9 @@ def run_epoch():
     inference = None
 
     for attempt in range(1, max_retries + 1):
-        print(f"Inference attempt {attempt}/{max_retries}...")
+        print(f"Inference attempt {attempt}/{max_retries} (seed={llama_seed})...")
         try:
-            inference = run_inference(full_prompt)
+            inference = run_inference(full_prompt, seed=llama_seed)
         except Exception as e:
             print(f"Inference error: {e}")
             if attempt == max_retries:
@@ -348,10 +359,17 @@ def run_epoch():
     reasoning = inference["reasoning"]
 
     # Encode action to bytes (same format as the smart contract expects)
-    action_bytes = encode_action_bytes(action_json)
+    try:
+        action_bytes = encode_action_bytes(action_json)
+    except Exception as e:
+        return jsonify({
+            "error": f"Failed to encode action: {e}",
+            "action": action_json,
+            "raw_output": inference["text"][:2000],
+        }), 500
 
     # Get TDX attestation quote
-    report_data = compute_report_data(input_hash, action_bytes, reasoning)
+    report_data = compute_report_data(input_hash, action_bytes, reasoning, seed=seed)
     quote = get_tdx_quote(report_data)
 
     return jsonify({
@@ -361,9 +379,25 @@ def run_epoch():
         "attestation_quote": "0x" + quote.hex(),
         "report_data": "0x" + report_data.hex(),
         "input_hash": input_hash_hex,
+        "seed": seed,
         "inference_seconds": inference["elapsed_seconds"],
         "tokens": inference["tokens"],
     })
+
+
+def _clean_amount(raw):
+    """Clean an amount string from model output — strip units, whitespace, etc."""
+    if isinstance(raw, (int, float)):
+        return str(raw)
+    s = str(raw).strip()
+    # Remove common suffixes the model might add
+    for suffix in [" ETH", " eth", " Eth", "ETH", "eth", " ether", "ether"]:
+        if s.endswith(suffix):
+            s = s[:-len(suffix)].strip()
+    # Remove any remaining non-numeric characters except . and -
+    import re
+    cleaned = re.sub(r'[^\d.\-]', '', s)
+    return cleaned if cleaned else "0"
 
 
 def encode_action_bytes(action_json):
@@ -379,7 +413,7 @@ def encode_action_bytes(action_json):
     elif action == "donate":
         # Handle various param key names the model might use
         np_id = int(params.get("nonprofit_id") or params.get("id") or params.get("nonprofit") or 1)
-        amount_str = str(params.get("amount_eth") or params.get("amount") or params.get("eth") or "0.1")
+        amount_str = _clean_amount(params.get("amount_eth") or params.get("amount") or params.get("eth") or "0.1")
         amount_wei = int(float(amount_str) * 1e18)
         return (
             bytes([1])
@@ -387,10 +421,12 @@ def encode_action_bytes(action_json):
             + amount_wei.to_bytes(32, "big")
         )
     elif action == "set_commission_rate":
-        rate = int(params.get("rate_bps") or params.get("rate") or params.get("bps") or 1000)
+        rate = int(float(str(params.get("rate_bps") or params.get("rate") or params.get("bps") or 1000)))
+        # Clamp to valid range
+        rate = max(100, min(9000, rate))
         return bytes([2]) + rate.to_bytes(32, "big")
     elif action == "set_max_bid":
-        amount_str = str(params.get("amount_eth") or params.get("amount") or params.get("eth") or "0.001")
+        amount_str = _clean_amount(params.get("amount_eth") or params.get("amount") or params.get("eth") or "0.001")
         amount_wei = int(float(amount_str) * 1e18)
         return bytes([3]) + amount_wei.to_bytes(32, "big")
     else:

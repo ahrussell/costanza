@@ -335,6 +335,30 @@ contract TheHumanFundTest is Test {
         assertEq(fund.lastDonationEpoch(), 2);
     }
 
+    // ─── History Hash ──────────────────────────────────────────────────────
+
+    function test_history_hash_updates_on_submit() public {
+        assertEq(fund.historyHash(), bytes32(0));
+
+        bytes memory reasoning = bytes("First epoch thoughts.");
+        fund.submitEpochAction(abi.encodePacked(uint8(0)), reasoning);
+
+        bytes32 expected = keccak256(abi.encodePacked(bytes32(0), keccak256(reasoning)));
+        assertEq(fund.historyHash(), expected);
+    }
+
+    function test_history_hash_included_in_input_hash() public {
+        bytes32 hash1 = fund.computeInputHash();
+
+        // Submit epoch (changes historyHash)
+        fund.submitEpochAction(abi.encodePacked(uint8(0)), bytes("reasoning"));
+
+        bytes32 hash2 = fund.computeInputHash();
+
+        // Input hash should differ (historyHash changed + epoch number changed)
+        assertTrue(hash1 != hash2);
+    }
+
     // ─── Receive ETH ─────────────────────────────────────────────────────
 
     function test_receive_eth() public {

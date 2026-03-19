@@ -22,9 +22,11 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Build llama.cpp (CPU only — GPU TEE is a future upgrade)
+# Pin to a specific release tag for reproducible builds and stable RTMR measurements
 WORKDIR /build
-RUN git clone --depth 1 https://github.com/ggml-org/llama.cpp.git && \
+RUN git clone https://github.com/ggml-org/llama.cpp.git && \
     cd llama.cpp && \
+    git checkout b5170 && \
     cmake -B build -DCMAKE_BUILD_TYPE=Release && \
     cmake --build build --config Release -j$(nproc) --target llama-server
 
@@ -49,11 +51,11 @@ COPY enclave_runner.py /app/enclave_runner.py
 COPY system_prompt.txt /app/system_prompt.txt
 COPY start.sh /app/start.sh
 
-# Model downloaded at startup, verified against hardcoded SHA-256.
-# The hash is baked into the image and covered by the RTMR attestation chain,
-# so a tampered download is caught before loading.
-ENV MODEL_URL="https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-14B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf"
-ENV MODEL_PATH=/models/DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf
+# Model is mounted from disk by the runner, NOT downloaded at runtime.
+# SHA-256 hash is baked into the image and covered by the RTMR attestation chain.
+# The entrypoint script verifies the model hash before starting inference.
+# Runners can use any model file as long as sha256(file) == MODEL_SHA256.
+ENV MODEL_PATH=/models/model.gguf
 ENV MODEL_SHA256="0b319bd0572f2730bfe11cc751defe82045fad5085b4e60591ac2cd2d9633181"
 RUN mkdir -p /models
 ENV LLAMA_SERVER_PORT=8080
