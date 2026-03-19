@@ -44,6 +44,10 @@ LLAMA_SERVER_URL = f"http://127.0.0.1:{os.environ.get('LLAMA_SERVER_PORT', '8080
 DSTACK_SOCK = "/var/run/dstack.sock"          # v0.5.x+
 DSTACK_SOCK_LEGACY = "/var/run/tappd.sock"    # v0.3.x fallback
 
+# Max reasoning bytes to include on-chain. Truncate BEFORE computing REPORTDATA
+# so the contract's sha256(reasoning) matches the quote's REPORTDATA.
+MAX_REASONING_BYTES = 8000
+
 
 # ─── Inference ───────────────────────────────────────────────────────────
 
@@ -420,7 +424,19 @@ def run_epoch():
             "raw_output": inference["text"][:2000] if inference else None,
         }), 500
 
-    reasoning = inference["reasoning"]
+    reasoning_full = inference["reasoning"]
+
+    # Truncate reasoning to fit on-chain gas budget.
+    # CRITICAL: truncate BEFORE computing REPORTDATA so contract's
+    # sha256(reasoning) matches the value bound into the TDX quote.
+    reasoning_bytes = reasoning_full.encode("utf-8")
+    if len(reasoning_bytes) > MAX_REASONING_BYTES:
+        reasoning_bytes = reasoning_bytes[:MAX_REASONING_BYTES]
+        # Ensure we don't break a multi-byte UTF-8 character
+        reasoning = reasoning_bytes.decode("utf-8", errors="ignore")
+        print(f"  Reasoning truncated: {len(reasoning_full.encode('utf-8'))} → {len(reasoning.encode('utf-8'))} bytes")
+    else:
+        reasoning = reasoning_full
 
     # Encode action to bytes (same format as the smart contract expects)
     try:
@@ -432,7 +448,7 @@ def run_epoch():
             "raw_output": inference["text"][:2000],
         }), 500
 
-    # Get TDX attestation quote
+    # Get TDX attestation quote — uses truncated reasoning
     report_data = compute_report_data(input_hash, action_bytes, reasoning, seed=seed)
     quote = get_tdx_quote(report_data)
 

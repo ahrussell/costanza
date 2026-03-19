@@ -56,18 +56,30 @@ RPC_URL = os.environ.get("RPC_URL", "https://sepolia.base.org")
 GCP_PROJECT = os.environ.get("GCP_PROJECT", "the-human-fund")
 GCP_ZONE = os.environ.get("GCP_ZONE", "us-central1-a")
 GCP_VM_NAME = os.environ.get("GCP_VM_NAME", "humanfund-e2e")
-# Default to CPU; set --gpu flag or GCP_GPU=1 for GPU instance
-GCP_MACHINE_TYPE_CPU = "c3-standard-4"   # 4 vCPU, 16 GB — CPU inference (~7 min)
+# Default to CPU; set --gpu flag for GPU instance
+GCP_MACHINE_TYPE_CPU = "c3-standard-4"   # 4 vCPU, 16 GB — CPU inference (~20-30 min)
 GCP_MACHINE_TYPE_GPU = "a3-highgpu-1g"   # 1x H100 80GB — GPU inference (~30 sec)
 
-# Timing: GPU inference is ~30s, CPU is ~7 min
-# Use shorter windows for GPU testing
-EPOCH_DURATION = 600     # 10 min
-BIDDING_WINDOW = 120     # 2 min
-EXECUTION_WINDOW = 300   # 5 min (plenty for GPU, tight for CPU)
+# Set at runtime based on --gpu flag
+GCP_MACHINE_TYPE = GCP_MACHINE_TYPE_CPU
+USE_GPU = False
+
+# Timing constants (adjusted at runtime based on CPU vs GPU)
+EPOCH_DURATION_GPU = 600      # 10 min
+BIDDING_WINDOW_GPU = 120      # 2 min
+EXECUTION_WINDOW_GPU = 300    # 5 min
+
+EPOCH_DURATION_CPU = 3600     # 60 min
+BIDDING_WINDOW_CPU = 120      # 2 min
+EXECUTION_WINDOW_CPU = 2700   # 45 min (CPU inference on 14B can take 20-30 min)
+
+# Defaults (overridden in main())
+EPOCH_DURATION = EPOCH_DURATION_CPU
+BIDDING_WINDOW = BIDDING_WINDOW_CPU
+EXECUTION_WINDOW = EXECUTION_WINDOW_CPU
 
 BID_AMOUNT_ETH = 0.0001  # Minimum bid
-SEED_AMOUNT_ETH = 0.005  # Treasury seed
+SEED_AMOUNT_ETH = 0.0005  # Treasury seed (keep small for testnet)
 
 # Model for testing (14B Q4_K_M, CPU-only)
 MODEL_URL = "https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-14B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf"
@@ -125,6 +137,8 @@ def deploy_contracts(w3, account):
     signed = account.sign_transaction(tx)
     tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
     receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+    if receipt.status != 1:
+        raise RuntimeError(f"Verifier deployment failed! Status: {receipt.status}, gas: {receipt.gasUsed}")
     verifier_addr = receipt.contractAddress
     print(f"  AttestationVerifier: {verifier_addr} (gas: {receipt.gasUsed})")
     nonce += 1
@@ -143,7 +157,7 @@ def deploy_contracts(w3, account):
         "from": deployer,
         "nonce": nonce,
         "value": seed_wei,
-        "gas": 3_000_000,
+        "gas": 6_500_000,  # Contract is ~21KB, constructor needs ~5.1M gas
         "maxFeePerGas": w3.eth.gas_price * 2,
         "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
     })
@@ -151,6 +165,8 @@ def deploy_contracts(w3, account):
     tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
     receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
     fund_addr = receipt.contractAddress
+    if receipt.status != 1:
+        raise RuntimeError(f"Fund deployment failed! Status: {receipt.status}, gas: {receipt.gasUsed}")
     print(f"  TheHumanFund: {fund_addr} (gas: {receipt.gasUsed})")
     nonce += 1
 
@@ -227,10 +243,12 @@ echo "=== Starting setup at $(date) ==="
 
 # Install dependencies
 apt-get update -qq
-apt-get install -y -qq python3 python3-pip cmake build-essential git wget
+apt-get install -y -qq python3 python3-pip python3-venv cmake build-essential git wget libcurl4-openssl-dev
 
-# Install Python packages
-pip3 install flask web3 requests
+# Set up venv (PEP 668 on Ubuntu 24.04 refuses system-wide pip)
+python3 -m venv /opt/humanfund-venv
+source /opt/humanfund-venv/bin/activate
+pip install flask web3 requests
 
 # Build llama.cpp from source (CPU-only)
 echo "Building llama.cpp..."
@@ -363,13 +381,21 @@ def upload_enclave_files(vm_ip):
         check=False, timeout=60
     )
 
-    # Start enclave_runner.py
+    # Start enclave_runner.py as root (needs root for configfs-tsm TDX quote generation)
+    # Upload a startup script to avoid shell quoting issues
+    startup = "#!/bin/bash\nsource /opt/humanfund-venv/bin/activate\nSYSTEM_PROMPT_PATH=/tmp/system_prompt.txt nohup python3 /tmp/enclave_runner.py > /tmp/enclave.log 2>&1 &\n"
+    with open("/tmp/start_enclave.sh", "w") as f:
+        f.write(startup)
     gcloud(
-        f"compute ssh {GCP_VM_NAME} --zone={GCP_ZONE} "
-        f"--command='SYSTEM_PROMPT_PATH=/tmp/system_prompt.txt nohup python3 /tmp/enclave_runner.py > /tmp/enclave.log 2>&1 &'",
+        f"compute scp /tmp/start_enclave.sh {GCP_VM_NAME}:/tmp/start_enclave.sh --zone={GCP_ZONE}",
         timeout=30
     )
-    print("  Started enclave_runner.py on port 8090")
+    gcloud(
+        f"compute ssh {GCP_VM_NAME} --zone={GCP_ZONE} "
+        f"--command='sudo rm -f /tmp/enclave.log && sudo bash /tmp/start_enclave.sh'",
+        timeout=30
+    )
+    print("  Started enclave_runner.py on port 8090 (as root for configfs-tsm)")
 
     # Wait for it to be ready
     for i in range(12):
@@ -596,13 +622,7 @@ def run_auction_e2e(w3, account, fund_addr, vm_ip, nonce):
     action_bytes = bytes.fromhex(tee_result["action_bytes"].replace("0x", ""))
     reasoning_bytes = tee_result["reasoning"].encode("utf-8")
     attestation_bytes = bytes.fromhex(tee_result["attestation_quote"].replace("0x", ""))
-
-    # Cap reasoning to stay within gas budget
-    MAX_REASONING = 8000
-    if len(reasoning_bytes) > MAX_REASONING:
-        reasoning_bytes = reasoning_bytes[:MAX_REASONING]
-        reasoning_bytes = reasoning_bytes.decode("utf-8", errors="ignore").encode("utf-8")
-        print(f"      Reasoning truncated to {len(reasoning_bytes)} bytes")
+    print(f"      Reasoning: {len(reasoning_bytes)} bytes (truncated by enclave if needed)")
 
     # Verify REPORTDATA matches before submitting
     expected_rd = hashlib.sha256(
@@ -676,7 +696,27 @@ def main():
     parser.add_argument("--vm-ip", help="Reuse existing GCP VM (skip creation)")
     parser.add_argument("--no-cleanup", action="store_true", help="Don't delete VM after test")
     parser.add_argument("--skip-vm", action="store_true", help="Skip VM creation (for testing)")
+    parser.add_argument("--gpu", action="store_true", help="Use GPU instance (a3-highgpu-1g with H100)")
     args = parser.parse_args()
+
+    # Configure GPU vs CPU
+    global GCP_MACHINE_TYPE, USE_GPU, EPOCH_DURATION, BIDDING_WINDOW, EXECUTION_WINDOW
+    if args.gpu:
+        GCP_MACHINE_TYPE = GCP_MACHINE_TYPE_GPU
+        USE_GPU = True
+        EPOCH_DURATION = EPOCH_DURATION_GPU
+        BIDDING_WINDOW = BIDDING_WINDOW_GPU
+        EXECUTION_WINDOW = EXECUTION_WINDOW_GPU
+        print("Mode: GPU (a3-highgpu-1g, H100)")
+    else:
+        GCP_MACHINE_TYPE = GCP_MACHINE_TYPE_CPU
+        USE_GPU = False
+        EPOCH_DURATION = EPOCH_DURATION_CPU
+        BIDDING_WINDOW = BIDDING_WINDOW_CPU
+        EXECUTION_WINDOW = EXECUTION_WINDOW_CPU
+        print("Mode: CPU (c3-standard-4, ~20-30 min inference)")
+
+    print(f"  Timing: epoch={EPOCH_DURATION}s, bidding={BIDDING_WINDOW}s, execution={EXECUTION_WINDOW}s")
 
     # Load private key
     private_key = os.environ.get("PRIVATE_KEY")
