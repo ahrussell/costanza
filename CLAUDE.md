@@ -12,16 +12,17 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 
 ## Current Status
 
-**Full e2e attestation verified on Base Sepolia with GCP H100 TDX.** DCAP + image registry + REPORTDATA all pass on-chain.
+**Full e2e attestation verified on Base Sepolia with both CPU and GPU GCP TDX.** DCAP + image registry + REPORTDATA all pass on-chain.
 
-- **Phase 2 contract (current)**: `0x579F6B59342348ED8736B617EDEe5e2ae3a3D7E5` (Base Sepolia) — e2e verified
-- **Attestation verifier**: `0xAC5634C4c279c4E3eA85968e26bD1AAED7f6453d` (Base Sepolia) — DCAP + image registry + REPORTDATA
+- **Phase 2 contract (latest, CPU e2e)**: `0x9043B54B7E5d2f98Bc12ff10799cf8d5d38c7ab2` (Base Sepolia) — CPU + GPU verified
+- **Phase 2 contract (GPU e2e)**: `0x579F6B59342348ED8736B617EDEe5e2ae3a3D7E5` (Base Sepolia) — GPU verified
 - Phase 0 original contract: `0x2F213Ea0D3F6D8349e2162b37Cc8cE6605dc9420` (Base Sepolia) — 21 epochs executed (legacy)
 - **74 tests pass** (28 Phase 0 + 34 auction + 12 attestation verifier)
 - Contract sizes: TheHumanFund ~21KB, AttestationVerifier ~3.4KB (both well within 24KB)
 - GCP TDX FMSPC `00806f050000` registered in Automata DCAP Dashboard
 - CPU image key (c3-standard-4): `0x1ff10986...` — approved
 - GPU image key (a3-highgpu-1g, H100): `0xb101c26a...` — approved
+- **E2E gas costs**: deployment ~5.1M, DCAP verification ~10.2M (15M limit recommended)
 - **Remaining**: production Docker image, audit, mainnet deployment
 - Deployer address: `0xffea30B0DbDAd460B9b6293fb51a059129fCCdAf`
 

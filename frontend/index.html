@@ -368,7 +368,10 @@
 <header>
   <div>
     <h1>The Human Fund <span>/ dashboard</span></h1>
-    <a class="contract-link" id="contract-link" href="#" target="_blank"></a>
+    <div style="display:flex;align-items:center;gap:8px;margin-top:4px;">
+      <select id="contract-select" class="btn" style="font-family:var(--mono);font-size:11px;" onchange="switchContract(this.value)"></select>
+      <a class="contract-link" id="contract-link" href="#" target="_blank"></a>
+    </div>
   </div>
   <div id="status">connecting...</div>
 </header>
@@ -417,7 +420,16 @@
 </div>
 
 <script>
-const CONTRACT_ADDRESS = '0x579F6B59342348ED8736B617EDEe5e2ae3a3D7E5';
+// Known deployments — most recent first
+const DEPLOYMENTS = [
+  { name: 'Phase 2 (CPU e2e verified)', address: '0x9043B54B7E5d2f98Bc12ff10799cf8d5d38c7ab2' },
+  { name: 'Phase 2 (GPU e2e verified)', address: '0x579F6B59342348ED8736B617EDEe5e2ae3a3D7E5' },
+  { name: 'Phase 0 (legacy, 21 epochs)', address: '0x2F213Ea0D3F6D8349e2162b37Cc8cE6605dc9420' },
+];
+
+// Allow URL param override: ?contract=0x...
+const urlParams = new URLSearchParams(window.location.search);
+const CONTRACT_ADDRESS = urlParams.get('contract') || DEPLOYMENTS[0].address;
 const RPC_URL = 'https://sepolia.base.org';
 const EXPLORER = 'https://sepolia.basescan.org';
 
@@ -937,10 +949,32 @@ async function refresh() {
   }
 }
 
+function switchContract(addr) {
+  window.location.search = '?contract=' + addr;
+}
+
 async function init() {
   try {
     provider = new ethers.JsonRpcProvider(RPC_URL);
     contract = new ethers.Contract(CONTRACT_ADDRESS, ABI, provider);
+
+    // Populate deployment selector
+    const select = document.getElementById('contract-select');
+    DEPLOYMENTS.forEach(d => {
+      const opt = document.createElement('option');
+      opt.value = d.address;
+      opt.textContent = d.name;
+      if (d.address.toLowerCase() === CONTRACT_ADDRESS.toLowerCase()) opt.selected = true;
+      select.appendChild(opt);
+    });
+    // Add custom option if URL has a contract not in the list
+    if (!DEPLOYMENTS.some(d => d.address.toLowerCase() === CONTRACT_ADDRESS.toLowerCase())) {
+      const opt = document.createElement('option');
+      opt.value = CONTRACT_ADDRESS;
+      opt.textContent = 'Custom: ' + CONTRACT_ADDRESS.slice(0, 10) + '...';
+      opt.selected = true;
+      select.appendChild(opt);
+    }
 
     document.getElementById('contract-link').textContent = CONTRACT_ADDRESS;
     document.getElementById('contract-link').href = `${EXPLORER}/address/${CONTRACT_ADDRESS}`;
