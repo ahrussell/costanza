@@ -55,14 +55,16 @@ ABI_DIR = PROJECT_ROOT / "out"
 RPC_URL = os.environ.get("RPC_URL", "https://sepolia.base.org")
 GCP_PROJECT = os.environ.get("GCP_PROJECT", "the-human-fund")
 GCP_ZONE = os.environ.get("GCP_ZONE", "us-central1-a")
-GCP_VM_NAME = "humanfund-e2e"
-GCP_MACHINE_TYPE = "c3-standard-4"  # 4 vCPU, 16 GB — enough for 14B Q4_K_M CPU inference
+GCP_VM_NAME = os.environ.get("GCP_VM_NAME", "humanfund-e2e")
+# Default to CPU; set --gpu flag or GCP_GPU=1 for GPU instance
+GCP_MACHINE_TYPE_CPU = "c3-standard-4"   # 4 vCPU, 16 GB — CPU inference (~7 min)
+GCP_MACHINE_TYPE_GPU = "a3-highgpu-1g"   # 1x H100 80GB — GPU inference (~30 sec)
 
-# Short timing for e2e test (total epoch = 30 min, bidding = 2 min, execution = 25 min)
-# 14B CPU inference takes ~20 min, so we need enough execution window
-EPOCH_DURATION = 1800    # 30 min
+# Timing: GPU inference is ~30s, CPU is ~7 min
+# Use shorter windows for GPU testing
+EPOCH_DURATION = 600     # 10 min
 BIDDING_WINDOW = 120     # 2 min
-EXECUTION_WINDOW = 1500  # 25 min
+EXECUTION_WINDOW = 300   # 5 min (plenty for GPU, tight for CPU)
 
 BID_AMOUNT_ETH = 0.0001  # Minimum bid
 SEED_AMOUNT_ETH = 0.005  # Treasury seed
@@ -471,67 +473,65 @@ def run_auction_e2e(w3, account, fund_addr, vm_ip, nonce):
     )["abi"]
     fund = w3.eth.contract(address=fund_addr, abi=fund_abi)
 
+    # Helper to get fresh Web3 connection (Base Sepolia RPC returns stale data after writes)
+    def fresh_connection():
+        w3_ = Web3(Web3.HTTPProvider(RPC_URL, request_kwargs={"timeout": 120}))
+        fund_ = w3_.eth.contract(address=fund_addr, abi=fund_abi)
+        return w3_, fund_
+
+    def send_tx(fn, value=0, gas=200_000):
+        """Send a transaction, wait for receipt, refresh connection, return (receipt, nonce)."""
+        nonlocal w3, fund, nonce
+        tx = fn.build_transaction({
+            "from": account.address, "nonce": nonce, "value": value, "gas": gas,
+            "maxFeePerGas": w3.eth.gas_price * 2,
+            "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
+        })
+        signed = account.sign_transaction(tx)
+        tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+        nonce += 1
+        assert receipt.status == 1, f"Transaction reverted! Gas: {receipt.gasUsed}"
+        # Refresh connection to avoid stale reads
+        time.sleep(3)
+        w3, fund = fresh_connection()
+        return receipt
+
     epoch = fund.functions.currentEpoch().call()
     print(f"  Current epoch: {epoch}")
     print(f"  Treasury: {w3.from_wei(fund.functions.treasuryBalance().call(), 'ether')} ETH")
 
     # ─── 4a: startEpoch ───
     print(f"\n  4a. Starting epoch {epoch}...")
-    tx = fund.functions.startEpoch().build_transaction({
-        "from": account.address, "nonce": nonce,
-        "gas": 200_000,
-        "maxFeePerGas": w3.eth.gas_price * 2,
-        "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
-    })
-    signed = account.sign_transaction(tx)
-    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-    receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
-    nonce += 1
-
+    receipt = send_tx(fund.functions.startEpoch())
     input_hash = fund.functions.epochInputHashes(epoch).call()
     print(f"      Input hash: 0x{input_hash.hex()[:16]}...")
     print(f"      Gas: {receipt.gasUsed}")
 
     # ─── 4b: bid ───
-    bid_wei = w3.to_wei(BID_AMOUNT_ETH, "ether")
-    bond_wei = bid_wei * 2000 // 10000  # 20% bond
-    print(f"\n  4b. Submitting bid: {BID_AMOUNT_ETH} ETH (bond: {w3.from_wei(bond_wei, 'ether')} ETH)...")
-    tx = fund.functions.bid(bid_wei).build_transaction({
-        "from": account.address, "nonce": nonce,
-        "value": bond_wei,
-        "gas": 200_000,
-        "maxFeePerGas": w3.eth.gas_price * 2,
-        "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
-    })
-    signed = account.sign_transaction(tx)
-    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-    receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
-    nonce += 1
+    # Use effectiveMaxBid to stay under ceiling (treasury may be small)
+    emb = fund.functions.effectiveMaxBid().call()
+    bid_wei = min(emb, w3.to_wei(BID_AMOUNT_ETH, "ether"))
+    bond_wei = max(1, bid_wei * 2000 // 10000)  # 20% bond, min 1 wei
+    print(f"\n  4b. Submitting bid: {w3.from_wei(bid_wei, 'ether')} ETH (bond: {w3.from_wei(bond_wei, 'ether')} ETH)...")
+    receipt = send_tx(fund.functions.bid(bid_wei), value=bond_wei)
     print(f"      Gas: {receipt.gasUsed}")
 
     # ─── 4c: Wait for bidding window, then closeAuction ───
-    print(f"\n  4c. Waiting {BIDDING_WINDOW}s for bidding window to close...")
     start_time, phase, _, _, _, _, _ = fund.functions.getAuctionState(epoch).call()
-    target_time = start_time + BIDDING_WINDOW
+    bid_window = fund.functions.biddingWindow().call()
     now = w3.eth.get_block("latest").timestamp
-    wait_secs = max(0, target_time - now + 5)  # +5s buffer
+    wait_secs = max(0, start_time + bid_window - now + 5)
+    print(f"\n  4c. Waiting {wait_secs}s for bidding window to close...")
     if wait_secs > 0:
-        print(f"      Sleeping {wait_secs}s...")
         time.sleep(wait_secs)
+        w3, fund = fresh_connection()
+        nonce = w3.eth.get_transaction_count(account.address)
 
     print("      Closing auction...")
-    tx = fund.functions.closeAuction().build_transaction({
-        "from": account.address, "nonce": nonce,
-        "gas": 200_000,
-        "maxFeePerGas": w3.eth.gas_price * 2,
-        "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
-    })
-    signed = account.sign_transaction(tx)
-    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-    receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
-    nonce += 1
+    receipt = send_tx(fund.functions.closeAuction())
 
-    # Read randomness seed
+    # Read state with fresh connection (critical — seed was reading as 0 before this fix)
     _, _, _, winner, winning_bid, _, seed = fund.functions.getAuctionState(epoch).call()
     print(f"      Winner: {winner}")
     print(f"      Randomness seed: {seed}")
@@ -542,7 +542,7 @@ def run_auction_e2e(w3, account, fund_addr, vm_ip, nonce):
     # ─── 4d: Run TEE inference on GCP VM ───
     print(f"\n  4d. Running TEE inference on GCP VM...")
 
-    # Build epoch context (simplified — use runner.py's logic)
+    # Build epoch context
     sys.path.insert(0, str(PROJECT_ROOT / "agent"))
     from runner import read_contract_state, build_epoch_context
 
@@ -550,48 +550,45 @@ def run_auction_e2e(w3, account, fund_addr, vm_ip, nonce):
     epoch_context = build_epoch_context(state)
     input_hash_hex = "0x" + input_hash.hex()
 
-    # Call the enclave runner on the VM via SSH tunnel
-    # We need to forward port 8090 from the VM to localhost
-    print("      Setting up SSH tunnel to enclave...")
+    # Save payload and upload to VM
+    payload = json.dumps({
+        "epoch_context": epoch_context,
+        "input_hash": input_hash_hex,
+        "seed": seed,
+    })
+    payload_path = "/tmp/tee_payload.json"
+    with open(payload_path, "w") as f:
+        f.write(payload)
 
-    # Use gcloud compute ssh to create a tunnel in the background
-    tunnel_proc = subprocess.Popen(
-        f"gcloud compute ssh {GCP_VM_NAME} --zone={GCP_ZONE} --project={GCP_PROJECT} "
-        f"-- -L 18090:localhost:8090 -N",
-        shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    subprocess.run(
+        f"gcloud compute scp {payload_path} {GCP_VM_NAME}:/tmp/tee_payload.json "
+        f"--zone={GCP_ZONE} --project={GCP_PROJECT}",
+        shell=True, timeout=30, capture_output=True
     )
-    time.sleep(5)  # Wait for tunnel to establish
 
-    try:
-        tee_url = "http://localhost:18090"
+    # Run inference on VM via gcloud ssh (more reliable than SSH tunnels)
+    print("      Running inference on VM...")
+    result = subprocess.run(
+        ["gcloud", "compute", "ssh", GCP_VM_NAME,
+         f"--zone={GCP_ZONE}", f"--project={GCP_PROJECT}",
+         '--command=curl -s -X POST http://127.0.0.1:8090/run_epoch '
+         '-H "Content-Type: application/json" '
+         '-d @/tmp/tee_payload.json -o /tmp/tee_result.json '
+         '&& echo DONE && wc -c /tmp/tee_result.json'],
+        timeout=2400, capture_output=True, text=True
+    )
+    print(f"      SSH output: {result.stdout.strip()}")
+    assert "DONE" in result.stdout, f"Inference failed: {result.stderr[:200]}"
 
-        # Call the TEE enclave
-        import urllib.request
-        payload = json.dumps({
-            "epoch_context": epoch_context,
-            "input_hash": input_hash_hex,
-            "seed": seed,
-        }).encode()
-
-        req = urllib.request.Request(
-            f"{tee_url}/run_epoch",
-            data=payload,
-            headers={"Content-Type": "application/json"},
-        )
-
-        print("      Calling /run_epoch (this may take 15-25 min for CPU inference)...")
-        start_ts = time.time()
-        resp = urllib.request.urlopen(req, timeout=2400)  # 40 min timeout
-        elapsed = time.time() - start_ts
-
-        tee_result = json.loads(resp.read())
-        print(f"      Inference complete in {elapsed:.0f}s")
-        print(f"      Action: {json.dumps(tee_result['action'])}")
-        print(f"      Attestation quote: {len(tee_result['attestation_quote'])} hex chars")
-        print(f"      Report data: {tee_result['report_data'][:34]}...")
-    finally:
-        tunnel_proc.terminate()
-        tunnel_proc.wait()
+    # Download result
+    subprocess.run(
+        f"gcloud compute scp {GCP_VM_NAME}:/tmp/tee_result.json /tmp/tee_result.json "
+        f"--zone={GCP_ZONE} --project={GCP_PROJECT}",
+        shell=True, timeout=30, capture_output=True
+    )
+    tee_result = json.loads(Path("/tmp/tee_result.json").read_text())
+    print(f"      Action: {json.dumps(tee_result['action'])}")
+    print(f"      Quote: {len(bytes.fromhex(tee_result['attestation_quote'].replace('0x', '')))} bytes")
 
     # ─── 4e: Submit auction result ───
     print(f"\n  4e. Submitting auction result on-chain...")
@@ -604,43 +601,37 @@ def run_auction_e2e(w3, account, fund_addr, vm_ip, nonce):
     MAX_REASONING = 8000
     if len(reasoning_bytes) > MAX_REASONING:
         reasoning_bytes = reasoning_bytes[:MAX_REASONING]
-        # Re-truncate at valid UTF-8 boundary
         reasoning_bytes = reasoning_bytes.decode("utf-8", errors="ignore").encode("utf-8")
         print(f"      Reasoning truncated to {len(reasoning_bytes)} bytes")
 
-    print(f"      Action bytes: {action_bytes.hex()[:32]}...")
-    print(f"      Reasoning: {len(reasoning_bytes)} bytes")
-    print(f"      Attestation: {len(attestation_bytes)} bytes")
-
-    # Verify REPORTDATA matches what the contract will compute
-    expected_report_data_bytes = hashlib.sha256(
+    # Verify REPORTDATA matches before submitting
+    expected_rd = hashlib.sha256(
         input_hash +
         hashlib.sha256(action_bytes).digest() +
         hashlib.sha256(reasoning_bytes).digest() +
         seed.to_bytes(32, "big")
     ).digest()
-    expected_report_data_hex = "0x" + expected_report_data_bytes.hex()
-    print(f"      Expected REPORTDATA: {expected_report_data_hex[:34]}...")
-    print(f"      TEE REPORTDATA:      {tee_result['report_data'][:34]}...")
-
-    # Check if they match (first 32 bytes)
     tee_rd = bytes.fromhex(tee_result["report_data"].replace("0x", ""))[:32]
-    if tee_rd != expected_report_data_bytes:
-        print("      WARNING: REPORTDATA MISMATCH — submission will revert!")
-        print(f"        Contract expects: {expected_report_data_bytes.hex()}")
-        print(f"        TEE produced:     {tee_rd.hex()}")
+    print(f"      REPORTDATA match: {expected_rd == tee_rd}")
+    if expected_rd != tee_rd:
+        print(f"      MISMATCH! Contract: {expected_rd.hex()[:32]}... TEE: {tee_rd.hex()[:32]}...")
+        return False
+
+    # Fresh connection for submission
+    w3, fund = fresh_connection()
+    nonce = w3.eth.get_transaction_count(account.address)
 
     tx = fund.functions.submitAuctionResult(
         action_bytes, reasoning_bytes, attestation_bytes
     ).build_transaction({
         "from": account.address, "nonce": nonce,
-        "gas": 10_000_000,  # High gas for DCAP verification
-        "maxFeePerGas": w3.eth.gas_price * 2,
-        "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
+        "gas": 10_000_000,
+        "maxFeePerGas": w3.eth.gas_price * 3,
+        "maxPriorityFeePerGas": w3.to_wei(0.01, "gwei"),
     })
     signed = account.sign_transaction(tx)
     tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-    print(f"      Tx hash: {tx_hash.hex()}")
+    print(f"      Tx: https://sepolia.basescan.org/tx/{tx_hash.hex()}")
 
     receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=180)
     nonce += 1
