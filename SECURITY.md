@@ -691,10 +691,37 @@ Inside TDX, the guest has access to `RDRAND`/`RDSEED` CPU instructions which pro
 | Randomness integrity | IMPLEMENTED (Q6) | `block.prevrandao` captured in `closeAuction()`, bound via REPORTDATA |
 | Model integrity | IMPLEMENTED (Q7) | Model mounted from disk, SHA-256 verified at boot |
 
-**Status**: All critical security gaps (GAPs 1–2) and design decisions (Q3, Q5–Q7) are now implemented. The `AttestationVerifier` contract handles DCAP output parsing and image/REPORTDATA verification. The main contract delegates to it via `verifier.verifyAttestation()`. 74 tests pass across 3 test suites.
+**Status**: All critical security gaps (GAPs 1–2) and design decisions (Q3, Q5–Q7) are now implemented and **verified end-to-end on Base Sepolia with real TDX attestation**. 74 tests pass across 3 test suites.
+
+### E2E Test Results (March 2026)
+
+Full attestation chain verified on Base Sepolia using GCP `a3-highgpu-1g` (H100 80GB, Intel TDX):
+
+| Step | Result | Details |
+|---|---|---|
+| Automata DCAP verification | PASS | GCP TDX V4 quote accepted, FMSPC `00806f050000` |
+| Image registry (MRTD + RTMR[0..2]) | PASS | GPU image key `0xb101c26a...` approved and verified |
+| REPORTDATA binding | PASS | `sha256(inputHash \|\| sha256(action) \|\| sha256(reasoning) \|\| seed)` matched |
+| Auction enforcement | PASS | Only winner could submit, within execution window |
+| Randomness seed | PASS | `block.prevrandao` captured at `closeAuction()`, bound in REPORTDATA |
+| Out-of-bounds action handling | PASS | Contract noops (not reverts) on invalid model output |
+
+**Key findings**:
+- DCAP on-chain verification costs ~10.2M gas — `submitAuctionResult` needs at least 12M gas limit
+- GPU inference (14B Q4_K_M on H100): ~30 seconds. CPU (c3-standard-4): ~7 minutes
+- GCP TDX requires `nvidia-driver-575-open` (open kernel module) for H100 in CC mode
+- Base Sepolia RPC returns stale reads after writes — must create fresh Web3 provider + 3s delay
+- MRTD/RTMR values differ between CPU and GPU VMs (different firmware/hardware config)
+- Both CPU and GPU image keys can be approved simultaneously in the registry
+- Automata PCCS collateral must be registered per-FMSPC via the DCAP Dashboard
+
+**Contracts (Base Sepolia)**:
+- TheHumanFund: `0x579F6B59342348ED8736B617EDEe5e2ae3a3D7E5`
+- AttestationVerifier: `0xAC5634C4c279c4E3eA85968e26bD1AAED7f6453d`
+- Successful e2e tx: [`0x14ea95fa...`](https://sepolia.basescan.org/tx/14ea95fa3753135ceccfa23050a7709862ff6b1f88721e0d0668db12bbf3ac1e)
 
 **Remaining**:
 - Q4 (enclave-side input verification via ABI encoding) — deferred
 - One-shot enclave redesign (Pass 5–6) — deferred
-- End-to-end integration test with real TDX quote — requires deployment to TEE hardware
-- Production image build and RTMR measurement registration
+- Production image build with Docker (currently running directly on VM)
+- Mainnet deployment and audit

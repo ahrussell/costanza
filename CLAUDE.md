@@ -12,15 +12,17 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 
 ## Current Status
 
-**Attestation verification implemented (GAPs 1+2 closed).** Next: deploy new contracts, build production TEE image, register RTMR measurements.
+**Full e2e attestation verified on Base Sepolia with GCP H100 TDX.** DCAP + image registry + REPORTDATA all pass on-chain.
 
-- Phase 0 original contract: `0x2F213Ea0D3F6D8349e2162b37Cc8cE6605dc9420` (Base Sepolia) — 21 epochs executed
-- **Phase 1+2 contract (old)**: `0x3C390f3cA2f0aB5614c33F74FcBc53a5aDBae275` (Base Sepolia) — needs redeployment with new verifier
-- Phase 1 TEE enclave running on Phala Cloud — real TDX attestation quotes generated (14B model, CPU)
-- **Attestation verifier**: `AttestationVerifier.sol` — separate contract, verifies MRTD + RTMR[0..2] + REPORTDATA
+- **Phase 2 contract (current)**: `0x579F6B59342348ED8736B617EDEe5e2ae3a3D7E5` (Base Sepolia) — e2e verified
+- **Attestation verifier**: `0xAC5634C4c279c4E3eA85968e26bD1AAED7f6453d` (Base Sepolia) — DCAP + image registry + REPORTDATA
+- Phase 0 original contract: `0x2F213Ea0D3F6D8349e2162b37Cc8cE6605dc9420` (Base Sepolia) — 21 epochs executed (legacy)
 - **74 tests pass** (28 Phase 0 + 34 auction + 12 attestation verifier)
-- Contract sizes: TheHumanFund 20,864 bytes, AttestationVerifier 3,360 bytes (both well within 24KB)
-- **Remaining**: redeploy contracts to Base Sepolia, build production TEE image, register approved RTMR measurements, end-to-end test with real TDX quote
+- Contract sizes: TheHumanFund ~21KB, AttestationVerifier ~3.4KB (both well within 24KB)
+- GCP TDX FMSPC `00806f050000` registered in Automata DCAP Dashboard
+- CPU image key (c3-standard-4): `0x1ff10986...` — approved
+- GPU image key (a3-highgpu-1g, H100): `0xb101c26a...` — approved
+- **Remaining**: production Docker image, audit, mainnet deployment
 - Deployer address: `0xffea30B0DbDAd460B9b6293fb51a059129fCCdAf`
 
 **DESIGN.md is a living document** — see it for the full specification and implementation checklist.

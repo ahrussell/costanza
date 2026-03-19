@@ -625,7 +625,7 @@ def run_auction_e2e(w3, account, fund_addr, vm_ip, nonce):
         action_bytes, reasoning_bytes, attestation_bytes
     ).build_transaction({
         "from": account.address, "nonce": nonce,
-        "gas": 10_000_000,
+        "gas": 15_000_000,  # DCAP verification needs ~10.2M gas
         "maxFeePerGas": w3.eth.gas_price * 3,
         "maxPriorityFeePerGas": w3.to_wei(0.01, "gwei"),
     })
