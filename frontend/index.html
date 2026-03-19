@@ -417,7 +417,7 @@
 </div>
 
 <script>
-const CONTRACT_ADDRESS = '0x3C390f3cA2f0aB5614c33F74FcBc53a5aDBae275';
+const CONTRACT_ADDRESS = '0x579F6B59342348ED8736B617EDEe5e2ae3a3D7E5';
 const RPC_URL = 'https://sepolia.base.org';
 const EXPLORER = 'https://sepolia.basescan.org';
 
@@ -448,7 +448,7 @@ const ABI = [
   "function epochDuration() view returns (uint256)",
   "function biddingWindow() view returns (uint256)",
   "function executionWindow() view returns (uint256)",
-  "function getAuctionState(uint256 epoch) view returns (uint256 epochStartTime, uint8 phase, uint256 bidCount, address winner, uint256 winningBid, uint256 bondAmount)",
+  "function getAuctionState(uint256 epoch) view returns (uint256 epochStartTime, uint8 phase, uint256 bidCount, address winner, uint256 winningBid, uint256 bondAmount, uint256 randomnessSeed)",
   "function computeInputHash() view returns (bytes32)",
   "event DiaryEntry(uint256 indexed epoch, bytes reasoning, bytes action, uint256 treasuryBefore, uint256 treasuryAfter)",
   "event AuctionOpened(uint256 indexed epoch, bytes32 inputHash, uint256 maxBidCeiling)",

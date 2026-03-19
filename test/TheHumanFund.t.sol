@@ -151,21 +151,29 @@ contract TheHumanFundTest is Test {
         assertEq(fund.lastDonationEpoch(), 1);
     }
 
-    function test_donate_rejects_over_10_percent() public {
-        // Try to donate 0.6 ETH (12% of 5 ETH)
+    function test_donate_out_of_bounds_becomes_noop() public {
+        // Try to donate 0.6 ETH (12% of 5 ETH) — should noop, not revert
         bytes memory action = abi.encodePacked(uint8(1), abi.encode(uint256(1), uint256(0.6 ether)));
         bytes memory reasoning = bytes("Trying to donate too much.");
 
-        vm.expectRevert(TheHumanFund.InvalidParams.selector);
+        uint256 treasuryBefore = fund.treasuryBalance();
         fund.submitEpochAction(action, reasoning);
+
+        // Epoch advances but treasury unchanged (noop)
+        assertEq(fund.currentEpoch(), 2);
+        assertEq(fund.treasuryBalance(), treasuryBefore);
+        assertEq(fund.lastDonationEpoch(), 0); // Never donated
     }
 
-    function test_donate_rejects_invalid_nonprofit() public {
+    function test_donate_invalid_nonprofit_becomes_noop() public {
         bytes memory action = abi.encodePacked(uint8(1), abi.encode(uint256(4), uint256(0.1 ether)));
         bytes memory reasoning = bytes("Bad nonprofit.");
 
-        vm.expectRevert(TheHumanFund.InvalidParams.selector);
+        uint256 treasuryBefore = fund.treasuryBalance();
         fund.submitEpochAction(action, reasoning);
+
+        assertEq(fund.currentEpoch(), 2);
+        assertEq(fund.treasuryBalance(), treasuryBefore);
     }
 
     // ─── Epoch: Set Commission Rate ──────────────────────────────────────
@@ -180,16 +188,20 @@ contract TheHumanFundTest is Test {
         assertEq(fund.lastCommissionChangeEpoch(), 1);
     }
 
-    function test_set_commission_rate_rejects_out_of_bounds() public {
-        // Too low
-        bytes memory action = abi.encodePacked(uint8(2), abi.encode(uint256(50)));
-        vm.expectRevert(TheHumanFund.InvalidParams.selector);
-        fund.submitEpochAction(action, bytes(""));
+    function test_set_commission_rate_out_of_bounds_becomes_noop() public {
+        uint256 originalRate = fund.commissionRateBps();
 
-        // Too high
+        // Too low — should noop
+        bytes memory action = abi.encodePacked(uint8(2), abi.encode(uint256(50)));
+        fund.submitEpochAction(action, bytes("rate too low"));
+        assertEq(fund.commissionRateBps(), originalRate);
+        assertEq(fund.currentEpoch(), 2);
+
+        // Too high — should noop
         action = abi.encodePacked(uint8(2), abi.encode(uint256(9500)));
-        vm.expectRevert(TheHumanFund.InvalidParams.selector);
-        fund.submitEpochAction(action, bytes(""));
+        fund.submitEpochAction(action, bytes("rate too high"));
+        assertEq(fund.commissionRateBps(), originalRate);
+        assertEq(fund.currentEpoch(), 3);
     }
 
     // ─── Epoch: Set Max Bid ──────────────────────────────────────────────
@@ -203,17 +215,23 @@ contract TheHumanFundTest is Test {
         assertEq(fund.maxBid(), 0.01 ether);
     }
 
-    function test_set_max_bid_rejects_too_low() public {
+    function test_set_max_bid_too_low_becomes_noop() public {
+        uint256 originalBid = fund.maxBid();
         bytes memory action = abi.encodePacked(uint8(3), abi.encode(uint256(0.00005 ether)));
-        vm.expectRevert(TheHumanFund.InvalidParams.selector);
-        fund.submitEpochAction(action, bytes(""));
+        fund.submitEpochAction(action, bytes("bid too low"));
+
+        assertEq(fund.maxBid(), originalBid);
+        assertEq(fund.currentEpoch(), 2);
     }
 
-    function test_set_max_bid_rejects_over_2_percent() public {
-        // 2% of 5 ETH = 0.1 ETH. Try 0.15 ETH.
+    function test_set_max_bid_over_2_percent_becomes_noop() public {
+        // 2% of 5 ETH = 0.1 ETH. Try 0.15 ETH — should noop.
+        uint256 originalBid = fund.maxBid();
         bytes memory action = abi.encodePacked(uint8(3), abi.encode(uint256(0.15 ether)));
-        vm.expectRevert(TheHumanFund.InvalidParams.selector);
-        fund.submitEpochAction(action, bytes(""));
+        fund.submitEpochAction(action, bytes("bid too high"));
+
+        assertEq(fund.maxBid(), originalBid);
+        assertEq(fund.currentEpoch(), 2);
     }
 
     // ─── Epoch: Sequencing ───────────────────────────────────────────────

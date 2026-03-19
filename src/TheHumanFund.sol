@@ -102,6 +102,7 @@ contract TheHumanFund {
     event EpochExecuted(uint256 indexed epoch, address indexed runner, uint256 bountyPaid);
     event BondForfeited(uint256 indexed epoch, address indexed runner, uint256 bondAmount);
     event AuctionModeChanged(bool enabled);
+    event ActionRejected(uint256 indexed epoch, bytes action, string reason);
 
     // ─── Constants ───────────────────────────────────────────────────────
 
@@ -598,8 +599,15 @@ contract TheHumanFund {
 
     // ─── Internal: Action Execution ──────────────────────────────────────
 
+    /// @dev Execute the model's chosen action. Out-of-bounds parameters cause
+    ///      a noop (not a revert) — the prover did their job, the model made
+    ///      a bad choice. The raw action bytes are still recorded in the epoch
+    ///      history so future prompts can see what was attempted.
     function _executeAction(uint256 epoch, bytes calldata action) internal {
-        if (action.length < 1) revert InvalidParams();
+        if (action.length < 1) {
+            emit ActionRejected(epoch, action, "empty");
+            return;
+        }
 
         uint8 actionType = uint8(action[0]);
 
@@ -608,30 +616,46 @@ contract TheHumanFund {
             return;
         } else if (actionType == 1) {
             // donate
-            if (action.length < 65) revert InvalidParams();
+            if (action.length < 65) {
+                emit ActionRejected(epoch, action, "malformed");
+                return;
+            }
             (uint256 nonprofitId, uint256 amount) = abi.decode(action[1:], (uint256, uint256));
-            _executeDonate(epoch, nonprofitId, amount);
+            if (!_executeDonate(epoch, nonprofitId, amount)) {
+                emit ActionRejected(epoch, action, "out_of_bounds");
+            }
         } else if (actionType == 2) {
             // set_commission_rate
-            if (action.length < 33) revert InvalidParams();
+            if (action.length < 33) {
+                emit ActionRejected(epoch, action, "malformed");
+                return;
+            }
             uint256 rateBps = abi.decode(action[1:], (uint256));
-            _executeSetCommissionRate(epoch, rateBps);
+            if (!_executeSetCommissionRate(epoch, rateBps)) {
+                emit ActionRejected(epoch, action, "out_of_bounds");
+            }
         } else if (actionType == 3) {
             // set_max_bid
-            if (action.length < 33) revert InvalidParams();
+            if (action.length < 33) {
+                emit ActionRejected(epoch, action, "malformed");
+                return;
+            }
             uint256 amount = abi.decode(action[1:], (uint256));
-            _executeSetMaxBid(epoch, amount);
+            if (!_executeSetMaxBid(epoch, amount)) {
+                emit ActionRejected(epoch, action, "out_of_bounds");
+            }
         } else {
-            revert InvalidParams();
+            emit ActionRejected(epoch, action, "unknown_type");
         }
     }
 
-    function _executeDonate(uint256 epoch, uint256 nonprofitId, uint256 amount) internal {
-        if (nonprofitId < 1 || nonprofitId > NUM_NONPROFITS) revert InvalidParams();
-        if (amount == 0) revert InvalidParams();
+    /// @dev Returns false if parameters are out of bounds (action becomes noop).
+    function _executeDonate(uint256 epoch, uint256 nonprofitId, uint256 amount) internal returns (bool) {
+        if (nonprofitId < 1 || nonprofitId > NUM_NONPROFITS) return false;
+        if (amount == 0) return false;
 
         uint256 maxDonation = (address(this).balance * MAX_DONATION_BPS) / 10000;
-        if (amount > maxDonation) revert InvalidParams();
+        if (amount > maxDonation) return false;
 
         Nonprofit storage np = nonprofits[nonprofitId];
         (bool sent, ) = np.addr.call{value: amount}("");
@@ -643,21 +667,26 @@ contract TheHumanFund {
         lastDonationEpoch = epoch;
 
         emit NonprofitDonation(epoch, nonprofitId, amount);
+        return true;
     }
 
-    function _executeSetCommissionRate(uint256 epoch, uint256 rateBps) internal {
-        if (rateBps < MIN_COMMISSION_BPS || rateBps > MAX_COMMISSION_BPS) revert InvalidParams();
+    /// @dev Returns false if parameters are out of bounds (action becomes noop).
+    function _executeSetCommissionRate(uint256 epoch, uint256 rateBps) internal returns (bool) {
+        if (rateBps < MIN_COMMISSION_BPS || rateBps > MAX_COMMISSION_BPS) return false;
         commissionRateBps = rateBps;
         lastCommissionChangeEpoch = epoch;
         emit CommissionRateChanged(epoch, rateBps);
+        return true;
     }
 
-    function _executeSetMaxBid(uint256 epoch, uint256 amount) internal {
-        if (amount < MIN_MAX_BID) revert InvalidParams();
+    /// @dev Returns false if parameters are out of bounds (action becomes noop).
+    function _executeSetMaxBid(uint256 epoch, uint256 amount) internal returns (bool) {
+        if (amount < MIN_MAX_BID) return false;
         uint256 maxAllowed = (address(this).balance * MAX_BID_BPS) / 10000;
-        if (amount > maxAllowed) revert InvalidParams();
+        if (amount > maxAllowed) return false;
         maxBid = amount;
         emit MaxBidChanged(epoch, amount);
+        return true;
     }
 
     // ─── Internal: Input Hash ────────────────────────────────────────────

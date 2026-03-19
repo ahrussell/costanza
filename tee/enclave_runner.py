@@ -465,7 +465,13 @@ def _clean_amount(raw):
 
 
 def encode_action_bytes(action_json):
-    """Encode action JSON to the contract's byte format."""
+    """Encode action JSON to the contract's byte format.
+
+    No bounds clamping — the enclave faithfully encodes whatever the model
+    outputs. If the action is out of bounds, the contract will noop and
+    record the attempted action in the epoch history for future context.
+    The prover still gets paid (they ran inference correctly).
+    """
     action = action_json["action"]
     params = action_json.get("params", {})
 
@@ -486,8 +492,6 @@ def encode_action_bytes(action_json):
         )
     elif action == "set_commission_rate":
         rate = int(float(str(params.get("rate_bps") or params.get("rate") or params.get("bps") or 1000)))
-        # Clamp to valid range
-        rate = max(100, min(9000, rate))
         return bytes([2]) + rate.to_bytes(32, "big")
     elif action == "set_max_bid":
         amount_str = _clean_amount(params.get("amount_eth") or params.get("amount") or params.get("eth") or "0.001")
