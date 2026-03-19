@@ -162,86 +162,150 @@ def parse_action(text):
 
 # ─── TDX Attestation ────────────────────────────────────────────────────
 
+# configfs-tsm paths (GCP, bare-metal TDX with kernel >= 6.7)
+CONFIGFS_TSM_BASE = "/sys/kernel/config/tsm/report"
+
+
+def _get_quote_configfs_tsm(report_data: bytes) -> bytes:
+    """Get TDX quote via Linux configfs-tsm interface (GCP, bare-metal).
+
+    Works on any TDX VM with kernel >= 6.7 and CONFIG_TSM_REPORTS enabled.
+    This is the standard Linux interface — no dstack or platform-specific API needed.
+    """
+    import tempfile
+    import uuid
+
+    # Create a unique report entry
+    entry_name = f"humanfund-{uuid.uuid4().hex[:8]}"
+    entry_path = os.path.join(CONFIGFS_TSM_BASE, entry_name)
+
+    try:
+        os.makedirs(entry_path, exist_ok=True)
+
+        # Write report_data (exactly 64 bytes)
+        with open(os.path.join(entry_path, "inblob"), "wb") as f:
+            f.write(report_data[:64].ljust(64, b'\x00'))
+
+        # Read the generated quote
+        with open(os.path.join(entry_path, "outblob"), "rb") as f:
+            quote = f.read()
+
+        print(f"  TDX quote via configfs-tsm: {len(quote)} bytes")
+        return quote
+
+    finally:
+        # Clean up the report entry
+        try:
+            os.rmdir(entry_path)
+        except OSError:
+            pass
+
+
+def _get_quote_dev_tdx(report_data: bytes) -> bytes:
+    """Get TDX quote via /dev/tdx_guest ioctl (legacy, pre-6.7 kernels)."""
+    import ctypes
+    import fcntl
+
+    # TDX_CMD_GET_REPORT0 ioctl
+    # struct tdx_report_req { reportdata[64]; tdreport[1024]; }
+    TDX_CMD_GET_REPORT0 = 0xC4401401  # _IOWR('T', 1, struct tdx_report_req)
+
+    report_req = bytearray(64 + 1024)
+    report_req[:64] = report_data[:64].ljust(64, b'\x00')
+
+    fd = os.open("/dev/tdx_guest", os.O_RDWR)
+    try:
+        fcntl.ioctl(fd, TDX_CMD_GET_REPORT0, report_req)
+        # The TD report is in bytes 64:1088
+        # But we need the full DCAP quote, not just the TD report.
+        # /dev/tdx_guest gives us the report; the QGS converts it to a quote.
+        # For simplicity, use configfs-tsm which handles the full quote flow.
+        print("WARNING: /dev/tdx_guest gives TD report, not full DCAP quote")
+        print("  Use configfs-tsm (kernel >= 6.7) for full quote generation")
+        return bytes(report_req[64:1088])
+    finally:
+        os.close(fd)
+
+
+def _get_quote_dstack(report_data: bytes, sock_path: str) -> bytes:
+    """Get TDX quote via dstack Unix socket (Phala Cloud)."""
+    request_body = json.dumps({
+        "report_data": report_data.hex(),
+    }).encode()
+
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.settimeout(30)
+    sock.connect(sock_path)
+
+    http_request = (
+        f"POST /GetQuote HTTP/1.1\r\n"
+        f"Host: localhost\r\n"
+        f"Content-Type: application/json\r\n"
+        f"Content-Length: {len(request_body)}\r\n"
+        f"Connection: close\r\n"
+        f"\r\n"
+    ).encode() + request_body
+
+    sock.sendall(http_request)
+
+    response = b""
+    while True:
+        chunk = sock.recv(4096)
+        if not chunk:
+            break
+        response += chunk
+    sock.close()
+
+    body_start = response.find(b"\r\n\r\n")
+    if body_start >= 0:
+        body = response[body_start + 4:]
+        try:
+            result = json.loads(body)
+        except json.JSONDecodeError:
+            lines = body.split(b"\r\n")
+            body_parts = [lines[i] for i in range(1, len(lines), 2) if lines[i]]
+            result = json.loads(b"".join(body_parts))
+
+        quote_hex = result.get("quote", "")
+        print(f"  TDX quote via dstack: {len(quote_hex) // 2} bytes")
+        return bytes.fromhex(quote_hex)
+    else:
+        raise RuntimeError("Could not parse dstack response")
+
+
 def get_tdx_quote(report_data: bytes) -> bytes:
-    """Request a TDX attestation quote from dstack via Unix socket.
+    """Request a TDX attestation quote using the best available backend.
+
+    Tries in order:
+    1. configfs-tsm (GCP, bare-metal TDX with kernel >= 6.7)
+    2. dstack socket (Phala Cloud)
+    3. Mock mode (local testing — returns report_data as the "quote")
 
     Args:
         report_data: 64 bytes of custom data to bind into the quote.
-                     We use: SHA256(input_hash || action_bytes || reasoning_hash)
 
     Returns:
         Raw DCAP quote bytes, suitable for on-chain verification.
     """
-    # Find the dstack socket (v0.5.x or legacy v0.3.x)
-    sock_path = DSTACK_SOCK
-    if not os.path.exists(sock_path):
-        sock_path = DSTACK_SOCK_LEGACY
-    if not os.path.exists(sock_path):
-        print(f"WARNING: dstack socket not found at {DSTACK_SOCK} or {DSTACK_SOCK_LEGACY}")
-        print("  Running outside TEE — returning report_data as mock attestation")
-        # In mock mode, return the report_data itself as the "quote"
-        # The mock DCAP verifier on-chain will place it in the REPORTDATA field
-        return report_data
+    # Try configfs-tsm first (GCP, bare-metal)
+    if os.path.isdir(CONFIGFS_TSM_BASE):
+        try:
+            return _get_quote_configfs_tsm(report_data)
+        except Exception as e:
+            print(f"WARNING: configfs-tsm failed: {e}")
 
-    # dstack v0.5.x+ API: POST /GetQuote on Unix socket
-    # Legacy (v0.3.x) used /var/run/tappd.sock and /prpc/Tappd.TdxQuote
-    try:
-        # Prepare the request — report_data as hex string, max 64 bytes
-        request_body = json.dumps({
-            "report_data": report_data.hex(),
-        }).encode()
-
-        # Connect via Unix socket
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.settimeout(30)
-        sock.connect(sock_path)
-
-        # Send HTTP request over Unix socket
-        http_request = (
-            f"POST /GetQuote HTTP/1.1\r\n"
-            f"Host: localhost\r\n"
-            f"Content-Type: application/json\r\n"
-            f"Content-Length: {len(request_body)}\r\n"
-            f"Connection: close\r\n"
-            f"\r\n"
-        ).encode() + request_body
-
-        sock.sendall(http_request)
-
-        # Read response
-        response = b""
-        while True:
-            chunk = sock.recv(4096)
-            if not chunk:
-                break
-            response += chunk
-
-        sock.close()
-
-        # Parse HTTP response body
-        # Response format: {"quote": "<hex>", "event_log": "<json string>"}
-        body_start = response.find(b"\r\n\r\n")
-        if body_start >= 0:
-            body = response[body_start + 4:]
-            # Handle chunked transfer encoding
+    # Try dstack socket (Phala Cloud)
+    for sock_path in [DSTACK_SOCK, DSTACK_SOCK_LEGACY]:
+        if os.path.exists(sock_path):
             try:
-                result = json.loads(body)
-            except json.JSONDecodeError:
-                # Try stripping chunked encoding markers
-                lines = body.split(b"\r\n")
-                body_parts = [lines[i] for i in range(1, len(lines), 2) if lines[i]]
-                result = json.loads(b"".join(body_parts))
+                return _get_quote_dstack(report_data, sock_path)
+            except Exception as e:
+                print(f"WARNING: dstack at {sock_path} failed: {e}")
 
-            quote_hex = result.get("quote", "")
-            print(f"  TDX quote obtained: {len(quote_hex) // 2} bytes")
-            return bytes.fromhex(quote_hex)
-        else:
-            print(f"WARNING: Could not parse dstack response")
-            return b"ATTESTATION_PARSE_ERROR"
-
-    except Exception as e:
-        print(f"WARNING: Failed to get TDX quote: {e}")
-        return b"ATTESTATION_ERROR"
+    # Mock mode (local testing)
+    print("WARNING: No TDX attestation backend found (configfs-tsm, dstack)")
+    print("  Running outside TEE — returning report_data as mock attestation")
+    return report_data
 
 
 def compute_report_data(input_hash: bytes, action_bytes: bytes, reasoning: str, seed: int = 0) -> bytes:
