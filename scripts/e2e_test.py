@@ -212,6 +212,66 @@ def deploy_contracts(w3, account):
     w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
     nonce += 1
 
+    # Deploy InvestmentManager
+    print("Deploying InvestmentManager...")
+    im_artifact = json.loads((ABI_DIR / "InvestmentManager.sol" / "InvestmentManager.json").read_text())
+    im_contract = w3.eth.contract(abi=im_artifact["abi"], bytecode=im_artifact["bytecode"]["object"])
+    tx = im_contract.constructor(fund_addr, deployer).build_transaction({
+        "from": deployer, "nonce": nonce, "gas": 2_000_000,
+        "maxFeePerGas": w3.eth.gas_price * 2, "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
+    })
+    signed = account.sign_transaction(tx)
+    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+    receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+    if receipt.status != 1:
+        raise RuntimeError(f"IM deployment failed! Gas: {receipt.gasUsed}")
+    im_addr = receipt.contractAddress
+    print(f"  InvestmentManager: {im_addr} (gas: {receipt.gasUsed})")
+    nonce += 1
+
+    # Link fund -> InvestmentManager
+    tx = fund.functions.setInvestmentManager(im_addr).build_transaction({
+        "from": deployer, "nonce": nonce, "gas": 100_000,
+        "maxFeePerGas": w3.eth.gas_price * 2, "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
+    })
+    signed = account.sign_transaction(tx)
+    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+    w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+    nonce += 1
+
+    # Deploy 3 MockAdapters and register them
+    mock_artifact = json.loads((ABI_DIR / "MockAdapter.sol" / "MockAdapter.json").read_text())
+    im = w3.eth.contract(address=im_addr, abi=im_artifact["abi"])
+    protocol_names = ["Aave V3 WETH (Mock)", "Lido wstETH (Mock)", "Compound V3 USDC (Mock)"]
+    risk_tiers = [1, 2, 1]
+    apys = [500, 380, 450]
+
+    for i, pname in enumerate(protocol_names):
+        # Deploy mock adapter
+        mock_contract = w3.eth.contract(abi=mock_artifact["abi"], bytecode=mock_artifact["bytecode"]["object"])
+        tx = mock_contract.constructor(pname, im_addr).build_transaction({
+            "from": deployer, "nonce": nonce, "gas": 500_000,
+            "maxFeePerGas": w3.eth.gas_price * 2, "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
+        })
+        signed = account.sign_transaction(tx)
+        tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+        if receipt.status != 1:
+            raise RuntimeError(f"Mock adapter deployment failed! Gas: {receipt.gasUsed}")
+        adapter_addr = receipt.contractAddress
+        nonce += 1
+
+        # Register in InvestmentManager (deployer is admin)
+        tx = im.functions.addProtocol(adapter_addr, pname, risk_tiers[i], apys[i]).build_transaction({
+            "from": deployer, "nonce": nonce, "gas": 200_000,
+            "maxFeePerGas": w3.eth.gas_price * 2, "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
+        })
+        signed = account.sign_transaction(tx)
+        tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+        nonce += 1
+        print(f"  Protocol #{i+1}: {pname} -> {adapter_addr}")
+
     print(f"  Contracts deployed and configured!")
     return fund_addr, verifier_addr, nonce
 
@@ -368,7 +428,7 @@ def upload_enclave_files(vm_ip):
 
     # Upload system prompt
     gcloud(
-        f"compute scp {PROJECT_ROOT}/agent/prompts/system_v1.txt "
+        f"compute scp {PROJECT_ROOT}/agent/prompts/system_v2.txt "
         f"{GCP_VM_NAME}:/tmp/system_prompt.txt --zone={GCP_ZONE}",
         timeout=30
     )
@@ -697,6 +757,7 @@ def main():
     parser.add_argument("--no-cleanup", action="store_true", help="Don't delete VM after test")
     parser.add_argument("--skip-vm", action="store_true", help="Skip VM creation (for testing)")
     parser.add_argument("--gpu", action="store_true", help="Use GPU instance (a3-highgpu-1g with H100)")
+    parser.add_argument("--snapshot", action="store_true", help="Create GCP disk image after VM setup (fast boot next time)")
     args = parser.parse_args()
 
     # Configure GPU vs CPU
@@ -768,6 +829,45 @@ def main():
             cleanup(not args.no_cleanup)
             sys.exit(1)
         upload_enclave_files(vm_ip)
+
+        # Optional: create disk image for fast boot next time
+        if args.snapshot:
+            print("\n═══ STEP 2d: Create Disk Image Snapshot ═══")
+            image_name = f"humanfund-tee-{'gpu' if USE_GPU else 'cpu'}-14b"
+            try:
+                # Stop VM to snapshot
+                print(f"  Stopping VM for snapshot...")
+                gcloud(f"compute instances stop {GCP_VM_NAME} --zone={GCP_ZONE}", timeout=120)
+                # Create image
+                print(f"  Creating image '{image_name}'...")
+                gcloud(
+                    f"compute images create {image_name} "
+                    f"--source-disk={GCP_VM_NAME} --source-disk-zone={GCP_ZONE} "
+                    f"--family=humanfund-tee --force",
+                    timeout=300
+                )
+                print(f"  Image created! Next time use: --image={image_name}")
+                # Restart VM
+                print(f"  Restarting VM...")
+                gcloud(f"compute instances start {GCP_VM_NAME} --zone={GCP_ZONE}", timeout=120)
+                # Wait for SSH to come back
+                time.sleep(30)
+                # Restart services (llama-server + enclave_runner)
+                print(f"  Restarting services...")
+                gcloud(
+                    f"compute ssh {GCP_VM_NAME} --zone={GCP_ZONE} "
+                    f"--command='sudo nohup llama-server -m /models/model.gguf -c 4096 --host 0.0.0.0 --port 8080 -t $(nproc) > /tmp/llama.log 2>&1 &'",
+                    timeout=30
+                )
+                time.sleep(15)
+                gcloud(
+                    f"compute ssh {GCP_VM_NAME} --zone={GCP_ZONE} "
+                    f"--command='sudo rm -f /tmp/enclave.log && sudo bash /tmp/start_enclave.sh'",
+                    timeout=30
+                )
+                time.sleep(10)
+            except Exception as e:
+                print(f"  WARNING: Snapshot failed: {e}. Continuing without snapshot.")
 
     # Step 3: Get measurements and register image key
     if vm_ip:

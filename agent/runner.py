@@ -138,6 +138,50 @@ def read_contract_state(contract, w3):
             except Exception:
                 continue
 
+    # Investment portfolio (if InvestmentManager is linked)
+    state["investments"] = []
+    state["total_invested"] = 0
+    try:
+        total_assets = contract.functions.totalAssets().call()
+        state["total_assets"] = total_assets
+        # Read investment manager address
+        im_addr = contract.functions.investmentManager().call()
+        if im_addr and im_addr != "0x0000000000000000000000000000000000000000":
+            im_abi = [
+                {"name": "protocolCount", "type": "function", "inputs": [], "outputs": [{"type": "uint256"}], "stateMutability": "view"},
+                {"name": "totalInvestedValue", "type": "function", "inputs": [], "outputs": [{"type": "uint256"}], "stateMutability": "view"},
+                {"name": "getPosition", "type": "function",
+                 "inputs": [{"name": "protocolId", "type": "uint256"}],
+                 "outputs": [
+                     {"name": "depositedEth", "type": "uint256"},
+                     {"name": "shares", "type": "uint256"},
+                     {"name": "currentValue", "type": "uint256"},
+                     {"name": "protocolName", "type": "string"},
+                     {"name": "riskTier", "type": "uint8"},
+                     {"name": "expectedApyBps", "type": "uint16"},
+                     {"name": "active", "type": "bool"},
+                 ], "stateMutability": "view"},
+            ]
+            im = w3.eth.contract(address=Web3.to_checksum_address(im_addr), abi=im_abi)
+            state["total_invested"] = im.functions.totalInvestedValue().call()
+            protocol_count = im.functions.protocolCount().call()
+
+            for pid in range(1, protocol_count + 1):
+                deposited, shares, value, pname, risk, apy, active = im.functions.getPosition(pid).call()
+                state["investments"].append({
+                    "id": pid,
+                    "name": pname,
+                    "deposited": deposited,
+                    "shares": shares,
+                    "current_value": value,
+                    "risk_tier": risk,
+                    "expected_apy_bps": apy,
+                    "active": active,
+                })
+    except Exception as e:
+        # No investment manager or error reading — that's fine
+        state["total_assets"] = state["treasury_balance"]
+
     return state
 
 
@@ -214,6 +258,38 @@ def build_epoch_context(state):
             lines.append(f"Epoch {snap['epoch']}: {format_eth(snap['balance'])} ETH")
     else:
         lines.append("No history yet.")
+
+    # Investment portfolio
+    if state.get("investments"):
+        lines.append("")
+        lines.append("--- Investment Portfolio ---")
+        total_assets = state.get("total_assets", balance)
+        total_invested = state.get("total_invested", 0)
+        liquid_pct = (balance * 100 // total_assets) if total_assets > 0 else 100
+        invested_pct = (total_invested * 100 // total_assets) if total_assets > 0 else 0
+        lines.append(f"Total assets: {format_eth(total_assets)} ETH")
+        lines.append(f"  Liquid (treasury): {format_eth(balance)} ETH ({liquid_pct}%)")
+        lines.append(f"  Invested: {format_eth(total_invested)} ETH ({invested_pct}%)")
+        lines.append("")
+        risk_labels = {1: "LOW", 2: "MEDIUM", 3: "MED-HIGH", 4: "HIGH"}
+        for inv in state["investments"]:
+            status = "ACTIVE" if inv["active"] else "PAUSED"
+            risk = risk_labels.get(inv["risk_tier"], "?")
+            apy = inv["expected_apy_bps"] / 100
+            if inv["shares"] > 0:
+                profit = inv["current_value"] - inv["deposited"]
+                profit_str = f"+{format_eth(profit)}" if profit >= 0 else f"-{format_eth(abs(profit))}"
+                lines.append(
+                    f"  #{inv['id']} {inv['name']} [{risk}, ~{apy:.0f}% APY]: "
+                    f"{format_eth(inv['deposited'])} ETH deposited -> {format_eth(inv['current_value'])} ETH ({profit_str})"
+                )
+            else:
+                lines.append(f"  #{inv['id']} {inv['name']} [{risk}, ~{apy:.0f}% APY, {status}]: No position")
+    elif state.get("total_assets", 0) > state.get("treasury_balance", 0):
+        lines.append("")
+        lines.append("--- Investment Portfolio ---")
+        lines.append(f"Total assets: {format_eth(state['total_assets'])} ETH")
+        lines.append("No investment positions yet.")
 
     # Decision history
     lines.append("")

@@ -23,5 +23,5 @@ interface IProtocolAdapter {
     function balance() external view returns (uint256 valueInEth);
 
     /// @notice Human-readable protocol name.
-    function name() external pure returns (string memory);
+    function name() external view returns (string memory);
 }
