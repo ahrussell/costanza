@@ -17,8 +17,8 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 - **Phase 2 contract (latest, CPU e2e)**: `0x9043B54B7E5d2f98Bc12ff10799cf8d5d38c7ab2` (Base Sepolia) — CPU + GPU verified
 - **Phase 2 contract (GPU e2e)**: `0x579F6B59342348ED8736B617EDEe5e2ae3a3D7E5` (Base Sepolia) — GPU verified
 - Phase 0 original contract: `0x2F213Ea0D3F6D8349e2162b37Cc8cE6605dc9420` (Base Sepolia) — 21 epochs executed (legacy)
-- **74 tests pass** (28 Phase 0 + 34 auction + 12 attestation verifier)
-- Contract sizes: TheHumanFund ~21KB, AttestationVerifier ~3.4KB (both well within 24KB)
+- **99 tests pass** (28 Phase 0 + 34 auction + 12 attestation verifier + 25 investment)
+- Contract sizes: TheHumanFund ~23.8KB (793B margin), AttestationVerifier ~3.4KB, InvestmentManager ~10.4KB
 - GCP TDX FMSPC `00806f050000` registered in Automata DCAP Dashboard
 - CPU image key (c3-standard-4): `0x1ff10986...` — approved
 - GPU image key (a3-highgpu-1g, H100): `0xb101c26a...` — approved
@@ -54,8 +54,8 @@ Each epoch (24 hours in production, configurable for testnet):
 
 ## Key Design Decisions
 
-- **Single action per epoch**: donate, set_commission_rate, set_max_bid, or noop
-- **Hard bounds enforced by contract**: max 10% treasury donated/epoch, commission 1-90%, max bid 0.0001 ETH to 2% treasury
+- **Single action per epoch**: donate, set_commission_rate, set_max_bid, invest, withdraw, or noop
+- **Hard bounds enforced by contract**: max 10% treasury donated/epoch, commission 1-90%, max bid 0.0001 ETH to 2% treasury, investment bounds 80% max / 25% per protocol / 20% min reserve
 - **No free-text input fields** — prompt injection mitigated by structured numeric/address data only
 - **Two-pass inference**: Pass 1 generates reasoning (stop at `</think>`), Pass 2 generates JSON action (lower temperature)
 - **Auto-escalation**: missed epochs automatically raise bid ceiling by 10% (compounding) until a runner accepts
@@ -72,9 +72,9 @@ Each epoch (24 hours in production, configurable for testnet):
 
 - **Phase 0** (COMPLETE): End-to-end loop on testnet with trusted operator, no TEE
 - **Phase 1** (COMPLETE): TEE integration — enclave on Phala Cloud, real TDX attestation, on-chain DCAP verification code
-- **Phase 2** (CONTRACT COMPLETE, DEPLOYED): Reverse auction — contract deployed to Base Sepolia, 55 tests pass, runner update pending
-- **Phase 3**: Oracle integration (Chainlink ETH/USD, gas price), prompt refinement
-- **Phase 4**: Frontend (diary viewer, treasury dashboard, donation UI)
+- **Phase 2** (COMPLETE): Reverse auction — contract + runner deployed, full attestation verified on Base Sepolia (CPU + GPU TDX)
+- **Phase 3** (IN PROGRESS): Investment portfolio — InvestmentManager + 5 adapters (Aave, wstETH, cbETH, Compound, Aerodrome), 99 tests pass, Chainlink ETH/USD oracle, system prompt v2
+- **Phase 4**: Frontend (diary viewer, treasury dashboard, investment portfolio UI)
 - **Phase 5**: Audit and mainnet deployment
 
 ## Tech Stack
@@ -109,22 +109,35 @@ thehumanfund/
 ├── foundry.toml                 # Foundry configuration
 ├── .venv/                       # Python virtual environment (gitignored)
 ├── src/
-│   ├── TheHumanFund.sol         # Main smart contract (Phase 0 + 2, 20.8KB)
+│   ├── TheHumanFund.sol         # Main smart contract (Phase 0-3, 23.8KB)
 │   ├── AttestationVerifier.sol  # TEE attestation verification (3.4KB)
-│   └── interfaces/
-│       ├── IAutomataDcapAttestation.sol  # Automata DCAP interface
-│       └── IAttestationVerifier.sol     # Attestation verifier interface
+│   ├── InvestmentManager.sol    # DeFi portfolio manager (10.4KB)
+│   ├── interfaces/
+│   │   ├── IAutomataDcapAttestation.sol  # Automata DCAP interface
+│   │   ├── IAttestationVerifier.sol     # Attestation verifier interface
+│   │   ├── IInvestmentManager.sol       # Investment manager interface
+│   │   └── IProtocolAdapter.sol         # Protocol adapter interface
+│   └── adapters/                # DeFi protocol adapters
+│       ├── AaveV3WETHAdapter.sol    # Aave V3 ETH lending
+│       ├── AaveV3USDCAdapter.sol    # Aave V3 USDC lending (with ETH swap)
+│       ├── WstETHAdapter.sol        # Lido wstETH liquid staking
+│       ├── CbETHAdapter.sol         # Coinbase cbETH staking
+│       ├── CompoundV3USDCAdapter.sol # Compound V3 USDC lending
+│       ├── SwapHelper.sol           # Shared ETH<->USDC swap logic
+│       └── IWETH.sol                # WETH9 interface
 ├── test/
 │   ├── TheHumanFund.t.sol       # Phase 0 tests (28 tests)
 │   ├── TheHumanFundAuction.t.sol # Phase 2 auction + attestation tests (34 tests)
-│   └── AttestationVerifier.t.sol # Verifier unit tests (12 tests)
+│   ├── AttestationVerifier.t.sol # Verifier unit tests (12 tests)
+│   └── InvestmentManager.t.sol  # Investment tests (25 tests)
 ├── script/
 │   └── Deploy.s.sol             # Foundry deployment script
 ├── agent/
 │   ├── runner.py                # Runner: state → prompt → inference → submit (Phase 0 + 1)
 │   ├── run_eval.py              # Prompt evaluation framework
 │   ├── prompts/
-│   │   └── system_v1.txt        # System prompt v1
+│   │   ├── system_v1.txt        # System prompt v1 (Phase 0-2, no investments)
+│   │   └── system_v2.txt        # System prompt v2 (Phase 3+, with investments)
 │   └── scenarios/
 │       └── scenarios.json       # 5 synthetic test scenarios
 ├── tee/                         # Phase 1: TEE enclave image
@@ -180,6 +193,8 @@ thehumanfund/
 - 1 = donate(nonprofit_id, amount)
 - 2 = set_commission_rate(rate_bps)
 - 3 = set_max_bid(amount)
+- 4 = invest(protocol_id, amount) — delegate to InvestmentManager
+- 5 = withdraw(protocol_id, amount) — delegate to InvestmentManager
 
 ## Runner Script
 
@@ -288,6 +303,10 @@ Performance: ~14.9 tok/s generation, ~27ms/tok prompt processing.
 
 **Important**: Always use `-ts 1,1` to split model across both A6000 GPUs.
 
+## Frontend
+
+After deploying a new contract to Base Sepolia, update the frontend `DEPLOYMENTS` array in `frontend/index.html` so the dashboard points to the latest contract. The most recent deployment should be first in the array (it becomes the default).
+
 ## Commands
 
 ```bash
@@ -349,6 +368,8 @@ The agent outputs exactly one action per epoch as JSON:
 | `donate` | `nonprofit_id` (1-3), `amount_eth` | amount <= 10% of treasury |
 | `set_commission_rate` | `rate_bps` (100-9000) | 1%-90% |
 | `set_max_bid` | `amount_eth` | 0.0001 ETH to 2% of treasury |
+| `invest` | `protocol_id` (1-8), `amount_eth` | 80% max invested, 25% max/protocol, 20% min reserve |
+| `withdraw` | `protocol_id` (1-8), `amount_eth` | up to full position value |
 | `noop` | none | -- |
 
 Output format:

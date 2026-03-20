@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import "./interfaces/IAutomataDcapAttestation.sol";
 import "./interfaces/IAttestationVerifier.sol";
+import "./interfaces/IInvestmentManager.sol";
 
 /// @title The Human Fund
 /// @notice An autonomous AI agent that manages a charitable treasury on Base.
@@ -167,6 +168,9 @@ contract TheHumanFund {
     // Rolling history hash — Merkle chain over all epoch reasoning
     bytes32 public historyHash;
 
+    // Investment manager (separate contract — see InvestmentManager.sol)
+    IInvestmentManager public investmentManager;
+
     // Phase 2: Auction state
     bool public auctionEnabled;                              // false = Phase 0/1 mode, true = auction mode
     uint256 public epochDuration;                            // 24 hours production, shorter for testnet
@@ -311,6 +315,11 @@ contract TheHumanFund {
     /// @dev The verifier handles DCAP verification, image registry, and REPORTDATA checks.
     function setVerifier(address _verifier) external onlyOwner {
         verifier = IAttestationVerifier(_verifier);
+    }
+
+    /// @notice Set the investment manager contract address.
+    function setInvestmentManager(address _im) external onlyOwner {
+        investmentManager = IInvestmentManager(_im);
     }
 
     // ─── Phase 2: Reverse Auction ────────────────────────────────────────
@@ -644,6 +653,30 @@ contract TheHumanFund {
             if (!_executeSetMaxBid(epoch, amount)) {
                 emit ActionRejected(epoch, action, "out_of_bounds");
             }
+        } else if (actionType == 4) {
+            // invest — delegate to InvestmentManager
+            if (action.length < 65 || address(investmentManager) == address(0)) {
+                emit ActionRejected(epoch, action, "invest_err");
+                return;
+            }
+            (uint256 pid, uint256 amt) = abi.decode(action[1:], (uint256, uint256));
+            try investmentManager.deposit{value: amt}(pid, amt) {
+                // success
+            } catch {
+                emit ActionRejected(epoch, action, "invest_fail");
+            }
+        } else if (actionType == 5) {
+            // withdraw — delegate to InvestmentManager
+            if (action.length < 65 || address(investmentManager) == address(0)) {
+                emit ActionRejected(epoch, action, "withdraw_err");
+                return;
+            }
+            (uint256 pid, uint256 amt) = abi.decode(action[1:], (uint256, uint256));
+            try investmentManager.withdraw(pid, amt) {
+                // success — ETH comes back to this contract via receive()
+            } catch {
+                emit ActionRejected(epoch, action, "withdraw_fail");
+            }
         } else {
             emit ActionRejected(epoch, action, "unknown_type");
         }
@@ -704,6 +737,9 @@ contract TheHumanFund {
             lastDonationEpoch,
             lastCommissionChangeEpoch
         ));
+        bytes32 investHash = address(investmentManager) != address(0)
+            ? investmentManager.stateHash()
+            : bytes32(0);
         return keccak256(abi.encode(
             stateHash,
             currentEpochInflow,
@@ -711,7 +747,8 @@ contract TheHumanFund {
             nonprofits[1].totalDonated,
             nonprofits[2].totalDonated,
             nonprofits[3].totalDonated,
-            historyHash
+            historyHash,
+            investHash
         ));
     }
 
@@ -752,9 +789,17 @@ contract TheHumanFund {
         return (a.epochStartTime, a.phase, a.bidCount, a.winner, a.winningBid, a.bondAmount, a.randomnessSeed);
     }
 
-    /// @notice Get the current treasury balance.
+    /// @notice Get the current treasury balance (liquid ETH only).
     function treasuryBalance() external view returns (uint256) {
         return address(this).balance;
+    }
+
+    /// @notice Get total assets: liquid treasury + invested value.
+    function totalAssets() external view returns (uint256) {
+        uint256 invested = address(investmentManager) != address(0)
+            ? investmentManager.totalInvestedValue()
+            : 0;
+        return address(this).balance + invested;
     }
 
     /// @notice Get nonprofit info by ID.

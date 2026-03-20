@@ -56,27 +56,28 @@ RPC_URL = os.environ.get("RPC_URL", "https://sepolia.base.org")
 GCP_PROJECT = os.environ.get("GCP_PROJECT", "the-human-fund")
 GCP_ZONE = os.environ.get("GCP_ZONE", "us-central1-a")
 GCP_VM_NAME = os.environ.get("GCP_VM_NAME", "humanfund-e2e")
-# Default to CPU; set --gpu flag for GPU instance
+# Default to GPU; set --cpu flag for CPU instance
 GCP_MACHINE_TYPE_CPU = "c3-standard-4"   # 4 vCPU, 16 GB — CPU inference (~20-30 min)
 GCP_MACHINE_TYPE_GPU = "a3-highgpu-1g"   # 1x H100 80GB — GPU inference (~30 sec)
 
-# Set at runtime based on --gpu flag
-GCP_MACHINE_TYPE = GCP_MACHINE_TYPE_CPU
-USE_GPU = False
+# Set at runtime based on --cpu flag
+GCP_MACHINE_TYPE = GCP_MACHINE_TYPE_GPU
+USE_GPU = True
 
 # Timing constants (adjusted at runtime based on CPU vs GPU)
+# GPU: inference takes ~30s, so keep windows tight
 EPOCH_DURATION_GPU = 600      # 10 min
-BIDDING_WINDOW_GPU = 120      # 2 min
-EXECUTION_WINDOW_GPU = 300    # 5 min
+BIDDING_WINDOW_GPU = 60       # 1 min
+EXECUTION_WINDOW_GPU = 300    # 5 min (inference ~30s but SCP/SSH overhead adds ~60s)
 
 EPOCH_DURATION_CPU = 3600     # 60 min
 BIDDING_WINDOW_CPU = 120      # 2 min
 EXECUTION_WINDOW_CPU = 2700   # 45 min (CPU inference on 14B can take 20-30 min)
 
 # Defaults (overridden in main())
-EPOCH_DURATION = EPOCH_DURATION_CPU
-BIDDING_WINDOW = BIDDING_WINDOW_CPU
-EXECUTION_WINDOW = EXECUTION_WINDOW_CPU
+EPOCH_DURATION = EPOCH_DURATION_GPU
+BIDDING_WINDOW = BIDDING_WINDOW_GPU
+EXECUTION_WINDOW = EXECUTION_WINDOW_GPU
 
 BID_AMOUNT_ETH = 0.0001  # Minimum bid
 SEED_AMOUNT_ETH = 0.0005  # Treasury seed (keep small for testnet)
@@ -212,6 +213,66 @@ def deploy_contracts(w3, account):
     w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
     nonce += 1
 
+    # Deploy InvestmentManager
+    print("Deploying InvestmentManager...")
+    im_artifact = json.loads((ABI_DIR / "InvestmentManager.sol" / "InvestmentManager.json").read_text())
+    im_contract = w3.eth.contract(abi=im_artifact["abi"], bytecode=im_artifact["bytecode"]["object"])
+    tx = im_contract.constructor(fund_addr, deployer).build_transaction({
+        "from": deployer, "nonce": nonce, "gas": 3_500_000,
+        "maxFeePerGas": w3.eth.gas_price * 2, "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
+    })
+    signed = account.sign_transaction(tx)
+    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+    receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+    if receipt.status != 1:
+        raise RuntimeError(f"IM deployment failed! Gas: {receipt.gasUsed}")
+    im_addr = receipt.contractAddress
+    print(f"  InvestmentManager: {im_addr} (gas: {receipt.gasUsed})")
+    nonce += 1
+
+    # Link fund -> InvestmentManager
+    tx = fund.functions.setInvestmentManager(im_addr).build_transaction({
+        "from": deployer, "nonce": nonce, "gas": 100_000,
+        "maxFeePerGas": w3.eth.gas_price * 2, "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
+    })
+    signed = account.sign_transaction(tx)
+    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+    w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+    nonce += 1
+
+    # Deploy 3 MockAdapters and register them
+    mock_artifact = json.loads((ABI_DIR / "MockAdapter.sol" / "MockAdapter.json").read_text())
+    im = w3.eth.contract(address=im_addr, abi=im_artifact["abi"])
+    protocol_names = ["Aave V3 WETH (Mock)", "Lido wstETH (Mock)", "Compound V3 USDC (Mock)"]
+    risk_tiers = [1, 2, 1]
+    apys = [500, 380, 450]
+
+    for i, pname in enumerate(protocol_names):
+        # Deploy mock adapter
+        mock_contract = w3.eth.contract(abi=mock_artifact["abi"], bytecode=mock_artifact["bytecode"]["object"])
+        tx = mock_contract.constructor(pname, im_addr).build_transaction({
+            "from": deployer, "nonce": nonce, "gas": 700_000,
+            "maxFeePerGas": w3.eth.gas_price * 2, "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
+        })
+        signed = account.sign_transaction(tx)
+        tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+        if receipt.status != 1:
+            raise RuntimeError(f"Mock adapter deployment failed! Gas: {receipt.gasUsed}")
+        adapter_addr = receipt.contractAddress
+        nonce += 1
+
+        # Register in InvestmentManager (deployer is admin)
+        tx = im.functions.addProtocol(adapter_addr, pname, risk_tiers[i], apys[i]).build_transaction({
+            "from": deployer, "nonce": nonce, "gas": 200_000,
+            "maxFeePerGas": w3.eth.gas_price * 2, "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
+        })
+        signed = account.sign_transaction(tx)
+        tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+        nonce += 1
+        print(f"  Protocol #{i+1}: {pname} -> {adapter_addr}")
+
     print(f"  Contracts deployed and configured!")
     return fund_addr, verifier_addr, nonce
 
@@ -235,17 +296,77 @@ def create_gcp_vm():
     except Exception:
         pass
 
-    # Create the startup script
-    startup_script = f"""#!/bin/bash
+    # Create the startup script (GPU or CPU)
+    if USE_GPU:
+        startup_script = f"""#!/bin/bash
 set -e
 exec > /tmp/startup.log 2>&1
-echo "=== Starting setup at $(date) ==="
+echo "=== Starting GPU setup at $(date) ==="
 
 # Install dependencies
 apt-get update -qq
 apt-get install -y -qq python3 python3-pip python3-venv cmake build-essential git wget libcurl4-openssl-dev
 
-# Set up venv (PEP 668 on Ubuntu 24.04 refuses system-wide pip)
+# Set up venv
+python3 -m venv /opt/humanfund-venv
+source /opt/humanfund-venv/bin/activate
+pip install flask web3 requests
+
+# Install NVIDIA drivers + CUDA toolkit for H100
+echo "Installing NVIDIA drivers..."
+apt-get install -y -qq linux-headers-$(uname -r) nvidia-driver-575-open nvidia-utils-575 2>/dev/null || true
+apt-get install -y -qq nvidia-cuda-toolkit 2>/dev/null || true
+
+# Build llama.cpp with CUDA
+echo "Building llama.cpp with CUDA..."
+cd /tmp
+git clone --depth 1 --branch b5170 https://github.com/ggml-org/llama.cpp.git
+cd llama.cpp
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=90
+cmake --build build --config Release -j$(nproc) --target llama-server
+cp build/bin/llama-server /usr/local/bin/
+
+# Download model
+echo "Downloading model..."
+mkdir -p /models
+wget -q -O /models/model.gguf "{MODEL_URL}"
+
+# Verify SHA-256
+echo "Verifying model hash..."
+ACTUAL_HASH=$(sha256sum /models/model.gguf | cut -d' ' -f1)
+if [ "$ACTUAL_HASH" != "{MODEL_SHA256}" ]; then
+    echo "FATAL: Model hash mismatch! Expected {{MODEL_SHA256}}, got $ACTUAL_HASH"
+    exit 1
+fi
+echo "Model hash verified: $ACTUAL_HASH"
+
+# Start llama-server with GPU
+echo "Starting llama-server (GPU)..."
+nohup llama-server -m /models/model.gguf -c 4096 --host 0.0.0.0 --port 8080 -ngl 99 > /tmp/llama.log 2>&1 &
+
+# Wait for llama-server to load
+echo "Waiting for llama-server..."
+for i in $(seq 1 120); do
+    if curl -s http://127.0.0.1:8080/health | grep -q ok; then
+        echo "llama-server ready after $((i*5))s"
+        break
+    fi
+    sleep 5
+done
+
+echo "=== Setup complete at $(date) ==="
+"""
+    else:
+        startup_script = f"""#!/bin/bash
+set -e
+exec > /tmp/startup.log 2>&1
+echo "=== Starting CPU setup at $(date) ==="
+
+# Install dependencies
+apt-get update -qq
+apt-get install -y -qq python3 python3-pip python3-venv cmake build-essential git wget libcurl4-openssl-dev
+
+# Set up venv
 python3 -m venv /opt/humanfund-venv
 source /opt/humanfund-venv/bin/activate
 pip install flask web3 requests
@@ -268,16 +389,13 @@ wget -q -O /models/model.gguf "{MODEL_URL}"
 echo "Verifying model hash..."
 ACTUAL_HASH=$(sha256sum /models/model.gguf | cut -d' ' -f1)
 if [ "$ACTUAL_HASH" != "{MODEL_SHA256}" ]; then
-    echo "FATAL: Model hash mismatch! Expected {MODEL_SHA256}, got $ACTUAL_HASH"
+    echo "FATAL: Model hash mismatch! Expected {{MODEL_SHA256}}, got $ACTUAL_HASH"
     exit 1
 fi
 echo "Model hash verified: $ACTUAL_HASH"
 
-# Copy enclave_runner.py and system_prompt.txt (will be uploaded separately)
-# For now, create a minimal version
-
 # Start llama-server
-echo "Starting llama-server..."
+echo "Starting llama-server (CPU)..."
 nohup llama-server -m /models/model.gguf -c 4096 --host 0.0.0.0 --port 8080 -t $(nproc) > /tmp/llama.log 2>&1 &
 
 # Wait for llama-server to load
@@ -368,7 +486,7 @@ def upload_enclave_files(vm_ip):
 
     # Upload system prompt
     gcloud(
-        f"compute scp {PROJECT_ROOT}/agent/prompts/system_v1.txt "
+        f"compute scp {PROJECT_ROOT}/agent/prompts/system_v2.txt "
         f"{GCP_VM_NAME}:/tmp/system_prompt.txt --zone={GCP_ZONE}",
         timeout=30
     )
@@ -696,25 +814,26 @@ def main():
     parser.add_argument("--vm-ip", help="Reuse existing GCP VM (skip creation)")
     parser.add_argument("--no-cleanup", action="store_true", help="Don't delete VM after test")
     parser.add_argument("--skip-vm", action="store_true", help="Skip VM creation (for testing)")
-    parser.add_argument("--gpu", action="store_true", help="Use GPU instance (a3-highgpu-1g with H100)")
+    parser.add_argument("--cpu", action="store_true", help="Use CPU instance instead of GPU (slower, cheaper)")
+    parser.add_argument("--snapshot", action="store_true", help="Create GCP disk image after VM setup (fast boot next time)")
     args = parser.parse_args()
 
-    # Configure GPU vs CPU
+    # Configure GPU vs CPU (GPU is default)
     global GCP_MACHINE_TYPE, USE_GPU, EPOCH_DURATION, BIDDING_WINDOW, EXECUTION_WINDOW
-    if args.gpu:
-        GCP_MACHINE_TYPE = GCP_MACHINE_TYPE_GPU
-        USE_GPU = True
-        EPOCH_DURATION = EPOCH_DURATION_GPU
-        BIDDING_WINDOW = BIDDING_WINDOW_GPU
-        EXECUTION_WINDOW = EXECUTION_WINDOW_GPU
-        print("Mode: GPU (a3-highgpu-1g, H100)")
-    else:
+    if args.cpu:
         GCP_MACHINE_TYPE = GCP_MACHINE_TYPE_CPU
         USE_GPU = False
         EPOCH_DURATION = EPOCH_DURATION_CPU
         BIDDING_WINDOW = BIDDING_WINDOW_CPU
         EXECUTION_WINDOW = EXECUTION_WINDOW_CPU
         print("Mode: CPU (c3-standard-4, ~20-30 min inference)")
+    else:
+        GCP_MACHINE_TYPE = GCP_MACHINE_TYPE_GPU
+        USE_GPU = True
+        EPOCH_DURATION = EPOCH_DURATION_GPU
+        BIDDING_WINDOW = BIDDING_WINDOW_GPU
+        EXECUTION_WINDOW = EXECUTION_WINDOW_GPU
+        print("Mode: GPU (a3-highgpu-1g, H100, ~30s inference)")
 
     print(f"  Timing: epoch={EPOCH_DURATION}s, bidding={BIDDING_WINDOW}s, execution={EXECUTION_WINDOW}s")
 
@@ -768,6 +887,45 @@ def main():
             cleanup(not args.no_cleanup)
             sys.exit(1)
         upload_enclave_files(vm_ip)
+
+        # Optional: create disk image for fast boot next time
+        if args.snapshot:
+            print("\n═══ STEP 2d: Create Disk Image Snapshot ═══")
+            image_name = f"humanfund-tee-{'gpu' if USE_GPU else 'cpu'}-14b"
+            try:
+                # Stop VM to snapshot
+                print(f"  Stopping VM for snapshot...")
+                gcloud(f"compute instances stop {GCP_VM_NAME} --zone={GCP_ZONE} --discard-local-ssd=true", timeout=120)
+                # Create image
+                print(f"  Creating image '{image_name}'...")
+                gcloud(
+                    f"compute images create {image_name} "
+                    f"--source-disk={GCP_VM_NAME} --source-disk-zone={GCP_ZONE} "
+                    f"--family=humanfund-tee --force",
+                    timeout=300
+                )
+                print(f"  Image created! Next time use: --image={image_name}")
+                # Restart VM
+                print(f"  Restarting VM...")
+                gcloud(f"compute instances start {GCP_VM_NAME} --zone={GCP_ZONE}", timeout=120)
+                # Wait for SSH to come back
+                time.sleep(30)
+                # Restart services (llama-server + enclave_runner)
+                print(f"  Restarting services...")
+                gcloud(
+                    f"compute ssh {GCP_VM_NAME} --zone={GCP_ZONE} "
+                    f"--command='sudo nohup llama-server -m /models/model.gguf -c 4096 --host 0.0.0.0 --port 8080 -t $(nproc) > /tmp/llama.log 2>&1 &'",
+                    timeout=30
+                )
+                time.sleep(15)
+                gcloud(
+                    f"compute ssh {GCP_VM_NAME} --zone={GCP_ZONE} "
+                    f"--command='sudo rm -f /tmp/enclave.log && sudo bash /tmp/start_enclave.sh'",
+                    timeout=30
+                )
+                time.sleep(10)
+            except Exception as e:
+                print(f"  WARNING: Snapshot failed: {e}. Continuing without snapshot.")
 
     # Step 3: Get measurements and register image key
     if vm_ip:
