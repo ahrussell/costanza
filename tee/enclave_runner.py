@@ -94,14 +94,16 @@ def run_inference(prompt, max_tokens=4096, temperature=0.6, seed=-1):
     reasoning = result1["text"].strip()
 
     # Pass 2: Generate JSON action (same seed for determinism)
-    prompt2 = prompt + reasoning + "\n</think>\n"
+    # Prefix with "{" to force the model to output JSON directly
+    prompt2 = prompt + reasoning + "\n</think>\n{"
     result2 = _call_llama(prompt2, max_tokens=256, temperature=0.3, stop=["\n\n"], seed=seed)
 
-    combined_text = reasoning + "\n</think>\n" + result2["text"]
+    action_text = "{" + result2["text"]
+    combined_text = reasoning + "\n</think>\n" + action_text
     return {
         "text": combined_text,
         "reasoning": reasoning,
-        "action_text": result2["text"].strip(),
+        "action_text": action_text.strip(),
         "elapsed_seconds": result1["elapsed_seconds"] + result2["elapsed_seconds"],
         "tokens": {
             "prompt_tokens": result1["tokens"]["prompt_tokens"] + result2["tokens"]["prompt_tokens"],

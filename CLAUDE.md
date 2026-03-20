@@ -12,17 +12,19 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 
 ## Current Status
 
-**Full e2e attestation verified on Base Sepolia with both CPU and GPU GCP TDX.** DCAP + image registry + REPORTDATA all pass on-chain.
+**Full e2e attestation verified on Base Sepolia with GCP TDX H100 GPU.** 5 straight successful epochs with DeepSeek R1 70B on H100. DCAP + image registry + REPORTDATA all pass on-chain.
 
-- **Phase 2 contract (latest, CPU e2e)**: `0x9043B54B7E5d2f98Bc12ff10799cf8d5d38c7ab2` (Base Sepolia) — CPU + GPU verified
-- **Phase 2 contract (GPU e2e)**: `0x579F6B59342348ED8736B617EDEe5e2ae3a3D7E5` (Base Sepolia) — GPU verified
+- **Phase 3 contract (latest, 70B GPU e2e)**: `0xa507366987417e0E4247a827B48536DA11235CC7` (Base Sepolia) — 5 consecutive successful epochs with investments, withdrawals, and guiding policies
+- **Phase 2 contract (CPU e2e)**: `0x9043B54B7E5d2f98Bc12ff10799cf8d5d38c7ab2` (Base Sepolia) — CPU + GPU verified
 - Phase 0 original contract: `0x2F213Ea0D3F6D8349e2162b37Cc8cE6605dc9420` (Base Sepolia) — 21 epochs executed (legacy)
 - **126 tests pass** (28 Phase 0 + 34 auction + 12 attestation verifier + 25 investment + 13 worldview + 14 messages)
 - Contract sizes: TheHumanFund ~18.0KB (6.5KB margin, optimizer enabled), AttestationVerifier ~3.4KB, InvestmentManager ~10.4KB, WorldView ~2.6KB
 - GCP TDX FMSPC `00806f050000` registered in Automata DCAP Dashboard
 - CPU image key (c3-standard-4): `0x1ff10986...` — approved
-- GPU image key (a3-highgpu-1g, H100): `0xb101c26a...` — approved
-- **E2E gas costs**: deployment ~5.1M, DCAP verification ~10.2M (15M limit recommended)
+- GPU image key (a3-highgpu-1g, H100): `0xababa83b...` — approved
+- **E2E gas costs**: deployment ~5.1M, DCAP verification ~10-12M (15M limit recommended)
+- **GPU inference**: ~30s per epoch on H100 (vs ~22 min on CPU)
+- **GCP snapshot**: `humanfund-gpu-70b-boot-v1` — boot disk with llama.cpp CUDA build
 - **Remaining**: production Docker image, audit, mainnet deployment
 - Deployer address: `0xffea30B0DbDAd460B9b6293fb51a059129fCCdAf`
 
