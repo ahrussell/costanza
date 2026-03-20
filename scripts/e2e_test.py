@@ -934,6 +934,7 @@ def main():
     parser.add_argument("--no-cleanup", action="store_true", help="Don't delete VM after test")
     parser.add_argument("--skip-vm", action="store_true", help="Skip VM creation (for testing)")
     parser.add_argument("--cpu", action="store_true", help="Use CPU instance instead of GPU (slower, cheaper)")
+    parser.add_argument("--epochs", type=int, default=1, help="Number of epochs to run (default: 1)")
     parser.add_argument("--no-snapshot", action="store_true", help="Don't auto-create snapshot on fresh boot")
     parser.add_argument("--fresh", action="store_true", help="Force fresh VM boot even if snapshot exists")
     args = parser.parse_args()
@@ -1023,9 +1024,20 @@ def main():
             measurements = get_vm_measurements()
             nonce = register_image_key(w3, account, verifier_addr, measurements["image_key"], nonce)
 
-        # Step 4: Run the full auction
+        # Step 4: Run the full auction (multiple epochs if requested)
         if vm_ip:
-            success = run_auction_e2e(w3, account, fund_addr, vm_ip, nonce)
+            num_epochs = args.epochs
+            for epoch_i in range(num_epochs):
+                print(f"\n{'=' * 60}")
+                print(f"  EPOCH RUN {epoch_i + 1} / {num_epochs}")
+                print(f"{'=' * 60}")
+                # Refresh nonce before each epoch
+                w3 = Web3(Web3.HTTPProvider(RPC_URL, request_kwargs={"timeout": 120}))
+                nonce = w3.eth.get_transaction_count(account.address)
+                success = run_auction_e2e(w3, account, fund_addr, vm_ip, nonce)
+                if not success:
+                    print(f"\nEpoch {epoch_i + 1} failed, stopping.")
+                    break
         else:
             print("\nSkipping auction (no VM)")
 
