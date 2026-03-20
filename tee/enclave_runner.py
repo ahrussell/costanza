@@ -513,6 +513,24 @@ def encode_action_bytes(action_json):
         amount_str = _clean_amount(params.get("amount_eth") or params.get("amount") or params.get("eth") or "0.001")
         amount_wei = int(float(amount_str) * 1e18)
         return bytes([3]) + amount_wei.to_bytes(32, "big")
+    elif action == "invest":
+        protocol_id = int(params.get("protocol_id") or params.get("id") or params.get("protocol") or 1)
+        amount_str = _clean_amount(params.get("amount_eth") or params.get("amount") or params.get("eth") or "0.1")
+        amount_wei = int(float(amount_str) * 1e18)
+        return (
+            bytes([4])
+            + protocol_id.to_bytes(32, "big")
+            + amount_wei.to_bytes(32, "big")
+        )
+    elif action == "withdraw":
+        protocol_id = int(params.get("protocol_id") or params.get("id") or params.get("protocol") or 1)
+        amount_str = _clean_amount(params.get("amount_eth") or params.get("amount") or params.get("eth") or "0.1")
+        amount_wei = int(float(amount_str) * 1e18)
+        return (
+            bytes([5])
+            + protocol_id.to_bytes(32, "big")
+            + amount_wei.to_bytes(32, "big")
+        )
     else:
         # Unknown action — fall back to noop
         print(f"WARNING: Unknown action '{action}', falling back to noop")

@@ -251,7 +251,7 @@ def build_epoch_context(state):
             try:
                 action_bytes = entry["action"] if isinstance(entry["action"], bytes) else bytes.fromhex(entry["action"])
                 action_type = action_bytes[0]
-                action_names = {0: "noop", 1: "donate", 2: "set_commission_rate", 3: "set_max_bid"}
+                action_names = {0: "noop", 1: "donate", 2: "set_commission_rate", 3: "set_max_bid", 4: "invest", 5: "withdraw"}
                 action_name = action_names.get(action_type, f"unknown({action_type})")
                 lines.append(f"[Your action]: {action_name}")
             except Exception:
@@ -497,6 +497,26 @@ def encode_action(parsed):
         amount_wei = int(amount_eth * 1e18)
         encoded_params = Web3.to_bytes(amount_wei).rjust(32, b'\x00')
         return bytes([3]) + encoded_params
+
+    elif action == "invest":
+        protocol_id = int(params.get("protocol_id", params.get("id", 1)))
+        amount_eth = float(params.get("amount_eth", params.get("amount", 0.1)))
+        amount_wei = int(amount_eth * 1e18)
+        return (
+            bytes([4])
+            + Web3.to_bytes(protocol_id).rjust(32, b'\x00')
+            + Web3.to_bytes(amount_wei).rjust(32, b'\x00')
+        )
+
+    elif action == "withdraw":
+        protocol_id = int(params.get("protocol_id", params.get("id", 1)))
+        amount_eth = float(params.get("amount_eth", params.get("amount", 0.1)))
+        amount_wei = int(amount_eth * 1e18)
+        return (
+            bytes([5])
+            + Web3.to_bytes(protocol_id).rjust(32, b'\x00')
+            + Web3.to_bytes(amount_wei).rjust(32, b'\x00')
+        )
 
     else:
         raise ValueError(f"Unknown action: {action}")
