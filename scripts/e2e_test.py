@@ -240,6 +240,33 @@ def deploy_contracts(w3, account):
     w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
     nonce += 1
 
+    # Deploy WorldView
+    print("Deploying WorldView...")
+    wv_artifact = json.loads((ABI_DIR / "WorldView.sol" / "WorldView.json").read_text())
+    wv_contract = w3.eth.contract(abi=wv_artifact["abi"], bytecode=wv_artifact["bytecode"]["object"])
+    tx = wv_contract.constructor(fund_addr).build_transaction({
+        "from": deployer, "nonce": nonce, "gas": 1_000_000,
+        "maxFeePerGas": w3.eth.gas_price * 2, "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
+    })
+    signed = account.sign_transaction(tx)
+    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+    receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+    if receipt.status != 1:
+        raise RuntimeError(f"WorldView deployment failed! Gas: {receipt.gasUsed}")
+    wv_addr = receipt.contractAddress
+    print(f"  WorldView: {wv_addr} (gas: {receipt.gasUsed})")
+    nonce += 1
+
+    # Link fund -> WorldView
+    tx = fund.functions.setWorldView(wv_addr).build_transaction({
+        "from": deployer, "nonce": nonce, "gas": 100_000,
+        "maxFeePerGas": w3.eth.gas_price * 2, "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
+    })
+    signed = account.sign_transaction(tx)
+    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+    w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+    nonce += 1
+
     # Deploy 3 MockAdapters and register them
     mock_artifact = json.loads((ABI_DIR / "MockAdapter.sol" / "MockAdapter.json").read_text())
     im = w3.eth.contract(address=im_addr, abi=im_artifact["abi"])
@@ -578,7 +605,7 @@ def upload_enclave_files(vm_ip):
 
     # Upload system prompt
     gcloud(
-        f"compute scp {PROJECT_ROOT}/agent/prompts/system_v2.txt "
+        f"compute scp {PROJECT_ROOT}/agent/prompts/system_v3.txt "
         f"{GCP_VM_NAME}:/tmp/system_prompt.txt --zone={GCP_ZONE}",
         timeout=30
     )

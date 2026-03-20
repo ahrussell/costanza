@@ -190,6 +190,44 @@
   .diary-action-badge.noop { background: #2a2a30; color: var(--text-dim); }
   .diary-action-badge.set_commission_rate { background: #3a2a1a; color: var(--orange); }
   .diary-action-badge.set_max_bid { background: #1a2a3a; color: var(--accent); }
+  .diary-action-badge.invest { background: #1a2a2a; color: #40c0c0; }
+  .diary-action-badge.withdraw { background: #2a1a2a; color: #b080e0; }
+  .diary-action-badge.set_guiding_policy { background: #2a2a1a; color: #c0c040; }
+
+  /* Worldview section */
+  .worldview-card {
+    margin-bottom: 24px;
+  }
+
+  .policy-slot {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .policy-slot:last-child { border-bottom: none; }
+
+  .policy-index {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-dim);
+    min-width: 20px;
+    padding-top: 2px;
+  }
+
+  .policy-text {
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--text);
+  }
+
+  .policy-empty {
+    font-size: 13px;
+    color: var(--text-dim);
+    font-style: italic;
+  }
 
   .diary-meta {
     display: flex;
@@ -409,6 +447,11 @@
   <div id="nonprofits"><div class="loading">Loading</div></div>
 </div>
 
+<div class="card worldview-card">
+  <h2>Worldview (Guiding Policies)</h2>
+  <div id="worldview"><div class="loading">Loading</div></div>
+</div>
+
 <div id="diary-section">
   <h2>Diary Entries</h2>
   <div id="diary"><div class="loading">Loading</div></div>
@@ -463,6 +506,7 @@ const ABI = [
   "function executionWindow() view returns (uint256)",
   "function getAuctionState(uint256 epoch) view returns (uint256 epochStartTime, uint8 phase, uint256 bidCount, address winner, uint256 winningBid, uint256 bondAmount, uint256 randomnessSeed)",
   "function computeInputHash() view returns (bytes32)",
+  "function worldView() view returns (address)",
   "event DiaryEntry(uint256 indexed epoch, bytes reasoning, bytes action, uint256 treasuryBefore, uint256 treasuryAfter)",
   "event AuctionOpened(uint256 indexed epoch, bytes32 inputHash, uint256 maxBidCeiling)",
   "event BidSubmitted(uint256 indexed epoch, address indexed runner, uint256 bidAmount)",
@@ -539,6 +583,33 @@ function decodeAction(actionBytes) {
       label: 'set_max_bid',
       detail: `Set max bid to ${fmtEth(amount)}`
     };
+  } else if (actionType === 4 && bytes.length >= 65) {
+    const decoded = ethers.AbiCoder.defaultAbiCoder().decode(['uint256', 'uint256'], bytes.slice(1));
+    return {
+      type: 'invest',
+      label: 'invest',
+      detail: `Invested ${fmtEth(decoded[1])} in protocol #${decoded[0]}`
+    };
+  } else if (actionType === 5 && bytes.length >= 65) {
+    const decoded = ethers.AbiCoder.defaultAbiCoder().decode(['uint256', 'uint256'], bytes.slice(1));
+    return {
+      type: 'withdraw',
+      label: 'withdraw',
+      detail: `Withdrew ${fmtEth(decoded[1])} from protocol #${decoded[0]}`
+    };
+  } else if (actionType === 6 && bytes.length >= 33) {
+    try {
+      const decoded = ethers.AbiCoder.defaultAbiCoder().decode(['uint256', 'string'], bytes.slice(1));
+      const slot = Number(decoded[0]);
+      const policy = decoded[1];
+      return {
+        type: 'set_guiding_policy',
+        label: 'set_policy',
+        detail: policy ? `Set policy [${slot}]: "${policy}"` : `Cleared policy [${slot}]`
+      };
+    } catch {
+      return { type: 'set_guiding_policy', label: 'set_policy', detail: 'Updated guiding policy' };
+    }
   }
 
   return { type: 'unknown', label: '???', detail: 'Unknown action type' };
@@ -781,6 +852,32 @@ async function loadState() {
       </div>
     </div>
   `).join('');
+
+  // Worldview (guiding policies)
+  try {
+    const wvAddr = await contract.worldView();
+    if (wvAddr && wvAddr !== '0x0000000000000000000000000000000000000000') {
+      const WV_ABI = ["function getPolicies() view returns (string[10])"];
+      const wvContract = new ethers.Contract(wvAddr, WV_ABI, provider);
+      const policies = await wvContract.getPolicies();
+      const hasPolicies = policies.some(p => p.length > 0);
+
+      if (hasPolicies) {
+        document.getElementById('worldview').innerHTML = policies.map((p, i) => `
+          <div class="policy-slot">
+            <span class="policy-index">[${i}]</span>
+            ${p ? `<span class="policy-text">${escapeHtml(p)}</span>` : `<span class="policy-empty">empty</span>`}
+          </div>
+        `).join('');
+      } else {
+        document.getElementById('worldview').innerHTML = '<div class="no-entries">No guiding policies set yet</div>';
+      }
+    } else {
+      document.getElementById('worldview').innerHTML = '<div class="no-entries">WorldView not linked</div>';
+    }
+  } catch (err) {
+    document.getElementById('worldview').innerHTML = '<div class="no-entries">Could not load worldview</div>';
+  }
 
   // Diary entries (load all executed epochs)
   const currentEpochNum = Number(epoch);

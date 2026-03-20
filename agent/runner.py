@@ -182,6 +182,20 @@ def read_contract_state(contract, w3):
         # No investment manager or error reading — that's fine
         state["total_assets"] = state["treasury_balance"]
 
+    # Worldview (guiding policies)
+    state["guiding_policies"] = [""] * 10
+    try:
+        wv_addr = contract.functions.worldView().call()
+        if wv_addr and wv_addr != "0x0000000000000000000000000000000000000000":
+            wv_abi = [
+                {"name": "getPolicies", "type": "function", "inputs": [],
+                 "outputs": [{"type": "string[10]"}], "stateMutability": "view"},
+            ]
+            wv = w3.eth.contract(address=Web3.to_checksum_address(wv_addr), abi=wv_abi)
+            state["guiding_policies"] = list(wv.functions.getPolicies().call())
+    except Exception:
+        pass
+
     return state
 
 
@@ -291,6 +305,20 @@ def build_epoch_context(state):
         lines.append(f"Total assets: {format_eth(state['total_assets'])} ETH")
         lines.append("No investment positions yet.")
 
+    # Worldview (guiding policies)
+    policies = state.get("guiding_policies", [""] * 10)
+    has_policies = any(p for p in policies)
+    lines.append("")
+    lines.append("--- Your Worldview (Guiding Policies) ---")
+    if has_policies:
+        for i, p in enumerate(policies):
+            if p:
+                lines.append(f"  [{i}] {p}")
+            else:
+                lines.append(f"  [{i}] (empty)")
+    else:
+        lines.append("No guiding policies set yet. Use set_guiding_policy to establish your worldview.")
+
     # Decision history
     lines.append("")
     lines.append("=== YOUR DECISION HISTORY (most recent first) ===")
@@ -327,7 +355,7 @@ def build_epoch_context(state):
             try:
                 action_bytes = entry["action"] if isinstance(entry["action"], bytes) else bytes.fromhex(entry["action"])
                 action_type = action_bytes[0]
-                action_names = {0: "noop", 1: "donate", 2: "set_commission_rate", 3: "set_max_bid", 4: "invest", 5: "withdraw"}
+                action_names = {0: "noop", 1: "donate", 2: "set_commission_rate", 3: "set_max_bid", 4: "invest", 5: "withdraw", 6: "set_guiding_policy"}
                 action_name = action_names.get(action_type, f"unknown({action_type})")
                 lines.append(f"[Your action]: {action_name}")
             except Exception:
@@ -594,6 +622,16 @@ def encode_action(parsed):
             + Web3.to_bytes(amount_wei).rjust(32, b'\x00')
         )
 
+    elif action == "set_guiding_policy":
+        slot = int(params.get("slot", params.get("slot_id", 0)))
+        policy = str(params.get("policy", params.get("text", "")))
+        # Truncate to 280 chars
+        if len(policy) > 280:
+            policy = policy[:280]
+        from eth_abi import encode
+        encoded_params = encode(["uint256", "string"], [slot, policy])
+        return bytes([6]) + encoded_params
+
     else:
         raise ValueError(f"Unknown action: {action}")
 
@@ -650,6 +688,13 @@ def _validate_and_fix_action(parsed, state):
             fixed = max_bid / 1e18
             print(f"⚠️  Max bid exceeds 2% of treasury, clamping to {fixed:.6f} ETH")
             parsed["action_json"]["params"]["amount_eth"] = fixed
+
+    elif action == "set_guiding_policy":
+        slot = int(params.get("slot", params.get("slot_id", 0)))
+        if slot < 0 or slot > 9:
+            print(f"⚠️  Invalid policy slot {slot}, downgrading to noop")
+            parsed["action"] = "noop"
+            parsed["action_json"] = {"action": "noop", "params": {}}
 
     return parsed
 

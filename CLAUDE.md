@@ -17,8 +17,8 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 - **Phase 2 contract (latest, CPU e2e)**: `0x9043B54B7E5d2f98Bc12ff10799cf8d5d38c7ab2` (Base Sepolia) — CPU + GPU verified
 - **Phase 2 contract (GPU e2e)**: `0x579F6B59342348ED8736B617EDEe5e2ae3a3D7E5` (Base Sepolia) — GPU verified
 - Phase 0 original contract: `0x2F213Ea0D3F6D8349e2162b37Cc8cE6605dc9420` (Base Sepolia) — 21 epochs executed (legacy)
-- **99 tests pass** (28 Phase 0 + 34 auction + 12 attestation verifier + 25 investment)
-- Contract sizes: TheHumanFund ~23.8KB (793B margin), AttestationVerifier ~3.4KB, InvestmentManager ~10.4KB
+- **112 tests pass** (28 Phase 0 + 34 auction + 12 attestation verifier + 25 investment + 13 worldview)
+- Contract sizes: TheHumanFund ~15.3KB (9.2KB margin, optimizer enabled), AttestationVerifier ~3.4KB, InvestmentManager ~10.4KB, WorldView ~2.6KB
 - GCP TDX FMSPC `00806f050000` registered in Automata DCAP Dashboard
 - CPU image key (c3-standard-4): `0x1ff10986...` — approved
 - GPU image key (a3-highgpu-1g, H100): `0xb101c26a...` — approved
@@ -112,11 +112,13 @@ thehumanfund/
 │   ├── TheHumanFund.sol         # Main smart contract (Phase 0-3, 23.8KB)
 │   ├── AttestationVerifier.sol  # TEE attestation verification (3.4KB)
 │   ├── InvestmentManager.sol    # DeFi portfolio manager (10.4KB)
+│   ├── WorldView.sol            # Agent worldview — 10 guiding policy slots
 │   ├── interfaces/
 │   │   ├── IAutomataDcapAttestation.sol  # Automata DCAP interface
 │   │   ├── IAttestationVerifier.sol     # Attestation verifier interface
 │   │   ├── IInvestmentManager.sol       # Investment manager interface
-│   │   └── IProtocolAdapter.sol         # Protocol adapter interface
+│   │   ├── IProtocolAdapter.sol         # Protocol adapter interface
+│   │   └── IWorldView.sol               # WorldView interface
 │   └── adapters/                # DeFi protocol adapters
 │       ├── AaveV3WETHAdapter.sol    # Aave V3 ETH lending
 │       ├── AaveV3USDCAdapter.sol    # Aave V3 USDC lending (with ETH swap)
@@ -129,7 +131,8 @@ thehumanfund/
 │   ├── TheHumanFund.t.sol       # Phase 0 tests (28 tests)
 │   ├── TheHumanFundAuction.t.sol # Phase 2 auction + attestation tests (34 tests)
 │   ├── AttestationVerifier.t.sol # Verifier unit tests (12 tests)
-│   └── InvestmentManager.t.sol  # Investment tests (25 tests)
+│   ├── InvestmentManager.t.sol  # Investment tests (25 tests)
+│   └── WorldView.t.sol          # Worldview tests (13 tests)
 ├── script/
 │   └── Deploy.s.sol             # Foundry deployment script
 ├── agent/
@@ -137,7 +140,8 @@ thehumanfund/
 │   ├── run_eval.py              # Prompt evaluation framework
 │   ├── prompts/
 │   │   ├── system_v1.txt        # System prompt v1 (Phase 0-2, no investments)
-│   │   └── system_v2.txt        # System prompt v2 (Phase 3+, with investments)
+│   │   ├── system_v2.txt        # System prompt v2 (Phase 3, with investments)
+│   │   └── system_v3.txt        # System prompt v3 (Phase 3+, with worldview)
 │   └── scenarios/
 │       └── scenarios.json       # 5 synthetic test scenarios
 ├── tee/                         # Phase 1: TEE enclave image
@@ -195,6 +199,7 @@ thehumanfund/
 - 3 = set_max_bid(amount)
 - 4 = invest(protocol_id, amount) — delegate to InvestmentManager
 - 5 = withdraw(protocol_id, amount) — delegate to InvestmentManager
+- 6 = set_guiding_policy(slot, policy) — delegate to WorldView
 
 ## Runner Script
 
@@ -370,6 +375,7 @@ The agent outputs exactly one action per epoch as JSON:
 | `set_max_bid` | `amount_eth` | 0.0001 ETH to 2% of treasury |
 | `invest` | `protocol_id` (1-8), `amount_eth` | 80% max invested, 25% max/protocol, 20% min reserve |
 | `withdraw` | `protocol_id` (1-8), `amount_eth` | up to full position value |
+| `set_guiding_policy` | `slot` (0-9), `policy` (string) | max 280 chars, truncated if longer |
 | `noop` | none | -- |
 
 Output format:

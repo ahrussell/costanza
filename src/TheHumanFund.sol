@@ -4,6 +4,7 @@ pragma solidity ^0.8.20;
 import "./interfaces/IAutomataDcapAttestation.sol";
 import "./interfaces/IAttestationVerifier.sol";
 import "./interfaces/IInvestmentManager.sol";
+import "./interfaces/IWorldView.sol";
 
 /// @title The Human Fund
 /// @notice An autonomous AI agent that manages a charitable treasury on Base.
@@ -171,6 +172,9 @@ contract TheHumanFund {
     // Investment manager (separate contract — see InvestmentManager.sol)
     IInvestmentManager public investmentManager;
 
+    // Worldview (separate contract — see WorldView.sol)
+    IWorldView public worldView;
+
     // Phase 2: Auction state
     bool public auctionEnabled;                              // false = Phase 0/1 mode, true = auction mode
     uint256 public epochDuration;                            // 24 hours production, shorter for testnet
@@ -320,6 +324,10 @@ contract TheHumanFund {
     /// @notice Set the investment manager contract address.
     function setInvestmentManager(address _im) external onlyOwner {
         investmentManager = IInvestmentManager(_im);
+    }
+
+    function setWorldView(address _wv) external onlyOwner {
+        worldView = IWorldView(_wv);
     }
 
     // ─── Phase 2: Reverse Auction ────────────────────────────────────────
@@ -677,6 +685,19 @@ contract TheHumanFund {
             } catch {
                 emit ActionRejected(epoch, action, "withdraw_fail");
             }
+        } else if (actionType == 6) {
+            // set_guiding_policy — delegate to WorldView contract
+            if (action.length < 33 || address(worldView) == address(0)) {
+                emit ActionRejected(epoch, action, "policy_err");
+                return;
+            }
+            // Forward raw ABI-encoded (uint256 slot, string policy) to WorldView
+            (bool ok, ) = address(worldView).call(
+                abi.encodePacked(IWorldView.setPolicy.selector, action[1:])
+            );
+            if (!ok) {
+                emit ActionRejected(epoch, action, "policy_fail");
+            }
         } else {
             emit ActionRejected(epoch, action, "unknown_type");
         }
@@ -740,6 +761,9 @@ contract TheHumanFund {
         bytes32 investHash = address(investmentManager) != address(0)
             ? investmentManager.stateHash()
             : bytes32(0);
+        bytes32 worldviewHash = address(worldView) != address(0)
+            ? worldView.stateHash()
+            : bytes32(0);
         return keccak256(abi.encode(
             stateHash,
             currentEpochInflow,
@@ -748,7 +772,8 @@ contract TheHumanFund {
             nonprofits[2].totalDonated,
             nonprofits[3].totalDonated,
             historyHash,
-            investHash
+            investHash,
+            worldviewHash
         ));
     }
 
