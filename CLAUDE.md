@@ -303,6 +303,10 @@ Performance: ~14.9 tok/s generation, ~27ms/tok prompt processing.
 
 **Important**: Always use `-ts 1,1` to split model across both A6000 GPUs.
 
+## Frontend
+
+After deploying a new contract to Base Sepolia, update the frontend `DEPLOYMENTS` array in `frontend/index.html` so the dashboard points to the latest contract. The most recent deployment should be first in the array (it becomes the default).
+
 ## Commands
 
 ```bash
