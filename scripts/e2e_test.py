@@ -240,6 +240,33 @@ def deploy_contracts(w3, account):
     w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
     nonce += 1
 
+    # Deploy WorldView
+    print("Deploying WorldView...")
+    wv_artifact = json.loads((ABI_DIR / "WorldView.sol" / "WorldView.json").read_text())
+    wv_contract = w3.eth.contract(abi=wv_artifact["abi"], bytecode=wv_artifact["bytecode"]["object"])
+    tx = wv_contract.constructor(fund_addr).build_transaction({
+        "from": deployer, "nonce": nonce, "gas": 1_000_000,
+        "maxFeePerGas": w3.eth.gas_price * 2, "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
+    })
+    signed = account.sign_transaction(tx)
+    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+    receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+    if receipt.status != 1:
+        raise RuntimeError(f"WorldView deployment failed! Gas: {receipt.gasUsed}")
+    wv_addr = receipt.contractAddress
+    print(f"  WorldView: {wv_addr} (gas: {receipt.gasUsed})")
+    nonce += 1
+
+    # Link fund -> WorldView
+    tx = fund.functions.setWorldView(wv_addr).build_transaction({
+        "from": deployer, "nonce": nonce, "gas": 100_000,
+        "maxFeePerGas": w3.eth.gas_price * 2, "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
+    })
+    signed = account.sign_transaction(tx)
+    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+    w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+    nonce += 1
+
     # Deploy 3 MockAdapters and register them
     mock_artifact = json.loads((ABI_DIR / "MockAdapter.sol" / "MockAdapter.json").read_text())
     im = w3.eth.contract(address=im_addr, abi=im_artifact["abi"])
@@ -279,45 +306,117 @@ def deploy_contracts(w3, account):
 
 # ─── Step 2: Spin up GCP TDX VM ─────────────────────────────────────────
 
-def create_gcp_vm():
-    """Create a GCP TDX confidential VM for e2e testing."""
-    print("\n═══ STEP 2: Create GCP TDX VM ═══")
+def snapshot_image_name():
+    """Return the expected snapshot image name for current mode."""
+    return f"humanfund-tee-{'gpu' if USE_GPU else 'cpu'}-14b"
 
-    # Check if VM already exists
+
+def snapshot_image_exists():
+    """Check if a snapshot image exists for current mode."""
+    name = snapshot_image_name()
     try:
-        result = gcloud(f"compute instances describe {GCP_VM_NAME} --zone={GCP_ZONE} --format='value(status)'", check=False)
-        if "RUNNING" in result:
-            ip = gcloud(f"compute instances describe {GCP_VM_NAME} --zone={GCP_ZONE} --format='value(networkInterfaces[0].accessConfigs[0].natIP)'")
-            print(f"  VM already running at {ip}")
-            return ip
-        elif result.strip():
-            print(f"  VM exists but status={result.strip()}, deleting...")
-            gcloud(f"compute instances delete {GCP_VM_NAME} --zone={GCP_ZONE} --quiet")
+        result = gcloud(f"compute images describe {name} --format='value(status)'", check=False)
+        return "READY" in result
     except Exception:
-        pass
+        return False
 
-    # Create the startup script (GPU or CPU)
+
+def get_snapshot_startup_script():
+    """Minimal startup script for booting from snapshot (everything pre-installed)."""
     if USE_GPU:
-        startup_script = f"""#!/bin/bash
+        return """#!/bin/bash
+exec > /tmp/startup.log 2>&1
+echo "=== Snapshot boot (GPU) at $(date) ==="
+
+# Ensure shared libraries from llama.cpp build are on the linker path
+# (They were built in /tmp/llama.cpp/build/ but not installed system-wide)
+echo "Fixing shared library paths..."
+if [ -d /tmp/llama.cpp/build ]; then
+    find /tmp/llama.cpp/build -name '*.so' -exec cp {} /usr/local/lib/ \\; 2>/dev/null || true
+    ldconfig
+    echo "Shared libs installed to /usr/local/lib/"
+fi
+
+# GPU drivers may need re-initialization after boot from snapshot
+echo "Checking GPU drivers..."
+if ! nvidia-smi > /dev/null 2>&1; then
+    echo "nvidia-smi failed, attempting driver reload..."
+    modprobe -r nvidia_uvm nvidia_drm nvidia_modeset nvidia 2>/dev/null || true
+    sleep 2
+    modprobe nvidia 2>/dev/null || true
+    modprobe nvidia_uvm 2>/dev/null || true
+    sleep 2
+    if nvidia-smi > /dev/null 2>&1; then
+        echo "GPU drivers reloaded successfully"
+    else
+        echo "WARNING: GPU drivers still not working, falling back to CPU mode"
+        nohup llama-server -m /models/model.gguf -c 4096 --host 0.0.0.0 --port 8080 -t $(nproc) > /tmp/llama.log 2>&1 &
+    fi
+fi
+
+if nvidia-smi > /dev/null 2>&1; then
+    echo "GPU available: $(nvidia-smi --query-gpu=name --format=csv,noheader)"
+    nohup llama-server -m /models/model.gguf -c 4096 --host 0.0.0.0 --port 8080 -ngl 99 > /tmp/llama.log 2>&1 &
+fi
+
+for i in $(seq 1 120); do
+    if curl -s http://127.0.0.1:8080/health | grep -q ok; then
+        echo "llama-server ready after $((i*5))s"
+        break
+    fi
+    # Check if llama-server crashed
+    if ! pgrep -f llama-server > /dev/null; then
+        echo "llama-server crashed! Check /tmp/llama.log"
+        tail -20 /tmp/llama.log
+        echo "Restarting in CPU mode..."
+        nohup llama-server -m /models/model.gguf -c 4096 --host 0.0.0.0 --port 8080 -t $(nproc) > /tmp/llama.log 2>&1 &
+    fi
+    sleep 5
+done
+echo "=== Snapshot boot complete at $(date) ==="
+"""
+    else:
+        return """#!/bin/bash
+exec > /tmp/startup.log 2>&1
+echo "=== Snapshot boot (CPU) at $(date) ==="
+
+# Ensure shared libraries are on linker path
+if [ -d /tmp/llama.cpp/build ]; then
+    find /tmp/llama.cpp/build -name '*.so' -exec cp {} /usr/local/lib/ \\; 2>/dev/null || true
+    ldconfig
+fi
+
+nohup llama-server -m /models/model.gguf -c 4096 --host 0.0.0.0 --port 8080 -t $(nproc) > /tmp/llama.log 2>&1 &
+for i in $(seq 1 120); do
+    if curl -s http://127.0.0.1:8080/health | grep -q ok; then
+        echo "llama-server ready after $((i*5))s"
+        break
+    fi
+    sleep 5
+done
+echo "=== Snapshot boot complete at $(date) ==="
+"""
+
+
+def get_fresh_startup_script():
+    """Full startup script for fresh boot (install everything from scratch)."""
+    if USE_GPU:
+        return f"""#!/bin/bash
 set -e
 exec > /tmp/startup.log 2>&1
 echo "=== Starting GPU setup at $(date) ==="
 
-# Install dependencies
 apt-get update -qq
 apt-get install -y -qq python3 python3-pip python3-venv cmake build-essential git wget libcurl4-openssl-dev
 
-# Set up venv
 python3 -m venv /opt/humanfund-venv
 source /opt/humanfund-venv/bin/activate
 pip install flask web3 requests
 
-# Install NVIDIA drivers + CUDA toolkit for H100
 echo "Installing NVIDIA drivers..."
 apt-get install -y -qq linux-headers-$(uname -r) nvidia-driver-575-open nvidia-utils-575 2>/dev/null || true
 apt-get install -y -qq nvidia-cuda-toolkit 2>/dev/null || true
 
-# Build llama.cpp with CUDA
 echo "Building llama.cpp with CUDA..."
 cd /tmp
 git clone --depth 1 --branch b5170 https://github.com/ggml-org/llama.cpp.git
@@ -325,26 +424,24 @@ cd llama.cpp
 cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=90
 cmake --build build --config Release -j$(nproc) --target llama-server
 cp build/bin/llama-server /usr/local/bin/
+find build -name '*.so' -exec cp {{}} /usr/local/lib/ \; 2>/dev/null || true
+ldconfig
 
-# Download model
 echo "Downloading model..."
 mkdir -p /models
 wget -q -O /models/model.gguf "{MODEL_URL}"
 
-# Verify SHA-256
 echo "Verifying model hash..."
 ACTUAL_HASH=$(sha256sum /models/model.gguf | cut -d' ' -f1)
 if [ "$ACTUAL_HASH" != "{MODEL_SHA256}" ]; then
-    echo "FATAL: Model hash mismatch! Expected {{MODEL_SHA256}}, got $ACTUAL_HASH"
+    echo "FATAL: Model hash mismatch!"
     exit 1
 fi
-echo "Model hash verified: $ACTUAL_HASH"
+echo "Model hash verified."
 
-# Start llama-server with GPU
 echo "Starting llama-server (GPU)..."
 nohup llama-server -m /models/model.gguf -c 4096 --host 0.0.0.0 --port 8080 -ngl 99 > /tmp/llama.log 2>&1 &
 
-# Wait for llama-server to load
 echo "Waiting for llama-server..."
 for i in $(seq 1 120); do
     if curl -s http://127.0.0.1:8080/health | grep -q ok; then
@@ -357,21 +454,18 @@ done
 echo "=== Setup complete at $(date) ==="
 """
     else:
-        startup_script = f"""#!/bin/bash
+        return f"""#!/bin/bash
 set -e
 exec > /tmp/startup.log 2>&1
 echo "=== Starting CPU setup at $(date) ==="
 
-# Install dependencies
 apt-get update -qq
 apt-get install -y -qq python3 python3-pip python3-venv cmake build-essential git wget libcurl4-openssl-dev
 
-# Set up venv
 python3 -m venv /opt/humanfund-venv
 source /opt/humanfund-venv/bin/activate
 pip install flask web3 requests
 
-# Build llama.cpp from source (CPU-only)
 echo "Building llama.cpp..."
 cd /tmp
 git clone --depth 1 --branch b5170 https://github.com/ggml-org/llama.cpp.git
@@ -379,26 +473,24 @@ cd llama.cpp
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release -j$(nproc) --target llama-server
 cp build/bin/llama-server /usr/local/bin/
+find build -name '*.so' -exec cp {{}} /usr/local/lib/ \; 2>/dev/null || true
+ldconfig
 
-# Download model
 echo "Downloading model..."
 mkdir -p /models
 wget -q -O /models/model.gguf "{MODEL_URL}"
 
-# Verify SHA-256
 echo "Verifying model hash..."
 ACTUAL_HASH=$(sha256sum /models/model.gguf | cut -d' ' -f1)
 if [ "$ACTUAL_HASH" != "{MODEL_SHA256}" ]; then
-    echo "FATAL: Model hash mismatch! Expected {{MODEL_SHA256}}, got $ACTUAL_HASH"
+    echo "FATAL: Model hash mismatch!"
     exit 1
 fi
-echo "Model hash verified: $ACTUAL_HASH"
+echo "Model hash verified."
 
-# Start llama-server
 echo "Starting llama-server (CPU)..."
 nohup llama-server -m /models/model.gguf -c 4096 --host 0.0.0.0 --port 8080 -t $(nproc) > /tmp/llama.log 2>&1 &
 
-# Wait for llama-server to load
 echo "Waiting for llama-server..."
 for i in $(seq 1 120); do
     if curl -s http://127.0.0.1:8080/health | grep -q ok; then
@@ -411,7 +503,84 @@ done
 echo "=== Setup complete at $(date) ==="
 """
 
-    # Write startup script to temp file
+
+def create_snapshot_image():
+    """Stop VM, create disk image, restart VM."""
+    name = snapshot_image_name()
+    print(f"\n═══ STEP 2d: Create Snapshot Image '{name}' ═══")
+    try:
+        print("  Stopping VM...")
+        gcloud(f"compute instances stop {GCP_VM_NAME} --zone={GCP_ZONE} --discard-local-ssd=true", timeout=180)
+
+        print("  Creating image from boot disk...")
+        gcloud(
+            f"compute images create {name} "
+            f"--source-disk={GCP_VM_NAME} --source-disk-zone={GCP_ZONE} "
+            f"--family=humanfund-tee --force",
+            timeout=600
+        )
+        print(f"  Image '{name}' created!")
+
+        print("  Restarting VM...")
+        gcloud(f"compute instances start {GCP_VM_NAME} --zone={GCP_ZONE}", timeout=120)
+
+        # Wait for llama-server to come back
+        print("  Waiting for llama-server to restart...")
+        for i in range(60):
+            time.sleep(10)
+            try:
+                result = gcloud(
+                    f"compute ssh {GCP_VM_NAME} --zone={GCP_ZONE} "
+                    f"--command='curl -s http://127.0.0.1:8080/health 2>/dev/null || echo NOT_READY'",
+                    check=False, timeout=15
+                )
+                if '"status":"ok"' in result or '"status": "ok"' in result:
+                    print(f"  llama-server back up after restart")
+                    return True
+            except Exception:
+                pass
+        print("  WARNING: llama-server not responding after restart")
+        return False
+    except Exception as e:
+        print(f"  WARNING: Snapshot failed: {e}")
+        return False
+
+
+def create_gcp_vm(force_fresh=False):
+    """Create a GCP TDX confidential VM for e2e testing.
+
+    Returns (ip, booted_from_snapshot) tuple.
+    """
+    print("\n═══ STEP 2: Create GCP TDX VM ═══")
+
+    # Check if VM already exists
+    try:
+        result = gcloud(f"compute instances describe {GCP_VM_NAME} --zone={GCP_ZONE} --format='value(status)'", check=False)
+        if "RUNNING" in result:
+            ip = gcloud(f"compute instances describe {GCP_VM_NAME} --zone={GCP_ZONE} --format='value(networkInterfaces[0].accessConfigs[0].natIP)'")
+            print(f"  VM already running at {ip}")
+            return ip, False
+        elif result.strip():
+            print(f"  VM exists but status={result.strip()}, deleting...")
+            gcloud(f"compute instances delete {GCP_VM_NAME} --zone={GCP_ZONE} --quiet")
+    except Exception:
+        pass
+
+    # Check for snapshot image
+    use_snapshot = not force_fresh and snapshot_image_exists()
+    if use_snapshot:
+        image_name = snapshot_image_name()
+        print(f"  Booting from snapshot image '{image_name}' (fast boot, ~1-2 min)")
+        startup_script = get_snapshot_startup_script()
+        image_flags = f"--image={image_name}"
+    else:
+        if force_fresh:
+            print(f"  Fresh boot requested (--fresh flag)")
+        else:
+            print(f"  No snapshot image found, doing fresh install (~10-15 min)")
+        startup_script = get_fresh_startup_script()
+        image_flags = "--image-family=ubuntu-2404-lts-amd64 --image-project=ubuntu-os-cloud"
+
     startup_path = "/tmp/humanfund_e2e_startup.sh"
     with open(startup_path, "w") as f:
         f.write(startup_script)
@@ -425,8 +594,7 @@ echo "=== Setup complete at $(date) ==="
         f"--provisioning-model=SPOT "
         f"--instance-termination-action=STOP "
         f'--min-cpu-platform="Intel Sapphire Rapids" '
-        f"--image-family=ubuntu-2404-lts-amd64 "
-        f"--image-project=ubuntu-os-cloud "
+        f"{image_flags} "
         f"--boot-disk-size=50GB "
         f"--metadata-from-file=startup-script={startup_path}",
         timeout=120
@@ -437,7 +605,7 @@ echo "=== Setup complete at $(date) ==="
         f"--format='value(networkInterfaces[0].accessConfigs[0].natIP)'"
     )
     print(f"  VM created: {ip}")
-    return ip
+    return ip, use_snapshot
 
 
 def wait_for_vm_ready(vm_ip):
@@ -457,13 +625,15 @@ def wait_for_vm_ready(vm_ip):
                 return True
             elif "NOT_READY" in result:
                 # SSH works but llama-server not ready yet
-                # Check startup progress
+                # Check startup progress and llama-server status
                 log = gcloud(
                     f"compute ssh {GCP_VM_NAME} --zone={GCP_ZONE} "
-                    f"--command='tail -1 /tmp/startup.log 2>/dev/null || echo no_log'",
+                    f"--command='tail -3 /tmp/startup.log 2>/dev/null; "
+                    f"echo \"---\"; pgrep -f llama-server > /dev/null && echo LLAMA_RUNNING || echo LLAMA_NOT_RUNNING; "
+                    f"echo \"---\"; tail -3 /tmp/llama.log 2>/dev/null || echo no_llama_log'",
                     check=False, timeout=15
                 )
-                print(f"  [{i * 30}s] Waiting... last log: {log[:80]}")
+                print(f"  [{i * 30}s] Waiting... {log[:120]}")
         except Exception as e:
             print(f"  [{i * 30}s] SSH not ready yet: {str(e)[:60]}")
         time.sleep(30)
@@ -486,11 +656,19 @@ def upload_enclave_files(vm_ip):
 
     # Upload system prompt
     gcloud(
-        f"compute scp {PROJECT_ROOT}/agent/prompts/system_v2.txt "
+        f"compute scp {PROJECT_ROOT}/agent/prompts/system_v4.txt "
         f"{GCP_VM_NAME}:/tmp/system_prompt.txt --zone={GCP_ZONE}",
         timeout=30
     )
-    print("  Uploaded system_prompt.txt")
+    print("  Uploaded system_prompt.txt (v4)")
+
+    # Upload protocols reference
+    gcloud(
+        f"compute scp {PROJECT_ROOT}/agent/prompts/protocols_reference.txt "
+        f"{GCP_VM_NAME}:/tmp/protocols_reference.txt --zone={GCP_ZONE}",
+        timeout=30
+    )
+    print("  Uploaded protocols_reference.txt")
 
     # Install flask on the VM (in case startup script isn't done)
     gcloud(
@@ -501,7 +679,7 @@ def upload_enclave_files(vm_ip):
 
     # Start enclave_runner.py as root (needs root for configfs-tsm TDX quote generation)
     # Upload a startup script to avoid shell quoting issues
-    startup = "#!/bin/bash\nsource /opt/humanfund-venv/bin/activate\nSYSTEM_PROMPT_PATH=/tmp/system_prompt.txt nohup python3 /tmp/enclave_runner.py > /tmp/enclave.log 2>&1 &\n"
+    startup = "#!/bin/bash\nsource /opt/humanfund-venv/bin/activate\nSYSTEM_PROMPT_PATH=/tmp/system_prompt.txt PROTOCOLS_REF_PATH=/tmp/protocols_reference.txt nohup python3 /tmp/enclave_runner.py > /tmp/enclave.log 2>&1 &\n"
     with open("/tmp/start_enclave.sh", "w") as f:
         f.write(startup)
     gcloud(
@@ -623,7 +801,7 @@ def run_auction_e2e(w3, account, fund_addr, vm_ip, nonce):
         fund_ = w3_.eth.contract(address=fund_addr, abi=fund_abi)
         return w3_, fund_
 
-    def send_tx(fn, value=0, gas=200_000):
+    def send_tx(fn, value=0, gas=300_000):
         """Send a transaction, wait for receipt, refresh connection, return (receipt, nonce)."""
         nonlocal w3, fund, nonce
         tx = fn.build_transaction({
@@ -646,8 +824,36 @@ def run_auction_e2e(w3, account, fund_addr, vm_ip, nonce):
     print(f"  Treasury: {w3.from_wei(fund.functions.treasuryBalance().call(), 'ether')} ETH")
 
     # ─── 4a: startEpoch ───
-    print(f"\n  4a. Starting epoch {epoch}...")
-    receipt = send_tx(fund.functions.startEpoch())
+    # The contract requires: block.timestamp >= prevAuction.epochStartTime + epochDuration
+    # So we check the previous epoch's actual start time, not the scheduled time
+    epoch_dur = fund.functions.epochDuration().call()
+    if epoch > 1:
+        prev_state = fund.functions.getAuctionState(epoch - 1).call()
+        earliest_start = prev_state[0] + epoch_dur
+        now = int(time.time())
+        if now < earliest_start:
+            wait_secs = earliest_start - now + 5  # +5s buffer
+            print(f"\n  4a. Waiting {wait_secs}s for epoch {epoch} window to open...")
+            time.sleep(wait_secs)
+            w3, fund = fresh_connection()
+            nonce = w3.eth.get_transaction_count(account.address)
+
+    # Retry startEpoch up to 5 times (timing edge cases)
+    print(f"  4a. Starting epoch {epoch}...")
+    for attempt in range(5):
+        try:
+            receipt = send_tx(fund.functions.startEpoch())
+            break
+        except AssertionError as e:
+            if attempt < 4:
+                wait = 30
+                print(f"      startEpoch reverted, retrying in {wait}s (attempt {attempt + 2}/5)...")
+                time.sleep(wait)
+                w3, fund = fresh_connection()
+                nonce = w3.eth.get_transaction_count(account.address)
+                epoch = fund.functions.currentEpoch().call()
+            else:
+                raise
     input_hash = fund.functions.epochInputHashes(epoch).call()
     print(f"      Input hash: 0x{input_hash.hex()[:16]}...")
     print(f"      Gas: {receipt.gasUsed}")
@@ -656,6 +862,12 @@ def run_auction_e2e(w3, account, fund_addr, vm_ip, nonce):
     # Use effectiveMaxBid to stay under ceiling (treasury may be small)
     emb = fund.functions.effectiveMaxBid().call()
     bid_wei = min(emb, w3.to_wei(BID_AMOUNT_ETH, "ether"))
+    # Cap bid at 90% of treasury balance so the contract can pay the bounty
+    treasury_bal = w3.eth.get_balance(fund.address)
+    max_bid_from_treasury = int(treasury_bal * 9 // 10)  # 90% of treasury
+    if max_bid_from_treasury > 0 and bid_wei > max_bid_from_treasury:
+        print(f"      Treasury low ({w3.from_wei(treasury_bal, 'ether')} ETH), capping bid to {w3.from_wei(max_bid_from_treasury, 'ether')} ETH")
+        bid_wei = max_bid_from_treasury
     bond_wei = max(1, bid_wei * 2000 // 10000)  # 20% bond, min 1 wei
     print(f"\n  4b. Submitting bid: {w3.from_wei(bid_wei, 'ether')} ETH (bond: {w3.from_wei(bond_wei, 'ether')} ETH)...")
     receipt = send_tx(fund.functions.bid(bid_wei), value=bond_wei)
@@ -731,7 +943,11 @@ def run_auction_e2e(w3, account, fund_addr, vm_ip, nonce):
         shell=True, timeout=30, capture_output=True
     )
     tee_result = json.loads(Path("/tmp/tee_result.json").read_text())
-    print(f"      Action: {json.dumps(tee_result['action'])}")
+    print(f"      Action: {json.dumps(tee_result.get('action', 'N/A'))}")
+    if "error" in tee_result:
+        print(f"      ❌ TEE error: {tee_result['error']}")
+        print(f"      Raw output: {tee_result.get('raw_output', 'N/A')[:200]}")
+        return False
     print(f"      Quote: {len(bytes.fromhex(tee_result['attestation_quote'].replace('0x', '')))} bytes")
 
     # ─── 4e: Submit auction result ───
@@ -815,7 +1031,9 @@ def main():
     parser.add_argument("--no-cleanup", action="store_true", help="Don't delete VM after test")
     parser.add_argument("--skip-vm", action="store_true", help="Skip VM creation (for testing)")
     parser.add_argument("--cpu", action="store_true", help="Use CPU instance instead of GPU (slower, cheaper)")
-    parser.add_argument("--snapshot", action="store_true", help="Create GCP disk image after VM setup (fast boot next time)")
+    parser.add_argument("--epochs", type=int, default=1, help="Number of epochs to run (default: 1)")
+    parser.add_argument("--no-snapshot", action="store_true", help="Don't auto-create snapshot on fresh boot")
+    parser.add_argument("--fresh", action="store_true", help="Force fresh VM boot even if snapshot exists")
     args = parser.parse_args()
 
     # Configure GPU vs CPU (GPU is default)
@@ -864,84 +1082,98 @@ def main():
     if balance < w3.to_wei(0.01, "ether"):
         print("WARNING: Low balance — may not have enough for deployment + gas")
 
-    # Step 1: Deploy contracts (or reuse)
-    if args.fund_address and args.verifier_address:
-        fund_addr = Web3.to_checksum_address(args.fund_address)
-        verifier_addr = Web3.to_checksum_address(args.verifier_address)
-        nonce = w3.eth.get_transaction_count(account.address)
-        print(f"\nReusing contracts: fund={fund_addr}, verifier={verifier_addr}")
-    else:
-        fund_addr, verifier_addr, nonce = deploy_contracts(w3, account)
+    # Track whether we created a VM (for cleanup)
+    vm_ip = None
+    created_vm = False
+    success = False
 
-    # Step 2: Create GCP TDX VM (or reuse)
-    if args.vm_ip:
-        vm_ip = args.vm_ip
-        print(f"\nReusing VM at {vm_ip}")
-    elif args.skip_vm:
-        print("\nSkipping VM creation")
-        vm_ip = None
-    else:
-        vm_ip = create_gcp_vm()
-        if not wait_for_vm_ready(vm_ip):
-            print("FATAL: VM not ready, aborting")
-            cleanup(not args.no_cleanup)
-            sys.exit(1)
-        upload_enclave_files(vm_ip)
+    try:
+        # Step 1: Deploy contracts (or reuse)
+        if args.fund_address and args.verifier_address:
+            fund_addr = Web3.to_checksum_address(args.fund_address)
+            verifier_addr = Web3.to_checksum_address(args.verifier_address)
+            nonce = w3.eth.get_transaction_count(account.address)
+            print(f"\nReusing contracts: fund={fund_addr}, verifier={verifier_addr}")
+        else:
+            fund_addr, verifier_addr, nonce = deploy_contracts(w3, account)
 
-        # Optional: create disk image for fast boot next time
-        if args.snapshot:
-            print("\n═══ STEP 2d: Create Disk Image Snapshot ═══")
-            image_name = f"humanfund-tee-{'gpu' if USE_GPU else 'cpu'}-14b"
-            try:
-                # Stop VM to snapshot
-                print(f"  Stopping VM for snapshot...")
-                gcloud(f"compute instances stop {GCP_VM_NAME} --zone={GCP_ZONE} --discard-local-ssd=true", timeout=120)
-                # Create image
-                print(f"  Creating image '{image_name}'...")
-                gcloud(
-                    f"compute images create {image_name} "
-                    f"--source-disk={GCP_VM_NAME} --source-disk-zone={GCP_ZONE} "
-                    f"--family=humanfund-tee --force",
-                    timeout=300
-                )
-                print(f"  Image created! Next time use: --image={image_name}")
-                # Restart VM
-                print(f"  Restarting VM...")
-                gcloud(f"compute instances start {GCP_VM_NAME} --zone={GCP_ZONE}", timeout=120)
-                # Wait for SSH to come back
-                time.sleep(30)
-                # Restart services (llama-server + enclave_runner)
-                print(f"  Restarting services...")
-                gcloud(
-                    f"compute ssh {GCP_VM_NAME} --zone={GCP_ZONE} "
-                    f"--command='sudo nohup llama-server -m /models/model.gguf -c 4096 --host 0.0.0.0 --port 8080 -t $(nproc) > /tmp/llama.log 2>&1 &'",
-                    timeout=30
-                )
-                time.sleep(15)
-                gcloud(
-                    f"compute ssh {GCP_VM_NAME} --zone={GCP_ZONE} "
-                    f"--command='sudo rm -f /tmp/enclave.log && sudo bash /tmp/start_enclave.sh'",
-                    timeout=30
-                )
-                time.sleep(10)
-            except Exception as e:
-                print(f"  WARNING: Snapshot failed: {e}. Continuing without snapshot.")
+        # Step 2: Create GCP TDX VM (or reuse)
+        if args.vm_ip:
+            vm_ip = args.vm_ip
+            print(f"\nReusing VM at {vm_ip}")
+            upload_enclave_files(vm_ip)
+        elif args.skip_vm:
+            print("\nSkipping VM creation")
+        else:
+            vm_ip, booted_from_snapshot = create_gcp_vm(force_fresh=args.fresh)
+            created_vm = True
+            if not wait_for_vm_ready(vm_ip):
+                print("FATAL: VM not ready, aborting")
+                sys.exit(1)
 
-    # Step 3: Get measurements and register image key
-    if vm_ip:
-        measurements = get_vm_measurements()
-        nonce = register_image_key(w3, account, verifier_addr, measurements["image_key"], nonce)
+            # Auto-create snapshot on fresh boot (saves ~10-15 min on next run)
+            if not booted_from_snapshot and not args.no_snapshot:
+                create_snapshot_image()
 
-    # Step 4: Run the full auction
-    if vm_ip:
-        success = run_auction_e2e(w3, account, fund_addr, vm_ip, nonce)
-    else:
-        print("\nSkipping auction (no VM)")
-        success = False
+            upload_enclave_files(vm_ip)
 
-    # Step 5: Cleanup
-    if not args.no_cleanup and vm_ip and not args.vm_ip:
-        cleanup()
+        # Step 3: Get measurements and register image key
+        if vm_ip:
+            measurements = get_vm_measurements()
+            nonce = register_image_key(w3, account, verifier_addr, measurements["image_key"], nonce)
+
+        # Step 4: Run the full auction (multiple epochs if requested)
+        if vm_ip:
+            num_epochs = args.epochs
+            for epoch_i in range(num_epochs):
+                print(f"\n{'=' * 60}")
+                print(f"  EPOCH RUN {epoch_i + 1} / {num_epochs}")
+                print(f"{'=' * 60}")
+                # Refresh nonce before each epoch
+                w3 = Web3(Web3.HTTPProvider(RPC_URL, request_kwargs={"timeout": 120}))
+                nonce = w3.eth.get_transaction_count(account.address)
+                try:
+                    success = run_auction_e2e(w3, account, fund_addr, vm_ip, nonce)
+                except Exception as e:
+                    print(f"\n  ❌ Epoch {epoch_i + 1} crashed: {e}")
+                    success = False
+                if not success:
+                    print(f"\n  ⚠️  Epoch {epoch_i + 1} failed, continuing to next epoch...")
+                    # Forfeit bond if stuck in execution
+                    try:
+                        w3 = Web3(Web3.HTTPProvider(RPC_URL, request_kwargs={"timeout": 120}))
+                        fund = w3.eth.contract(address=fund_addr, abi=json.loads((ABI_DIR / "TheHumanFund.sol" / "TheHumanFund.json").read_text())["abi"])
+                        epoch = fund.functions.currentEpoch().call()
+                        state = fund.functions.getAuctionState(epoch).call()
+                        if state[1] == 2:  # EXECUTION phase
+                            bid_win = fund.functions.biddingWindow().call()
+                            exec_win = fund.functions.executionWindow().call()
+                            deadline = state[0] + bid_win + exec_win
+                            wait = max(0, deadline - int(time.time())) + 5
+                            print(f"      Waiting {wait}s to forfeit bond...")
+                            time.sleep(wait)
+                            w3 = Web3(Web3.HTTPProvider(RPC_URL, request_kwargs={"timeout": 120}))
+                            fund = w3.eth.contract(address=fund_addr, abi=json.loads((ABI_DIR / "TheHumanFund.sol" / "TheHumanFund.json").read_text())["abi"])
+                            nonce = w3.eth.get_transaction_count(account.address)
+                            tx = fund.functions.forfeitBond().build_transaction({
+                                "from": account.address, "nonce": nonce, "gas": 200_000,
+                                "maxFeePerGas": w3.eth.gas_price * 2,
+                                "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
+                            })
+                            signed = account.sign_transaction(tx)
+                            tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+                            w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+                            print(f"      Bond forfeited, continuing...")
+                    except Exception as fe:
+                        print(f"      Could not auto-forfeit: {fe}")
+                    success = False  # Track overall
+        else:
+            print("\nSkipping auction (no VM)")
+
+    finally:
+        # Step 5: Always clean up the VM (unless --no-cleanup or reusing existing VM)
+        if created_vm and not args.no_cleanup:
+            cleanup()
 
     # Summary
     print("\n" + "=" * 60)

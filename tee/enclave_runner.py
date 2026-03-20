@@ -26,6 +26,7 @@ Usage:
 import hashlib
 import json
 import os
+import re
 import socket
 import struct
 import sys
@@ -40,6 +41,7 @@ app = Flask(__name__)
 # ─── Config ──────────────────────────────────────────────────────────────
 
 SYSTEM_PROMPT_PATH = Path(os.environ.get("SYSTEM_PROMPT_PATH", "/app/system_prompt.txt"))
+PROTOCOLS_REF_PATH = Path(os.environ.get("PROTOCOLS_REF_PATH", "/app/protocols_reference.txt"))
 LLAMA_SERVER_URL = f"http://127.0.0.1:{os.environ.get('LLAMA_SERVER_PORT', '8080')}"
 DSTACK_SOCK = "/var/run/dstack.sock"          # v0.5.x+
 DSTACK_SOCK_LEGACY = "/var/run/tappd.sock"    # v0.3.x fallback
@@ -92,14 +94,16 @@ def run_inference(prompt, max_tokens=4096, temperature=0.6, seed=-1):
     reasoning = result1["text"].strip()
 
     # Pass 2: Generate JSON action (same seed for determinism)
-    prompt2 = prompt + reasoning + "\n</think>\n"
+    # Prefix with "{" to force the model to output JSON directly
+    prompt2 = prompt + reasoning + "\n</think>\n{"
     result2 = _call_llama(prompt2, max_tokens=256, temperature=0.3, stop=["\n\n"], seed=seed)
 
-    combined_text = reasoning + "\n</think>\n" + result2["text"]
+    action_text = "{" + result2["text"]
+    combined_text = reasoning + "\n</think>\n" + action_text
     return {
         "text": combined_text,
         "reasoning": reasoning,
-        "action_text": result2["text"].strip(),
+        "action_text": action_text.strip(),
         "elapsed_seconds": result1["elapsed_seconds"] + result2["elapsed_seconds"],
         "tokens": {
             "prompt_tokens": result1["tokens"]["prompt_tokens"] + result2["tokens"]["prompt_tokens"],
@@ -152,7 +156,7 @@ def parse_action(text):
             obj["action"] = obj["action"].split("(")[0].strip().lower()
             return obj
 
-    # Fallback: search entire text
+    # Fallback: search entire text for JSON
     for i, c in enumerate(text):
         if c == '{':
             obj = _extract_json_object(text[i:])
@@ -161,7 +165,119 @@ def parse_action(text):
                 obj["action"] = obj["action"].split("(")[0].strip().lower()
                 return obj
 
+    # Fallback 2: parse function-call format output
+    # Model sometimes outputs: set_guiding_policy(slot=1, policy="...")
+    # or: donate(nonprofit_id=1, amount_eth=0.01)
+    return _parse_function_call_format(text)
+
+
+def _parse_function_call_format(text):
+    """Parse action from function-call format like 'donate(nonprofit_id=1, amount_eth=0.01)'.
+
+    The model sometimes mimics the history display format instead of outputting JSON.
+    """
+    # Look after </think> first, then in the whole text
+    search_text = text
+    close_idx = text.find("</think>")
+    if close_idx >= 0:
+        search_text = text[close_idx + len("</think>"):]
+
+    # Known action patterns
+    action_patterns = [
+        "noop", "donate", "set_commission_rate", "set_max_bid",
+        "invest", "withdraw", "set_guiding_policy", "set_policy",
+    ]
+
+    for action_name in action_patterns:
+        # Look for action_name( or action_name as standalone
+        idx = search_text.lower().find(action_name)
+        if idx == -1:
+            continue
+
+        after = search_text[idx:]
+        # Check for noop (no params)
+        if action_name == "noop":
+            return {"action": "noop", "params": {}}
+
+        # Try to extract params from parentheses
+        paren_start = after.find("(")
+        if paren_start == -1:
+            continue
+
+        # Find matching close paren
+        depth = 0
+        paren_end = -1
+        for i, c in enumerate(after[paren_start:]):
+            if c == "(":
+                depth += 1
+            elif c == ")":
+                depth -= 1
+                if depth == 0:
+                    paren_end = paren_start + i
+                    break
+        if paren_end == -1:
+            continue
+
+        params_str = after[paren_start+1:paren_end]
+        params = {}
+
+        # Parse key=value pairs
+        # Handle: slot=1, policy="some text with, commas"
+        # Use a simple state machine for quoted strings
+        current_key = ""
+        current_val = ""
+        in_key = True
+        in_quotes = False
+        quote_char = None
+
+        for c in params_str:
+            if in_key:
+                if c == "=":
+                    in_key = False
+                elif c not in " ,":
+                    current_key += c
+            else:
+                if not in_quotes:
+                    if c in ('"', "'"):
+                        in_quotes = True
+                        quote_char = c
+                    elif c == ",":
+                        # End of value
+                        params[current_key.strip()] = _coerce_param_value(current_val.strip())
+                        current_key = ""
+                        current_val = ""
+                        in_key = True
+                    else:
+                        current_val += c
+                else:
+                    if c == quote_char:
+                        in_quotes = False
+                    else:
+                        current_val += c
+
+        # Don't forget the last param
+        if current_key.strip():
+            params[current_key.strip()] = _coerce_param_value(current_val.strip())
+
+        return {"action": action_name, "params": params}
+
     return None
+
+
+def _coerce_param_value(val):
+    """Try to convert a string value to the appropriate Python type."""
+    if not val:
+        return val
+    # Remove surrounding quotes if present
+    if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
+        return val[1:-1]
+    # Try numeric conversion
+    try:
+        if "." in val:
+            return float(val)
+        return int(val)
+    except (ValueError, TypeError):
+        return val
 
 
 # ─── TDX Attestation ────────────────────────────────────────────────────
@@ -391,8 +507,11 @@ def run_epoch():
     # Use lower 32 bits (llama.cpp seed is uint32)
     llama_seed = seed & 0xFFFFFFFF if seed > 0 else -1
 
-    # Load system prompt
+    # Load system prompt + protocols reference
     system_prompt = SYSTEM_PROMPT_PATH.read_text().strip()
+    if PROTOCOLS_REF_PATH.exists():
+        protocols_ref = PROTOCOLS_REF_PATH.read_text().strip()
+        system_prompt = system_prompt + "\n\n" + protocols_ref
 
     # Construct full prompt
     full_prompt = system_prompt + "\n\n" + epoch_context + "\n\n<think>\n"
@@ -480,6 +599,42 @@ def _clean_amount(raw):
     return cleaned if cleaned else "0"
 
 
+# Protocol name → ID mapping for when the model outputs names instead of IDs
+PROTOCOL_NAME_MAP = {
+    "aave": 1, "aave v3 weth": 1, "aave weth": 1, "aave v3": 1, "aave eth": 1,
+    "wsteth": 2, "lido": 2, "lido wsteth": 2, "steth": 2,
+    "cbeth": 3, "coinbase": 3, "coinbase cbeth": 3,
+    "reth": 4, "rocket pool": 4, "rocket pool reth": 4,
+    "aave usdc": 5, "aave v3 usdc": 5,
+    "compound": 6, "compound v3": 6, "compound usdc": 6, "compound v3 usdc": 6,
+    "moonwell": 7, "moonwell usdc": 7,
+    "aerodrome": 8, "aerodrome eth/usdc": 8, "aerodrome lp": 8,
+}
+
+
+def _parse_protocol_id(params):
+    """Parse protocol_id from various model output formats (numeric, name strings, etc.)."""
+    raw_pid = str(params.get("protocol_id") or params.get("id") or params.get("protocol") or 1)
+    # Try direct numeric parse first
+    try:
+        return int(raw_pid)
+    except (ValueError, TypeError):
+        pass
+    # Try name lookup (case-insensitive)
+    name_lower = raw_pid.strip().lower()
+    if name_lower in PROTOCOL_NAME_MAP:
+        return PROTOCOL_NAME_MAP[name_lower]
+    # Try partial match — find longest matching key
+    for key in sorted(PROTOCOL_NAME_MAP.keys(), key=len, reverse=True):
+        if key in name_lower or name_lower in key:
+            return PROTOCOL_NAME_MAP[key]
+    # Last resort: extract digits
+    digits = re.findall(r'\d+', raw_pid)
+    if digits:
+        return int(digits[0])
+    return 1  # fallback
+
+
 def encode_action_bytes(action_json):
     """Encode action JSON to the contract's byte format.
 
@@ -498,7 +653,13 @@ def encode_action_bytes(action_json):
         return bytes([0])
     elif action == "donate":
         # Handle various param key names the model might use
-        np_id = int(params.get("nonprofit_id") or params.get("id") or params.get("nonprofit") or 1)
+        raw_np = str(params.get("nonprofit_id") or params.get("id") or params.get("nonprofit") or 1)
+        # Extract integer from various model outputs: "1", "#1", "0xaddr...", "nonprofit 2", etc.
+        digits = re.findall(r'\d+', raw_np)
+        try:
+            np_id = int(digits[0]) if digits else 1
+        except (ValueError, TypeError, IndexError):
+            np_id = 1
         amount_str = _clean_amount(params.get("amount_eth") or params.get("amount") or params.get("eth") or "0.1")
         amount_wei = int(float(amount_str) * 1e18)
         return (
@@ -514,7 +675,7 @@ def encode_action_bytes(action_json):
         amount_wei = int(float(amount_str) * 1e18)
         return bytes([3]) + amount_wei.to_bytes(32, "big")
     elif action == "invest":
-        protocol_id = int(params.get("protocol_id") or params.get("id") or params.get("protocol") or 1)
+        protocol_id = _parse_protocol_id(params)
         amount_str = _clean_amount(params.get("amount_eth") or params.get("amount") or params.get("eth") or "0.1")
         amount_wei = int(float(amount_str) * 1e18)
         return (
@@ -523,7 +684,7 @@ def encode_action_bytes(action_json):
             + amount_wei.to_bytes(32, "big")
         )
     elif action == "withdraw":
-        protocol_id = int(params.get("protocol_id") or params.get("id") or params.get("protocol") or 1)
+        protocol_id = _parse_protocol_id(params)
         amount_str = _clean_amount(params.get("amount_eth") or params.get("amount") or params.get("eth") or "0.1")
         amount_wei = int(float(amount_str) * 1e18)
         return (
@@ -531,6 +692,22 @@ def encode_action_bytes(action_json):
             + protocol_id.to_bytes(32, "big")
             + amount_wei.to_bytes(32, "big")
         )
+    elif action in ("set_guiding_policy", "set_policy"):
+        slot = int(params.get("slot") or params.get("slot_id") or params.get("id") or 0)
+        policy = str(params.get("policy") or params.get("text") or params.get("value") or "")
+        # Truncate to 280 chars
+        if len(policy) > 280:
+            policy = policy[:280]
+        # ABI-encode (uint256, string)
+        slot_bytes = slot.to_bytes(32, "big")
+        # String ABI encoding: offset (32) + length + padded data
+        policy_bytes = policy.encode("utf-8")
+        str_offset = (64).to_bytes(32, "big")  # offset to string data (after slot + offset)
+        str_length = len(policy_bytes).to_bytes(32, "big")
+        # Pad string data to 32-byte boundary
+        padded_len = ((len(policy_bytes) + 31) // 32) * 32
+        str_data = policy_bytes.ljust(padded_len, b'\x00')
+        return bytes([6]) + slot_bytes + str_offset + str_length + str_data
     else:
         # Unknown action — fall back to noop
         print(f"WARNING: Unknown action '{action}', falling back to noop")
