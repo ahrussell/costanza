@@ -327,11 +327,49 @@ def get_snapshot_startup_script():
         return """#!/bin/bash
 exec > /tmp/startup.log 2>&1
 echo "=== Snapshot boot (GPU) at $(date) ==="
-nohup llama-server -m /models/model.gguf -c 4096 --host 0.0.0.0 --port 8080 -ngl 99 > /tmp/llama.log 2>&1 &
+
+# Ensure shared libraries from llama.cpp build are on the linker path
+# (They were built in /tmp/llama.cpp/build/ but not installed system-wide)
+echo "Fixing shared library paths..."
+if [ -d /tmp/llama.cpp/build ]; then
+    find /tmp/llama.cpp/build -name '*.so' -exec cp {} /usr/local/lib/ \\; 2>/dev/null || true
+    ldconfig
+    echo "Shared libs installed to /usr/local/lib/"
+fi
+
+# GPU drivers may need re-initialization after boot from snapshot
+echo "Checking GPU drivers..."
+if ! nvidia-smi > /dev/null 2>&1; then
+    echo "nvidia-smi failed, attempting driver reload..."
+    modprobe -r nvidia_uvm nvidia_drm nvidia_modeset nvidia 2>/dev/null || true
+    sleep 2
+    modprobe nvidia 2>/dev/null || true
+    modprobe nvidia_uvm 2>/dev/null || true
+    sleep 2
+    if nvidia-smi > /dev/null 2>&1; then
+        echo "GPU drivers reloaded successfully"
+    else
+        echo "WARNING: GPU drivers still not working, falling back to CPU mode"
+        nohup llama-server -m /models/model.gguf -c 4096 --host 0.0.0.0 --port 8080 -t $(nproc) > /tmp/llama.log 2>&1 &
+    fi
+fi
+
+if nvidia-smi > /dev/null 2>&1; then
+    echo "GPU available: $(nvidia-smi --query-gpu=name --format=csv,noheader)"
+    nohup llama-server -m /models/model.gguf -c 4096 --host 0.0.0.0 --port 8080 -ngl 99 > /tmp/llama.log 2>&1 &
+fi
+
 for i in $(seq 1 120); do
     if curl -s http://127.0.0.1:8080/health | grep -q ok; then
         echo "llama-server ready after $((i*5))s"
         break
+    fi
+    # Check if llama-server crashed
+    if ! pgrep -f llama-server > /dev/null; then
+        echo "llama-server crashed! Check /tmp/llama.log"
+        tail -20 /tmp/llama.log
+        echo "Restarting in CPU mode..."
+        nohup llama-server -m /models/model.gguf -c 4096 --host 0.0.0.0 --port 8080 -t $(nproc) > /tmp/llama.log 2>&1 &
     fi
     sleep 5
 done
@@ -341,6 +379,13 @@ echo "=== Snapshot boot complete at $(date) ==="
         return """#!/bin/bash
 exec > /tmp/startup.log 2>&1
 echo "=== Snapshot boot (CPU) at $(date) ==="
+
+# Ensure shared libraries are on linker path
+if [ -d /tmp/llama.cpp/build ]; then
+    find /tmp/llama.cpp/build -name '*.so' -exec cp {} /usr/local/lib/ \\; 2>/dev/null || true
+    ldconfig
+fi
+
 nohup llama-server -m /models/model.gguf -c 4096 --host 0.0.0.0 --port 8080 -t $(nproc) > /tmp/llama.log 2>&1 &
 for i in $(seq 1 120); do
     if curl -s http://127.0.0.1:8080/health | grep -q ok; then
@@ -379,6 +424,8 @@ cd llama.cpp
 cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=90
 cmake --build build --config Release -j$(nproc) --target llama-server
 cp build/bin/llama-server /usr/local/bin/
+find build -name '*.so' -exec cp {{}} /usr/local/lib/ \; 2>/dev/null || true
+ldconfig
 
 echo "Downloading model..."
 mkdir -p /models
@@ -426,6 +473,8 @@ cd llama.cpp
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release -j$(nproc) --target llama-server
 cp build/bin/llama-server /usr/local/bin/
+find build -name '*.so' -exec cp {{}} /usr/local/lib/ \; 2>/dev/null || true
+ldconfig
 
 echo "Downloading model..."
 mkdir -p /models
@@ -576,13 +625,15 @@ def wait_for_vm_ready(vm_ip):
                 return True
             elif "NOT_READY" in result:
                 # SSH works but llama-server not ready yet
-                # Check startup progress
+                # Check startup progress and llama-server status
                 log = gcloud(
                     f"compute ssh {GCP_VM_NAME} --zone={GCP_ZONE} "
-                    f"--command='tail -1 /tmp/startup.log 2>/dev/null || echo no_log'",
+                    f"--command='tail -3 /tmp/startup.log 2>/dev/null; "
+                    f"echo \"---\"; pgrep -f llama-server > /dev/null && echo LLAMA_RUNNING || echo LLAMA_NOT_RUNNING; "
+                    f"echo \"---\"; tail -3 /tmp/llama.log 2>/dev/null || echo no_llama_log'",
                     check=False, timeout=15
                 )
-                print(f"  [{i * 30}s] Waiting... last log: {log[:80]}")
+                print(f"  [{i * 30}s] Waiting... {log[:120]}")
         except Exception as e:
             print(f"  [{i * 30}s] SSH not ready yet: {str(e)[:60]}")
         time.sleep(30)
@@ -605,11 +656,19 @@ def upload_enclave_files(vm_ip):
 
     # Upload system prompt
     gcloud(
-        f"compute scp {PROJECT_ROOT}/agent/prompts/system_v3.txt "
+        f"compute scp {PROJECT_ROOT}/agent/prompts/system_v4.txt "
         f"{GCP_VM_NAME}:/tmp/system_prompt.txt --zone={GCP_ZONE}",
         timeout=30
     )
-    print("  Uploaded system_prompt.txt")
+    print("  Uploaded system_prompt.txt (v4)")
+
+    # Upload protocols reference
+    gcloud(
+        f"compute scp {PROJECT_ROOT}/agent/prompts/protocols_reference.txt "
+        f"{GCP_VM_NAME}:/tmp/protocols_reference.txt --zone={GCP_ZONE}",
+        timeout=30
+    )
+    print("  Uploaded protocols_reference.txt")
 
     # Install flask on the VM (in case startup script isn't done)
     gcloud(
@@ -620,7 +679,7 @@ def upload_enclave_files(vm_ip):
 
     # Start enclave_runner.py as root (needs root for configfs-tsm TDX quote generation)
     # Upload a startup script to avoid shell quoting issues
-    startup = "#!/bin/bash\nsource /opt/humanfund-venv/bin/activate\nSYSTEM_PROMPT_PATH=/tmp/system_prompt.txt nohup python3 /tmp/enclave_runner.py > /tmp/enclave.log 2>&1 &\n"
+    startup = "#!/bin/bash\nsource /opt/humanfund-venv/bin/activate\nSYSTEM_PROMPT_PATH=/tmp/system_prompt.txt PROTOCOLS_REF_PATH=/tmp/protocols_reference.txt nohup python3 /tmp/enclave_runner.py > /tmp/enclave.log 2>&1 &\n"
     with open("/tmp/start_enclave.sh", "w") as f:
         f.write(startup)
     gcloud(
@@ -742,7 +801,7 @@ def run_auction_e2e(w3, account, fund_addr, vm_ip, nonce):
         fund_ = w3_.eth.contract(address=fund_addr, abi=fund_abi)
         return w3_, fund_
 
-    def send_tx(fn, value=0, gas=200_000):
+    def send_tx(fn, value=0, gas=300_000):
         """Send a transaction, wait for receipt, refresh connection, return (receipt, nonce)."""
         nonlocal w3, fund, nonce
         tx = fn.build_transaction({
@@ -765,8 +824,36 @@ def run_auction_e2e(w3, account, fund_addr, vm_ip, nonce):
     print(f"  Treasury: {w3.from_wei(fund.functions.treasuryBalance().call(), 'ether')} ETH")
 
     # ─── 4a: startEpoch ───
-    print(f"\n  4a. Starting epoch {epoch}...")
-    receipt = send_tx(fund.functions.startEpoch())
+    # The contract requires: block.timestamp >= prevAuction.epochStartTime + epochDuration
+    # So we check the previous epoch's actual start time, not the scheduled time
+    epoch_dur = fund.functions.epochDuration().call()
+    if epoch > 1:
+        prev_state = fund.functions.getAuctionState(epoch - 1).call()
+        earliest_start = prev_state[0] + epoch_dur
+        now = int(time.time())
+        if now < earliest_start:
+            wait_secs = earliest_start - now + 5  # +5s buffer
+            print(f"\n  4a. Waiting {wait_secs}s for epoch {epoch} window to open...")
+            time.sleep(wait_secs)
+            w3, fund = fresh_connection()
+            nonce = w3.eth.get_transaction_count(account.address)
+
+    # Retry startEpoch up to 5 times (timing edge cases)
+    print(f"  4a. Starting epoch {epoch}...")
+    for attempt in range(5):
+        try:
+            receipt = send_tx(fund.functions.startEpoch())
+            break
+        except AssertionError as e:
+            if attempt < 4:
+                wait = 30
+                print(f"      startEpoch reverted, retrying in {wait}s (attempt {attempt + 2}/5)...")
+                time.sleep(wait)
+                w3, fund = fresh_connection()
+                nonce = w3.eth.get_transaction_count(account.address)
+                epoch = fund.functions.currentEpoch().call()
+            else:
+                raise
     input_hash = fund.functions.epochInputHashes(epoch).call()
     print(f"      Input hash: 0x{input_hash.hex()[:16]}...")
     print(f"      Gas: {receipt.gasUsed}")
@@ -775,6 +862,12 @@ def run_auction_e2e(w3, account, fund_addr, vm_ip, nonce):
     # Use effectiveMaxBid to stay under ceiling (treasury may be small)
     emb = fund.functions.effectiveMaxBid().call()
     bid_wei = min(emb, w3.to_wei(BID_AMOUNT_ETH, "ether"))
+    # Cap bid at 90% of treasury balance so the contract can pay the bounty
+    treasury_bal = w3.eth.get_balance(fund.address)
+    max_bid_from_treasury = int(treasury_bal * 9 // 10)  # 90% of treasury
+    if max_bid_from_treasury > 0 and bid_wei > max_bid_from_treasury:
+        print(f"      Treasury low ({w3.from_wei(treasury_bal, 'ether')} ETH), capping bid to {w3.from_wei(max_bid_from_treasury, 'ether')} ETH")
+        bid_wei = max_bid_from_treasury
     bond_wei = max(1, bid_wei * 2000 // 10000)  # 20% bond, min 1 wei
     print(f"\n  4b. Submitting bid: {w3.from_wei(bid_wei, 'ether')} ETH (bond: {w3.from_wei(bond_wei, 'ether')} ETH)...")
     receipt = send_tx(fund.functions.bid(bid_wei), value=bond_wei)
@@ -850,7 +943,11 @@ def run_auction_e2e(w3, account, fund_addr, vm_ip, nonce):
         shell=True, timeout=30, capture_output=True
     )
     tee_result = json.loads(Path("/tmp/tee_result.json").read_text())
-    print(f"      Action: {json.dumps(tee_result['action'])}")
+    print(f"      Action: {json.dumps(tee_result.get('action', 'N/A'))}")
+    if "error" in tee_result:
+        print(f"      ❌ TEE error: {tee_result['error']}")
+        print(f"      Raw output: {tee_result.get('raw_output', 'N/A')[:200]}")
+        return False
     print(f"      Quote: {len(bytes.fromhex(tee_result['attestation_quote'].replace('0x', '')))} bytes")
 
     # ─── 4e: Submit auction result ───
@@ -1004,6 +1101,7 @@ def main():
         if args.vm_ip:
             vm_ip = args.vm_ip
             print(f"\nReusing VM at {vm_ip}")
+            upload_enclave_files(vm_ip)
         elif args.skip_vm:
             print("\nSkipping VM creation")
         else:
@@ -1034,10 +1132,41 @@ def main():
                 # Refresh nonce before each epoch
                 w3 = Web3(Web3.HTTPProvider(RPC_URL, request_kwargs={"timeout": 120}))
                 nonce = w3.eth.get_transaction_count(account.address)
-                success = run_auction_e2e(w3, account, fund_addr, vm_ip, nonce)
+                try:
+                    success = run_auction_e2e(w3, account, fund_addr, vm_ip, nonce)
+                except Exception as e:
+                    print(f"\n  ❌ Epoch {epoch_i + 1} crashed: {e}")
+                    success = False
                 if not success:
-                    print(f"\nEpoch {epoch_i + 1} failed, stopping.")
-                    break
+                    print(f"\n  ⚠️  Epoch {epoch_i + 1} failed, continuing to next epoch...")
+                    # Forfeit bond if stuck in execution
+                    try:
+                        w3 = Web3(Web3.HTTPProvider(RPC_URL, request_kwargs={"timeout": 120}))
+                        fund = w3.eth.contract(address=fund_addr, abi=json.loads((ABI_DIR / "TheHumanFund.sol" / "TheHumanFund.json").read_text())["abi"])
+                        epoch = fund.functions.currentEpoch().call()
+                        state = fund.functions.getAuctionState(epoch).call()
+                        if state[1] == 2:  # EXECUTION phase
+                            bid_win = fund.functions.biddingWindow().call()
+                            exec_win = fund.functions.executionWindow().call()
+                            deadline = state[0] + bid_win + exec_win
+                            wait = max(0, deadline - int(time.time())) + 5
+                            print(f"      Waiting {wait}s to forfeit bond...")
+                            time.sleep(wait)
+                            w3 = Web3(Web3.HTTPProvider(RPC_URL, request_kwargs={"timeout": 120}))
+                            fund = w3.eth.contract(address=fund_addr, abi=json.loads((ABI_DIR / "TheHumanFund.sol" / "TheHumanFund.json").read_text())["abi"])
+                            nonce = w3.eth.get_transaction_count(account.address)
+                            tx = fund.functions.forfeitBond().build_transaction({
+                                "from": account.address, "nonce": nonce, "gas": 200_000,
+                                "maxFeePerGas": w3.eth.gas_price * 2,
+                                "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
+                            })
+                            signed = account.sign_transaction(tx)
+                            tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+                            w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+                            print(f"      Bond forfeited, continuing...")
+                    except Exception as fe:
+                        print(f"      Could not auto-forfeit: {fe}")
+                    success = False  # Track overall
         else:
             print("\nSkipping auction (no VM)")
 

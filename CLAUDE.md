@@ -17,8 +17,8 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 - **Phase 2 contract (latest, CPU e2e)**: `0x9043B54B7E5d2f98Bc12ff10799cf8d5d38c7ab2` (Base Sepolia) — CPU + GPU verified
 - **Phase 2 contract (GPU e2e)**: `0x579F6B59342348ED8736B617EDEe5e2ae3a3D7E5` (Base Sepolia) — GPU verified
 - Phase 0 original contract: `0x2F213Ea0D3F6D8349e2162b37Cc8cE6605dc9420` (Base Sepolia) — 21 epochs executed (legacy)
-- **112 tests pass** (28 Phase 0 + 34 auction + 12 attestation verifier + 25 investment + 13 worldview)
-- Contract sizes: TheHumanFund ~15.3KB (9.2KB margin, optimizer enabled), AttestationVerifier ~3.4KB, InvestmentManager ~10.4KB, WorldView ~2.6KB
+- **126 tests pass** (28 Phase 0 + 34 auction + 12 attestation verifier + 25 investment + 13 worldview + 14 messages)
+- Contract sizes: TheHumanFund ~18.0KB (6.5KB margin, optimizer enabled), AttestationVerifier ~3.4KB, InvestmentManager ~10.4KB, WorldView ~2.6KB
 - GCP TDX FMSPC `00806f050000` registered in Automata DCAP Dashboard
 - CPU image key (c3-standard-4): `0x1ff10986...` — approved
 - GPU image key (a3-highgpu-1g, H100): `0xb101c26a...` — approved
@@ -54,7 +54,8 @@ Each epoch (24 hours in production, configurable for testnet):
 
 ## Key Design Decisions
 
-- **Single action per epoch**: donate, set_commission_rate, set_max_bid, invest, withdraw, or noop
+- **Single action per epoch**: donate, set_commission_rate, set_max_bid, invest, withdraw, set_guiding_policy, or noop
+- **Donor messages**: donateWithMessage() accepts a string (max 280 chars, min 0.01 ETH). Messages queued, up to 20 per epoch shown to model with spotlighting delimiters to mitigate prompt injection
 - **Hard bounds enforced by contract**: max 10% treasury donated/epoch, commission 1-90%, max bid 0.0001 ETH to 2% treasury, investment bounds 80% max / 25% per protocol / 20% min reserve
 - **No free-text input fields** — prompt injection mitigated by structured numeric/address data only
 - **Two-pass inference**: Pass 1 generates reasoning (stop at `</think>`), Pass 2 generates JSON action (lower temperature)
@@ -132,7 +133,8 @@ thehumanfund/
 │   ├── TheHumanFundAuction.t.sol # Phase 2 auction + attestation tests (34 tests)
 │   ├── AttestationVerifier.t.sol # Verifier unit tests (12 tests)
 │   ├── InvestmentManager.t.sol  # Investment tests (25 tests)
-│   └── WorldView.t.sol          # Worldview tests (13 tests)
+│   ├── WorldView.t.sol          # Worldview tests (13 tests)
+│   └── Messages.t.sol           # Donor messages tests (14 tests)
 ├── script/
 │   └── Deploy.s.sol             # Foundry deployment script
 ├── agent/
@@ -167,6 +169,7 @@ thehumanfund/
 ### Core Features
 - Treasury management with 3 hardcoded nonprofits
 - Referral system with mintable codes and 7-day commission escrow
+- Donor messages: donateWithMessage() stores messages on-chain, queue advances each epoch
 - 4 agent actions with contract-enforced bounds
 - Auto-escalation: `effectiveMaxBid` increases 10% per consecutive missed epoch
 - `DiaryEntry` event emits reasoning + action on-chain

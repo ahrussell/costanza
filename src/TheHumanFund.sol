@@ -54,6 +54,13 @@ contract TheHumanFund {
         bool claimed;
     }
 
+    struct DonorMessage {
+        address sender;
+        uint256 amount;        // ETH donated with this message
+        string text;
+        uint256 epoch;         // epoch when the message was received
+    }
+
     // Phase 2: Auction types
     enum EpochPhase { IDLE, BIDDING, EXECUTION, SETTLED }
 
@@ -105,6 +112,7 @@ contract TheHumanFund {
     event BondForfeited(uint256 indexed epoch, address indexed runner, uint256 bondAmount);
     event AuctionModeChanged(bool enabled);
     event ActionRejected(uint256 indexed epoch, bytes action, string reason);
+    event MessageReceived(address indexed sender, uint256 amount, uint256 indexed messageId);
 
     // ─── Constants ───────────────────────────────────────────────────────
 
@@ -118,6 +126,9 @@ contract TheHumanFund {
     uint256 public constant AUTO_ESCALATION_BPS = 1000;    // 10% increase per missed epoch
     uint256 public constant NUM_NONPROFITS = 3;
     uint256 public constant BOND_BPS = 2000;               // 20% bond on bids
+    uint256 public constant MIN_MESSAGE_DONATION = 0.01 ether;  // 10x normal min to prevent spam
+    uint256 public constant MAX_MESSAGE_LENGTH = 280;
+    uint256 public constant MAX_MESSAGES_PER_EPOCH = 20;
 
     // Note: DCAP verification now handled by the AttestationVerifier contract (see setVerifier)
 
@@ -174,6 +185,10 @@ contract TheHumanFund {
 
     // Worldview (separate contract — see WorldView.sol)
     IWorldView public worldView;
+
+    // Donor messages
+    DonorMessage[] public messages;
+    uint256 public messageHead;  // index of first unread message
 
     // Phase 2: Auction state
     bool public auctionEnabled;                              // false = Phase 0/1 mode, true = auction mode
@@ -254,6 +269,54 @@ contract TheHumanFund {
         currentEpochDonationCount += 1;
 
         emit DonationReceived(msg.sender, msg.value, referralCodeId, commission);
+    }
+
+    /// @notice Donate ETH to the fund with a message for the AI agent.
+    /// @param referralCodeId The referral code ID (0 for no referral).
+    /// @param message A message for the agent (max 280 characters, requires >= 0.01 ETH).
+    function donateWithMessage(uint256 referralCodeId, string calldata message) external payable {
+        if (msg.value < MIN_MESSAGE_DONATION) revert InvalidParams();
+
+        // Process donation (same logic as donate)
+        uint256 commission = 0;
+        if (referralCodeId > 0 && referralCodes[referralCodeId].exists) {
+            commission = (msg.value * commissionRateBps) / 10000;
+            pendingCommissions.push(PendingCommission({
+                referrer: payable(referralCodes[referralCodeId].owner),
+                amount: commission,
+                releaseTime: block.timestamp + COMMISSION_DELAY,
+                claimed: false
+            }));
+            referralCodes[referralCodeId].totalReferred += msg.value;
+            referralCodes[referralCodeId].referralCount += 1;
+        }
+
+        totalInflows += msg.value;
+        currentEpochInflow += msg.value;
+        currentEpochDonationCount += 1;
+
+        // Store message (truncate to MAX_MESSAGE_LENGTH bytes)
+        bytes memory msgBytes = bytes(message);
+        string memory truncated = message;
+        if (msgBytes.length > MAX_MESSAGE_LENGTH) {
+            // Truncate raw bytes and convert back
+            bytes memory cut = new bytes(MAX_MESSAGE_LENGTH);
+            for (uint256 i = 0; i < MAX_MESSAGE_LENGTH; i++) {
+                cut[i] = msgBytes[i];
+            }
+            truncated = string(cut);
+        }
+
+        uint256 messageId = messages.length;
+        messages.push(DonorMessage({
+            sender: msg.sender,
+            amount: msg.value,
+            text: truncated,
+            epoch: currentEpoch
+        }));
+
+        emit DonationReceived(msg.sender, msg.value, referralCodeId, commission);
+        emit MessageReceived(msg.sender, msg.value, messageId);
     }
 
     /// @notice Mint a referral code for the caller.
@@ -607,6 +670,14 @@ contract TheHumanFund {
         // Extend rolling history hash (Merkle chain over all reasoning)
         historyHash = keccak256(abi.encodePacked(historyHash, keccak256(reasoning)));
 
+        // Advance message head (up to MAX_MESSAGES_PER_EPOCH)
+        uint256 unread = messages.length - messageHead;
+        if (unread > MAX_MESSAGES_PER_EPOCH) {
+            messageHead += MAX_MESSAGES_PER_EPOCH;
+        } else {
+            messageHead = messages.length;
+        }
+
         currentEpochInflow = 0;
         currentEpochDonationCount = 0;
         currentEpochCommissions = 0;
@@ -764,6 +835,7 @@ contract TheHumanFund {
         bytes32 worldviewHash = address(worldView) != address(0)
             ? worldView.stateHash()
             : bytes32(0);
+        bytes32 messageHash = keccak256(abi.encode(messageHead, messages.length));
         return keccak256(abi.encode(
             stateHash,
             currentEpochInflow,
@@ -773,7 +845,8 @@ contract TheHumanFund {
             nonprofits[3].totalDonated,
             historyHash,
             investHash,
-            worldviewHash
+            worldviewHash,
+            messageHash
         ));
     }
 
@@ -846,6 +919,40 @@ contract TheHumanFund {
     /// @notice Get number of pending commissions.
     function pendingCommissionsCount() external view returns (uint256) {
         return pendingCommissions.length;
+    }
+
+    /// @notice Get the total number of messages.
+    function messageCount() external view returns (uint256) {
+        return messages.length;
+    }
+
+    /// @notice Get unread messages for the current epoch (up to MAX_MESSAGES_PER_EPOCH).
+    /// @return senders Array of sender addresses
+    /// @return amounts Array of ETH amounts
+    /// @return texts Array of message texts
+    /// @return epochNums Array of epoch numbers when messages were received
+    function getUnreadMessages() external view returns (
+        address[] memory senders,
+        uint256[] memory amounts,
+        string[] memory texts,
+        uint256[] memory epochNums
+    ) {
+        uint256 total = messages.length;
+        uint256 unread = total > messageHead ? total - messageHead : 0;
+        uint256 count = unread > MAX_MESSAGES_PER_EPOCH ? MAX_MESSAGES_PER_EPOCH : unread;
+
+        senders = new address[](count);
+        amounts = new uint256[](count);
+        texts = new string[](count);
+        epochNums = new uint256[](count);
+
+        for (uint256 i = 0; i < count; i++) {
+            DonorMessage storage m = messages[messageHead + i];
+            senders[i] = m.sender;
+            amounts[i] = m.amount;
+            texts[i] = m.text;
+            epochNums[i] = m.epoch;
+        }
     }
 
     // Allow receiving ETH directly (for seed funding)
