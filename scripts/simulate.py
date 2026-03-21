@@ -922,6 +922,23 @@ def apply_action(state, action_json):
     if not changes:
         changes.append(f"  Action: {action} (unhandled in simulation)")
 
+    # Handle optional worldview update (alongside any action)
+    worldview = action_json.get("worldview")
+    if worldview and isinstance(worldview, dict):
+        wv_slot = int(worldview.get("slot", 0))
+        wv_policy = str(worldview.get("policy", ""))[:280]
+        if 0 <= wv_slot <= 9 and wv_policy:
+            # Ensure guiding_policies list is long enough
+            while len(state["guiding_policies"]) <= wv_slot:
+                state["guiding_policies"].append("")
+            old = state["guiding_policies"][wv_slot]
+            state["guiding_policies"][wv_slot] = wv_policy
+            snippet = wv_policy[:60] + "..." if len(wv_policy) > 60 else wv_policy
+            if old:
+                changes.append(f'  📝 Worldview [{wv_slot}] updated: "{snippet}"')
+            else:
+                changes.append(f'  📝 Worldview [{wv_slot}] set: "{snippet}"')
+
     return changes
 
 
