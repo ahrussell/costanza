@@ -672,6 +672,7 @@ def build_epoch_context(state):
 
     lines.append("")
     lines.append("Choose one action. Reason in <think> tags, then output JSON.")
+    lines.append("You may also include a \"worldview\" field to update a guiding policy slot (this is free — it does not replace your action).")
 
     return "\n".join(lines)
 

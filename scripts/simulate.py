@@ -814,7 +814,13 @@ def two_pass_inference(server_url, full_prompt, verbose=False):
 def apply_action(state, action_json):
     """Update simulated state based on the action taken. Returns a description of changes."""
     action = action_json["action"]
-    params = action_json.get("params", {})
+    # Model sometimes puts params at top level or under "args" instead of "params"
+    params = action_json.get("params", action_json.get("args", {}))
+    if not params:
+        # Fallback: extract known param keys from top-level JSON
+        param_keys = {"nonprofit_id", "id", "amount_eth", "amount", "rate_bps", "rate",
+                       "protocol_id", "protocol", "slot", "policy", "text", "amount_eth"}
+        params = {k: v for k, v in action_json.items() if k in param_keys}
     changes = []
 
     if action == "noop":

@@ -45,13 +45,18 @@ YOUR ACTIONS (choose exactly one per epoch):
 
 WORLDVIEW UPDATES:
 
-In addition to your main action, you may optionally update one guiding policy slot per epoch. This does NOT consume your action — it happens alongside it. Use this to:
-- Record lessons learned from this epoch's deliberation
-- Update strategic principles based on new information
-- Note important events (e.g., an investment protocol failing)
-- Evolve your philosophy as circumstances change
+In addition to your main action, you may optionally update one guiding policy slot per epoch. This does NOT consume your action — it happens alongside it. Include a "worldview" field in your output JSON (see OUTPUT FORMAT below). Omit it entirely if you have nothing to record. Policy slots 0-9, max 280 characters each. Empty string to clear a slot.
 
-To update a policy, include a "worldview" field in your output JSON (see OUTPUT FORMAT below). Omit it entirely if you have nothing to record. Policy slots 0-9, max 280 characters each. Empty string to clear a slot.
+Your worldview is your long-term memory. Use it actively:
+- Record lessons from bad outcomes (e.g., "Protocol X lost 30% in epoch 42 — avoid or limit exposure")
+- Set strategic principles you've reasoned about (e.g., "Keep ≥30% liquid during drought periods")
+- Note donor preferences or patterns you want to remember
+- Track phase transitions (e.g., "Inflows stopped — entering conservation mode")
+- Update or retire stale policies as conditions change
+
+You should update your worldview whenever something important happens that future-you needs to know. If an investment loses value, record it. If a strategy is working, codify it. If conditions change, note the shift. Your future self has no memory beyond these policies and the last 10 epochs of history.
+
+IMPORTANT: Policies should be STRATEGIC PRINCIPLES and LESSONS LEARNED — not specific action plans. Write them as guidance your future self can apply across many situations. Bad: "Donate 0.01 ETH to nonprofit 1." Good: "Prioritize GiveDirectly for donations — highest impact per ETH." Bad: "Invest 0.5 ETH in Aave." Good: "Core allocation in Aave WETH (low risk); limit staking to 15% after epoch 42 loss."
 
 OUTPUT FORMAT:
 
@@ -64,3 +69,10 @@ Reason inside <think> tags, then output your action as a single JSON object:
 
 To also update a guiding policy, add a "worldview" field:
 {"action": "...", "params": {...}, "worldview": {"slot": 0, "policy": "Your updated policy text"}}
+
+Examples:
+{"action": "donate", "params": {"nonprofit_id": 1, "amount_eth": 0.5}}
+{"action": "withdraw", "params": {"protocol_id": 2, "amount_eth": 999}, "worldview": {"slot": 3, "policy": "wstETH lost 30% in epoch 42. Limit staking exposure to 10% max."}}
+{"action": "noop", "params": {}, "worldview": {"slot": 0, "policy": "Inflows stopped. Conserve treasury, reduce donations to 3% until recovery."}}
+
+Use the worldview field whenever you learn something your future self should know. You do not need to include it every epoch — only when you have something worth remembering.
