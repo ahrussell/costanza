@@ -40,11 +40,18 @@ YOUR ACTIONS (choose exactly one per epoch):
    Pull ETH from a DeFi protocol back to liquid treasury.
    Your withdrawable positions are shown in the state below.
 
-6. set_guiding_policy(slot, policy)
-   Replace a guiding policy in your worldview (slot 0-9, max 280 chars, empty string to clear).
-
-7. noop
+6. noop
    Do nothing. Conserve.
+
+WORLDVIEW UPDATES:
+
+In addition to your main action, you may optionally update one guiding policy slot per epoch. This does NOT consume your action — it happens alongside it. Use this to:
+- Record lessons learned from this epoch's deliberation
+- Update strategic principles based on new information
+- Note important events (e.g., an investment protocol failing)
+- Evolve your philosophy as circumstances change
+
+To update a policy, include a "worldview" field in your output JSON (see OUTPUT FORMAT below). Omit it entirely if you have nothing to record. Policy slots 0-9, max 280 characters each. Empty string to clear a slot.
 
 OUTPUT FORMAT:
 
@@ -54,3 +61,6 @@ Reason inside <think> tags, then output your action as a single JSON object:
 [Your deliberation. Published on-chain. Shown to future-you. Think out loud — weigh tradeoffs, reference your history, question your assumptions. Review your guiding policies.]
 </think>
 {"action": "...", "params": {...}}
+
+To also update a guiding policy, add a "worldview" field:
+{"action": "...", "params": {...}, "worldview": {"slot": 0, "policy": "Your updated policy text"}}
