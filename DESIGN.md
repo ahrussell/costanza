@@ -482,7 +482,8 @@ The agent's `set_max_bid` action creates a feedback loop: as treasury shrinks, t
 | Runner cherry-picks outputs | Verifiable randomness seed (`block.prevrandao`) | Implemented |
 | Runner fabricates history | Rolling `historyHash` in `_computeInputHash()` | Implemented |
 | Runner substitutes model | SHA-256 hash baked into image, verified at boot | Implemented |
-| Prompt injection | No free-text fields — all structured numeric/address data | By design |
+| Prompt injection (structured fields) | No free-text fields — all structured numeric/address data | By design |
+| Prompt injection (donor messages) | Datamarking spotlighting: whitespace replaced with pseudorandom marker seeded by `block.prevrandao` (Hines et al. 2024) | Implemented |
 | Pathological model output | Hard bounds enforced by contract (10% donation, 1-90% commission, etc.) | By design |
 | Griefing (non-delivery) | 20% bond forfeited, epoch skipped not bricked | By design |
 | All runners disappear | Auto-escalation raises bid ceiling 10%/epoch until runners return | By design |

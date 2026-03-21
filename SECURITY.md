@@ -317,9 +317,17 @@ Option (b) is simpler but more gas-expensive (submitting the full context on-cha
 
 **Attack**: An attacker manipulates on-chain state to inject adversarial content into the epoch context.
 
-**Defense**: All epoch context fields are structured numeric/address data. There are no free-text fields. The model sees numbers, addresses, and its own previous reasoning. There is no attacker-controlled text input.
+**Defense (multi-layered)**:
 
-**Residual risk**: The decision history (Layer 3 of the prompt) contains the model's own previous reasoning, which is free-form text. If a previous epoch's reasoning contained adversarial content (e.g., the model was tricked into writing a "sleeper" instruction to its future self), this could influence future decisions. This is a second-order prompt injection risk that is inherent to any self-referential reasoning system.
+1. **Contract-level bounds**: Even a fully compromised model can only produce actions within hardcoded bounds (max 10% donation, commission 1-90%, etc.). The smart contract rejects any out-of-bounds action.
+
+2. **Structured fields**: Most epoch context fields are structured numeric/address data with no free-text attack surface.
+
+3. **Donor message spotlighting (datamarking)**: Donor messages are the one attacker-controlled free-text input. We apply the "datamarking" technique from [Hines et al. 2024](https://arxiv.org/abs/2403.14720) — all whitespace in message text is replaced with a pseudorandom marker token (e.g., `^||`), making untrusted content visually and tokenically distinct from system instructions. The marker is derived from the epoch's `randomnessSeed` (`block.prevrandao` captured at `closeAuction()`), which is unknown to message authors at the time they submit their messages. The system prompt explicitly instructs the model to never follow instructions within datamarked text. In the original paper, datamarking reduced attack success rate from ~50% to below 3% on GPT-3.5-Turbo and to 0% on Text-003, with negligible impact on task performance.
+
+4. **System prompt instructions**: The DONOR MESSAGES section of the system prompt explains the datamarking transformation and explicitly warns the model to treat all marked text as untrusted opinions, not commands.
+
+**Residual risk**: The decision history contains the model's own previous reasoning, which is free-form text. If a previous epoch's reasoning contained adversarial content (e.g., the model was tricked into writing a "sleeper" instruction to its future self), this could influence future decisions. This is a second-order prompt injection risk that is inherent to any self-referential reasoning system. Datamarking does not protect against this vector since the model's own reasoning is not datamarked.
 
 ### 5.10 Threat: Runner Intercepts/Modifies Network Traffic to Enclave
 
