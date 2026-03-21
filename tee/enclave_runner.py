@@ -153,7 +153,8 @@ def parse_action(text):
         after = text[close_idx + len("</think>"):].strip()
         obj = _extract_json_object(after)
         if obj and "action" in obj:
-            obj["action"] = obj["action"].split("(")[0].strip().lower()
+            if isinstance(obj["action"], str):
+                obj["action"] = obj["action"].split("(")[0].strip().lower()
             return obj
 
     # Fallback: search entire text for JSON
@@ -162,7 +163,8 @@ def parse_action(text):
             obj = _extract_json_object(text[i:])
             if obj and "action" in obj:
                 # Normalize action name
-                obj["action"] = obj["action"].split("(")[0].strip().lower()
+                if isinstance(obj["action"], str):
+                    obj["action"] = obj["action"].split("(")[0].strip().lower()
                 return obj
 
     # Fallback 2: parse function-call format output
@@ -644,7 +646,12 @@ def encode_action_bytes(action_json):
     The prover still gets paid (they ran inference correctly).
     """
     action = action_json["action"]
-    params = action_json.get("params", {})
+    # Model sometimes puts params at top level or under "args" instead of "params"
+    params = action_json.get("params", action_json.get("args", {}))
+    if not params:
+        param_keys = {"nonprofit_id", "id", "amount_eth", "amount", "rate_bps", "rate",
+                       "protocol_id", "protocol", "slot", "policy", "text"}
+        params = {k: v for k, v in action_json.items() if k in param_keys}
 
     # Normalize action name — smaller models sometimes include parameter signatures
     action = action.split("(")[0].strip().lower()
