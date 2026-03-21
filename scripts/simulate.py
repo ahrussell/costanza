@@ -795,10 +795,10 @@ def two_pass_inference(server_url, full_prompt, verbose=False):
         print(f"  Reasoning ({len(reasoning)} chars, {result1['elapsed_seconds']}s)")
 
     print("  Pass 2: generating action JSON...")
-    prompt2 = full_prompt + reasoning + "\n</think>\n"
+    prompt2 = full_prompt + reasoning + "\n</think>\n{"
     result2 = call_llama(server_url, prompt2, max_tokens=256, temperature=0.3, stop=["\n\n"])
 
-    combined = reasoning + "\n</think>\n" + result2["text"]
+    combined = reasoning + "\n</think>\n{" + result2["text"]
     total_elapsed = result1["elapsed_seconds"] + result2["elapsed_seconds"]
 
     return {

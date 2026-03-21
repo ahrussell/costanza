@@ -535,7 +535,9 @@ The agent's `set_max_bid` action creates a feedback loop: as treasury shrinks, t
 - Phala gateway has HTTP timeouts; SSH tunnel or on-CVM curl needed for long inference.
 - Two-pass inference timeout must account for CPU speed: 1800s per pass minimum for 14B.
 
-**Current attested model:** DeepSeek R1 Distill Qwen 14B Q4_K_M (8.99 GB GGUF, SHA-256: `0b319bd0572f2730bfe11cc751defe82045fad5085b4e60591ac2cd2d9633181`). CPU-only, TDX enclave. The 70B model is used in Phase 0 (RunPod, no TEE) but not yet in a TEE build.
+**Production model:** DeepSeek R1 Distill Llama 70B Q4_K_M (42.5 GB GGUF). Selected via 3-model gauntlet (75 epochs × 3 models): 100% parse success, best reasoning depth, diversified investment strategy. Runs on GCP TDX H100 (a3-highgpu-1g) with ~30s/epoch. GPU CC ready state must be set after boot: `nvidia-smi conf-compute -srs 1`.
+
+**Development model:** DeepSeek R1 Distill Qwen 14B Q4_K_M (8.99 GB GGUF, SHA-256: `0b319bd0572f2730bfe11cc751defe82045fad5085b4e60591ac2cd2d9633181`). CPU-only, used for Phase 1 TEE testing on Phala Cloud.
 
 ### Phase 2: Auction + Attestation Verification (Weeks 5–6) ✅ CONTRACT COMPLETE
 **Goal:** Permissionless runner participation with economic incentives and full attestation verification.
