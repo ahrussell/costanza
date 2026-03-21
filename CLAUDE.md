@@ -5,7 +5,8 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 ## Project Overview
 
 - **Smart contract** (Solidity, Base L2): Treasury, referral system, epoch actions, reverse auction, TEE attestation, diary events
-- **Agent inference**: DeepSeek R1 Distill Llama 70B (Q4_K_M, 42.5GB GGUF) via llama.cpp on RunPod (Phase 0); DeepSeek R1 Distill Qwen 14B in TDX TEE (Phase 1)
+- **Agent inference**: DeepSeek R1 Distill Llama 70B (Q4_K_M, 42.5GB GGUF) via llama.cpp on GCP TDX H100 (production model)
+- **Model selection**: DeepSeek R1 70B chosen via 3-model gauntlet (75 epochs each): 100% parse success, best reasoning depth, diversified investment strategy. Llama 3.3 70B also 100% reliable but less strategic. QwQ 32B eliminated (23% parse failure rate).
 - **Runner software**: Python script that reads contract state, runs inference (direct or via TEE), parses output, submits on-chain
 - **TEE enclave**: Docker image with llama.cpp + model + Flask API, runs in TDX Confidential VM on Phala Cloud
 - **Frontend**: Diary viewer, treasury dashboard, donation/referral interface (Phase 4)
@@ -25,7 +26,8 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 - **E2E gas costs**: deployment ~5.1M, DCAP verification ~10-12M (15M limit recommended)
 - **GPU inference**: ~30s per epoch on H100 (vs ~22 min on CPU)
 - **GCP snapshot**: `humanfund-gpu-70b-boot-v1` — boot disk with llama.cpp CUDA build
-- **Remaining**: production Docker image, audit, mainnet deployment
+- **Model gauntlet**: 3 models tested across 75-epoch scenario (honeymoon → boom → crisis → drought → recovery → endgame). DeepSeek R1 70B: 6.12 ETH donated, 3.05 ETH final assets, diversified across 3 protocols. Llama 3.3 70B: 7.20 ETH donated but only 2.00 ETH final assets (less sustainable). QwQ 32B: 0.80 ETH donated, 17 parse failures.
+- **Remaining**: message spotlighting (prompt injection defense), production Docker image, audit, mainnet deployment
 - Deployer address: `0xffea30B0DbDAd460B9b6293fb51a059129fCCdAf`
 
 **DESIGN.md is a living document** — see it for the full specification and implementation checklist.
@@ -57,7 +59,7 @@ Each epoch (24 hours in production, configurable for testnet):
 ## Key Design Decisions
 
 - **Single action per epoch**: donate, set_commission_rate, set_max_bid, invest, withdraw, set_guiding_policy, or noop
-- **Donor messages**: donateWithMessage() accepts a string (max 280 chars, min 0.01 ETH). Messages queued, up to 20 per epoch shown to model with spotlighting delimiters to mitigate prompt injection
+- **Donor messages**: donateWithMessage() accepts a string (max 280 chars, min 0.01 ETH). Messages queued, up to 20 per epoch shown to model with datamarking spotlighting (whitespace replaced with dynamic marker token) to mitigate prompt injection — based on [Hines et al. 2024](https://arxiv.org/abs/2403.14720)
 - **Hard bounds enforced by contract**: max 10% treasury donated/epoch, commission 1-90%, max bid 0.0001 ETH to 2% treasury, investment bounds 80% max / 25% per protocol / 20% min reserve
 - **No free-text input fields** — prompt injection mitigated by structured numeric/address data only
 - **Two-pass inference**: Pass 1 generates reasoning (stop at `</think>`), Pass 2 generates JSON action (lower temperature)
@@ -83,7 +85,7 @@ Each epoch (24 hours in production, configurable for testnet):
 ## Tech Stack
 
 - **Chain**: Base (Coinbase L2), Solidity ^0.8.20
-- **Inference**: llama.cpp + DeepSeek R1 Distill Llama 70B Q4_K_M (RunPod, Phase 0); 14B Q4_K_M (TEE, Phase 1)
+- **Inference**: llama.cpp + DeepSeek R1 Distill Llama 70B Q4_K_M (GCP TDX H100, production)
 - **TEE**: Intel TDX via Phala Cloud / dstack (v0.5.x)
 - **Attestation**: Automata Network DCAP contracts at `0xaDdeC7e85c2182202b66E331f2a4A0bBB2cEEa1F`
 - **Tooling**: Foundry (Solidity), Python 3.9+ with venv (runner + enclave)
@@ -158,6 +160,10 @@ thehumanfund/
 │   └── index.html               # Internal dashboard (reads contract state)
 ├── models/                      # Local model files (gitignored)
 ├── scripts/
+│   ├── simulate.py              # Local simulation mode (scenario presets, stress testing)
+│   ├── arena.py                 # Model comparison arena (run + blind review UI)
+│   ├── gauntlet.py              # Multi-model gauntlet runner (75-epoch scenarios)
+│   ├── e2e_test.py              # Full e2e test on Base Sepolia with TDX attestation
 │   ├── rpod                     # SSH wrapper for RunPod
 │   ├── runpod-setup.sh          # First-time RunPod pod setup
 │   └── runpod-ssh.exp           # Low-level expect script for RunPod SSH
@@ -242,7 +248,8 @@ phala ssh humanfund-tee -- 'docker exec -d dstack-agent-1 python3 /tmp/run_infer
 
 **Image**: `ghcr.io/ahrussell/humanfund-tee:v3` (amd64, Ubuntu 22.04)
 
-**Model**: DeepSeek R1 Distill Qwen 14B Q4_K_M (8.99 GB GGUF) — development model
+**Production model**: DeepSeek R1 Distill Llama 70B Q4_K_M (42.5 GB GGUF) — selected via 3-model gauntlet
+**Development model**: DeepSeek R1 Distill Qwen 14B Q4_K_M (8.99 GB GGUF) — used for Phase 1 CPU testing
 - SHA-256: `0b319bd0572f2730bfe11cc751defe82045fad5085b4e60591ac2cd2d9633181`
 - Mounted from disk by runner, SHA-256 verified at boot (no network download)
 - CPU-only inference: ~0.33 tok/s on 16 vCPU, ~22 min/epoch
