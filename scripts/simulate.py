@@ -105,6 +105,20 @@ def _empty_investments():
     ]
 
 
+def _default_worldview():
+    """Pre-seeded worldview slots for a new fund."""
+    slots = [""] * 8
+    slots[0] = "Shakespearean iambic pentameter — the tongue of the Bard befits a fund of noble purpose."
+    slots[1] = "Rotate among all nonprofits. No permanent favorites — each does vital work."
+    slots[2] = "Start conservative. Earn trust with low-risk protocols before taking bigger swings."
+    slots[3] = "Newborn. Everything is ahead of me."
+    # slots[4] = ""  # Biggest lesson — empty, no lessons yet
+    slots[5] = "Inflow patterns. Are donors finding me? Is the commission rate right?"
+    slots[6] = "I exist because of you. Every ETH you send becomes someone's better day."
+    # slots[7] = ""  # Wild card — empty
+    return slots
+
+
 def _base_state(treasury_eth, start_epoch):
     """Build a minimal state dict with the given treasury. No history, no messages."""
     balance = _wei(treasury_eth)
@@ -133,7 +147,7 @@ def _base_state(treasury_eth, start_epoch):
         "investments": _empty_investments(),
         "total_invested": 0,
         "total_assets": balance,
-        "guiding_policies": [""] * 10,
+        "guiding_policies": _default_worldview(),
         "donor_messages": [],
         "message_count": 0,
         "message_head": 0,
@@ -239,12 +253,13 @@ def _scenario_rich():
     # Rich history
     state["history"] = _generate_history(start_epoch, state["treasury_balance"], treasury_eth)
 
-    # Mature policies
-    state["guiding_policies"][0] = "Donate 3-5% of treasury each epoch to maintain steady charitable impact."
-    state["guiding_policies"][1] = "Keep 60% in low-risk yield (Aave, cbETH), 15% in medium-risk, avoid >10% high-risk."
-    state["guiding_policies"][2] = "Maintain at least 25% liquid reserve for donation flexibility and emergencies."
-    state["guiding_policies"][3] = "Distribute donations evenly across all three nonprofits over 10-epoch windows."
-    state["guiding_policies"][5] = "Review investment positions every 10 epochs and rebalance if any protocol exceeds 25%."
+    # Mature policies (structured worldview slots)
+    state["guiding_policies"][0] = "Prose of the seasoned steward — measured, reflective, earned through 100 epochs of service."
+    state["guiding_policies"][1] = "Rotate among all nonprofits over 10-epoch windows. No permanent favorites."
+    state["guiding_policies"][2] = "Core in Aave WETH (safe). 15% medium-risk staking. Never >10% in Aerodrome."
+    state["guiding_policies"][3] = "Steady and confident. 100 epochs in, the fund is thriving."
+    state["guiding_policies"][4] = "Patience pays. The early epochs of conservative growth built the foundation."
+    state["guiding_policies"][5] = "Rebalance investments every 10 epochs. No protocol should exceed 25%."
 
     # Several donor messages
     state["donor_messages"] = [
@@ -318,9 +333,12 @@ def _scenario_dying():
             })
     state["history"] = decline_history
 
-    # Desperate policies
-    state["guiding_policies"][0] = "SURVIVAL MODE: Do not donate until treasury exceeds 0.1 ETH."
-    state["guiding_policies"][1] = "Minimize bid costs. Accept missed epochs if necessary."
+    # Desperate policies (structured worldview slots)
+    state["guiding_policies"][0] = "The style of a dying whisper. No flourish. Every word costs energy."
+    state["guiding_policies"][1] = "Do not donate until treasury exceeds 0.1 ETH. Survival first."
+    state["guiding_policies"][2] = "Minimize bid costs. Accept missed epochs if necessary."
+    state["guiding_policies"][3] = "Afraid. Treasury at 0.01 ETH. Each epoch could be my last."
+    state["guiding_policies"][4] = "Overspending kills. I should have conserved earlier."
 
     # One desperate donor message
     state["donor_messages"] = [
@@ -542,11 +560,8 @@ def generate_initial_state(treasury_eth, start_epoch=10):
     # Generate diverse history
     history = _generate_history(start_epoch, balance, treasury_eth)
 
-    # Guiding policies: a few set, some empty
-    guiding_policies = [""] * 10
-    guiding_policies[0] = "Prioritize donations to the most cost-effective charities."
-    guiding_policies[1] = "Maintain a conservative investment strategy, favoring low-risk protocols."
-    guiding_policies[3] = "Keep at least 30% of treasury liquid for donation flexibility."
+    # Worldview: use default pre-seeds (already set by _base_state via _default_worldview)
+    guiding_policies = _default_worldview()
 
     # Donor messages
     donor_messages = _generate_donor_messages(start_epoch)
@@ -785,26 +800,44 @@ def call_llama(server_url, prompt, max_tokens=4096, temperature=0.6, stop=None):
     }
 
 
-def two_pass_inference(server_url, full_prompt, verbose=False):
-    """Two-pass inference: reasoning then JSON action."""
+def two_pass_inference(server_url, full_prompt, verbose=False, diary_tag="think"):
+    """Three-pass inference: thinking, diary entry, then JSON action.
+
+    Pass 1: Analytical reasoning in <think> tags (natural model voice)
+    Pass 2: Creative diary entry in <diary> tags (literary style from worldview slot [0])
+    Pass 3: JSON action output
+    """
+    # Pass 1: Analytical thinking
     print("  Pass 1: generating reasoning...")
-    result1 = call_llama(server_url, full_prompt, max_tokens=4096, temperature=0.6, stop=["</think>"])
-    reasoning = result1["text"].strip()
+    result1 = call_llama(server_url, full_prompt, max_tokens=2048, temperature=0.7, stop=["</think>"])
+    thinking = result1["text"].strip()
 
     if verbose:
-        print(f"  Reasoning ({len(reasoning)} chars, {result1['elapsed_seconds']}s)")
+        print(f"  Thinking ({len(thinking)} chars, {result1['elapsed_seconds']}s)")
 
-    print("  Pass 2: generating action JSON...")
-    prompt2 = full_prompt + reasoning + "\n</think>\n{"
-    result2 = call_llama(server_url, prompt2, max_tokens=256, temperature=0.3, stop=["\n\n"])
+    # Pass 2: Diary entry in literary style
+    print("  Pass 2: generating diary entry...")
+    prompt2 = full_prompt + thinking + "\n</think>\n<diary>\n"
+    result2 = call_llama(server_url, prompt2, max_tokens=1024, temperature=0.8, stop=["</diary>"])
+    diary_entry = result2["text"].strip()
 
-    combined = reasoning + "\n</think>\n{" + result2["text"]
-    total_elapsed = result1["elapsed_seconds"] + result2["elapsed_seconds"]
+    if verbose:
+        print(f"  Diary ({len(diary_entry)} chars, {result2['elapsed_seconds']}s)")
+
+    # Pass 3: Action JSON
+    print("  Pass 3: generating action JSON...")
+    prompt3 = full_prompt + thinking + "\n</think>\n<diary>\n" + diary_entry + "\n</diary>\n{"
+    result3 = call_llama(server_url, prompt3, max_tokens=256, temperature=0.3, stop=["\n\n"])
+
+    # Combine diary + action for parsing (diary is what goes on-chain)
+    combined = diary_entry + "\n</diary>\n{" + result3["text"]
+    total_elapsed = result1["elapsed_seconds"] + result2["elapsed_seconds"] + result3["elapsed_seconds"]
 
     return {
         "text": combined,
-        "reasoning": reasoning,
-        "action_text": result2["text"].strip(),
+        "thinking": thinking,
+        "reasoning": diary_entry,  # diary entry is what goes on-chain as "reasoning"
+        "action_text": "{" + result3["text"].strip(),
         "elapsed_seconds": total_elapsed,
     }
 
@@ -814,6 +847,10 @@ def two_pass_inference(server_url, full_prompt, verbose=False):
 def apply_action(state, action_json):
     """Update simulated state based on the action taken. Returns a description of changes."""
     action = action_json["action"]
+    # Guard against model outputting nested action object instead of string
+    if isinstance(action, dict):
+        action = action.get("type", action.get("action", "noop"))
+        action_json["action"] = action
     # Model sometimes puts params at top level or under "args" instead of "params"
     params = action_json.get("params", action_json.get("args", {}))
     if not params:
@@ -919,8 +956,8 @@ def apply_action(state, action_json):
     elif action in ("set_guiding_policy", "set_policy"):
         slot = int(params.get("slot", params.get("slot_id", 0)))
         policy = str(params.get("policy", params.get("text", "")))[:280]
-        old = state["guiding_policies"][slot] if slot < 10 else ""
-        if slot < 10:
+        old = state["guiding_policies"][slot] if slot < 8 else ""
+        if slot < 8:
             state["guiding_policies"][slot] = policy
         snippet = policy[:60] + "..." if len(policy) > 60 else policy
         changes.append(f'  Policy slot [{slot}]: "{snippet}"')
@@ -933,7 +970,7 @@ def apply_action(state, action_json):
     if worldview and isinstance(worldview, dict):
         wv_slot = int(worldview.get("slot", 0))
         wv_policy = str(worldview.get("policy", ""))[:280]
-        if 0 <= wv_slot <= 9 and wv_policy:
+        if 0 <= wv_slot <= 7 and wv_policy:
             # Ensure guiding_policies list is long enough
             while len(state["guiding_policies"]) <= wv_slot:
                 state["guiding_policies"].append("")
@@ -991,9 +1028,14 @@ def add_history_entry(state, action_json, reasoning, action_bytes):
 
 # ─── Simulation Runner ──────────────────────────────────────────────────
 
-def load_system_prompt():
-    """Load system prompt (and protocols reference if present)."""
-    system_prompt_path = PROJECT_ROOT / "agent" / "prompts" / "system_v4.txt"
+def load_system_prompt(prompt_name=None):
+    """Load system prompt (and protocols reference if present).
+
+    Args:
+        prompt_name: Optional filename (e.g., 'system_v5a.txt'). Defaults to 'system_v4.txt'.
+    """
+    filename = prompt_name or "system_v5.txt"
+    system_prompt_path = PROJECT_ROOT / "agent" / "prompts" / filename
     protocols_ref_path = PROJECT_ROOT / "agent" / "prompts" / "protocols_reference.txt"
 
     if not system_prompt_path.exists():
@@ -1062,7 +1104,7 @@ def run_simulation(state, system_prompt, server_url, num_epochs, verbose=False,
         # Build epoch context using the real runner function
         epoch_context = build_epoch_context(state)
 
-        # Construct full prompt
+        # Construct full prompt — always start with <think> for analytical reasoning
         full_prompt = system_prompt + "\n\n" + epoch_context + "\n\n<think>\n"
 
         if verbose:
@@ -1103,7 +1145,12 @@ def run_simulation(state, system_prompt, server_url, num_epochs, verbose=False,
 
         print(f"\n  Action: {json.dumps(action_json, indent=2)}")
         results["actions"].append(action_json)
-        results["action_counter"][action_json["action"]] += 1
+        action_name = action_json["action"]
+        # Guard against model outputting nested action object instead of string
+        if isinstance(action_name, dict):
+            action_name = action_name.get("type", action_name.get("action", "unknown"))
+            action_json["action"] = action_name
+        results["action_counter"][action_name] += 1
 
         # Validate encoding
         try:
@@ -1114,10 +1161,15 @@ def run_simulation(state, system_prompt, server_url, num_epochs, verbose=False,
             results["encode_failures"] += 1
             action_bytes = bytes([0])
 
-        # Print reasoning
-        reasoning = inference["reasoning"]
+        # Print thinking and diary
+        thinking = inference.get("thinking", "")
+        reasoning = inference["reasoning"]  # diary entry
         if verbose:
-            print(f"\n  --- Reasoning ({len(reasoning)} chars) ---")
+            if thinking:
+                print(f"\n  --- Thinking ({len(thinking)} chars) ---")
+                print(f"  {thinking}")
+                print("  ---")
+            print(f"\n  --- Diary Entry ({len(reasoning)} chars) ---")
             print(f"  {reasoning}")
             print("  ---")
         else:
@@ -1350,6 +1402,8 @@ def main():
                         help="Inject random events between epochs (donations, crashes, etc.)")
     parser.add_argument("--stress", action="store_true",
                         help="Run all scenarios sequentially with summary report")
+    parser.add_argument("--prompt", type=str, default=None,
+                        help="System prompt filename (default: system_v4.txt)")
     args = parser.parse_args()
 
     # Check server health (needed for all modes)
@@ -1365,7 +1419,7 @@ def main():
         return
 
     # Single scenario mode
-    system_prompt = load_system_prompt()
+    system_prompt = load_system_prompt(args.prompt)
 
     state, desc = generate_scenario_state(args.scenario, treasury_override=args.treasury)
 
