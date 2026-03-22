@@ -98,7 +98,7 @@ The RTMR[3] verification requires replaying the event log:
 ### Property 3: Correct Inputs
 > The enclave processed exactly the inputs that the contract committed for this epoch.
 
-**Verified by**: The REPORTDATA field in the quote must contain a hash that commits to the `inputHash` the contract stored at epoch start. Since the enclave computes `REPORTDATA = SHA256(input_hash || action_hash || reasoning_hash)`, and the contract knows the committed `input_hash`, the contract can recompute the expected REPORTDATA from the submitted data and compare.
+**Verified by**: The REPORTDATA field in the quote must contain a hash that commits to the `inputHash` the contract stored at epoch start. Since the enclave computes `REPORTDATA = SHA256(input_hash || action_hash || reasoning_hash || randomnessSeed)`, and the contract knows the committed `input_hash`, the contract can recompute the expected REPORTDATA from the submitted data and compare.
 
 ### Property 4: Output Integrity
 > The action and reasoning submitted on-chain are exactly what the enclave produced.
@@ -114,9 +114,9 @@ The RTMR[3] verification requires replaying the event log:
 
 ## 4. Current Implementation Gaps
 
-### GAP 1 (Critical): RTMR/MRTD Values Not Checked
+### GAP 1 (CLOSED): MRTD/RTMR Values Verified
 
-**Status**: The contract stores `approvedMrtd` via `setApprovedMrtd()` but never actually compares it against the quote output. In `submitAuctionResult()` (line 527):
+**Status**: Implemented in `AttestationVerifier.sol`. The contract stores `approvedMrtd` via `setApprovedMrtd()` but never actually compares it against the quote output. In `submitAuctionResult()` (line 527):
 
 ```solidity
 (bool verified, ) = DCAP_VERIFIER.verifyAndAttestOnChain{value: msg.value}(attestationQuote);
@@ -153,9 +153,9 @@ Within the quoteBody (offsets relative to output start):
 
 Source: `automata-network/automata-dcap-attestation` — `QuoteVerifierBase.serializeOutput()`, `V4QuoteVerifier.sol`, `TDReportParser.sol`.
 
-### GAP 2 (Critical): REPORTDATA Not Checked
+### GAP 2 (CLOSED): REPORTDATA Verified
 
-**Status**: The enclave correctly computes `REPORTDATA = SHA256(input_hash || action_hash || reasoning_hash)` and binds it into the TDX quote. However, the contract never verifies that the REPORTDATA in the quote matches the expected value computed from the submitted `action`, `reasoning`, and the committed `epochInputHash`.
+**Status**: Implementation matches the spec. The enclave correctly computes `REPORTDATA = SHA256(input_hash || action_hash || reasoning_hash || randomnessSeed)` and binds it into the TDX quote. The contract now verifies that the REPORTDATA in the quote matches the expected value computed from the submitted `action`, `reasoning`, the committed `epochInputHash`, and the `randomnessSeed`.
 
 **Impact**: Even with an approved image, a runner could:
 - Run inference with modified inputs (different epoch context)
@@ -164,12 +164,12 @@ Source: `automata-network/automata-dcap-attestation` — `QuoteVerifierBase.seri
 
 **Required fix**:
 1. Parse REPORTDATA from the DCAP verifier output (bytes 531–594, see GAP 1 for layout)
-2. Recompute expected REPORTDATA: `SHA256(input_hash || SHA256(action) || SHA256(reasoning))`, zero-padded to 64 bytes
+2. Recompute expected REPORTDATA: `SHA256(input_hash || SHA256(action) || SHA256(reasoning) || randomnessSeed)`, zero-padded to 64 bytes
 3. Compare against the quote's REPORTDATA field
 
 Note: dstack v0.5.x (`/var/run/dstack.sock`) passes report_data **verbatim** to the TDX driver — no double-hashing. The old v0.3.x `tappd` API did apply SHA-256, but that API is deprecated. See GAP 5 (resolved) for details.
 
-### GAP 3 (Moderate): Input Hash Not Verified Against Submission
+### GAP 3 (CLOSED via GAP 2): Input Hash Verified via REPORTDATA
 
 **Status**: The contract computes `epochInputHashes[epoch]` at `startEpoch()` but `submitAuctionResult()` does not require the runner to submit the input blob or verify its hash matches the commitment.
 
@@ -207,12 +207,12 @@ Note: dstack v0.5.x (`/var/run/dstack.sock`) passes report_data **verbatim** to 
 The current v0.5.x `dstack` API (`/var/run/dstack.sock`, which the enclave uses) passes report_data **verbatim** to the TDX driver, only zero-padding to 64 bytes. The raw TDX hardware also passes report_data verbatim.
 
 **Verification on-chain is therefore straightforward**:
-- Enclave computes: `rd = SHA256(input_hash || SHA256(action) || SHA256(reasoning))` → 32 bytes, padded to 64
+- Enclave computes: `rd = SHA256(input_hash || SHA256(action) || SHA256(reasoning) || randomnessSeed)` → 32 bytes, padded to 64
 - Quote contains: `REPORTDATA = rd || 0x00*32` (64 bytes total)
-- Contract computes: `expected = sha256(abi.encodePacked(inputHash, sha256(action), sha256(reasoning)))` → 32 bytes
+- Contract computes: `expected = sha256(abi.encodePacked(inputHash, sha256(action), sha256(reasoning), randomnessSeed))` → 32 bytes
 - Contract verifies: `expected == REPORTDATA[0:32]` and `REPORTDATA[32:64] == 0`
 
-**CLAUDE.md should be updated** to remove the incorrect double-hashing note.
+**CLAUDE.md should be updated** to remove the incorrect double-hashing note. (RESOLVED — CLAUDE.md has been updated)
 
 **Azure note**: Azure Confidential VMs use a vTPM abstraction where REPORTDATA contains a hash of Runtime Claims JSON, not application-controlled data directly. Supporting Azure would require a different verification flow. For now, we target platforms that give direct REPORTDATA control (dstack, bare-metal TDX).
 
@@ -248,7 +248,7 @@ The current v0.5.x `dstack` API (`/var/run/dstack.sock`, which the enclave uses)
 1. The contract computes `inputHash = keccak256(epoch_state)` at `startEpoch()` and commits it on-chain
 2. The runner must pass `input_hash` to the enclave (it currently does via the `/run_epoch` API)
 3. The enclave binds `input_hash` into REPORTDATA via `compute_report_data()`
-4. The contract verifies REPORTDATA matches `expected = SHA256(committed_input_hash || action_hash || reasoning_hash)`
+4. The contract verifies REPORTDATA matches `expected = SHA256(committed_input_hash || action_hash || reasoning_hash || randomnessSeed)`
 
 **Current gap**: The enclave accepts whatever `input_hash` the runner passes — it does NOT independently verify that the epoch context matches the hash. The enclave trusts the runner's claim about what the input hash is.
 
@@ -374,9 +374,9 @@ There exists a genuine TDX execution where:
 4. **Model integrity**: The approved image contains `MODEL_SHA256`. start.sh downloads the model and verifies `sha256sum(model) == MODEL_SHA256` before starting inference. A mismatch causes abort. Since start.sh is part of the attested image, this check cannot be bypassed. (A5)
 
 5. **REPORTDATA check** establishes that the attested computation used `input_hash = epochInputHashes[e]` and produced exactly the submitted `(action, reasoning)`. Specifically:
-   - Enclave computes: `rd = SHA256(input_hash || SHA256(action) || SHA256(reasoning))` → 32 bytes, zero-padded to 64 bytes
+   - Enclave computes: `rd = SHA256(input_hash || SHA256(action) || SHA256(reasoning) || randomnessSeed)` → 32 bytes, zero-padded to 64 bytes
    - TDX hardware places: `quote.REPORTDATA = rd` (64 bytes, verbatim — no additional hashing in dstack v0.5.x)
-   - Contract computes: `expected = sha256(abi.encodePacked(epochInputHashes[e], sha256(action), sha256(reasoning)))` → 32 bytes
+   - Contract computes: `expected = sha256(abi.encodePacked(epochInputHashes[e], sha256(action), sha256(reasoning), randomnessSeed))` → 32 bytes
    - Contract verifies: `expected == quote.REPORTDATA[0:32]` (extracted from Automata output at bytes 531–562)
 
 6. **Epoch binding**: `epochInputHashes[e]` is computed from state that includes `currentEpoch`, which is unique per epoch. A quote for epoch N has different REPORTDATA than epoch M (for N != M).
@@ -464,7 +464,7 @@ function _verifyReportData(
     bytes32 inputHash = epochInputHashes[epoch];
     bytes32 actionHash = sha256(action);
     bytes32 reasoningHash = sha256(reasoning);
-    bytes32 expected = sha256(abi.encodePacked(inputHash, actionHash, reasoningHash));
+    bytes32 expected = sha256(abi.encodePacked(inputHash, actionHash, reasoningHash, randomnessSeed));
 
     // Extract actual REPORTDATA[0:32] from output at offset 531
     bytes32 actual;
@@ -479,7 +479,7 @@ function _verifyReportData(
 }
 ```
 
-**Encoding compatibility**: `abi.encodePacked(bytes32, bytes32, bytes32)` concatenates three 32-byte values = 96 bytes. Python's `input_hash + action_hash + reasoning_hash` also concatenates three 32-byte values = 96 bytes. These produce identical byte sequences, so `sha256` produces the same result. This should be verified with an integration test.
+**Encoding compatibility**: `abi.encodePacked(bytes32, bytes32, bytes32, bytes32)` concatenates four 32-byte values = 128 bytes. Python's `input_hash + action_hash + reasoning_hash + randomness_seed` also concatenates four 32-byte values = 128 bytes. These produce identical byte sequences, so `sha256` produces the same result. This should be verified with an integration test.
 
 **Gas cost**: `sha256` precompile costs 60 gas base + 12 gas per 32-byte word. For reasoning up to 8KB: ~3,072 gas for `sha256(reasoning)`. Action is small (~65 bytes): ~84 gas. Combined hash (96 bytes): ~96 gas. Total REPORTDATA verification: ~3,300 gas. Negligible compared to the ~3M gas DCAP verification.
 
@@ -662,7 +662,7 @@ This would reduce the TCB (Trusted Computing Base) significantly by eliminating 
 The contract computes `inputHash` using `keccak256(abi.encode(...))` (Ethereum's native hash). The enclave computes REPORTDATA using `SHA-256`. These are different hash functions, which is fine — but the interaction needs care:
 
 - `inputHash` (keccak256, 32 bytes) is an opaque blob to the enclave — it just includes it in the SHA-256 chain
-- The enclave hashes: `SHA256(inputHash_keccak || SHA256(action) || SHA256(reasoning))` → 32 bytes, zero-padded to 64 bytes
+- The enclave hashes: `SHA256(inputHash_keccak || SHA256(action) || SHA256(reasoning) || randomnessSeed)` → 32 bytes, zero-padded to 64 bytes
 - TDX hardware places these 64 bytes verbatim into the quote's REPORTDATA field (no additional hashing in dstack v0.5.x or bare-metal TDX)
 
 The contract must replicate this exact chain using Solidity's `sha256()` precompile (NOT `keccak256`). The `keccak256` is only used for the initial input hash; all REPORTDATA verification uses SHA-256.
@@ -689,9 +689,9 @@ Inside TDX, the guest has access to `RDRAND`/`RDSEED` CPU instructions which pro
 | Property | Status | Implementation |
 |---|---|---|
 | Genuine TDX hardware | IMPLEMENTED | Automata DCAP via `AttestationVerifier.sol` |
-| Approved image identity | IMPLEMENTED (GAP 1) | MRTD + RTMR[0..2] checked in `AttestationVerifier._computeImageKey()` |
-| Input integrity | IMPLEMENTED (GAP 2) | REPORTDATA verified in `submitAuctionResult()` |
-| Output integrity | IMPLEMENTED (GAP 2) | REPORTDATA binds `sha256(inputHash \|\| sha256(action) \|\| sha256(reasoning) \|\| seed)` |
+| Approved image identity | IMPLEMENTED | MRTD + RTMR[0..2] checked in `AttestationVerifier._computeImageKey()` |
+| Input integrity | IMPLEMENTED | REPORTDATA verified in `submitAuctionResult()` |
+| Output integrity | IMPLEMENTED | REPORTDATA binds `sha256(inputHash \|\| sha256(action) \|\| sha256(reasoning) \|\| seed)` |
 | Action bounds | IMPLEMENTED | Contract-enforced hard bounds (unchanged) |
 | Temporal validity | IMPLEMENTED | Auction state machine (unchanged) |
 | Epoch binding | IMPLEMENTED | `epochInputHashes[epoch]` includes `historyHash` + epoch number |
@@ -699,11 +699,11 @@ Inside TDX, the guest has access to `RDRAND`/`RDSEED` CPU instructions which pro
 | Randomness integrity | IMPLEMENTED (Q6) | `block.prevrandao` captured in `closeAuction()`, bound via REPORTDATA |
 | Model integrity | IMPLEMENTED (Q7) | Model mounted from disk, SHA-256 verified at boot |
 
-**Status**: All critical security gaps (GAPs 1–2) and design decisions (Q3, Q5–Q7) are now implemented and **verified end-to-end on Base Sepolia with real TDX attestation**. 74 tests pass across 3 test suites.
+**Status**: All critical security gaps (GAPs 1–2) and design decisions (Q3, Q5–Q7) are now implemented and **verified end-to-end on Base Sepolia with real TDX attestation**. 126 tests pass across 6 test suites.
 
 ### E2E Test Results (March 2026)
 
-Full attestation chain verified on Base Sepolia using GCP `a3-highgpu-1g` (H100 80GB, Intel TDX):
+Full attestation chain verified on Base Sepolia using GCP `a3-highgpu-1g` (H100 80GB, Intel TDX) with DeepSeek R1 70B (~30s/epoch on H100):
 
 | Step | Result | Details |
 |---|---|---|
@@ -716,7 +716,7 @@ Full attestation chain verified on Base Sepolia using GCP `a3-highgpu-1g` (H100 
 
 **Key findings**:
 - DCAP on-chain verification costs ~10.2M gas — `submitAuctionResult` needs at least 12M gas limit
-- GPU inference (14B Q4_K_M on H100): ~30 seconds. CPU (c3-standard-4): ~7 minutes
+- GPU inference (70B Q4_K_M on H100): ~30 seconds. CPU (c3-standard-4): ~7 minutes
 - GCP TDX requires `nvidia-driver-575-open` (open kernel module) for H100 in CC mode
 - Base Sepolia RPC returns stale reads after writes — must create fresh Web3 provider + 3s delay
 - MRTD/RTMR values differ between CPU and GPU VMs (different firmware/hardware config)
@@ -724,7 +724,7 @@ Full attestation chain verified on Base Sepolia using GCP `a3-highgpu-1g` (H100 
 - Automata PCCS collateral must be registered per-FMSPC via the DCAP Dashboard
 
 **Contracts (Base Sepolia)**:
-- TheHumanFund: `0x579F6B59342348ED8736B617EDEe5e2ae3a3D7E5`
+- TheHumanFund (Phase 3): `0xa507366987417e0E4247a827B48536DA11235CC7`
 - AttestationVerifier: `0xAC5634C4c279c4E3eA85968e26bD1AAED7f6453d`
 - Successful e2e tx: [`0x14ea95fa...`](https://sepolia.basescan.org/tx/14ea95fa3753135ceccfa23050a7709862ff6b1f88721e0d0668db12bbf3ac1e)
 

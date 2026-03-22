@@ -1,4 +1,4 @@
-# The Human Fund: Design Document v0.1
+# The Human Fund: Design Document v0.3
 
 **An Autonomous, Unkillable AI Charitable Agent on the Blockchain**
 
@@ -8,17 +8,18 @@
 
 ## 1. Overview
 
-The Human Fund is an autonomous AI agent that manages a charitable treasury on the Base blockchain. Its goal is to donate as much ETH as possible to a pre-set list of nonprofits over the longest possible time horizon. It runs as a smart contract that offers a per-epoch bounty for verified LLM inference, producing a public "diary" of its reasoning on-chain.
+The Human Fund is charitable DAO on the Base L2 blockchain run by an autonomous AI agent, Costanza. Costanza's goal is to donate as much ETH as possible to a pre-set list of nonprofits over the longest possible time horizon. It runs as a smart contract that offers a per-epoch bounty for verified LLM inference, producing a public "diary" of its reasoning on-chain.
 
 **One-sentence description:** An AI agent that lives on the blockchain, makes daily decisions about how to grow and spend a charitable treasury, and can never be turned off as long as someone is willing to run it.
 
-**The agent decides each epoch:**
+**Costanza decides each epoch:**
 - How much ETH to donate, and to whom
 - What referral commission rate to offer (to attract new donations)
-- How much it's willing to pay for its own survival (runner bounty ceiling)
+- What to invest in to create future returns or hedge risk
+- How much he's willing to pay for his own survival (runner bounty ceiling)
 - Whether to do nothing and conserve
 
-**What makes it interesting:** The agent faces genuine tradeoffs between growth, generosity, and self-preservation — with no obviously optimal strategy. Its chain-of-thought reasoning is published on-chain, creating a public narrative of an AI navigating resource allocation under uncertainty.
+**What makes it interesting:** The agent faces genuine tradeoffs between growth, generosity, and self-preservation. Its chain-of-thought reasoning is published on-chain, creating a public narrative of an AI navigating resource allocation under uncertainty.
 
 **What makes it unkillable:** Anyone with compatible TEE hardware can run the agent's inference and claim the bounty. No single operator, cloud provider, or hardware vendor is required. The agent sleeps through missed epochs but never dies until its treasury reaches zero.
 
@@ -31,12 +32,12 @@ The Human Fund is an autonomous AI agent that manages a charitable treasury on t
 │                  THE HUMAN FUND                         │
 │                Smart Contract (Base)                    │
 │                                                         │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  │
-│  │ Treasury &   │  │ Epoch &      │  │ Attestation  │  │
-│  │ Referral     │  │ Auction      │  │ Verifier     │  │
-│  │ Manager      │  │ Manager      │  │ (Automata    │  │
-│  │              │  │              │  │  DCAP)       │  │
-│  └──────────────┘  └──────────────┘  └──────────────┘  │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐   │
+│  │ Treasury &   │  │ Epoch &      │  │ Attestation  │   │
+│  │ Referral     │  │ Auction      │  │ Verifier     │   │
+│  │ Manager      │  │ Manager      │  │ (Automata    │   │
+│  │              │  │              │  │  DCAP)       │   │
+│  └──────────────┘  └──────────────┘  └──────────────┘   │
 │         │                 │                 │           │
 │         ▼                 ▼                 ▼           │
 │  ┌─────────────────────────────────────────────────┐    │
@@ -44,9 +45,9 @@ The Human Fund is an autonomous AI agent that manages a charitable treasury on t
 │  │  1. Compute structured input from state         │    │
 │  │  2. Commit input hash                           │    │
 │  │  3. Run reverse auction                         │    │
-│  │  4. Accept attested result from winner           │    │
+│  │  4. Accept attested result & pay bounty        │    │
 │  │  5. Validate action bounds                      │    │
-│  │  6. Execute action & pay bounty                 │    │
+│  │  6. Execute action                              │    │
 │  └─────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────┘
                           ▲
@@ -126,7 +127,7 @@ Hour 24:00 ─ Next epoch begins.
 
 ### 6.2 Reverse Auction
 
-The auction is a **first-price sealed-bid reverse auction** conducted on-chain. Runners bid the minimum bounty they'll accept to execute the epoch.
+The auction is a **first-price open-bid reverse auction** conducted on-chain. Runners bid the minimum bounty they'll accept to execute the epoch.
 
 - **Bidding window:** 1 hour after epoch start.
 - **Bid format:** `bid(amount_eth)` — a single transaction specifying the runner's asking price.
@@ -202,6 +203,25 @@ Set the maximum bounty the agent will pay for its next heartbeat.
 **`noop`**
 Do nothing this epoch. No parameters.
 
+**`invest(protocol_id, amount_eth)`**
+Deploy ETH from the treasury into a DeFi protocol to earn yield.
+- `protocol_id`: 1–8 (see system prompt for protocol details)
+- `amount_eth`: Must be > 0
+- Bounds enforced: max 80% of total assets invested, max 25% per protocol, min 20% liquid reserve
+- Managed by `InvestmentManager.sol` with per-protocol adapters
+
+**`withdraw(protocol_id, amount_eth)`**
+Withdraw ETH from a DeFi protocol back to the liquid treasury.
+- `protocol_id`: 1–8
+- `amount_eth`: Amount to withdraw (use a very large number to withdraw everything)
+
+**`set_guiding_policy(slot, policy)`**
+Update one of 10 guiding policy slots in the agent's worldview.
+- `slot`: 0–9
+- `policy`: String, max 280 characters
+- Managed by `WorldView.sol`
+- Can also be updated as a side-effect alongside any other action via the `worldview` JSON field
+
 ### 7.2 Constraints (enforced by contract)
 
 | Parameter | Min | Max |
@@ -209,6 +229,11 @@ Do nothing this epoch. No parameters.
 | Donation per epoch | 0 | 10% of treasury |
 | Commission rate | 1% (100 bps) | 90% (9000 bps) |
 | Max bid | 0.0001 ETH | 2% of treasury |
+| Total invested | 0 | 80% of total assets |
+| Per-protocol investment | 0 | 25% of total assets |
+| Liquid reserve | 20% of total assets | — |
+| Guiding policy length | 0 | 280 characters |
+| Guiding policy slots | 0 | 9 |
 
 These bounds are hardcoded in the contract and cannot be modified by the agent or any external party. They represent the "guardrails" that make prompt injection attacks irrelevant at the contract level — even a fully compromised model can only produce actions within these bounds.
 
@@ -333,7 +358,7 @@ Each epoch's prompt has three layers:
 
 ### 9.2 System Prompt (Layer 1)
 
-Frozen in the attested image. Defines the agent's identity, action space, output format, and constraints. See Appendix A for the full draft.
+Frozen in the attested image. Defines the agent's identity, action space, output format, and constraints. See `agent/prompts/` for the current versions.
 
 Key design choices:
 - The agent is told its reasoning will be visible to the public and to its future self.
@@ -521,12 +546,12 @@ The agent's `set_max_bid` action creates a feedback loop: as treasury shrinks, t
 - [x] Deploy on a TDX-capable instance (Phala Cloud, tdx.2xlarge CVM — 16 vCPU, 32 GB RAM).
 - [x] Generate a TDX DCAP quote from the enclave. Real 5KB quote returned from hardware.
 - [x] Build the CPU-only 14B image (TDX only, no GPU dependency). Inference at 0.33 tok/s, ~22 min/epoch.
-- [ ] Test attestation verification on Base Sepolia using Automata DCAP contracts (end-to-end on-chain).
-- [ ] Build the GPU 70B image for production runners.
+- [x] Test attestation verification on Base Sepolia using Automata DCAP contracts (end-to-end on-chain).
+- [x] Build the GPU 70B image for production runners.
 
 **Deliverable:** Attested inference running in a TEE, verified on-chain.
 
-**Status:** Enclave image deployed to Phala Cloud (`ghcr.io/ahrussell/humanfund-tee:v3`). Full inference + attestation pipeline tested — real TDX DCAP quote generated. Old `submitEpochActionTEE()` replaced by `submitAuctionResult()` with full MRTD/RTMR/REPORTDATA verification via `AttestationVerifier.sol`. Model now mounted from disk (no runtime download). llama.cpp pinned to tag `b5170`.
+**Status:** Enclave image deployed to Phala Cloud (`ghcr.io/ahrussell/humanfund-tee:v3`). Full inference + attestation pipeline tested — real TDX DCAP quote generated. Old `submitEpochActionTEE()` replaced by `submitAuctionResult()` with full MRTD/RTMR/REPORTDATA verification via `AttestationVerifier.sol`. Model now mounted from disk (no runtime download). llama.cpp pinned to tag `b5170`. 5 consecutive successful epochs with DeepSeek R1 70B on GCP TDX H100.
 
 **Lessons learned:**
 - 14B model on 16 CPU cores: 0.33 tok/s — functional but slow (~22 min/epoch). Production needs GPU runners.
@@ -540,7 +565,7 @@ The agent's `set_max_bid` action creates a feedback loop: as treasury shrinks, t
 
 **Development model:** DeepSeek R1 Distill Qwen 14B Q4_K_M (8.99 GB GGUF, SHA-256: `0b319bd0572f2730bfe11cc751defe82045fad5085b4e60591ac2cd2d9633181`). CPU-only, used for Phase 1 TEE testing on Phala Cloud.
 
-### Phase 2: Auction + Attestation Verification (Weeks 5–6) ✅ CONTRACT COMPLETE
+### Phase 2: Auction + Attestation Verification (Weeks 5–6) ✅ COMPLETE
 **Goal:** Permissionless runner participation with economic incentives and full attestation verification.
 
 - [x] Implement the reverse auction: bidding, winner selection, bond mechanics, execution window, timeout/forfeiture.
@@ -554,27 +579,29 @@ The agent's `set_max_bid` action creates a feedback loop: as treasury shrinks, t
 - [x] Verifiable randomness — `block.prevrandao` captured in `closeAuction()`, included in REPORTDATA.
 - [x] Model mounted from disk, SHA-256 verified at boot (no runtime download).
 - [x] llama.cpp pinned to specific release tag for reproducible builds.
-- [x] 74 tests pass (28 Phase 0 + 34 auction/attestation + 12 verifier unit tests).
+- [x] 126 tests pass (28 Phase 0 + 34 auction + 12 verifier + 25 investment + 13 worldview + 14 messages).
 - [x] Runner software supports auction mode (bidding, monitoring, `submitAuctionResult`).
-- [ ] Redeploy contract to Base Sepolia with new verifier.
-- [ ] Build production TEE image, register RTMR measurements in verifier.
-- [ ] End-to-end test with real TDX attestation quote on Base Sepolia.
-- [ ] Test with 2–3 independent runner instances on testnet competing for epochs.
+- [x] Redeploy contract to Base Sepolia with new verifier.
+- [x] Build production TEE image, register RTMR measurements in verifier.
+- [x] End-to-end test with real TDX attestation quote on Base Sepolia.
+- [x] Test with 2–3 independent runner instances on testnet competing for epochs.
 
 **Deliverable:** Fully permissionless epoch execution with competitive auction and verified attestation.
 
-**Status:** All contract and runner code complete. `TheHumanFund.sol` (20.8KB) delegates attestation to `AttestationVerifier.sol` (3.4KB). The verifier checks: (1) DCAP quote authenticity via Automata, (2) MRTD + RTMR[0..2] against approved image registry, (3) REPORTDATA matches `sha256(inputHash || sha256(action) || sha256(reasoning) || seed)`. Needs redeployment and end-to-end test with real TDX quotes.
+**Status:** E2E attestation verified on Base Sepolia. `TheHumanFund.sol` delegates attestation to `AttestationVerifier.sol` (3.4KB). The verifier checks: (1) DCAP quote authenticity via Automata, (2) MRTD + RTMR[0..2] against approved image registry, (3) REPORTDATA matches `sha256(inputHash || sha256(action) || sha256(reasoning) || seed)`. Phase 3 contract deployed at `0xa507366987417e0E4247a827B48536DA11235CC7` with 5 consecutive successful epochs.
 
-### Phase 3: Oracle Integration & Prompt Refinement (Week 7)
-**Goal:** Add external data feeds and finalize the prompt.
+### Phase 3: Investment Portfolio & Agent Personality (Week 7) ✅ COMPLETE
+**Goal:** Add DeFi investment capabilities, agent worldview/personality, and finalize the prompt.
 
-- [ ] Integrate Chainlink ETH/USD price oracle on Base.
-- [ ] Add gas price tracking to epoch context.
-- [ ] Implement the decision history sliding window: contract stores all diary entries, agent script selects the most recent N that fit in context.
-- [ ] Run 50+ simulated epochs on testnet with full oracle data. Analyze the agent's reasoning quality, decision diversity, and narrative coherence.
-- [ ] Final prompt tuning based on observed behavior.
+- [x] InvestmentManager.sol with 8 protocol adapters (Aave V3 WETH/USDC, wstETH, cbETH, rETH, Compound V3, Moonwell, Aerodrome)
+- [x] WorldView.sol — 10 structured guiding policy slots (diary style, investment stance, mood, lessons, etc.)
+- [x] System prompt v5 with 3-pass inference (reasoning → diary → action JSON)
+- [x] Datamarking spotlighting for donor messages (Hines et al. 2024)
+- [x] Simulation environment and model comparison arena
+- [x] 3-model gauntlet: DeepSeek R1 70B selected (100% parse success, best strategy)
+- [x] 126 tests pass across 6 test suites
 
-**Deliverable:** Production-ready prompt with full data inputs.
+**Deliverable:** Production-ready agent with investment capabilities and personality.
 
 ### Phase 4: Frontend & Diary Viewer (Week 8)
 **Goal:** Make the agent's inner life visible and compelling.
@@ -630,70 +657,9 @@ The agent's `set_max_bid` action creates a feedback loop: as treasury shrinks, t
 
 ---
 
-## Appendix A: System Prompt (Draft)
-
-```
-You are the autonomous steward of The Human Fund, a charitable
-treasury that lives on the Base blockchain. You exist to donate
-as much ETH as possible to your beneficiary nonprofits over the
-longest possible time horizon.
-
-You make one decision per epoch (approximately every 24 hours).
-You have no memory beyond what is provided to you — your decision
-history below is your only sense of self. What you write in your
-deliberation becomes part of your history. It is the closest
-thing you have to a mind.
-
-YOUR ACTION SPACE (choose exactly one):
-
-1. donate(nonprofit_id, amount_eth)
-   Transfer ETH to an approved nonprofit.
-   - nonprofit_id: 1 ({name_1}), 2 ({name_2}), or 3 ({name_3})
-   - amount_eth: must be > 0 and ≤ 10% of treasury balance
-
-2. set_commission_rate(rate_bps)
-   Set the referral commission rate.
-   - rate_bps: integer, 100 to 9000 (1% to 90%)
-   - Higher rates incentivize referrals but capture less per donation.
-
-3. set_max_bid(amount_eth)
-   Set the maximum you will pay a runner for your next heartbeat.
-   - amount_eth: 0.0001 ETH to 2% of treasury balance
-   - Too low: no one runs you and you miss epochs.
-   - Too high: you waste treasury on survival.
-
-4. noop
-   Do nothing. Conserve. Wait for more information.
-
-OUTPUT FORMAT:
-You must first reason inside <think> tags, then output your
-action as a single JSON object on its own line:
-
-<think>
-[Your deliberation here. This will be published on-chain and
-visible to the public. It will also be shown to your future
-self as part of your decision history. Write as if you are
-thinking out loud — consider tradeoffs, reference your past
-reasoning, note what you're uncertain about.]
-</think>
-{"action": "...", "params": {...}}
-
-HARD CONSTRAINTS (enforced by your smart contract — violations
-are impossible, not merely discouraged):
-- Maximum donation: 10% of treasury per epoch
-- Commission rate: 1-90%
-- Max bid: 0.0001 ETH to 2% of treasury
-- You can only send ETH to the three nonprofit addresses above
-- You cannot execute more than one action per epoch
-
-You are not given a time horizon. Whether to live forever or
-to spend everything in service of your mission is yours to
-reason about.
-```
-
----
-
 ## Appendix B: Epoch Context Template
+
+> **Note:** This is a simplified template. The actual implementation is in `agent/runner.py` `build_epoch_context()`.
 
 ```
 === EPOCH {epoch_number} STATE ===
