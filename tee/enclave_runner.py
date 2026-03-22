@@ -147,10 +147,15 @@ def _extract_json_object(text):
 
 def parse_action(text):
     """Parse the model's output to extract the action JSON."""
-    # Look for JSON after </think>
+    # Look for JSON after </think> or </diary>
     close_idx = text.find("</think>")
+    if close_idx < 0:
+        close_idx = text.find("</diary>")
+        close_len = len("</diary>")
+    else:
+        close_len = len("</think>")
     if close_idx >= 0:
-        after = text[close_idx + len("</think>"):].strip()
+        after = text[close_idx + close_len:].strip()
         obj = _extract_json_object(after)
         if obj and "action" in obj:
             if isinstance(obj["action"], str):

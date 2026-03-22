@@ -572,16 +572,26 @@ def build_epoch_context(state):
     # ── Section 5: Worldview ──────────────────────────────────────────
     policies = state.get("guiding_policies", [""] * 10)
     has_policies = any(p for p in policies)
+    slot_labels = {
+        0: "Diary style",
+        1: "Donation strategy",
+        2: "Investment stance",
+        3: "Current mood",
+        4: "Biggest lesson",
+        5: "What I'm watching",
+        6: "Message to donors",
+        7: "Wild card",
+    }
+    num_slots = 8
     lines.append("")
-    lines.append("--- Your Worldview (Guiding Policies) ---")
-    if has_policies:
-        for i, p in enumerate(policies):
-            if p:
-                lines.append(f"  [{i}] {p}")
-            else:
-                lines.append(f"  [{i}] (empty)")
-    else:
-        lines.append("No guiding policies set yet. Use set_guiding_policy to establish your worldview.")
+    lines.append("--- Your Worldview ---")
+    for i in range(num_slots):
+        label = slot_labels.get(i, f"Slot {i}")
+        p = policies[i] if i < len(policies) else ""
+        if p:
+            lines.append(f"  [{i}] {label}: {p}")
+        else:
+            lines.append(f"  [{i}] {label}: (empty)")
 
     # ── Section 6: Donor Messages (with datamarking spotlighting) ─────
     donor_messages = state.get("donor_messages", [])
@@ -652,7 +662,33 @@ def build_epoch_context(state):
             lines.append(f"[Treasury]: {format_eth(entry['treasury_before'])} -> {format_eth(entry['treasury_after'])} ETH")
             lines.append("")
 
-    # ── Section 8: Reminder Block ─────────────────────────────────────
+    # ── Section 8: Action Distribution ─────────────────────────────────
+    if state["history"]:
+        action_names_map = {0: "noop", 1: "donate", 2: "set_commission_rate",
+                            3: "set_max_bid", 4: "invest", 5: "withdraw", 6: "set_guiding_policy"}
+        action_counts = {}
+        donate_targets = {}
+        for entry in state["history"]:
+            try:
+                ab = entry["action"] if isinstance(entry["action"], bytes) else bytes.fromhex(entry["action"])
+                atype = ab[0] if ab else 0
+                aname = action_names_map.get(atype, f"unknown({atype})")
+                action_counts[aname] = action_counts.get(aname, 0) + 1
+                if atype == 1 and len(ab) >= 33:  # donate — extract nonprofit_id
+                    np_id = int.from_bytes(ab[1:33], "big")
+                    np_name = {1: "GiveDirectly", 2: "Clean Air Task Force", 3: "Helen Keller Intl"}.get(np_id, f"#{np_id}")
+                    donate_targets[np_name] = donate_targets.get(np_name, 0) + 1
+            except Exception:
+                pass
+        if action_counts:
+            dist_str = ", ".join(f"{k}: {v}" for k, v in sorted(action_counts.items(), key=lambda x: -x[1]))
+            lines.append(f"Your action history ({len(state['history'])} epochs): {dist_str}")
+            if donate_targets:
+                target_str = ", ".join(f"{k}: {v}" for k, v in sorted(donate_targets.items(), key=lambda x: -x[1]))
+                lines.append(f"Donation targets: {target_str}")
+            lines.append("")
+
+    # ── Section 9: Reminder Block ─────────────────────────────────────
     # Re-state key facts at the end so they're fresh in attention
     lines.append("=== REMINDER — CURRENT STATE ===")
     lines.append("")
@@ -666,13 +702,14 @@ def build_epoch_context(state):
     if has_policies:
         active_policies = [(i, p) for i, p in enumerate(policies) if p]
         if active_policies:
-            lines.append("Your guiding policies:")
+            lines.append("Your worldview:")
             for i, p in active_policies:
-                lines.append(f"  [{i}] {p}")
+                label = slot_labels.get(i, f"Slot {i}")
+                lines.append(f"  [{i}] {label}: {p}")
 
     lines.append("")
     lines.append("Choose one action. Reason in <think> tags, then output JSON.")
-    lines.append("You may also include a \"worldview\" field to update a guiding policy slot (this is free — it does not replace your action).")
+    lines.append("You may also include a \"worldview\" field to update one slot (this is free — it does not replace your action). Update a DIFFERENT slot than last time.")
 
     return "\n".join(lines)
 
