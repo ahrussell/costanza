@@ -1491,13 +1491,80 @@ def get_auction_state(contract, epoch):
     }
 
 
-def run_auction_epoch(w3, contract, account, tee_url, bid_amount_wei, log_file=None):
+def estimate_bid(w3, vm_hourly_usd=3.50, vm_minutes=8):
+    """Estimate the cost of running one epoch and return a bid = 2x that cost.
+
+    Components:
+      1. Gas cost: startEpoch + bid + closeAuction + submitAuctionResult
+      2. Compute cost: Full GCP TDX VM lifecycle (boot + driver init + model
+         load + inference + quote + teardown). Default 8 minutes covers the
+         typical ~5-6 min cycle with safety margin.
+
+    Compute cost is tripled as a safety buffer (retries, slow boots, etc.),
+    then the total is doubled for the bid (targeting ~50% profit margin on
+    top of the safety buffer).
+
+    Returns bid amount in wei.
+    """
+    # ─── Gas cost estimate ────────────────────────────────────────────
+    # Estimated gas usage per auction epoch:
+    #   startEpoch:          ~100K gas
+    #   bid:                 ~100K gas
+    #   closeAuction:        ~100K gas
+    #   submitAuctionResult: ~12M gas (DCAP verification dominates)
+    TOTAL_GAS_ESTIMATE = 12_500_000
+
+    gas_price = w3.eth.gas_price  # wei per gas unit
+    gas_cost_wei = TOTAL_GAS_ESTIMATE * gas_price
+
+    # ─── Compute cost estimate (3x safety buffer) ─────────────────────
+    # Full VM lifecycle: boot (~2-3 min) + driver init (~30s) + model load
+    # (~60-90s) + inference (~30s) + quote + submission (~10s) ≈ 5-6 min.
+    # We use vm_minutes (default 8) and then triple for safety.
+    COMPUTE_SAFETY_MULTIPLIER = 3
+    base_compute_usd = vm_hourly_usd * (vm_minutes / 60)
+    compute_cost_usd = base_compute_usd * COMPUTE_SAFETY_MULTIPLIER
+
+    eth_price_usd = _get_eth_price_usd()
+    if eth_price_usd is None:
+        print("   ⚠️  ETH price unavailable, using $2000 fallback")
+        eth_price_usd = 2000.0
+
+    compute_cost_eth = compute_cost_usd / eth_price_usd
+    compute_cost_wei = int(compute_cost_eth * 10**18)
+
+    # ─── Total: 2x (gas + compute) ───────────────────────────────────
+    total_cost_wei = gas_cost_wei + compute_cost_wei
+    bid_wei = total_cost_wei * 2
+
+    print(f"   💵 Bid estimate:")
+    print(f"      Gas:       {format_eth(gas_cost_wei)} ETH ({TOTAL_GAS_ESTIMATE / 1e6:.1f}M gas @ {gas_price / 1e9:.4f} gwei)")
+    print(f"      Compute:   {format_eth(compute_cost_wei)} ETH (${base_compute_usd:.2f} × {COMPUTE_SAFETY_MULTIPLIER} = ${compute_cost_usd:.2f} @ ${eth_price_usd:.0f}/ETH)")
+    print(f"      Total:     {format_eth(total_cost_wei)} ETH × 2 = {format_eth(bid_wei)} ETH")
+
+    return bid_wei
+
+
+def _get_eth_price_usd():
+    """Fetch current ETH/USD price from CoinGecko (free, no API key)."""
+    try:
+        url = "https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd"
+        req = Request(url, headers={"User-Agent": "TheHumanFund/1.0", "Accept": "application/json"})
+        with urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+            return float(data["ethereum"]["usd"])
+    except Exception as e:
+        print(f"   ⚠️  Failed to fetch ETH price: {e}")
+        return None
+
+
+def run_auction_epoch(w3, contract, account, tee_url, log_file=None):
     """Run a single epoch through the auction mechanism.
 
     Flow:
     1. Check current epoch and auction phase
     2. If IDLE: call startEpoch() to open bidding
-    3. If BIDDING: submit our bid
+    3. If BIDDING: estimate cost-based bid and submit
     4. If EXECUTION and we're the winner: run TEE inference, submit result
     5. If EXECUTION and window expired: call forfeitBond()
     6. Wait for phase transitions as needed
@@ -1539,15 +1606,19 @@ def run_auction_epoch(w3, contract, account, tee_url, bid_amount_wei, log_file=N
 
     # ─── Phase: BIDDING — Submit our bid ───────────────────────────────
     if auction["phase"] == 1:  # BIDDING
-        effective_max = contract.functions.effectiveMaxBid().call()
-        if bid_amount_wei > effective_max:
-            bid_amount_wei = effective_max
-            print(f"   ⚠️  Bid clamped to effective max: {format_eth(bid_amount_wei)} ETH")
-
         already_bid = contract.functions.hasBid(epoch, account.address).call()
         if already_bid:
             print(f"   Already bid this epoch, waiting for auction to close...")
         else:
+            # Estimate cost-based bid (2x actual cost)
+            bid_amount_wei = estimate_bid(w3)
+
+            # Clamp to contract ceiling
+            effective_max = contract.functions.effectiveMaxBid().call()
+            if bid_amount_wei > effective_max:
+                bid_amount_wei = effective_max
+                print(f"   ⚠️  Bid clamped to effective max: {format_eth(bid_amount_wei)} ETH")
+
             bond_amount = (bid_amount_wei * 2000) // 10000  # 20% bond
             print(f"\n💰 Bidding {format_eth(bid_amount_wei)} ETH (bond: {format_eth(bond_amount)} ETH)")
 
@@ -1739,15 +1810,16 @@ def run_auction_epoch(w3, contract, account, tee_url, bid_amount_wei, log_file=N
     return None
 
 
-def run_auction_loop(w3, contract, account, tee_url, bid_amount_wei, log_file=None, max_epochs=None):
+def run_auction_loop(w3, contract, account, tee_url, log_file=None, max_epochs=None):
     """Continuously monitor and participate in auctions.
 
+    Bids are computed dynamically based on current gas prices and compute costs.
     Runs until max_epochs is reached or interrupted.
     """
     results = []
     epoch_count = 0
 
-    print(f"\n🔄 Starting auction loop (bid: {format_eth(bid_amount_wei)} ETH)")
+    print(f"\n🔄 Starting auction loop (bids computed dynamically)")
     if max_epochs:
         print(f"   Will run {max_epochs} epoch(s)")
     else:
@@ -1757,7 +1829,7 @@ def run_auction_loop(w3, contract, account, tee_url, bid_amount_wei, log_file=No
         if max_epochs and epoch_count >= max_epochs:
             break
 
-        result = run_auction_epoch(w3, contract, account, tee_url, bid_amount_wei, log_file)
+        result = run_auction_epoch(w3, contract, account, tee_url, log_file=log_file)
         if result:
             results.append(result)
             if result.get("status") in ("success", "no_bids", "not_winner", "already_settled"):
@@ -1796,7 +1868,8 @@ def main():
     parser.add_argument("--log", default=None, help="JSONL log file for results (default: agent/results/run_<timestamp>.jsonl)")
     parser.add_argument("--tee-url", default=os.environ.get("TEE_URL"), help="TEE enclave URL (e.g., http://host:8090). Enables TEE mode.")
     parser.add_argument("--auction", action="store_true", help="Auction mode (requires --tee-url)")
-    parser.add_argument("--bid", type=float, default=float(os.environ.get("BID_AMOUNT", "0.001")), help="Bid amount in ETH for auction mode (default: 0.001)")
+    parser.add_argument("--vm-hourly-usd", type=float, default=float(os.environ.get("VM_HOURLY_USD", "3.50")), help="VM instance hourly cost in USD (default: $3.50 for H100 spot, use $0.20 for CPU)")
+    parser.add_argument("--vm-minutes", type=int, default=int(os.environ.get("VM_MINUTES", "8")), help="Expected VM lifecycle in minutes: boot + load + inference + teardown (default: 8)")
     args = parser.parse_args()
 
     # Load config from env
@@ -1863,9 +1936,9 @@ def main():
             print("❌ Auction mode is not compatible with --dry-run")
             sys.exit(1)
 
-        bid_wei = Web3.to_wei(args.bid, "ether")
         print(f"\n🏛️  Auction mode")
-        print(f"   Bid amount: {args.bid} ETH")
+        print(f"   GPU cost: ${args.vm_hourly_usd:.2f}/hr")
+        print(f"   VM lifecycle: {args.vm_minutes} min")
         print(f"   TEE enclave: {args.tee_url}")
 
         # Verify auction is enabled on-chain
@@ -1875,7 +1948,7 @@ def main():
             sys.exit(1)
 
         results = run_auction_loop(
-            w3, contract, account, args.tee_url, bid_wei,
+            w3, contract, account, args.tee_url,
             log_file=log_file, max_epochs=args.epochs,
         )
         if len(results) > 1:
