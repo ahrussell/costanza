@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-The Human Fund — Runner (Phase 0 + Phase 1 + Phase 2)
+The Human Fund — Runner
 
 Reads contract state, constructs the prompt, calls the AI model,
 parses the output, and submits the action to the contract.
 
 Supports three modes:
-  - Direct mode (Phase 0): Calls llama-server directly via LLAMA_SERVER_URL
-  - TEE mode (Phase 1):    Sends epoch context to TEE enclave's /run_epoch endpoint
-                           and receives action + TDX attestation quote
-  - Auction mode (Phase 2): Monitors auction state, bids, runs TEE inference,
-                            submits via submitAuctionResult()
+  - Direct mode: Calls llama-server directly via LLAMA_SERVER_URL
+  - TEE mode:    Sends epoch context to TEE enclave's /run_epoch endpoint
+                 and receives action + TDX attestation quote
+  - Auction mode: Monitors auction state, bids, runs TEE inference,
+                  submits via submitAuctionResult()
 
 Usage:
     # Run a single epoch (direct mode)
@@ -19,7 +19,7 @@ Usage:
     # Run via TEE enclave
     python agent/runner.py --tee-url http://<tee-host>:8090
 
-    # Auction mode (Phase 2) — continuous monitoring
+    # Auction mode — continuous monitoring
     python agent/runner.py --auction --tee-url http://<tee-host>:8090
 
     # Dry run (don't submit to contract)
@@ -29,7 +29,7 @@ Environment variables:
     PRIVATE_KEY       - Runner's private key (hex, with or without 0x prefix)
     RPC_URL           - Base Sepolia RPC URL
     CONTRACT_ADDRESS  - Deployed TheHumanFund contract address
-    LLAMA_SERVER_URL  - llama-server URL (default: RunPod proxy)
+    LLAMA_SERVER_URL  - llama-server URL (default: http://localhost:8080)
     TEE_URL           - TEE enclave URL (alternative to --tee-url flag)
     BID_AMOUNT        - Bid amount in ETH for auction mode (default: 0.001)
 """
@@ -57,7 +57,7 @@ ABI_PATH = PROJECT_ROOT / "out" / "TheHumanFund.sol" / "TheHumanFund.json"
 
 LLAMA_SERVER_URL = os.environ.get(
     "LLAMA_SERVER_URL",
-    "https://xabf55irwjp075-8080.proxy.runpod.net"
+    "http://localhost:8080"
 )
 
 
@@ -113,7 +113,7 @@ def datamark_text(text, marker=None, seed=None):
 
 
 def _headers():
-    return {"User-Agent": "TheHumanFund/1.0", "Content-Type": "application/json"}
+    return {"Content-Type": "application/json"}
 
 
 # ─── Contract Interface ─────────────────────────────────────────────────
@@ -1472,7 +1472,7 @@ def print_run_summary(results):
     print("=" * 60)
 
 
-# ─── Phase 2: Auction Runner ─────────────────────────────────────────────
+# ─── Auction Runner ──────────────────────────────────────────────────────
 
 def get_auction_state(contract, epoch):
     """Get the auction state for a given epoch."""
@@ -1795,7 +1795,7 @@ def main():
     parser.add_argument("--epochs", type=int, default=1, help="Number of epochs to run (default: 1)")
     parser.add_argument("--log", default=None, help="JSONL log file for results (default: agent/results/run_<timestamp>.jsonl)")
     parser.add_argument("--tee-url", default=os.environ.get("TEE_URL"), help="TEE enclave URL (e.g., http://host:8090). Enables TEE mode.")
-    parser.add_argument("--auction", action="store_true", help="Phase 2: auction mode (requires --tee-url)")
+    parser.add_argument("--auction", action="store_true", help="Auction mode (requires --tee-url)")
     parser.add_argument("--bid", type=float, default=float(os.environ.get("BID_AMOUNT", "0.001")), help="Bid amount in ETH for auction mode (default: 0.001)")
     args = parser.parse_args()
 
@@ -1854,7 +1854,7 @@ def main():
                 print(f"   ❌ Cannot reach TEE enclave — aborting")
                 sys.exit(1)
 
-    # ─── Auction Mode (Phase 2) ────────────────────────────────────────
+    # ─── Auction Mode ───────────────────────────────────────────────────
     if args.auction:
         if not args.tee_url:
             print("❌ Auction mode requires --tee-url")
@@ -1864,7 +1864,7 @@ def main():
             sys.exit(1)
 
         bid_wei = Web3.to_wei(args.bid, "ether")
-        print(f"\n🏛️  Auction mode (Phase 2)")
+        print(f"\n🏛️  Auction mode")
         print(f"   Bid amount: {args.bid} ETH")
         print(f"   TEE enclave: {args.tee_url}")
 
@@ -1882,7 +1882,7 @@ def main():
             print_run_summary(results)
         return
 
-    # ─── Direct / TEE Mode (Phase 0 / 1) ──────────────────────────────
+    # ─── Direct / TEE Mode ─────────────────────────────────────────────
     results = []
     for i in range(args.epochs):
         if args.epochs > 1:

@@ -998,12 +998,10 @@ def run_auction_e2e(w3, account, fund_addr, vm_ip, nonce):
     if receipt.status == 1:
         new_epoch = fund.functions.currentEpoch().call()
         new_balance = fund.functions.treasuryBalance().call()
-        history_hash = fund.functions.historyHash().call()
 
         print(f"\n  ✅ SUCCESS! Full attestation chain verified on-chain!")
         print(f"      Epoch advanced: {epoch} → {new_epoch}")
         print(f"      Treasury: {w3.from_wei(new_balance, 'ether')} ETH")
-        print(f"      History hash: 0x{history_hash.hex()[:16]}...")
         print(f"      Gas used: {receipt.gasUsed}")
         print(f"      Tx: https://sepolia.basescan.org/tx/{tx_hash.hex()}")
         return True

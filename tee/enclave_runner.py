@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
-The Human Fund — TEE Enclave Runner (Phase 1)
+The Human Fund — TEE Enclave Runner
 
-Runs inside a TDX Confidential VM (Phala Cloud / dstack).
-Provides an HTTP API that:
+Runs inside a TDX Confidential VM. Provides an HTTP API that:
   1. Accepts epoch context (contract state) as input
   2. Constructs the full prompt (system prompt + epoch context)
   3. Runs two-pass inference via the local llama-server
@@ -27,8 +26,6 @@ import hashlib
 import json
 import os
 import re
-import socket
-import struct
 import sys
 import time
 from pathlib import Path
@@ -43,8 +40,6 @@ app = Flask(__name__)
 SYSTEM_PROMPT_PATH = Path(os.environ.get("SYSTEM_PROMPT_PATH", "/app/system_prompt.txt"))
 PROTOCOLS_REF_PATH = Path(os.environ.get("PROTOCOLS_REF_PATH", "/app/protocols_reference.txt"))
 LLAMA_SERVER_URL = f"http://127.0.0.1:{os.environ.get('LLAMA_SERVER_PORT', '8080')}"
-DSTACK_SOCK = "/var/run/dstack.sock"          # v0.5.x+
-DSTACK_SOCK_LEGACY = "/var/run/tappd.sock"    # v0.3.x fallback
 
 # Max reasoning bytes to include on-chain. Truncate BEFORE computing REPORTDATA
 # so the contract's sha256(reasoning) matches the quote's REPORTDATA.
@@ -297,7 +292,7 @@ def _get_quote_configfs_tsm(report_data: bytes) -> bytes:
     """Get TDX quote via Linux configfs-tsm interface (GCP, bare-metal).
 
     Works on any TDX VM with kernel >= 6.7 and CONFIG_TSM_REPORTS enabled.
-    This is the standard Linux interface — no dstack or platform-specific API needed.
+    This is the standard Linux interface for TDX attestation.
     """
     import tempfile
     import uuid
@@ -354,58 +349,12 @@ def _get_quote_dev_tdx(report_data: bytes) -> bytes:
         os.close(fd)
 
 
-def _get_quote_dstack(report_data: bytes, sock_path: str) -> bytes:
-    """Get TDX quote via dstack Unix socket (Phala Cloud)."""
-    request_body = json.dumps({
-        "report_data": report_data.hex(),
-    }).encode()
-
-    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    sock.settimeout(30)
-    sock.connect(sock_path)
-
-    http_request = (
-        f"POST /GetQuote HTTP/1.1\r\n"
-        f"Host: localhost\r\n"
-        f"Content-Type: application/json\r\n"
-        f"Content-Length: {len(request_body)}\r\n"
-        f"Connection: close\r\n"
-        f"\r\n"
-    ).encode() + request_body
-
-    sock.sendall(http_request)
-
-    response = b""
-    while True:
-        chunk = sock.recv(4096)
-        if not chunk:
-            break
-        response += chunk
-    sock.close()
-
-    body_start = response.find(b"\r\n\r\n")
-    if body_start >= 0:
-        body = response[body_start + 4:]
-        try:
-            result = json.loads(body)
-        except json.JSONDecodeError:
-            lines = body.split(b"\r\n")
-            body_parts = [lines[i] for i in range(1, len(lines), 2) if lines[i]]
-            result = json.loads(b"".join(body_parts))
-
-        quote_hex = result.get("quote", "")
-        print(f"  TDX quote via dstack: {len(quote_hex) // 2} bytes")
-        return bytes.fromhex(quote_hex)
-    else:
-        raise RuntimeError("Could not parse dstack response")
-
-
 def get_tdx_quote(report_data: bytes) -> bytes:
     """Request a TDX attestation quote using the best available backend.
 
     Tries in order:
-    1. configfs-tsm (GCP, bare-metal TDX with kernel >= 6.7)
-    2. dstack socket (Phala Cloud)
+    1. configfs-tsm (GCP TDX, bare-metal TDX with kernel >= 6.7)
+    2. /dev/tdx_guest (bare-metal TDX with older kernels)
     3. Mock mode (local testing — returns report_data as the "quote")
 
     Args:
@@ -414,43 +363,38 @@ def get_tdx_quote(report_data: bytes) -> bytes:
     Returns:
         Raw DCAP quote bytes, suitable for on-chain verification.
     """
-    # Try configfs-tsm first (GCP, bare-metal)
+    # Try configfs-tsm first (GCP, bare-metal with kernel >= 6.7)
     if os.path.isdir(CONFIGFS_TSM_BASE):
         try:
             return _get_quote_configfs_tsm(report_data)
         except Exception as e:
             print(f"WARNING: configfs-tsm failed: {e}")
 
-    # Try dstack socket (Phala Cloud)
-    for sock_path in [DSTACK_SOCK, DSTACK_SOCK_LEGACY]:
-        if os.path.exists(sock_path):
-            try:
-                return _get_quote_dstack(report_data, sock_path)
-            except Exception as e:
-                print(f"WARNING: dstack at {sock_path} failed: {e}")
+    # Try /dev/tdx_guest (bare-metal with older kernels)
+    if os.path.exists("/dev/tdx_guest"):
+        try:
+            return _get_quote_dev_tdx(report_data)
+        except Exception as e:
+            print(f"WARNING: /dev/tdx_guest failed: {e}")
 
     # Mock mode (local testing)
-    print("WARNING: No TDX attestation backend found (configfs-tsm, dstack)")
+    print("WARNING: No TDX attestation backend found (configfs-tsm, /dev/tdx_guest)")
     print("  Running outside TEE — returning report_data as mock attestation")
     return report_data
 
 
-def compute_report_data(input_hash: bytes, action_bytes: bytes, reasoning: str, seed: int = 0) -> bytes:
+def compute_report_data(input_hash: bytes, action_bytes: bytes, reasoning: str) -> bytes:
     """Compute the 64-byte report data that gets bound into the TDX quote.
 
     This creates a cryptographic binding between:
-    - The input (epoch context hash — includes randomness seed since it's
-      folded into inputHash at closeAuction)
+    - The input (epoch context hash, which includes the randomness seed)
     - The output (action + reasoning)
     - The TEE identity (via RTMR values in the quote)
 
-    The TdxVerifier contract verifies:
+    The contract verifies:
         REPORTDATA == sha256(inputHash || outputHash)
     where:
         outputHash = keccak256(abi.encodePacked(sha256(action), sha256(reasoning)))
-
-    The `seed` parameter is kept for backward compatibility but is ignored —
-    the seed is already included in inputHash.
     """
     action_hash = hashlib.sha256(action_bytes).digest()
     reasoning_hash = hashlib.sha256(reasoning.encode("utf-8")).digest()
@@ -594,7 +538,7 @@ def health():
     except Exception as e:
         return jsonify({"status": "unhealthy", "llama": str(e)}), 503
 
-    has_tee = os.path.exists(DSTACK_SOCK) or os.path.exists(DSTACK_SOCK_LEGACY)
+    has_tee = os.path.isdir(CONFIGFS_TSM_BASE) or os.path.exists("/dev/tdx_guest")
     return jsonify({
         "status": "ok",
         "llama": llama_status,
@@ -645,13 +589,13 @@ def run_epoch():
         input_hash = compute_input_hash(contract_state)
         print(f"  Input hash (computed from state): 0x{input_hash.hex()[:16]}...")
     else:
-        # Legacy fallback: no structured state, use provided hash
+        # Fallback: no structured state, use provided hash
         input_hash_hex = data.get("input_hash", "0x" + "00" * 32)
         input_hash = bytes.fromhex(input_hash_hex.replace("0x", ""))
         print(f"  Input hash (provided, unverified): 0x{input_hash.hex()[:16]}...")
 
-    # Derive llama.cpp seed from the contract's randomness seed
-    # Use lower 32 bits (llama.cpp seed is uint32)
+    # Derive llama.cpp seed from the randomness seed (baked into inputHash).
+    # Use lower 32 bits (llama.cpp seed is uint32).
     llama_seed = seed & 0xFFFFFFFF if seed > 0 else -1
 
     # Load system prompt + protocols reference
@@ -715,7 +659,7 @@ def run_epoch():
         }), 500
 
     # Get TDX attestation quote — uses truncated reasoning
-    report_data = compute_report_data(input_hash, action_bytes, reasoning, seed=seed)
+    report_data = compute_report_data(input_hash, action_bytes, reasoning)
     quote = get_tdx_quote(report_data)
 
     return jsonify({
@@ -873,8 +817,8 @@ if __name__ == "__main__":
     print(f"Starting enclave runner on port {port}...")
     print(f"  System prompt: {SYSTEM_PROMPT_PATH}")
     print(f"  Llama server: {LLAMA_SERVER_URL}")
-    tee_sock = DSTACK_SOCK if os.path.exists(DSTACK_SOCK) else DSTACK_SOCK_LEGACY
-    print(f"  dstack socket: {tee_sock} ({'found' if os.path.exists(tee_sock) else 'NOT FOUND'})")
+    has_tee = os.path.isdir(CONFIGFS_TSM_BASE) or os.path.exists("/dev/tdx_guest")
+    print(f"  TDX attestation: {'available' if has_tee else 'not available (mock mode)'}")
 
     # Wait for llama-server to be ready
     print("Waiting for llama-server...")
@@ -892,5 +836,5 @@ if __name__ == "__main__":
         print("WARNING: llama-server not ready after 5 minutes, starting anyway")
 
     # threaded=True prevents a stuck/dropped request from blocking all others.
-    # Flask dev server is fine for the TEE enclave (single client, not public).
+    # Flask dev server is sufficient here (single client, not public-facing).
     app.run(host="0.0.0.0", port=port, threaded=True)

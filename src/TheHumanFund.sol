@@ -53,7 +53,7 @@ contract TheHumanFund {
         uint256 epoch;         // epoch when the message was received
     }
 
-    // Phase 2: Auction types
+    // Auction types
     enum EpochPhase { IDLE, BIDDING, EXECUTION, SETTLED }
 
     struct AuctionState {
@@ -96,7 +96,7 @@ contract TheHumanFund {
     event CommissionPaid(address indexed referrer, uint256 amount, uint256 referralCodeId);
     event EpochStarted(uint256 indexed epoch, bytes32 inputHash);
 
-    // Phase 2: Auction events
+    // Auction events
     event AuctionOpened(uint256 indexed epoch, bytes32 inputHash, uint256 maxBidCeiling);
     event BidSubmitted(uint256 indexed epoch, address indexed runner, uint256 bidAmount);
     event AuctionClosed(uint256 indexed epoch, address indexed winner, uint256 winningBid);
@@ -125,7 +125,7 @@ contract TheHumanFund {
 
     // ─── State ───────────────────────────────────────────────────────────
 
-    address public owner;           // Phase 0: deployer is the authorized runner
+    address public owner;           // Deployer is the authorized runner for direct submission
     uint256 public deployTimestamp;
     uint256 public currentEpoch;
 
@@ -182,8 +182,8 @@ contract TheHumanFund {
     mapping(uint256 => bytes32) public messageHashes;  // messageId => keccak256(sender, amount, text, epoch)
     uint256 public messageHead;  // index of first unread message
 
-    // Phase 2: Auction state
-    bool public auctionEnabled;                              // false = Phase 0/1 mode, true = auction mode
+    // Auction state
+    bool public auctionEnabled;                              // false = direct submission, true = auction mode
     uint256 public epochDuration;                            // 24 hours production, shorter for testnet
     uint256 public biddingWindow;                            // 1 hour production
     uint256 public executionWindow;                          // 2 hours production
@@ -321,10 +321,10 @@ contract TheHumanFund {
         emit CommissionPaid(referrer, commission, referralCodeId);
     }
 
-    // ─── Owner: Epoch Execution (Phase 0) ────────────────────────────────
+    // ─── Owner: Direct Epoch Submission ───────────────────────────────────
 
     /// @notice Submit the AI agent's action for the current epoch.
-    /// @dev Phase 0: Only the owner can call this. No auction, no TEE.
+    /// @dev Owner-only direct submission (no auction, no proof required).
     /// @param action The encoded action blob.
     /// @param reasoning The agent's chain-of-thought reasoning.
     function submitEpochAction(bytes calldata action, bytes calldata reasoning) external onlyOwner {
@@ -397,10 +397,10 @@ contract TheHumanFund {
         worldView = IWorldView(_wv);
     }
 
-    // ─── Phase 2: Reverse Auction ────────────────────────────────────────
+    // ─── Reverse Auction ──────────────────────────────────────────────────
 
     /// @notice Enable or disable auction mode.
-    /// @dev When enabled, Phase 0/1 direct submission functions are blocked.
+    /// @dev When enabled, owner-only direct submission functions are blocked.
     ///      Epochs are managed through the auction lifecycle instead.
     function setAuctionEnabled(bool enabled) external onlyOwner {
         auctionEnabled = enabled;
