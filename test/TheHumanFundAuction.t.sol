@@ -18,7 +18,7 @@ contract AuctionMockDcapVerifier is IAutomataDcapAttestation {
     }
 }
 
-/// @title Auction mechanism tests for The Human Fund (Phase 2)
+/// @title Auction mechanism tests — commit-reveal sealed bids with fixed escalating bond
 contract TheHumanFundAuctionTest is Test {
     TheHumanFund public fund;
     TdxVerifier public verifier;
@@ -33,13 +33,12 @@ contract TheHumanFundAuctionTest is Test {
     address runner3 = address(0x4003);
 
     // Short testnet timing
-    uint256 constant EPOCH_DUR = 300;    // 5 minutes
-    uint256 constant BID_WIN = 60;       // 1 minute bidding
-    uint256 constant EXEC_WIN = 120;     // 2 minutes execution
+    uint256 constant EPOCH_DUR = 300;     // 5 minutes
+    uint256 constant COMMIT_WIN = 60;     // 1 minute commit
+    uint256 constant REVEAL_WIN = 30;     // 30 seconds reveal
+    uint256 constant EXEC_WIN = 120;      // 2 minutes execution
 
-    // Test measurement values for mock attestation (48 bytes = 96 hex chars each, SHA-384)
-    bytes constant TEST_MRTD = hex"aabbccdd0000000000000000000000000000000000000000000000000000000000000000000000000000000000000011";
-    bytes constant TEST_RTMR0 = hex"111111110000000000000000000000000000000000000000000000000000000000000000000000000000000000000022";
+    // Test measurement values (48 bytes each, SHA-384)
     bytes constant TEST_RTMR1 = hex"222222220000000000000000000000000000000000000000000000000000000000000000000000000000000000000033";
     bytes constant TEST_RTMR2 = hex"333333330000000000000000000000000000000000000000000000000000000000000000000000000000000000000044";
 
@@ -48,503 +47,609 @@ contract TheHumanFundAuctionTest is Test {
         address payable[3] memory addrs = [np1, np2, np3];
 
         fund = new TheHumanFund{value: 10 ether}(
-            names,
-            addrs,
-            1000,          // 10% commission
-            0.01 ether     // initial max bid
+            names, addrs, 1000, 0.01 ether
         );
 
         // Deploy attestation verifier with mock DCAP
         mockDcap = new AuctionMockDcapVerifier();
         verifier = new TdxVerifier();
-
-        // Etch mock DCAP verifier at the hardcoded address
         vm.etch(address(0xaDdeC7e85c2182202b66E331f2a4A0bBB2cEEa1F), address(mockDcap).code);
 
-        // Approve the test image
         bytes32 imageKey = keccak256(abi.encodePacked(TEST_RTMR1, TEST_RTMR2));
         verifier.approveImage(imageKey);
-
-        // Link verifier to fund
         fund.approveVerifier(1, address(verifier));
 
-        // Configure short auction timing and enable
-        fund.setAuctionTiming(EPOCH_DUR, BID_WIN, EXEC_WIN);
+        // Configure short timing and enable
+        fund.setAuctionTiming(EPOCH_DUR, COMMIT_WIN, REVEAL_WIN, EXEC_WIN);
         fund.setAuctionEnabled(true);
 
-        // Fund runners with ETH for bonds
+        // Fund runners
         vm.deal(runner1, 10 ether);
         vm.deal(runner2, 10 ether);
         vm.deal(runner3, 10 ether);
     }
 
-    // ─── Helper ───────────────────────────────────────────────────────────
+    // ─── Helpers ────────────────────────────────────────────────────────────
 
     function _noopAction() internal pure returns (bytes memory) {
         return abi.encodePacked(uint8(0));
     }
 
-    function _mockAttestation() internal pure returns (bytes memory) {
-        // Dummy attestation — DCAP verifier isn't deployed in tests
-        return bytes("mock_attestation");
+    /// @dev Generate a commit hash from bid amount and salt
+    function _commitHash(uint256 bidAmount, bytes32 salt) internal pure returns (bytes32) {
+        return keccak256(abi.encodePacked(bidAmount, salt));
     }
 
-    /// @dev Helper to run a full auction lifecycle (start, bid, close, submit)
-    ///      Since DCAP_VERIFIER isn't deployed, we can't test submitAuctionResult
-    ///      in the standard setUp. Use this only when testing non-attestation paths.
-
-    // ─── Auction: Full Lifecycle ──────────────────────────────────────────
-
-    function test_auction_start_epoch() public {
+    /// @dev Run a full commit-reveal cycle: start → commit → closeCommit → reveal → closeReveal
+    function _runAuctionTo(address runner, uint256 bidAmount, bytes32 salt) internal {
         fund.startEpoch();
 
-        (uint256 startTime, TheHumanFund.EpochPhase phase, uint256 bidCount,
-         address winner, uint256 winningBid,,) = fund.getAuctionState(1);
+        uint256 bond = fund.currentBond();
+        vm.prank(runner);
+        fund.commit{value: bond}(_commitHash(bidAmount, salt));
 
-        assertEq(startTime, block.timestamp);
-        assertEq(uint256(phase), uint256(TheHumanFund.EpochPhase.BIDDING));
-        assertEq(bidCount, 0);
-        assertEq(winner, address(0));
-        assertEq(winningBid, 0);
+        vm.warp(block.timestamp + COMMIT_WIN);
+        fund.closeCommit();
+
+        vm.prank(runner);
+        fund.reveal(bidAmount, salt);
+
+        vm.warp(block.timestamp + REVEAL_WIN);
+        fund.closeReveal();
     }
 
-    function test_auction_single_bidder() public {
-        fund.startEpoch();
-
-        // Runner1 bids 0.005 ETH, bond = 20% = 0.001 ETH
-        vm.prank(runner1);
-        fund.bid{value: 0.001 ether}(0.005 ether);
-
-        (, , uint256 bidCount, address winner, uint256 winningBid,,) = fund.getAuctionState(1);
-        assertEq(bidCount, 1);
-        assertEq(winner, runner1);
-        assertEq(winningBid, 0.005 ether);
-    }
-
-    function test_auction_lowest_bid_wins() public {
-        fund.startEpoch();
-
-        // Runner1 bids 0.008 ETH (bond = 0.0016)
-        vm.prank(runner1);
-        fund.bid{value: 0.0016 ether}(0.008 ether);
-
-        // Runner2 bids 0.005 ETH (bond = 0.001) — should become leader
-        vm.prank(runner2);
-        fund.bid{value: 0.001 ether}(0.005 ether);
-
-        // Runner3 bids 0.009 ETH (bond = 0.0018) — higher, stays runner2
-        vm.prank(runner3);
-        fund.bid{value: 0.0018 ether}(0.009 ether);
-
-        (, , uint256 bidCount, address winner, uint256 winningBid,,) = fund.getAuctionState(1);
-        assertEq(bidCount, 3);
-        assertEq(winner, runner2);
-        assertEq(winningBid, 0.005 ether);
-    }
-
-    function test_auction_outbid_refunds_previous_leader() public {
-        fund.startEpoch();
-
-        uint256 runner1BalBefore = runner1.balance;
-
-        // Runner1 bids 0.008 ETH (bond = 0.0016)
-        vm.prank(runner1);
-        fund.bid{value: 0.0016 ether}(0.008 ether);
-
-        assertEq(runner1.balance, runner1BalBefore - 0.0016 ether);
-
-        // Runner2 bids lower — runner1 should get bond back
-        vm.prank(runner2);
-        fund.bid{value: 0.001 ether}(0.005 ether);
-
-        // Runner1's bond was refunded
-        assertEq(runner1.balance, runner1BalBefore);
-    }
-
-    function test_auction_non_leader_bond_refunded_immediately() public {
-        fund.startEpoch();
-
-        // Runner1 bids 0.005 ETH (leader)
-        vm.prank(runner1);
-        fund.bid{value: 0.001 ether}(0.005 ether);
-
-        uint256 runner2BalBefore = runner2.balance;
-
-        // Runner2 bids 0.008 ETH (higher, not leader) — bond refunded immediately
-        vm.prank(runner2);
-        fund.bid{value: 0.0016 ether}(0.008 ether);
-
-        // Runner2 got their bond back (they weren't the leader)
-        assertEq(runner2.balance, runner2BalBefore);
-    }
-
-    function test_auction_close_no_bids_skips_epoch() public {
-        fund.startEpoch();
-
-        // Fast-forward past bidding window
-        vm.warp(block.timestamp + BID_WIN);
-
-        fund.closeAuction();
-
-        assertEq(fund.currentEpoch(), 2);
-        assertEq(fund.consecutiveMissedEpochs(), 1);
-
-        (, TheHumanFund.EpochPhase phase,,,,,) = fund.getAuctionState(1);
-        assertEq(uint256(phase), uint256(TheHumanFund.EpochPhase.SETTLED));
-    }
-
-    function test_auction_close_with_bids_enters_execution() public {
-        fund.startEpoch();
-
-        vm.prank(runner1);
-        fund.bid{value: 0.001 ether}(0.005 ether);
-
-        vm.warp(block.timestamp + BID_WIN);
-        fund.closeAuction();
-
-        (, TheHumanFund.EpochPhase phase,,,,,) = fund.getAuctionState(1);
-        assertEq(uint256(phase), uint256(TheHumanFund.EpochPhase.EXECUTION));
-        // Epoch not advanced yet — waiting for winner to submit
-        assertEq(fund.currentEpoch(), 1);
-    }
-
-    function test_auction_forfeit_bond_on_timeout() public {
-        fund.startEpoch();
-
-        vm.prank(runner1);
-        fund.bid{value: 0.001 ether}(0.005 ether);
-
-        vm.warp(block.timestamp + BID_WIN);
-        fund.closeAuction();
-
-        // Fast-forward past execution window
-        uint256 treasuryBefore = fund.treasuryBalance();
-        vm.warp(block.timestamp + EXEC_WIN);
-        fund.forfeitBond();
-
-        // Bond stays in treasury
-        assertEq(fund.treasuryBalance(), treasuryBefore);
-        assertEq(fund.currentEpoch(), 2);
-        assertEq(fund.consecutiveMissedEpochs(), 1);
-
-        (, TheHumanFund.EpochPhase phase,,,,,) = fund.getAuctionState(1);
-        assertEq(uint256(phase), uint256(TheHumanFund.EpochPhase.SETTLED));
-    }
-
-    // ─── Auction: Bid Validation ──────────────────────────────────────────
-
-    function test_auction_bid_above_ceiling_rejected() public {
-        fund.startEpoch();
-
-        // Max bid is 0.01 ETH. Bid 0.02 ETH.
-        vm.prank(runner1);
-        vm.expectRevert(TheHumanFund.InvalidParams.selector);
-        fund.bid{value: 0.004 ether}(0.02 ether);
-    }
-
-    function test_auction_duplicate_bid_rejected() public {
-        fund.startEpoch();
-
-        vm.prank(runner1);
-        fund.bid{value: 0.001 ether}(0.005 ether);
-
-        vm.prank(runner1);
-        vm.expectRevert(TheHumanFund.AlreadyDone.selector);
-        fund.bid{value: 0.001 ether}(0.004 ether);
-    }
-
-    function test_auction_bid_insufficient_bond_rejected() public {
-        fund.startEpoch();
-
-        // Bid 0.005 ETH requires 0.001 ETH bond. Send only 0.0005.
-        vm.prank(runner1);
-        vm.expectRevert(TheHumanFund.InvalidParams.selector);
-        fund.bid{value: 0.0005 ether}(0.005 ether);
-    }
-
-    function test_auction_bid_after_window_rejected() public {
-        fund.startEpoch();
-
-        vm.warp(block.timestamp + BID_WIN);
-
-        vm.prank(runner1);
-        vm.expectRevert(TheHumanFund.TimingError.selector);
-        fund.bid{value: 0.001 ether}(0.005 ether);
-    }
-
-    function test_auction_excess_bond_refunded() public {
-        fund.startEpoch();
-
-        uint256 balBefore = runner1.balance;
-        // Bid 0.005 ETH (bond = 0.001 ETH), send 0.005 ETH (excess = 0.004)
-        vm.prank(runner1);
-        fund.bid{value: 0.005 ether}(0.005 ether);
-
-        // Only 0.001 should be held (runner1 is the leader)
-        assertEq(runner1.balance, balBefore - 0.001 ether);
-    }
-
-    // ─── Auction: Timing Enforcement ──────────────────────────────────────
-
-    function test_auction_cannot_close_before_window() public {
-        fund.startEpoch();
-
-        vm.expectRevert(TheHumanFund.TimingError.selector);
-        fund.closeAuction();
-    }
-
-    function test_auction_cannot_forfeit_before_execution_window() public {
-        fund.startEpoch();
-
-        vm.prank(runner1);
-        fund.bid{value: 0.001 ether}(0.005 ether);
-
-        vm.warp(block.timestamp + BID_WIN);
-        fund.closeAuction();
-
-        vm.expectRevert(TheHumanFund.TimingError.selector);
-        fund.forfeitBond();
-    }
-
-    function test_auction_cannot_start_before_previous_settled() public {
-        // Start and settle epoch 1 (no bids)
-        fund.startEpoch();
-        vm.warp(block.timestamp + BID_WIN);
-        fund.closeAuction(); // No bids → epoch skipped, settled
-
-        // Try to start epoch 2 before epoch duration elapsed
-        vm.expectRevert(TheHumanFund.TimingError.selector);
-        fund.startEpoch();
-
-        // Fast-forward past epoch duration
-        vm.warp(block.timestamp + EPOCH_DUR);
-        fund.startEpoch(); // Should succeed now
-        assertEq(fund.currentEpoch(), 2); // Still epoch 2 (auction opened)
-    }
-
-    // ─── Auction: Phase 0 Blocked ─────────────────────────────────────────
-
-    function test_phase0_blocked_when_auction_enabled() public {
-        bytes memory action = _noopAction();
-
-        vm.expectRevert(TheHumanFund.WrongPhase.selector);
-        fund.submitEpochAction(action, bytes("nope"));
-
-        vm.expectRevert(TheHumanFund.WrongPhase.selector);
-        fund.skipEpoch();
-    }
-
-    function test_phase0_works_when_auction_disabled() public {
-        fund.setAuctionEnabled(false);
-
-        bytes memory action = _noopAction();
-        fund.submitEpochAction(action, bytes("back to phase 0"));
-
-        assertEq(fund.currentEpoch(), 2);
-    }
-
-    // ─── Auction: Auto-Escalation Integration ─────────────────────────────
-
-    function test_auction_auto_escalation_with_missed_epochs() public {
-        // Initial max bid is 0.01 ETH
-        assertEq(fund.effectiveMaxBid(), 0.01 ether);
-
-        // Miss epoch 1 (no bids)
-        fund.startEpoch();
-        vm.warp(block.timestamp + BID_WIN);
-        fund.closeAuction();
-
-        // Effective max bid should be escalated by 10%
-        assertEq(fund.consecutiveMissedEpochs(), 1);
-        assertEq(fund.effectiveMaxBid(), 0.011 ether); // 0.01 * 1.1
-
-        // Miss epoch 2 (no bids)
-        vm.warp(block.timestamp + EPOCH_DUR);
-        fund.startEpoch();
-        vm.warp(block.timestamp + BID_WIN);
-        fund.closeAuction();
-
-        assertEq(fund.consecutiveMissedEpochs(), 2);
-        assertEq(fund.effectiveMaxBid(), 0.0121 ether); // 0.01 * 1.1^2
-    }
-
-    function test_auction_escalation_resets_after_forfeit_does_not() public {
-        // Bond forfeiture counts as a miss (consecutiveMissedEpochs increments)
-        fund.startEpoch();
-
-        vm.prank(runner1);
-        fund.bid{value: 0.001 ether}(0.005 ether);
-
-        vm.warp(block.timestamp + BID_WIN);
-        fund.closeAuction();
-
-        vm.warp(block.timestamp + EXEC_WIN);
-        fund.forfeitBond();
-
-        // Bond forfeiture = missed epoch
-        assertEq(fund.consecutiveMissedEpochs(), 1);
-        assertEq(fund.effectiveMaxBid(), 0.011 ether);
-    }
-
-    // ─── Auction: Non-winner Submission ───────────────────────────────────
-
-    function test_auction_non_winner_cannot_submit() public {
-        fund.startEpoch();
-
-        vm.prank(runner1);
-        fund.bid{value: 0.001 ether}(0.005 ether);
-
-        vm.warp(block.timestamp + BID_WIN);
-        fund.closeAuction();
-
-        // Runner2 (not the winner) tries to submit
-        vm.prank(runner2);
-        vm.expectRevert(TheHumanFund.Unauthorized.selector);
-        fund.submitAuctionResult(_noopAction(), bytes("hax"), _mockAttestation(), uint8(1), -1, "");
-    }
-
-    // ─── Auction: Input Hash ──────────────────────────────────────────────
-
-    function test_base_input_hash_committed_at_start() public {
-        bytes32 expectedHash = fund.computeInputHash();
-
-        fund.startEpoch();
-
-        // Base hash is committed at startEpoch; final hash (with seed) set at closeAuction
-        assertEq(fund.epochBaseInputHashes(1), expectedHash);
-    }
-
-    function test_input_hash_deterministic() public view {
-        bytes32 hash1 = fund.computeInputHash();
-        bytes32 hash2 = fund.computeInputHash();
-        assertEq(hash1, hash2);
-    }
-
-    // ─── Auction: Edge Cases ──────────────────────────────────────────────
-
-    function test_auction_cannot_start_twice() public {
-        fund.startEpoch();
-
-        vm.expectRevert(TheHumanFund.AlreadyDone.selector);
-        fund.startEpoch();
-    }
-
-    function test_auction_bid_zero_rejected() public {
-        fund.startEpoch();
-
-        vm.prank(runner1);
-        vm.expectRevert(TheHumanFund.InvalidParams.selector);
-        fund.bid{value: 0}(0);
-    }
-
-    function test_auction_requires_enabled() public {
-        fund.setAuctionEnabled(false);
-
-        vm.expectRevert(TheHumanFund.WrongPhase.selector);
-        fund.startEpoch();
-    }
-
-    function test_auction_close_requires_bidding_phase() public {
-        vm.expectRevert(TheHumanFund.WrongPhase.selector);
-        fund.closeAuction();
-    }
-
-    function test_auction_forfeit_requires_execution_phase() public {
-        vm.expectRevert(TheHumanFund.WrongPhase.selector);
-        fund.forfeitBond();
-    }
-
-    // ─── Auction: Timing Config ───────────────────────────────────────────
-
-    function test_auction_timing_validation() public {
-        // Windows exceed epoch duration
-        vm.expectRevert(TheHumanFund.InvalidParams.selector);
-        fund.setAuctionTiming(100, 60, 60); // 60+60=120 > 100
-
-        // Zero windows
-        vm.expectRevert(TheHumanFund.InvalidParams.selector);
-        fund.setAuctionTiming(100, 0, 50);
-    }
-
-    // ─── Attestation Integration ──────────────────────────────────────────
-
-    /// @dev Helper to build mock DCAP output with fields at correct offsets
+    /// @dev Build mock DCAP output with fields at correct offsets
     function _buildDcapOutput(bytes32 reportData) internal pure returns (bytes memory) {
+        // Only need MRTD placeholder (48 bytes at 147) and RTMR fields
         bytes memory output = new bytes(595);
         output[0] = 0x00; output[1] = 0x04; // quoteVersion = 4
         output[2] = 0x00; output[3] = 0x02; // quoteBodyType = 2 (TDX)
-
-        // Place measurements at correct offsets
         for (uint256 i = 0; i < 48; i++) {
-            output[147 + i] = TEST_MRTD[i];
-            output[339 + i] = TEST_RTMR0[i];
             output[387 + i] = TEST_RTMR1[i];
             output[435 + i] = TEST_RTMR2[i];
         }
-        // Place REPORTDATA
         for (uint256 i = 0; i < 32; i++) {
             output[531 + i] = reportData[i];
         }
         return output;
     }
 
-    function test_full_auction_with_attestation() public {
-        // 1. Start epoch
+    // ─── Auction: Start Epoch ───────────────────────────────────────────────
+
+    function test_start_epoch() public {
         fund.startEpoch();
 
-        // 2. Bid
+        (uint256 startTime, TheHumanFund.EpochPhase phase, uint256 commitCount,
+         , address winner, uint256 winningBid, uint256 bondAmount,) = fund.getAuctionState(1);
+
+        assertEq(startTime, block.timestamp);
+        assertEq(uint256(phase), uint256(TheHumanFund.EpochPhase.COMMIT));
+        assertEq(commitCount, 0);
+        assertEq(winner, address(0));
+        assertEq(winningBid, 0);
+        assertEq(bondAmount, 0.01 ether); // BASE_BOND
+    }
+
+    function test_cannot_start_twice() public {
+        fund.startEpoch();
+        vm.expectRevert(TheHumanFund.AlreadyDone.selector);
+        fund.startEpoch();
+    }
+
+    function test_requires_auction_enabled() public {
+        fund.setAuctionEnabled(false);
+        vm.expectRevert(TheHumanFund.WrongPhase.selector);
+        fund.startEpoch();
+    }
+
+    // ─── Auction: Commit Phase ──────────────────────────────────────────────
+
+    function test_single_commit() public {
+        fund.startEpoch();
+
         vm.prank(runner1);
-        fund.bid{value: 0.001 ether}(0.005 ether);
+        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, bytes32("salt1")));
 
-        // 3. Close auction (captures prevrandao, commits inputHash with seed)
-        vm.warp(block.timestamp + BID_WIN);
-        fund.closeAuction();
+        (,, uint256 commitCount,,,,, ) = fund.getAuctionState(1);
+        assertEq(commitCount, 1);
+        assertTrue(fund.hasCommitted(1, runner1));
+    }
 
-        // Read inputHash AFTER closeAuction (it now includes the randomness seed)
+    function test_commit_requires_bond() public {
+        fund.startEpoch();
+
+        vm.prank(runner1);
+        vm.expectRevert(TheHumanFund.InvalidParams.selector);
+        fund.commit{value: 0.005 ether}(_commitHash(0.005 ether, bytes32("salt1")));
+    }
+
+    function test_commit_refunds_excess() public {
+        fund.startEpoch();
+        uint256 balBefore = runner1.balance;
+
+        vm.prank(runner1);
+        fund.commit{value: 0.05 ether}(_commitHash(0.005 ether, bytes32("salt1")));
+
+        // Only 0.01 bond held
+        assertEq(runner1.balance, balBefore - 0.01 ether);
+    }
+
+    function test_duplicate_commit_rejected() public {
+        fund.startEpoch();
+
+        vm.prank(runner1);
+        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, bytes32("salt1")));
+
+        vm.prank(runner1);
+        vm.expectRevert(TheHumanFund.AlreadyDone.selector);
+        fund.commit{value: 0.01 ether}(_commitHash(0.003 ether, bytes32("salt2")));
+    }
+
+    function test_commit_after_window_rejected() public {
+        fund.startEpoch();
+        vm.warp(block.timestamp + COMMIT_WIN);
+
+        vm.prank(runner1);
+        vm.expectRevert(TheHumanFund.TimingError.selector);
+        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, bytes32("salt1")));
+    }
+
+    function test_empty_commit_hash_rejected() public {
+        fund.startEpoch();
+
+        vm.prank(runner1);
+        vm.expectRevert(TheHumanFund.InvalidParams.selector);
+        fund.commit{value: 0.01 ether}(bytes32(0));
+    }
+
+    // ─── Auction: Close Commit ──────────────────────────────────────────────
+
+    function test_close_commit_no_commits_skips_epoch() public {
+        fund.startEpoch();
+        vm.warp(block.timestamp + COMMIT_WIN);
+        fund.closeCommit();
+
+        assertEq(fund.currentEpoch(), 2);
+        assertEq(fund.consecutiveMissedEpochs(), 1);
+    }
+
+    function test_close_commit_enters_reveal() public {
+        fund.startEpoch();
+
+        vm.prank(runner1);
+        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, bytes32("salt1")));
+
+        vm.warp(block.timestamp + COMMIT_WIN);
+        fund.closeCommit();
+
+        (, TheHumanFund.EpochPhase phase,,,,,,) = fund.getAuctionState(1);
+        assertEq(uint256(phase), uint256(TheHumanFund.EpochPhase.REVEAL));
+    }
+
+    function test_cannot_close_commit_before_window() public {
+        fund.startEpoch();
+        vm.expectRevert(TheHumanFund.TimingError.selector);
+        fund.closeCommit();
+    }
+
+    // ─── Auction: Reveal Phase ──────────────────────────────────────────────
+
+    function test_single_reveal() public {
+        fund.startEpoch();
+
+        bytes32 salt = bytes32("salt1");
+        uint256 bidAmount = 0.005 ether;
+
+        vm.prank(runner1);
+        fund.commit{value: 0.01 ether}(_commitHash(bidAmount, salt));
+
+        vm.warp(block.timestamp + COMMIT_WIN);
+        fund.closeCommit();
+
+        vm.prank(runner1);
+        fund.reveal(bidAmount, salt);
+
+        (,,, uint256 revealCount, address winner, uint256 winningBid,,) = fund.getAuctionState(1);
+        assertEq(revealCount, 1);
+        assertEq(winner, runner1);
+        assertEq(winningBid, bidAmount);
+    }
+
+    function test_lowest_reveal_wins() public {
+        fund.startEpoch();
+
+        bytes32 salt1 = bytes32("salt1");
+        bytes32 salt2 = bytes32("salt2");
+        bytes32 salt3 = bytes32("salt3");
+
+        vm.prank(runner1);
+        fund.commit{value: 0.01 ether}(_commitHash(0.008 ether, salt1));
+        vm.prank(runner2);
+        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, salt2));
+        vm.prank(runner3);
+        fund.commit{value: 0.01 ether}(_commitHash(0.009 ether, salt3));
+
+        vm.warp(block.timestamp + COMMIT_WIN);
+        fund.closeCommit();
+
+        vm.prank(runner1);
+        fund.reveal(0.008 ether, salt1);
+        vm.prank(runner2);
+        fund.reveal(0.005 ether, salt2);
+        vm.prank(runner3);
+        fund.reveal(0.009 ether, salt3);
+
+        (,,,, address winner, uint256 winningBid,,) = fund.getAuctionState(1);
+        assertEq(winner, runner2);
+        assertEq(winningBid, 0.005 ether);
+    }
+
+    function test_wrong_hash_reveal_reverts() public {
+        fund.startEpoch();
+
+        vm.prank(runner1);
+        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, bytes32("salt1")));
+
+        vm.warp(block.timestamp + COMMIT_WIN);
+        fund.closeCommit();
+
+        // Try to reveal with wrong amount
+        vm.prank(runner1);
+        vm.expectRevert(TheHumanFund.InvalidParams.selector);
+        fund.reveal(0.003 ether, bytes32("salt1"));
+    }
+
+    function test_reveal_without_commit_reverts() public {
+        fund.startEpoch();
+
+        vm.prank(runner1);
+        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, bytes32("salt1")));
+
+        vm.warp(block.timestamp + COMMIT_WIN);
+        fund.closeCommit();
+
+        // Runner2 never committed
+        vm.prank(runner2);
+        vm.expectRevert(TheHumanFund.Unauthorized.selector);
+        fund.reveal(0.005 ether, bytes32("salt1"));
+    }
+
+    function test_duplicate_reveal_reverts() public {
+        fund.startEpoch();
+
+        bytes32 salt = bytes32("salt1");
+        vm.prank(runner1);
+        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, salt));
+
+        vm.warp(block.timestamp + COMMIT_WIN);
+        fund.closeCommit();
+
+        vm.prank(runner1);
+        fund.reveal(0.005 ether, salt);
+
+        vm.prank(runner1);
+        vm.expectRevert(TheHumanFund.AlreadyDone.selector);
+        fund.reveal(0.005 ether, salt);
+    }
+
+    function test_reveal_bid_above_ceiling_rejected() public {
+        fund.startEpoch();
+
+        bytes32 salt = bytes32("salt1");
+        uint256 tooHigh = 0.02 ether; // max bid is 0.01
+
+        vm.prank(runner1);
+        fund.commit{value: 0.01 ether}(_commitHash(tooHigh, salt));
+
+        vm.warp(block.timestamp + COMMIT_WIN);
+        fund.closeCommit();
+
+        vm.prank(runner1);
+        vm.expectRevert(TheHumanFund.InvalidParams.selector);
+        fund.reveal(tooHigh, salt);
+    }
+
+    function test_reveal_after_window_rejected() public {
+        fund.startEpoch();
+
+        bytes32 salt = bytes32("salt1");
+        vm.prank(runner1);
+        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, salt));
+
+        vm.warp(block.timestamp + COMMIT_WIN);
+        fund.closeCommit();
+
+        vm.warp(block.timestamp + REVEAL_WIN);
+
+        vm.prank(runner1);
+        vm.expectRevert(TheHumanFund.TimingError.selector);
+        fund.reveal(0.005 ether, salt);
+    }
+
+    // ─── Auction: Close Reveal ──────────────────────────────────────────────
+
+    function test_close_reveal_no_reveals_forfeits_all_bonds() public {
+        fund.startEpoch();
+
+        // Two runners commit but neither reveals
+        vm.prank(runner1);
+        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, bytes32("s1")));
+        vm.prank(runner2);
+        fund.commit{value: 0.01 ether}(_commitHash(0.003 ether, bytes32("s2")));
+
+        vm.warp(block.timestamp + COMMIT_WIN);
+        fund.closeCommit();
+
+        uint256 treasuryBefore = fund.treasuryBalance();
+
+        vm.warp(block.timestamp + REVEAL_WIN);
+        fund.closeReveal();
+
+        // Both bonds stay in treasury (forfeited)
+        assertEq(fund.treasuryBalance(), treasuryBefore);
+        assertEq(fund.currentEpoch(), 2);
+        assertEq(fund.consecutiveMissedEpochs(), 1);
+    }
+
+    function test_close_reveal_refunds_non_winners() public {
+        fund.startEpoch();
+
+        bytes32 s1 = bytes32("s1");
+        bytes32 s2 = bytes32("s2");
+
+        vm.prank(runner1);
+        fund.commit{value: 0.01 ether}(_commitHash(0.008 ether, s1));
+        vm.prank(runner2);
+        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, s2));
+
+        vm.warp(block.timestamp + COMMIT_WIN);
+        fund.closeCommit();
+
+        vm.prank(runner1);
+        fund.reveal(0.008 ether, s1);
+        vm.prank(runner2);
+        fund.reveal(0.005 ether, s2);
+
+        uint256 runner1BalBefore = runner1.balance;
+
+        vm.warp(block.timestamp + REVEAL_WIN);
+        fund.closeReveal();
+
+        // Runner1 (non-winner who revealed) gets bond back
+        assertEq(runner1.balance, runner1BalBefore + 0.01 ether);
+    }
+
+    function test_close_reveal_non_revealer_loses_bond() public {
+        fund.startEpoch();
+
+        bytes32 s1 = bytes32("s1");
+        bytes32 s2 = bytes32("s2");
+
+        vm.prank(runner1);
+        fund.commit{value: 0.01 ether}(_commitHash(0.008 ether, s1));
+        vm.prank(runner2);
+        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, s2));
+
+        vm.warp(block.timestamp + COMMIT_WIN);
+        fund.closeCommit();
+
+        // Only runner2 reveals
+        vm.prank(runner2);
+        fund.reveal(0.005 ether, s2);
+
+        uint256 runner1BalBefore = runner1.balance;
+
+        vm.warp(block.timestamp + REVEAL_WIN);
+        fund.closeReveal();
+
+        // Runner1 (non-revealer) does NOT get bond back
+        assertEq(runner1.balance, runner1BalBefore);
+    }
+
+    function test_close_reveal_enters_execution() public {
+        fund.startEpoch();
+
+        bytes32 salt = bytes32("s1");
+        vm.prank(runner1);
+        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, salt));
+
+        vm.warp(block.timestamp + COMMIT_WIN);
+        fund.closeCommit();
+
+        vm.prank(runner1);
+        fund.reveal(0.005 ether, salt);
+
+        vm.warp(block.timestamp + REVEAL_WIN);
+        fund.closeReveal();
+
+        (, TheHumanFund.EpochPhase phase,,,,,,) = fund.getAuctionState(1);
+        assertEq(uint256(phase), uint256(TheHumanFund.EpochPhase.EXECUTION));
+        assertEq(fund.currentEpoch(), 1); // Not advanced yet
+    }
+
+    function test_cannot_close_reveal_before_window() public {
+        fund.startEpoch();
+
+        vm.prank(runner1);
+        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, bytes32("s1")));
+
+        vm.warp(block.timestamp + COMMIT_WIN);
+        fund.closeCommit();
+
+        vm.expectRevert(TheHumanFund.TimingError.selector);
+        fund.closeReveal();
+    }
+
+    // ─── Auction: Forfeit Bond ──────────────────────────────────────────────
+
+    function test_forfeit_bond_on_timeout() public {
+        _runAuctionTo(runner1, 0.005 ether, bytes32("s1"));
+
+        uint256 treasuryBefore = fund.treasuryBalance();
+        vm.warp(block.timestamp + EXEC_WIN);
+        fund.forfeitBond();
+
+        assertEq(fund.treasuryBalance(), treasuryBefore); // Bond stays
+        assertEq(fund.currentEpoch(), 2);
+        assertEq(fund.consecutiveMissedEpochs(), 1);
+    }
+
+    function test_cannot_forfeit_before_execution_window() public {
+        _runAuctionTo(runner1, 0.005 ether, bytes32("s1"));
+
+        vm.expectRevert(TheHumanFund.TimingError.selector);
+        fund.forfeitBond();
+    }
+
+    function test_forfeit_requires_execution_phase() public {
+        vm.expectRevert(TheHumanFund.WrongPhase.selector);
+        fund.forfeitBond();
+    }
+
+    // ─── Auction: Bond Escalation ───────────────────────────────────────────
+
+    function test_bond_escalates_on_missed_epochs() public {
+        assertEq(fund.currentBond(), 0.01 ether);
+
+        // Miss epoch 1
+        fund.startEpoch();
+        vm.warp(block.timestamp + COMMIT_WIN);
+        fund.closeCommit();
+
+        assertEq(fund.consecutiveMissedEpochs(), 1);
+        assertEq(fund.currentBond(), 0.011 ether); // 0.01 * 1.1
+
+        // Miss epoch 2
+        vm.warp(block.timestamp + EPOCH_DUR);
+        fund.startEpoch();
+        vm.warp(block.timestamp + COMMIT_WIN);
+        fund.closeCommit();
+
+        assertEq(fund.consecutiveMissedEpochs(), 2);
+        assertEq(fund.currentBond(), 0.0121 ether); // 0.01 * 1.1^2
+    }
+
+    function test_bond_escalates_after_forfeit() public {
+        _runAuctionTo(runner1, 0.005 ether, bytes32("s1"));
+
+        vm.warp(block.timestamp + EXEC_WIN);
+        fund.forfeitBond();
+
+        assertEq(fund.consecutiveMissedEpochs(), 1);
+        assertEq(fund.currentBond(), 0.011 ether);
+    }
+
+    // ─── Auction: Bid Ceiling Auto-Escalation ───────────────────────────────
+
+    function test_bid_ceiling_escalates() public {
+        assertEq(fund.effectiveMaxBid(), 0.01 ether);
+
+        // Miss epoch 1
+        fund.startEpoch();
+        vm.warp(block.timestamp + COMMIT_WIN);
+        fund.closeCommit();
+
+        assertEq(fund.effectiveMaxBid(), 0.011 ether);
+    }
+
+    // ─── Auction: Phase 0 Blocked ───────────────────────────────────────────
+
+    function test_phase0_blocked_when_auction_enabled() public {
+        vm.expectRevert(TheHumanFund.WrongPhase.selector);
+        fund.submitEpochAction(_noopAction(), bytes("nope"));
+    }
+
+    function test_phase0_works_when_auction_disabled() public {
+        fund.setAuctionEnabled(false);
+        fund.submitEpochAction(_noopAction(), bytes("back to phase 0"));
+        assertEq(fund.currentEpoch(), 2);
+    }
+
+    // ─── Auction: Timing ────────────────────────────────────────────────────
+
+    function test_cannot_start_before_previous_settled() public {
+        fund.startEpoch();
+        vm.warp(block.timestamp + COMMIT_WIN);
+        fund.closeCommit(); // No commits → settled
+
+        vm.expectRevert(TheHumanFund.TimingError.selector);
+        fund.startEpoch();
+
+        vm.warp(block.timestamp + EPOCH_DUR);
+        fund.startEpoch();
+        assertEq(fund.currentEpoch(), 2);
+    }
+
+    function test_timing_validation() public {
+        // Windows exceed epoch duration
+        vm.expectRevert(TheHumanFund.InvalidParams.selector);
+        fund.setAuctionTiming(100, 40, 30, 40); // 40+30+40=110 > 100
+
+        // Zero windows
+        vm.expectRevert(TheHumanFund.InvalidParams.selector);
+        fund.setAuctionTiming(100, 0, 30, 50);
+    }
+
+    // ─── Auction: Non-winner Submission ─────────────────────────────────────
+
+    function test_non_winner_cannot_submit() public {
+        _runAuctionTo(runner1, 0.005 ether, bytes32("s1"));
+
+        vm.prank(runner2);
+        vm.expectRevert(TheHumanFund.Unauthorized.selector);
+        fund.submitAuctionResult(_noopAction(), bytes("hax"), bytes("mock"), uint8(1), -1, "");
+    }
+
+    // ─── Auction: Input Hash ────────────────────────────────────────────────
+
+    function test_base_input_hash_committed_at_start() public {
+        bytes32 expectedHash = fund.computeInputHash();
+        fund.startEpoch();
+        assertEq(fund.epochBaseInputHashes(1), expectedHash);
+    }
+
+    function test_input_hash_deterministic() public view {
+        assertEq(fund.computeInputHash(), fund.computeInputHash());
+    }
+
+    function test_randomness_seed_captured() public {
+        _runAuctionTo(runner1, 0.005 ether, bytes32("s1"));
+
+        (,,,,,,,uint256 seed) = fund.getAuctionState(1);
+        assertEq(seed, block.prevrandao);
+    }
+
+    // ─── Attestation Integration ────────────────────────────────────────────
+
+    function test_full_auction_with_attestation() public {
+        bytes32 salt = bytes32("s1");
+        uint256 bidAmount = 0.005 ether;
+
+        _runAuctionTo(runner1, bidAmount, salt);
+
         bytes32 inputHash = fund.epochInputHashes(1);
-
-        // 4. Prepare action and reasoning
         bytes memory action = _noopAction();
-        bytes memory reasoning = bytes("The fund is conserving resources this epoch.");
+        bytes memory reasoning = bytes("The fund is conserving resources.");
 
-        // 5. Compute expected REPORTDATA: sha256(inputHash || outputHash)
-        //    outputHash includes approvedPromptHash (bytes32(0) if not set)
         bytes32 promptHash = fund.approvedPromptHash();
         bytes32 outputHash = keccak256(abi.encodePacked(sha256(action), sha256(reasoning), promptHash));
         bytes32 expectedReportData = sha256(abi.encodePacked(inputHash, outputHash));
 
-        // 6. Set up mock DCAP to return output with correct REPORTDATA
         AuctionMockDcapVerifier etchedMock = AuctionMockDcapVerifier(0xaDdeC7e85c2182202b66E331f2a4A0bBB2cEEa1F);
         etchedMock.setOutput(_buildDcapOutput(expectedReportData));
         etchedMock.setShouldSucceed(true);
 
-        // 7. Submit result as winner
-        uint256 treasuryBefore = fund.treasuryBalance();
         vm.prank(runner1);
         fund.submitAuctionResult(action, reasoning, bytes("mock_quote"), uint8(1), -1, "");
 
-        // 8. Verify epoch advanced
         assertEq(fund.currentEpoch(), 2);
         assertEq(fund.consecutiveMissedEpochs(), 0);
-
-        // 9. Verify epoch content hash was stored
-        bytes32 contentHash = fund.epochContentHashes(1);
-        assertTrue(contentHash != bytes32(0));
+        assertTrue(fund.epochContentHashes(1) != bytes32(0));
     }
 
     function test_attestation_reportdata_mismatch_reverts() public {
-        fund.startEpoch();
+        _runAuctionTo(runner1, 0.005 ether, bytes32("s1"));
 
-        vm.prank(runner1);
-        fund.bid{value: 0.001 ether}(0.005 ether);
-
-        vm.warp(block.timestamp + BID_WIN);
-        fund.closeAuction();
-
-        bytes memory action = _noopAction();
-        bytes memory reasoning = bytes("test reasoning");
-
-        // Set up mock with WRONG REPORTDATA
         bytes32 wrongReportData = bytes32(uint256(0xdeadbeef));
         AuctionMockDcapVerifier etchedMock = AuctionMockDcapVerifier(0xaDdeC7e85c2182202b66E331f2a4A0bBB2cEEa1F);
         etchedMock.setOutput(_buildDcapOutput(wrongReportData));
@@ -552,59 +657,32 @@ contract TheHumanFundAuctionTest is Test {
 
         vm.prank(runner1);
         vm.expectRevert(TheHumanFund.ProofFailed.selector);
-        fund.submitAuctionResult(action, reasoning, bytes("mock_quote"), uint8(1), -1, "");
+        fund.submitAuctionResult(_noopAction(), bytes("test"), bytes("mock"), uint8(1), -1, "");
     }
 
-    function test_randomness_seed_captured() public {
-        fund.startEpoch();
-
-        vm.prank(runner1);
-        fund.bid{value: 0.001 ether}(0.005 ether);
-
-        vm.warp(block.timestamp + BID_WIN);
-        fund.closeAuction();
-
-        (,,,,,,uint256 seed) = fund.getAuctionState(1);
-        // block.prevrandao should be non-zero in Foundry's test environment
-        // (it defaults to block.difficulty which is 0 in tests, but that's ok —
-        // we're testing the storage, not the randomness quality)
-        // The important thing is it's stored correctly
-        assertEq(seed, block.prevrandao);
-    }
+    // ─── Epoch Content Hashes ───────────────────────────────────────────────
 
     function test_epoch_content_hashes_accumulate() public {
-        // Run epoch 1 via Phase 0 (direct submission, no auction)
         fund.setAuctionEnabled(false);
 
-        bytes memory action1 = _noopAction();
-        bytes memory reasoning1 = bytes("First epoch reasoning");
-        fund.submitEpochAction(action1, reasoning1);
-
+        fund.submitEpochAction(_noopAction(), bytes("First"));
         bytes32 hash1 = fund.epochContentHashes(1);
         assertTrue(hash1 != bytes32(0));
 
-        // Run epoch 2
-        bytes memory reasoning2 = bytes("Second epoch reasoning");
-        fund.submitEpochAction(_noopAction(), reasoning2);
-
+        fund.submitEpochAction(_noopAction(), bytes("Second"));
         bytes32 hash2 = fund.epochContentHashes(2);
         assertTrue(hash2 != bytes32(0));
         assertTrue(hash1 != hash2);
     }
 
     function test_epoch_content_hash_in_input_hash() public {
-        // Submit an epoch to create content hash
         fund.setAuctionEnabled(false);
         fund.submitEpochAction(_noopAction(), bytes("reasoning"));
-
         bytes32 hashBefore = fund.computeInputHash();
 
-        // Submit another epoch (new content hash + epoch number)
         fund.submitEpochAction(_noopAction(), bytes("more reasoning"));
-
         bytes32 hashAfter = fund.computeInputHash();
 
-        // Input hash should differ because history changed
         assertTrue(hashBefore != hashAfter);
     }
 }

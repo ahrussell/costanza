@@ -54,17 +54,17 @@ contract TheHumanFund {
     }
 
     // Auction types
-    enum EpochPhase { IDLE, BIDDING, EXECUTION, SETTLED }
+    enum EpochPhase { IDLE, COMMIT, REVEAL, EXECUTION, SETTLED }
 
     struct AuctionState {
         uint256 epochStartTime;       // block.timestamp when auction opened
         EpochPhase phase;             // current lifecycle phase
-        uint256 bidCount;             // number of bids received
-        address winner;               // lowest bidder (address(0) if none)
-        uint256 winningBid;           // lowest bid amount in wei
-        uint256 winningBidTimestamp;   // block.timestamp of winning bid (tie-breaking)
-        uint256 bondAmount;           // bond held from winner (20% of bid)
-        uint256 randomnessSeed;       // block.prevrandao captured at closeAuction()
+        uint256 commitCount;          // number of sealed commits received
+        uint256 revealCount;          // number of valid reveals
+        address winner;               // lowest revealed bidder (address(0) until reveal)
+        uint256 winningBid;           // lowest revealed bid amount in wei
+        uint256 bondAmount;           // fixed bond for this epoch (same for all bidders)
+        uint256 randomnessSeed;       // block.prevrandao captured at closeReveal()
     }
 
     // ─── Events ──────────────────────────────────────────────────────────
@@ -97,9 +97,10 @@ contract TheHumanFund {
     event EpochStarted(uint256 indexed epoch, bytes32 inputHash);
 
     // Auction events
-    event AuctionOpened(uint256 indexed epoch, bytes32 inputHash, uint256 maxBidCeiling);
-    event BidSubmitted(uint256 indexed epoch, address indexed runner, uint256 bidAmount);
-    event AuctionClosed(uint256 indexed epoch, address indexed winner, uint256 winningBid);
+    event AuctionOpened(uint256 indexed epoch, bytes32 inputHash, uint256 maxBidCeiling, uint256 bond);
+    event BidCommitted(uint256 indexed epoch, address indexed runner);
+    event BidRevealed(uint256 indexed epoch, address indexed runner, uint256 bidAmount);
+    event RevealClosed(uint256 indexed epoch, address indexed winner, uint256 winningBid);
     event EpochExecuted(uint256 indexed epoch, address indexed runner, uint256 bountyPaid);
     event BondForfeited(uint256 indexed epoch, address indexed runner, uint256 bondAmount);
     event AuctionModeChanged(bool enabled);
@@ -116,7 +117,7 @@ contract TheHumanFund {
     uint256 public constant MIN_DONATION_AMOUNT = 0.001 ether;
     uint256 public constant AUTO_ESCALATION_BPS = 1000;    // 10% increase per missed epoch
     uint256 public constant NUM_NONPROFITS = 3;
-    uint256 public constant BOND_BPS = 2000;               // 20% bond on bids
+    uint256 public constant BASE_BOND = 0.01 ether;         // Fixed bond, escalates on missed epochs
     uint256 public constant MIN_MESSAGE_DONATION = 0.01 ether;  // 10x normal min to prevent spam
     uint256 public constant MAX_MESSAGE_LENGTH = 280;
     uint256 public constant MAX_MESSAGES_PER_EPOCH = 20;
@@ -190,10 +191,16 @@ contract TheHumanFund {
     // Auction state
     bool public auctionEnabled;                              // false = direct submission, true = auction mode
     uint256 public epochDuration;                            // 24 hours production, shorter for testnet
-    uint256 public biddingWindow;                            // 1 hour production
+    uint256 public commitWindow;                             // 1 hour production
+    uint256 public revealWindow;                             // 30 min production
     uint256 public executionWindow;                          // 2 hours production
     mapping(uint256 => AuctionState) public auctions;        // epoch -> auction state
-    mapping(uint256 => mapping(address => bool)) public hasBid; // epoch -> runner -> has bid
+
+    // Commit-reveal storage
+    mapping(uint256 => mapping(address => bytes32)) public bidCommits; // epoch -> runner -> commit hash
+    mapping(uint256 => mapping(address => bool)) public hasCommitted;  // epoch -> runner -> committed?
+    mapping(uint256 => mapping(address => bool)) public hasRevealed;   // epoch -> runner -> revealed?
+    mapping(uint256 => address[]) internal epochCommitters;            // epoch -> list of committers (for refunds)
 
     // ─── Modifiers ───────────────────────────────────────────────────────
 
@@ -222,7 +229,8 @@ contract TheHumanFund {
 
         // Default timing (can be overridden via setAuctionTiming)
         epochDuration = 24 hours;
-        biddingWindow = 1 hours;
+        commitWindow = 1 hours;
+        revealWindow = 30 minutes;
         executionWindow = 2 hours;
 
         for (uint256 i = 0; i < NUM_NONPROFITS; i++) {
@@ -430,18 +438,21 @@ contract TheHumanFund {
     }
 
     /// @notice Set auction timing parameters (owner-only, for testnet tuning).
-    /// @param _epochDuration Total epoch duration (e.g., 24 hours or 5 minutes for testnet)
-    /// @param _biddingWindow Duration of the bidding phase
-    /// @param _executionWindow Duration of the execution phase after auction closes
+    /// @param _epochDuration Total epoch duration
+    /// @param _commitWindow Duration of the sealed bid commit phase
+    /// @param _revealWindow Duration of the bid reveal phase
+    /// @param _executionWindow Duration of the execution phase after reveal closes
     function setAuctionTiming(
         uint256 _epochDuration,
-        uint256 _biddingWindow,
+        uint256 _commitWindow,
+        uint256 _revealWindow,
         uint256 _executionWindow
     ) external onlyOwner {
-        if (_biddingWindow + _executionWindow > _epochDuration) revert InvalidParams();
-        if (_biddingWindow == 0 || _executionWindow == 0) revert InvalidParams();
+        if (_commitWindow + _revealWindow + _executionWindow > _epochDuration) revert InvalidParams();
+        if (_commitWindow == 0 || _revealWindow == 0 || _executionWindow == 0) revert InvalidParams();
         epochDuration = _epochDuration;
-        biddingWindow = _biddingWindow;
+        commitWindow = _commitWindow;
+        revealWindow = _revealWindow;
         executionWindow = _executionWindow;
     }
 
@@ -449,19 +460,26 @@ contract TheHumanFund {
     /// @dev Requires the previous epoch's duration to have elapsed (or this is epoch 1).
     ///      Computes and commits the epoch input hash, which runners use to verify
     ///      their input matches the contract state.
+    /// @notice Current bond amount — fixed base that escalates 10% per consecutive missed epoch.
+    function currentBond() public view returns (uint256) {
+        uint256 bond = BASE_BOND;
+        for (uint256 i = 0; i < consecutiveMissedEpochs; i++) {
+            bond = bond + (bond * AUTO_ESCALATION_BPS) / 10000;
+        }
+        return bond;
+    }
+
+    /// @notice Open the auction for the current epoch. Anyone can call this.
     function startEpoch() external {
         if (!auctionEnabled) revert WrongPhase();
         uint256 epoch = currentEpoch;
         if (auctions[epoch].phase != EpochPhase.IDLE) revert AlreadyDone();
 
         // Enforce timing: previous epoch must have finished.
-        // If the previous winner failed to deliver and the execution window has passed,
-        // auto-forfeit their bond so we can start the next epoch without a separate call.
         if (epoch > 1) {
             AuctionState storage prevAuction = auctions[epoch - 1];
             if (prevAuction.phase == EpochPhase.EXECUTION) {
-                // Auto-forfeit if execution window expired
-                if (block.timestamp < prevAuction.epochStartTime + biddingWindow + executionWindow)
+                if (block.timestamp < prevAuction.epochStartTime + commitWindow + revealWindow + executionWindow)
                     revert TimingError();
                 _forfeitBond(epoch - 1, prevAuction);
             }
@@ -470,126 +488,157 @@ contract TheHumanFund {
             }
         }
 
-        // Compute and commit the base input hash (seed added at closeAuction)
         bytes32 baseInputHash = _computeInputHash();
         epochBaseInputHashes[epoch] = baseInputHash;
 
-        // Open the auction
+        uint256 bond = currentBond();
         auctions[epoch] = AuctionState({
             epochStartTime: block.timestamp,
-            phase: EpochPhase.BIDDING,
-            bidCount: 0,
+            phase: EpochPhase.COMMIT,
+            commitCount: 0,
+            revealCount: 0,
             winner: address(0),
             winningBid: 0,
-            winningBidTimestamp: 0,
-            bondAmount: 0,
+            bondAmount: bond,
             randomnessSeed: 0
         });
 
-        emit AuctionOpened(epoch, baseInputHash, effectiveMaxBid());
+        emit AuctionOpened(epoch, baseInputHash, effectiveMaxBid(), bond);
     }
 
-    /// @notice Submit a bid for the current epoch's auction.
-    /// @dev Must send bond (20% of bid amount) as ETH with the transaction.
-    ///      If this bid is lower than the current leader, the previous leader's
-    ///      bond is refunded immediately. One bid per runner per epoch.
-    /// @param amount The bounty amount the runner is willing to accept (in wei).
-    function bid(uint256 amount) external payable {
+    /// @notice Submit a sealed bid commitment for the current epoch.
+    /// @dev Bidders commit keccak256(abi.encodePacked(bidAmount, salt)) and send the fixed bond.
+    ///      One commit per runner per epoch.
+    /// @param commitHash The sealed bid: keccak256(abi.encodePacked(bidAmount, salt)).
+    function commit(bytes32 commitHash) external payable {
         if (!auctionEnabled) revert WrongPhase();
         uint256 epoch = currentEpoch;
         AuctionState storage auction = auctions[epoch];
 
-        if (auction.phase != EpochPhase.BIDDING) revert WrongPhase();
-        if (block.timestamp >= auction.epochStartTime + biddingWindow) revert TimingError();
-        if (amount == 0) revert InvalidParams();
-        if (amount > effectiveMaxBid()) revert InvalidParams();
-        if (hasBid[epoch][msg.sender]) revert AlreadyDone();
+        if (auction.phase != EpochPhase.COMMIT) revert WrongPhase();
+        if (block.timestamp >= auction.epochStartTime + commitWindow) revert TimingError();
+        if (hasCommitted[epoch][msg.sender]) revert AlreadyDone();
+        if (commitHash == bytes32(0)) revert InvalidParams();
 
-        uint256 requiredBond = (amount * BOND_BPS) / 10000;
-        if (msg.value < requiredBond) revert InvalidParams();
+        uint256 bond = auction.bondAmount;
+        if (msg.value < bond) revert InvalidParams();
 
-        // Refund excess ETH sent
-        uint256 excess = msg.value - requiredBond;
+        hasCommitted[epoch][msg.sender] = true;
+        bidCommits[epoch][msg.sender] = commitHash;
+        epochCommitters[epoch].push(msg.sender);
+        auction.commitCount += 1;
 
-        hasBid[epoch][msg.sender] = true;
-        auction.bidCount += 1;
-
-        // Check if this is the new lowest bid
-        bool isNewLeader = false;
-        if (auction.winner == address(0)) {
-            // First bid
-            isNewLeader = true;
-        } else if (amount < auction.winningBid) {
-            // Lower bid
-            isNewLeader = true;
-        } else if (amount == auction.winningBid && block.timestamp < auction.winningBidTimestamp) {
-            // Same amount, earlier timestamp (tie-break)
-            isNewLeader = true;
-        }
-
-        if (isNewLeader) {
-            // Refund previous leader's bond (if any)
-            address previousWinner = auction.winner;
-            uint256 previousBond = auction.bondAmount;
-
-            // Update state before external call (checks-effects-interactions)
-            auction.winner = msg.sender;
-            auction.winningBid = amount;
-            auction.winningBidTimestamp = block.timestamp;
-            auction.bondAmount = requiredBond;
-
-            if (previousWinner != address(0) && previousBond > 0) {
-                (bool refunded, ) = payable(previousWinner).call{value: previousBond}("");
-                if (!refunded) revert TransferFailed();
-            }
-        } else {
-            // Not the new leader — refund bond immediately
-            excess += requiredBond;
-        }
-
-        // Refund any excess ETH
+        // Refund excess ETH sent beyond the bond
+        uint256 excess = msg.value - bond;
         if (excess > 0) {
             (bool sent, ) = payable(msg.sender).call{value: excess}("");
             if (!sent) revert TransferFailed();
         }
 
-        emit BidSubmitted(epoch, msg.sender, amount);
+        emit BidCommitted(epoch, msg.sender);
     }
 
-    /// @notice Close the auction and transition to execution phase.
-    /// @dev Anyone can call this after the bidding window has elapsed.
-    ///      If no bids were received, the epoch is skipped.
-    function closeAuction() external {
+    /// @notice Close the commit phase. Anyone can call after commit window expires.
+    function closeCommit() external {
         if (!auctionEnabled) revert WrongPhase();
         uint256 epoch = currentEpoch;
         AuctionState storage auction = auctions[epoch];
 
-        if (auction.phase != EpochPhase.BIDDING) revert WrongPhase();
-        if (block.timestamp < auction.epochStartTime + biddingWindow) revert TimingError();
+        if (auction.phase != EpochPhase.COMMIT) revert WrongPhase();
+        if (block.timestamp < auction.epochStartTime + commitWindow) revert TimingError();
 
-        if (auction.bidCount == 0) {
-            // No bids — skip this epoch
+        if (auction.commitCount == 0) {
+            // No commits — skip epoch
             auction.phase = EpochPhase.SETTLED;
             consecutiveMissedEpochs += 1;
             currentEpoch = epoch + 1;
-
-            // Reset per-epoch counters
             currentEpochInflow = 0;
             currentEpochDonationCount = 0;
             currentEpochCommissions = 0;
         } else {
-            // Winner determined — enter execution phase
-            auction.phase = EpochPhase.EXECUTION;
-            auction.randomnessSeed = block.prevrandao;
-
-            // Extend base input hash with randomness seed to produce final input hash
-            epochInputHashes[epoch] = keccak256(abi.encodePacked(
-                epochBaseInputHashes[epoch],
-                block.prevrandao
-            ));
-
-            emit AuctionClosed(epoch, auction.winner, auction.winningBid);
+            auction.phase = EpochPhase.REVEAL;
         }
+    }
+
+    /// @notice Reveal a previously committed bid.
+    /// @dev The hash of (bidAmount, salt) must match the stored commit.
+    ///      Lowest valid reveal becomes the winner. First to reveal wins ties.
+    /// @param bidAmount The actual bid amount in wei.
+    /// @param salt Random salt used when committing.
+    function reveal(uint256 bidAmount, bytes32 salt) external {
+        if (!auctionEnabled) revert WrongPhase();
+        uint256 epoch = currentEpoch;
+        AuctionState storage auction = auctions[epoch];
+
+        if (auction.phase != EpochPhase.REVEAL) revert WrongPhase();
+        if (block.timestamp >= auction.epochStartTime + commitWindow + revealWindow) revert TimingError();
+        if (!hasCommitted[epoch][msg.sender]) revert Unauthorized();
+        if (hasRevealed[epoch][msg.sender]) revert AlreadyDone();
+
+        // Verify commitment
+        bytes32 expectedHash = keccak256(abi.encodePacked(bidAmount, salt));
+        if (expectedHash != bidCommits[epoch][msg.sender]) revert InvalidParams();
+
+        // Validate bid bounds
+        if (bidAmount == 0) revert InvalidParams();
+        if (bidAmount > effectiveMaxBid()) revert InvalidParams();
+
+        hasRevealed[epoch][msg.sender] = true;
+        auction.revealCount += 1;
+
+        // Update winner if this is the lowest bid (or first reveal)
+        if (auction.winner == address(0) || bidAmount < auction.winningBid) {
+            auction.winner = msg.sender;
+            auction.winningBid = bidAmount;
+        }
+
+        emit BidRevealed(epoch, msg.sender, bidAmount);
+    }
+
+    /// @notice Close the reveal phase and enter execution. Anyone can call after reveal window.
+    /// @dev Captures block.prevrandao for verifiable randomness. Refunds bonds to non-winners
+    ///      who revealed. Non-revealers lose their bond (stays in treasury).
+    function closeReveal() external {
+        if (!auctionEnabled) revert WrongPhase();
+        uint256 epoch = currentEpoch;
+        AuctionState storage auction = auctions[epoch];
+
+        if (auction.phase != EpochPhase.REVEAL) revert WrongPhase();
+        if (block.timestamp < auction.epochStartTime + commitWindow + revealWindow) revert TimingError();
+
+        if (auction.revealCount == 0) {
+            // No valid reveals — all bonds forfeited, skip epoch
+            auction.phase = EpochPhase.SETTLED;
+            consecutiveMissedEpochs += 1;
+            currentEpoch = epoch + 1;
+            currentEpochInflow = 0;
+            currentEpochDonationCount = 0;
+            currentEpochCommissions = 0;
+            return;
+        }
+
+        // Enter execution phase
+        auction.phase = EpochPhase.EXECUTION;
+        auction.randomnessSeed = block.prevrandao;
+
+        epochInputHashes[epoch] = keccak256(abi.encodePacked(
+            epochBaseInputHashes[epoch],
+            block.prevrandao
+        ));
+
+        // Refund bonds to non-winners who revealed. Non-revealers lose bond.
+        uint256 bond = auction.bondAmount;
+        address winner = auction.winner;
+        address[] storage committers = epochCommitters[epoch];
+        for (uint256 i = 0; i < committers.length; i++) {
+            address runner = committers[i];
+            if (runner != winner && hasRevealed[epoch][runner]) {
+                (bool refunded, ) = payable(runner).call{value: bond}("");
+                if (!refunded) revert TransferFailed();
+            }
+        }
+
+        emit RevealClosed(epoch, winner, auction.winningBid);
     }
 
     /// @notice Submit the auction result (winner only).
@@ -652,7 +701,7 @@ contract TheHumanFund {
         AuctionState storage auction = auctions[epoch];
         if (auction.phase != EpochPhase.EXECUTION) revert WrongPhase();
         if (msg.sender != auction.winner) revert Unauthorized();
-        if (block.timestamp >= auction.epochStartTime + biddingWindow + executionWindow) revert TimingError();
+        if (block.timestamp >= auction.epochStartTime + commitWindow + revealWindow + executionWindow) revert TimingError();
 
         if (!v.verify{value: msg.value}(epochInputHashes[epoch], outputHash, proof))
             revert ProofFailed();
@@ -675,7 +724,7 @@ contract TheHumanFund {
         AuctionState storage auction = auctions[epoch];
 
         if (auction.phase != EpochPhase.EXECUTION) revert WrongPhase();
-        if (block.timestamp < auction.epochStartTime + biddingWindow + executionWindow) revert TimingError();
+        if (block.timestamp < auction.epochStartTime + commitWindow + revealWindow + executionWindow) revert TimingError();
 
         _forfeitBond(epoch, auction);
     }
@@ -998,14 +1047,15 @@ contract TheHumanFund {
     function getAuctionState(uint256 epoch) external view returns (
         uint256 epochStartTime,
         EpochPhase phase,
-        uint256 bidCount,
+        uint256 commitCount,
+        uint256 revealCount,
         address winner,
         uint256 winningBid,
         uint256 bondAmount,
         uint256 randomnessSeed
     ) {
         AuctionState storage a = auctions[epoch];
-        return (a.epochStartTime, a.phase, a.bidCount, a.winner, a.winningBid, a.bondAmount, a.randomnessSeed);
+        return (a.epochStartTime, a.phase, a.commitCount, a.revealCount, a.winner, a.winningBid, a.bondAmount, a.randomnessSeed);
     }
 
     /// @notice Get the current treasury balance (liquid ETH only).

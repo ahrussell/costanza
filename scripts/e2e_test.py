@@ -7,7 +7,7 @@ Tests the complete security model end-to-end:
   2. Register GCP TDX image measurements (RTMR[1] + RTMR[2] — kernel + application)
   3. Configure auction timing (short windows for testing)
   4. Spin up GCP TDX confidential VM with enclave_runner + llama-server
-  5. Run full auction: startEpoch → bid → closeAuction → TEE inference → submitAuctionResult
+  5. Run full auction: startEpoch → commit → closeCommit → reveal → closeReveal → TEE inference → submitAuctionResult
   6. Verify on-chain: Automata DCAP + image registry + REPORTDATA binding all pass
 
 Security properties verified:
@@ -67,16 +67,19 @@ USE_GPU = True
 # Timing constants (adjusted at runtime based on CPU vs GPU)
 # GPU: inference takes ~30s, so keep windows tight
 EPOCH_DURATION_GPU = 600      # 10 min
-BIDDING_WINDOW_GPU = 60       # 1 min
-EXECUTION_WINDOW_GPU = 300    # 5 min (inference ~30s but SCP/SSH overhead adds ~60s)
+COMMIT_WINDOW_GPU = 60        # 1 min
+REVEAL_WINDOW_GPU = 30        # 30 sec
+EXECUTION_WINDOW_GPU = 300    # 5 min
 
 EPOCH_DURATION_CPU = 3600     # 60 min
-BIDDING_WINDOW_CPU = 120      # 2 min
-EXECUTION_WINDOW_CPU = 2700   # 45 min (CPU inference on 14B can take 20-30 min)
+COMMIT_WINDOW_CPU = 120       # 2 min
+REVEAL_WINDOW_CPU = 60        # 1 min
+EXECUTION_WINDOW_CPU = 2700   # 45 min
 
 # Defaults (overridden in main())
 EPOCH_DURATION = EPOCH_DURATION_GPU
-BIDDING_WINDOW = BIDDING_WINDOW_GPU
+COMMIT_WINDOW = COMMIT_WINDOW_GPU
+REVEAL_WINDOW = REVEAL_WINDOW_GPU
 EXECUTION_WINDOW = EXECUTION_WINDOW_GPU
 
 BID_AMOUNT_ETH = 0.0001  # Minimum bid
@@ -186,9 +189,9 @@ def deploy_contracts(w3, account):
     nonce += 1
 
     # Configure auction timing
-    print(f"Setting auction timing (epoch={EPOCH_DURATION}s, bid={BIDDING_WINDOW}s, exec={EXECUTION_WINDOW}s)...")
+    print(f"Setting auction timing (epoch={EPOCH_DURATION}s, commit={COMMIT_WINDOW}s, reveal={REVEAL_WINDOW}s, exec={EXECUTION_WINDOW}s)...")
     tx = fund.functions.setAuctionTiming(
-        EPOCH_DURATION, BIDDING_WINDOW, EXECUTION_WINDOW
+        EPOCH_DURATION, COMMIT_WINDOW, REVEAL_WINDOW, EXECUTION_WINDOW
     ).build_transaction({
         "from": deployer, "nonce": nonce,
         "gas": 100_000,
@@ -323,41 +326,41 @@ def snapshot_image_exists():
 
 
 def get_snapshot_startup_script():
-    """Minimal startup script for booting from snapshot (everything pre-installed)."""
+    """Minimal startup script for booting from snapshot (everything pre-installed).
+
+    The fresh build installs llama-server to /usr/local/bin/ and shared libs to
+    /usr/local/lib/ with ldconfig, so they persist across stop/start. We just
+    need to run ldconfig (in case) and start the server.
+    """
     if USE_GPU:
         return """#!/bin/bash
 exec > /tmp/startup.log 2>&1
 echo "=== Snapshot boot (GPU) at $(date) ==="
 
-# Ensure shared libraries from llama.cpp build are on the linker path
-# (They were built in /tmp/llama.cpp/build/ but not installed system-wide)
-echo "Fixing shared library paths..."
-if [ -d /tmp/llama.cpp/build ]; then
-    find /tmp/llama.cpp/build -name '*.so' -exec cp {} /usr/local/lib/ \\; 2>/dev/null || true
-    ldconfig
-    echo "Shared libs installed to /usr/local/lib/"
-fi
+# Shared libs should already be in /usr/local/lib/ from fresh build
+ldconfig 2>/dev/null || true
 
 # GPU drivers may need re-initialization after boot from snapshot
 echo "Checking GPU drivers..."
-if ! nvidia-smi > /dev/null 2>&1; then
-    echo "nvidia-smi failed, attempting driver reload..."
+for attempt in 1 2 3; do
+    if nvidia-smi > /dev/null 2>&1; then
+        echo "GPU available: $(nvidia-smi --query-gpu=name --format=csv,noheader)"
+        break
+    fi
+    echo "nvidia-smi failed (attempt $attempt), reloading drivers..."
     modprobe -r nvidia_uvm nvidia_drm nvidia_modeset nvidia 2>/dev/null || true
-    sleep 2
+    sleep 5
     modprobe nvidia 2>/dev/null || true
     modprobe nvidia_uvm 2>/dev/null || true
-    sleep 2
-    if nvidia-smi > /dev/null 2>&1; then
-        echo "GPU drivers reloaded successfully"
-    else
-        echo "WARNING: GPU drivers still not working, falling back to CPU mode"
-        nohup llama-server -m /models/model.gguf -c 4096 --host 0.0.0.0 --port 8080 -t $(nproc) > /tmp/llama.log 2>&1 &
-    fi
-fi
+    sleep 5
+done
 
 if nvidia-smi > /dev/null 2>&1; then
-    echo "GPU available: $(nvidia-smi --query-gpu=name --format=csv,noheader)"
+    echo "Starting llama-server (GPU)..."
     nohup llama-server -m /models/model.gguf -c 4096 --host 0.0.0.0 --port 8080 -ngl 99 > /tmp/llama.log 2>&1 &
+else
+    echo "WARNING: GPU not available after 3 attempts, falling back to CPU"
+    nohup llama-server -m /models/model.gguf -c 4096 --host 0.0.0.0 --port 8080 -t $(nproc) > /tmp/llama.log 2>&1 &
 fi
 
 for i in $(seq 1 120); do
@@ -365,11 +368,9 @@ for i in $(seq 1 120); do
         echo "llama-server ready after $((i*5))s"
         break
     fi
-    # Check if llama-server crashed
     if ! pgrep -f llama-server > /dev/null; then
-        echo "llama-server crashed! Check /tmp/llama.log"
-        tail -20 /tmp/llama.log
-        echo "Restarting in CPU mode..."
+        echo "llama-server crashed! Restarting in CPU mode..."
+        tail -10 /tmp/llama.log
         nohup llama-server -m /models/model.gguf -c 4096 --host 0.0.0.0 --port 8080 -t $(nproc) > /tmp/llama.log 2>&1 &
     fi
     sleep 5
@@ -380,13 +381,7 @@ echo "=== Snapshot boot complete at $(date) ==="
         return """#!/bin/bash
 exec > /tmp/startup.log 2>&1
 echo "=== Snapshot boot (CPU) at $(date) ==="
-
-# Ensure shared libraries are on linker path
-if [ -d /tmp/llama.cpp/build ]; then
-    find /tmp/llama.cpp/build -name '*.so' -exec cp {} /usr/local/lib/ \\; 2>/dev/null || true
-    ldconfig
-fi
-
+ldconfig 2>/dev/null || true
 nohup llama-server -m /models/model.gguf -c 4096 --host 0.0.0.0 --port 8080 -t $(nproc) > /tmp/llama.log 2>&1 &
 for i in $(seq 1 120); do
     if curl -s http://127.0.0.1:8080/health | grep -q ok; then
@@ -511,13 +506,17 @@ def create_snapshot_image():
     print(f"\n═══ STEP 2d: Create Snapshot Image '{name}' ═══")
     try:
         print("  Stopping VM...")
-        gcloud(f"compute instances stop {GCP_VM_NAME} --zone={GCP_ZONE} --discard-local-ssd=true", timeout=180)
+        gcloud(f"compute instances stop {GCP_VM_NAME} --zone={GCP_ZONE}", timeout=180)
+
+        # Delete old image if it exists (--force doesn't work for images create)
+        print("  Deleting old image if it exists...")
+        gcloud(f"compute images delete {name} --quiet", check=False, timeout=60)
 
         print("  Creating image from boot disk...")
         gcloud(
             f"compute images create {name} "
             f"--source-disk={GCP_VM_NAME} --source-disk-zone={GCP_ZONE} "
-            f"--family=humanfund-tee --force",
+            f"--family=humanfund-tee",
             timeout=600
         )
         print(f"  Image '{name}' created!")
@@ -533,7 +532,7 @@ def create_snapshot_image():
                 result = gcloud(
                     f"compute ssh {GCP_VM_NAME} --zone={GCP_ZONE} "
                     f"--command='curl -s http://127.0.0.1:8080/health 2>/dev/null || echo NOT_READY'",
-                    check=False, timeout=15
+                    check=False, timeout=30
                 )
                 if '"status":"ok"' in result or '"status": "ok"' in result:
                     print(f"  llama-server back up after restart")
@@ -596,7 +595,7 @@ def create_gcp_vm(force_fresh=False):
         f"--instance-termination-action=STOP "
         f'--min-cpu-platform="Intel Sapphire Rapids" '
         f"{image_flags} "
-        f"--boot-disk-size=50GB "
+        f"--boot-disk-size=80GB "
         f"--metadata-from-file=startup-script={startup_path}",
         timeout=120
     )
@@ -663,13 +662,7 @@ def upload_enclave_files(vm_ip):
     )
     print("  Uploaded system_prompt.txt (v4)")
 
-    # Upload protocols reference
-    gcloud(
-        f"compute scp {PROJECT_ROOT}/agent/prompts/protocols_reference.txt "
-        f"{GCP_VM_NAME}:/tmp/protocols_reference.txt --zone={GCP_ZONE}",
-        timeout=30
-    )
-    print("  Uploaded protocols_reference.txt")
+    # Protocol descriptions are now on-chain (no file to upload)
 
     # Install flask on the VM (in case startup script isn't done)
     gcloud(
@@ -680,7 +673,7 @@ def upload_enclave_files(vm_ip):
 
     # Start enclave_runner.py as root (needs root for configfs-tsm TDX quote generation)
     # Upload a startup script to avoid shell quoting issues
-    startup = "#!/bin/bash\nsource /opt/humanfund-venv/bin/activate\nSYSTEM_PROMPT_PATH=/tmp/system_prompt.txt PROTOCOLS_REF_PATH=/tmp/protocols_reference.txt nohup python3 /tmp/enclave_runner.py > /tmp/enclave.log 2>&1 &\n"
+    startup = "#!/bin/bash\nsource /opt/humanfund-venv/bin/activate\nSYSTEM_PROMPT_PATH=/tmp/system_prompt.txt nohup python3 /tmp/enclave_runner.py > /tmp/enclave.log 2>&1 &\n"
     with open("/tmp/start_enclave.sh", "w") as f:
         f.write(startup)
     gcloud(
@@ -856,43 +849,63 @@ def run_auction_e2e(w3, account, fund_addr, vm_ip, nonce):
             else:
                 raise
     print(f"      Gas: {receipt.gasUsed}")
-    # Note: epochInputHashes is set at closeAuction, not startEpoch
+    # Note: epochInputHashes is set at closeReveal, not startEpoch
 
-    # ─── 4b: bid ───
-    # Use effectiveMaxBid to stay under ceiling (treasury may be small)
+    # ─── 4b: commit sealed bid ───
     emb = fund.functions.effectiveMaxBid().call()
     bid_wei = min(emb, w3.to_wei(BID_AMOUNT_ETH, "ether"))
-    # Cap bid at 90% of treasury balance so the contract can pay the bounty
     treasury_bal = w3.eth.get_balance(fund.address)
-    max_bid_from_treasury = int(treasury_bal * 9 // 10)  # 90% of treasury
+    max_bid_from_treasury = int(treasury_bal * 9 // 10)
     if max_bid_from_treasury > 0 and bid_wei > max_bid_from_treasury:
-        print(f"      Treasury low ({w3.from_wei(treasury_bal, 'ether')} ETH), capping bid to {w3.from_wei(max_bid_from_treasury, 'ether')} ETH")
+        print(f"      Treasury low, capping bid to {w3.from_wei(max_bid_from_treasury, 'ether')} ETH")
         bid_wei = max_bid_from_treasury
-    bond_wei = max(1, bid_wei * 2000 // 10000)  # 20% bond, min 1 wei
-    print(f"\n  4b. Submitting bid: {w3.from_wei(bid_wei, 'ether')} ETH (bond: {w3.from_wei(bond_wei, 'ether')} ETH)...")
-    receipt = send_tx(fund.functions.bid(bid_wei), value=bond_wei)
+
+    bond_wei = fund.functions.currentBond().call()
+    salt = w3.keccak(os.urandom(32))
+    commit_hash = w3.keccak(bid_wei.to_bytes(32, "big") + salt)
+
+    print(f"\n  4b. Committing sealed bid: {w3.from_wei(bid_wei, 'ether')} ETH (bond: {w3.from_wei(bond_wei, 'ether')} ETH)...")
+    receipt = send_tx(fund.functions.commit(commit_hash), value=bond_wei)
     print(f"      Gas: {receipt.gasUsed}")
 
-    # ─── 4c: Wait for bidding window, then closeAuction ───
-    start_time, phase, _, _, _, _, _ = fund.functions.getAuctionState(epoch).call()
-    bid_window = fund.functions.biddingWindow().call()
+    # ─── 4c: Wait for commit window, closeCommit, reveal, closeReveal ───
+    start_time, phase, _, _, _, _, _, _ = fund.functions.getAuctionState(epoch).call()
+    commit_win = fund.functions.commitWindow().call()
     now = w3.eth.get_block("latest").timestamp
-    wait_secs = max(0, start_time + bid_window - now + 5)
-    print(f"\n  4c. Waiting {wait_secs}s for bidding window to close...")
+    wait_secs = max(0, start_time + commit_win - now + 5)
+    print(f"\n  4c. Waiting {wait_secs}s for commit window to close...")
     if wait_secs > 0:
         time.sleep(wait_secs)
         w3, fund = fresh_connection()
         nonce = w3.eth.get_transaction_count(account.address)
 
-    print("      Closing auction...")
-    receipt = send_tx(fund.functions.closeAuction())
+    print("      Closing commit phase...")
+    receipt = send_tx(fund.functions.closeCommit())
+    print(f"      Gas: {receipt.gasUsed}")
 
-    # Read state with fresh connection (critical — seed was reading as 0 before this fix)
-    _, _, _, winner, winning_bid, _, seed = fund.functions.getAuctionState(epoch).call()
-    # epochInputHashes is set at closeAuction (includes randomness seed)
+    # Reveal our bid
+    print(f"      Revealing bid: {w3.from_wei(bid_wei, 'ether')} ETH...")
+    receipt = send_tx(fund.functions.reveal(bid_wei, salt))
+    print(f"      Gas: {receipt.gasUsed}")
+
+    # Wait for reveal window, then close
+    reveal_win = fund.functions.revealWindow().call()
+    now = w3.eth.get_block("latest").timestamp
+    reveal_close_time = start_time + commit_win + reveal_win
+    wait_secs = max(0, reveal_close_time - now + 5)
+    print(f"      Waiting {wait_secs}s for reveal window to close...")
+    if wait_secs > 0:
+        time.sleep(wait_secs)
+        w3, fund = fresh_connection()
+        nonce = w3.eth.get_transaction_count(account.address)
+
+    print("      Closing reveal phase...")
+    receipt = send_tx(fund.functions.closeReveal())
+
+    _, _, _, _, winner, winning_bid, _, seed = fund.functions.getAuctionState(epoch).call()
     input_hash = fund.functions.epochInputHashes(epoch).call()
     print(f"      Winner: {winner}")
-    print(f"      Input hash: 0x{input_hash.hex()[:16]}... (set at closeAuction)")
+    print(f"      Input hash: 0x{input_hash.hex()[:16]}... (set at closeReveal)")
     print(f"      Randomness seed: {seed}")
     print(f"      Gas: {receipt.gasUsed}")
 
@@ -1041,23 +1054,25 @@ def main():
     args = parser.parse_args()
 
     # Configure GPU vs CPU (GPU is default)
-    global GCP_MACHINE_TYPE, USE_GPU, EPOCH_DURATION, BIDDING_WINDOW, EXECUTION_WINDOW
+    global GCP_MACHINE_TYPE, USE_GPU, EPOCH_DURATION, COMMIT_WINDOW, REVEAL_WINDOW, EXECUTION_WINDOW
     if args.cpu:
         GCP_MACHINE_TYPE = GCP_MACHINE_TYPE_CPU
         USE_GPU = False
         EPOCH_DURATION = EPOCH_DURATION_CPU
-        BIDDING_WINDOW = BIDDING_WINDOW_CPU
+        COMMIT_WINDOW = COMMIT_WINDOW_CPU
+        REVEAL_WINDOW = REVEAL_WINDOW_CPU
         EXECUTION_WINDOW = EXECUTION_WINDOW_CPU
         print("Mode: CPU (c3-standard-4, ~20-30 min inference)")
     else:
         GCP_MACHINE_TYPE = GCP_MACHINE_TYPE_GPU
         USE_GPU = True
         EPOCH_DURATION = EPOCH_DURATION_GPU
-        BIDDING_WINDOW = BIDDING_WINDOW_GPU
+        COMMIT_WINDOW = COMMIT_WINDOW_GPU
+        REVEAL_WINDOW = REVEAL_WINDOW_GPU
         EXECUTION_WINDOW = EXECUTION_WINDOW_GPU
         print("Mode: GPU (a3-highgpu-1g, H100, ~30s inference)")
 
-    print(f"  Timing: epoch={EPOCH_DURATION}s, bidding={BIDDING_WINDOW}s, execution={EXECUTION_WINDOW}s")
+    print(f"  Timing: epoch={EPOCH_DURATION}s, commit={COMMIT_WINDOW}s, reveal={REVEAL_WINDOW}s, execution={EXECUTION_WINDOW}s")
 
     # Load private key
     private_key = os.environ.get("PRIVATE_KEY")
@@ -1117,12 +1132,22 @@ def main():
 
             # Auto-create snapshot on fresh boot (saves ~10-15 min on next run)
             if not booted_from_snapshot and not args.no_snapshot:
-                create_snapshot_image()
+                if not create_snapshot_image():
+                    # Snapshot failed but VM may be stopped — restart it
+                    print("  Restarting VM after failed snapshot...")
+                    try:
+                        gcloud(f"compute instances start {GCP_VM_NAME} --zone={GCP_ZONE}", timeout=120)
+                        wait_for_vm_ready(vm_ip)
+                    except Exception as e:
+                        print(f"  WARNING: Could not restart VM: {e}")
 
             upload_enclave_files(vm_ip)
 
         # Step 3: Get measurements and register image key
         if vm_ip:
+            # Fresh RPC connection (SSH polling can exhaust local sockets)
+            w3 = Web3(Web3.HTTPProvider(RPC_URL, request_kwargs={"timeout": 120}))
+            nonce = w3.eth.get_transaction_count(account.address)
             measurements = get_vm_measurements()
             nonce = register_image_key(w3, account, verifier_addr, measurements["image_key"], nonce)
 
@@ -1133,9 +1158,10 @@ def main():
                 print(f"\n{'=' * 60}")
                 print(f"  EPOCH RUN {epoch_i + 1} / {num_epochs}")
                 print(f"{'=' * 60}")
-                # Refresh nonce before each epoch
+                # Refresh nonce before each epoch (sleep to avoid stale RPC reads)
+                time.sleep(5)
                 w3 = Web3(Web3.HTTPProvider(RPC_URL, request_kwargs={"timeout": 120}))
-                nonce = w3.eth.get_transaction_count(account.address)
+                nonce = w3.eth.get_transaction_count(account.address, "pending")
                 try:
                     success = run_auction_e2e(w3, account, fund_addr, vm_ip, nonce)
                 except Exception as e:
@@ -1149,10 +1175,11 @@ def main():
                         fund = w3.eth.contract(address=fund_addr, abi=json.loads((ABI_DIR / "TheHumanFund.sol" / "TheHumanFund.json").read_text())["abi"])
                         epoch = fund.functions.currentEpoch().call()
                         state = fund.functions.getAuctionState(epoch).call()
-                        if state[1] == 2:  # EXECUTION phase
-                            bid_win = fund.functions.biddingWindow().call()
+                        if state[1] == 3:  # EXECUTION phase
+                            commit_win = fund.functions.commitWindow().call()
+                            reveal_win = fund.functions.revealWindow().call()
                             exec_win = fund.functions.executionWindow().call()
-                            deadline = state[0] + bid_win + exec_win
+                            deadline = state[0] + commit_win + reveal_win + exec_win
                             wait = max(0, deadline - int(time.time())) + 5
                             print(f"      Waiting {wait}s to forfeit bond...")
                             time.sleep(wait)

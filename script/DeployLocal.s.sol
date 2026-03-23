@@ -80,7 +80,7 @@ contract DeployLocal is Script {
         fund.approveVerifier(1, address(verifier));
 
         // Configure short timing for local testing (30s epoch, 10s bid, 15s exec)
-        fund.setAuctionTiming(30, 10, 15);
+        fund.setAuctionTiming(30, 10, 5, 10);
         fund.setAuctionEnabled(true);
 
         console.log("=== Local Deployment ===");

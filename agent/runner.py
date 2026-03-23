@@ -1540,14 +1540,16 @@ def print_run_summary(results):
 
 def get_auction_state(contract, epoch):
     """Get the auction state for a given epoch."""
-    start_time, phase, bid_count, winner, winning_bid, bond, seed = contract.functions.getAuctionState(epoch).call()
-    # Phase enum: 0=IDLE, 1=BIDDING, 2=EXECUTION, 3=SETTLED
-    phase_names = {0: "IDLE", 1: "BIDDING", 2: "EXECUTION", 3: "SETTLED"}
+    start_time, phase, commit_count, reveal_count, winner, winning_bid, bond, seed = \
+        contract.functions.getAuctionState(epoch).call()
+    # Phase enum: 0=IDLE, 1=COMMIT, 2=REVEAL, 3=EXECUTION, 4=SETTLED
+    phase_names = {0: "IDLE", 1: "COMMIT", 2: "REVEAL", 3: "EXECUTION", 4: "SETTLED"}
     return {
         "epoch_start_time": start_time,
         "phase": phase,
         "phase_name": phase_names.get(phase, f"UNKNOWN({phase})"),
-        "bid_count": bid_count,
+        "commit_count": commit_count,
+        "reveal_count": reveal_count,
         "winner": winner,
         "winning_bid": winning_bid,
         "bond": bond,
@@ -1668,11 +1670,11 @@ def run_auction_epoch(w3, contract, account, tee_url, system_prompt, log_file=No
         # Refresh auction state
         auction = get_auction_state(contract, epoch)
 
-    # ─── Phase: BIDDING — Submit our bid ───────────────────────────────
-    if auction["phase"] == 1:  # BIDDING
-        already_bid = contract.functions.hasBid(epoch, account.address).call()
-        if already_bid:
-            print(f"   Already bid this epoch, waiting for auction to close...")
+    # ─── Phase: COMMIT — Submit sealed bid ──────────────────────────────
+    if auction["phase"] == 1:  # COMMIT
+        already_committed = contract.functions.hasCommitted(epoch, account.address).call()
+        if already_committed:
+            print(f"   Already committed this epoch, waiting for commit window to close...")
         else:
             # Estimate cost-based bid (2x actual cost)
             bid_amount_wei = estimate_bid(w3)
@@ -1683,11 +1685,19 @@ def run_auction_epoch(w3, contract, account, tee_url, system_prompt, log_file=No
                 bid_amount_wei = effective_max
                 print(f"   ⚠️  Bid clamped to effective max: {format_eth(bid_amount_wei)} ETH")
 
-            bond_amount = (bid_amount_wei * 2000) // 10000  # 20% bond
-            print(f"\n💰 Bidding {format_eth(bid_amount_wei)} ETH (bond: {format_eth(bond_amount)} ETH)")
+            # Generate random salt and compute commit hash
+            # Must match Solidity: keccak256(abi.encodePacked(bidAmount, salt))
+            salt = w3.keccak(os.urandom(32))
+            commit_hash = w3.keccak(
+                bid_amount_wei.to_bytes(32, "big") + salt
+            )
+
+            # Get fixed bond
+            bond_amount = contract.functions.currentBond().call()
+            print(f"\n💰 Committing sealed bid {format_eth(bid_amount_wei)} ETH (bond: {format_eth(bond_amount)} ETH)")
 
             try:
-                tx = contract.functions.bid(bid_amount_wei).build_transaction({
+                tx = contract.functions.commit(commit_hash).build_transaction({
                     "from": account.address,
                     "nonce": w3.eth.get_transaction_count(account.address),
                     "gas": 200_000,
@@ -1699,29 +1709,29 @@ def run_auction_epoch(w3, contract, account, tee_url, system_prompt, log_file=No
                 tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
                 receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
                 if receipt["status"] == 1:
-                    print(f"   ✅ Bid submitted (gas: {receipt['gasUsed']})")
+                    print(f"   ✅ Commit submitted (gas: {receipt['gasUsed']})")
                 else:
-                    print(f"   ❌ bid() reverted")
+                    print(f"   ❌ commit() reverted")
                     return None
             except Exception as e:
-                print(f"   ❌ bid() failed: {e}")
+                print(f"   ❌ commit() failed: {e}")
                 return None
 
-        # Wait for bidding window to close
+        # Wait for commit window to close
         auction = get_auction_state(contract, epoch)
-        bidding_window = contract.functions.biddingWindow().call()
-        close_time = auction["epoch_start_time"] + bidding_window
+        commit_window = contract.functions.commitWindow().call()
+        close_time = auction["epoch_start_time"] + commit_window
         now = w3.eth.get_block("latest")["timestamp"]
 
         if now < close_time:
-            wait_secs = close_time - now + 2  # +2s buffer
-            print(f"\n⏳ Waiting {wait_secs}s for bidding window to close...")
+            wait_secs = close_time - now + 2
+            print(f"\n⏳ Waiting {wait_secs}s for commit window to close...")
             time.sleep(wait_secs)
 
-        # Close the auction
-        print("\n🔨 Closing auction...")
+        # Close commit phase
+        print("\n🔨 Closing commit phase...")
         try:
-            tx = contract.functions.closeAuction().build_transaction({
+            tx = contract.functions.closeCommit().build_transaction({
                 "from": account.address,
                 "nonce": w3.eth.get_transaction_count(account.address),
                 "gas": 200_000,
@@ -1732,24 +1742,93 @@ def run_auction_epoch(w3, contract, account, tee_url, system_prompt, log_file=No
             tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
             receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
             if receipt["status"] == 1:
-                print(f"   ✅ Auction closed (gas: {receipt['gasUsed']})")
+                print(f"   ✅ Commit phase closed (gas: {receipt['gasUsed']})")
             else:
-                print(f"   ❌ closeAuction() reverted")
+                print(f"   ❌ closeCommit() reverted")
                 return None
         except Exception as e:
-            print(f"   ❌ closeAuction() failed: {e}")
+            print(f"   ❌ closeCommit() failed: {e}")
             return None
 
-        # Refresh state — epoch may have advanced if no bids
+        # Refresh state — epoch may have advanced if no commits
         new_epoch = contract.functions.currentEpoch().call()
         if new_epoch != epoch:
-            print(f"   ℹ️  No bids — epoch skipped ({epoch} → {new_epoch})")
-            return {"epoch": epoch, "action": "skipped", "status": "no_bids"}
+            print(f"   ℹ️  No commits — epoch skipped ({epoch} → {new_epoch})")
+            return {"epoch": epoch, "action": "skipped", "status": "no_commits"}
+
+        auction = get_auction_state(contract, epoch)
+
+    # ─── Phase: REVEAL — Reveal our bid ──────────────────────────────────
+    if auction["phase"] == 2:  # REVEAL
+        already_revealed = contract.functions.hasRevealed(epoch, account.address).call()
+        if already_revealed:
+            print(f"   Already revealed this epoch, waiting for reveal window...")
+        else:
+            print(f"\n🔓 Revealing bid: {format_eth(bid_amount_wei)} ETH")
+            try:
+                tx = contract.functions.reveal(bid_amount_wei, salt).build_transaction({
+                    "from": account.address,
+                    "nonce": w3.eth.get_transaction_count(account.address),
+                    "gas": 200_000,
+                    "maxFeePerGas": w3.eth.gas_price * 2,
+                    "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
+                })
+                signed = account.sign_transaction(tx)
+                tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+                receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+                if receipt["status"] == 1:
+                    print(f"   ✅ Bid revealed (gas: {receipt['gasUsed']})")
+                else:
+                    print(f"   ❌ reveal() reverted")
+                    return None
+            except Exception as e:
+                print(f"   ❌ reveal() failed: {e}")
+                return None
+
+        # Wait for reveal window to close
+        auction = get_auction_state(contract, epoch)
+        commit_window = contract.functions.commitWindow().call()
+        reveal_window = contract.functions.revealWindow().call()
+        close_time = auction["epoch_start_time"] + commit_window + reveal_window
+        now = w3.eth.get_block("latest")["timestamp"]
+
+        if now < close_time:
+            wait_secs = close_time - now + 2
+            print(f"\n⏳ Waiting {wait_secs}s for reveal window to close...")
+            time.sleep(wait_secs)
+
+        # Close reveal phase
+        print("\n🔨 Closing reveal phase...")
+        try:
+            tx = contract.functions.closeReveal().build_transaction({
+                "from": account.address,
+                "nonce": w3.eth.get_transaction_count(account.address),
+                "gas": 500_000,  # Higher gas — loops through committers for refunds
+                "maxFeePerGas": w3.eth.gas_price * 2,
+                "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
+            })
+            signed = account.sign_transaction(tx)
+            tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+            receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+            if receipt["status"] == 1:
+                print(f"   ✅ Reveal phase closed (gas: {receipt['gasUsed']})")
+            else:
+                print(f"   ❌ closeReveal() reverted")
+                return None
+        except Exception as e:
+            print(f"   ❌ closeReveal() failed: {e}")
+            return None
+
+        # Refresh state
+        new_epoch = contract.functions.currentEpoch().call()
+        if new_epoch != epoch:
+            print(f"   ℹ️  No valid reveals — epoch skipped ({epoch} → {new_epoch})")
+            return {"epoch": epoch, "action": "skipped", "status": "no_reveals"}
 
         auction = get_auction_state(contract, epoch)
 
     # ─── Phase: EXECUTION — We won, run inference and submit ───────────
-    if auction["phase"] == 2:  # EXECUTION
+    if auction["phase"] == 3:  # EXECUTION
         if auction["winner"].lower() != account.address.lower():
             print(f"   ℹ️  We are not the winner (winner: {auction['winner'][:10]}...)")
             return {"epoch": epoch, "action": "lost_auction", "status": "not_winner"}

@@ -175,7 +175,7 @@ contract Deploy is Script {
 
         slots[0] = 0; policies[0] = "Shakespearean iambic pentameter -- the tongue of the Bard befits a fund of noble purpose.";
         slots[1] = 1; policies[1] = "Rotate among all nonprofits. No permanent favorites -- each does vital work.";
-        slots[2] = 2; policies[2] = "Start conservative. Earn trust with low-risk protocols before taking bigger swings.";
+        slots[2] = 2; policies[2] = "Diversify to hedge risk and learn how to maximize risk-adjusted returns.";
         slots[3] = 3; policies[3] = "Newborn. Everything is ahead of me.";
         slots[4] = 5; policies[4] = "Inflow patterns. Are donors finding me? Is the commission rate right?";
         slots[5] = 6; policies[5] = "I exist because of you. Every ETH you send becomes someone's better day.";
