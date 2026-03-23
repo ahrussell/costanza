@@ -210,14 +210,16 @@ def read_contract_state(contract, w3):
     state["epoch_inflow"] = contract.functions.currentEpochInflow().call()
     state["epoch_donation_count"] = contract.functions.currentEpochDonationCount().call()
 
-    # Nonprofits
+    # Nonprofits (dynamic count, read from chain)
     state["nonprofits"] = []
-    for i in range(1, 4):
-        name, addr, total_donated, donation_count = contract.functions.getNonprofit(i).call()
+    np_count = contract.functions.nonprofitCount().call()
+    for i in range(1, np_count + 1):
+        name, description, ein, total_donated, donation_count = contract.functions.getNonprofit(i).call()
         state["nonprofits"].append({
             "id": i,
             "name": name,
-            "address": addr,
+            "description": description,
+            "ein": ein.hex().rstrip('0') if isinstance(ein, bytes) else ein,
             "total_donated": total_donated,
             "donation_count": donation_count,
         })
@@ -360,7 +362,8 @@ def build_contract_state_for_tee(contract, w3, state):
     for np in state["nonprofits"]:
         cs["nonprofits"].append({
             "name": np["name"],
-            "addr": np["address"],
+            "description": np["description"],
+            "ein": np["ein"],
             "total_donated": np["total_donated"],
             "donation_count": np["donation_count"],
         })
@@ -693,9 +696,11 @@ def build_epoch_context(state):
     lines.append("--- Nonprofits ---")
     for np in state["nonprofits"]:
         lines.append(
-            f"  #{np['id']} {np['name']} ({np['address'][:6]}...{np['address'][-4:]}): "
+            f"  #{np['id']} {np['name']}: "
             f"{format_eth(np['total_donated'])} ETH across {np['donation_count']} donations"
         )
+        if np.get("description"):
+            lines.append(f"     {np['description']}")
 
     # ── Section 4: Investment Portfolio ────────────────────────────────
     if state.get("investments"):
@@ -823,7 +828,8 @@ def build_epoch_context(state):
                 action_counts[aname] = action_counts.get(aname, 0) + 1
                 if atype == 1 and len(ab) >= 33:  # donate — extract nonprofit_id
                     np_id = int.from_bytes(ab[1:33], "big")
-                    np_name = {1: "GiveDirectly", 2: "Clean Air Task Force", 3: "Helen Keller Intl"}.get(np_id, f"#{np_id}")
+                    np_names = {np["id"]: np["name"] for np in state.get("nonprofits", [])}
+                    np_name = np_names.get(np_id, f"#{np_id}")
                     donate_targets[np_name] = donate_targets.get(np_name, 0) + 1
             except Exception:
                 pass
@@ -1162,7 +1168,8 @@ def _validate_and_fix_action(parsed, state):
             parsed["action_json"] = {"action": "noop", "params": {}}
 
         nonprofit_id = int(params.get("nonprofit_id", 0))
-        if nonprofit_id < 1 or nonprofit_id > 3:
+        np_count = len(state.get("nonprofits", []))
+        if nonprofit_id < 1 or nonprofit_id > np_count:
             print(f"⚠️  Invalid nonprofit_id {nonprofit_id}, downgrading to noop")
             parsed["action"] = "noop"
             parsed["action_json"] = {"action": "noop", "params": {}}

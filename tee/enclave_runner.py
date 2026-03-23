@@ -486,15 +486,24 @@ def compute_input_hash(state: dict) -> bytes:
 
     # 2. Nonprofit hash
     nps = state["nonprofits"]
-    np_args = []
-    for np in nps:
-        np_args.extend([
-            ("string", np["name"]),
-            ("address", np["addr"]),
-            ("uint256", np["total_donated"]),
-            ("uint256", np["donation_count"]),
-        ])
-    nonprofit_hash = _keccak256(_abi_encode(*np_args))
+    if len(nps) == 0:
+        nonprofit_hash = b'\x00' * 32
+    else:
+        # Match contract: keccak256(abi.encodePacked(hash1, hash2, ...))
+        # where each hash = keccak256(abi.encode(name, description, ein, totalDonated, donationCount))
+        packed = b""
+        for np in nps:
+            ein_bytes = bytes.fromhex(np["ein"].replace("0x", "")) if isinstance(np["ein"], str) else np["ein"]
+            ein_bytes32 = ein_bytes.ljust(32, b'\x00')[:32]
+            per_np_hash = _keccak256(_abi_encode(
+                ("string", np["name"]),
+                ("string", np["description"]),
+                ("bytes32", ein_bytes32),
+                ("uint256", np["total_donated"]),
+                ("uint256", np["donation_count"]),
+            ))
+            packed += per_np_hash
+        nonprofit_hash = _keccak256(packed)
 
     # 3. Investment hash (pre-computed by InvestmentManager.stateHash())
     invest_hash = bytes.fromhex(state.get("invest_hash", "0" * 64).replace("0x", ""))

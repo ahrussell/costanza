@@ -18,7 +18,6 @@ import "../src/adapters/CompoundV3USDCAdapter.sol";
 /// Required env vars:
 ///   PRIVATE_KEY          — deployer wallet
 ///   SEED_AMOUNT          — initial treasury ETH (default 0.01 ETH)
-///   NONPROFIT_1/2/3      — nonprofit wallet addresses (default to deployer for testnet)
 ///
 /// Base Mainnet DeFi addresses (required for adapter deployment):
 ///   AAVE_V3_POOL         — Aave V3 Pool
@@ -37,27 +36,28 @@ contract Deploy is Script {
         uint256 seedAmount = vm.envOr("SEED_AMOUNT", uint256(0.01 ether));
 
         address deployer = vm.addr(deployerPrivateKey);
-        address payable np1 = payable(vm.envOr("NONPROFIT_1", deployer));
-        address payable np2 = payable(vm.envOr("NONPROFIT_2", deployer));
-        address payable np3 = payable(vm.envOr("NONPROFIT_3", deployer));
 
-        string[3] memory names = [
-            "GiveDirectly",
-            "Against Malaria Foundation",
-            "Helen Keller International"
-        ];
-        address payable[3] memory addrs = [np1, np2, np3];
+        // Endaoment + DeFi addresses (Base mainnet defaults, overridable for testnet)
+        address endaomentFactory = vm.envOr("ENDAOMENT_FACTORY", address(0x10fD9348136dCea154F752fe0B6dB45Fc298A589));
+        address wethAddr = vm.envOr("WETH", address(0x4200000000000000000000000000000000000006));
+        address usdcAddr = vm.envOr("USDC", address(0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913));
+        address swapRouterAddr = vm.envOr("SWAP_ROUTER", address(0x2626664c2603336E57B271c5C0b26F421741e481));
 
         vm.startBroadcast(deployerPrivateKey);
 
         // ─── 1. Core contracts ──────────────────────────────────────────
 
         TheHumanFund fund = new TheHumanFund{value: seedAmount}(
-            names,
-            addrs,
-            1000,           // 10% initial commission
-            0.0001 ether    // initial max bid (minimum allowed)
+            1000,               // 10% initial commission
+            0.0001 ether,       // initial max bid (minimum allowed)
+            endaomentFactory,
+            wethAddr,
+            usdcAddr,
+            swapRouterAddr
         );
+
+        // Add all 9 nonprofits
+        _addNonprofits(fund);
 
         TdxVerifier tdxVerifier = new TdxVerifier();
         fund.approveVerifier(1, address(tdxVerifier));  // ID 1 = Intel TDX
@@ -181,6 +181,18 @@ contract Deploy is Script {
         slots[5] = 6; policies[5] = "I exist because of you. Every ETH you send becomes someone's better day.";
 
         fund.seedWorldView(slots, policies);
+    }
+
+    function _addNonprofits(TheHumanFund fund) internal {
+        fund.addNonprofit("National Public Radio", "Nonprofit news organization providing independent, fact-based journalism via radio, podcasts, and digital media.", bytes32("52-0907625"));
+        fund.addNonprofit("Freedom of the Press Foundation", "Builds SecureDrop, the open-source whistleblower submission system. Trains journalists on digital security.", bytes32("46-0967274"));
+        fund.addNonprofit("Electronic Frontier Foundation", "The leading nonprofit defending civil liberties in the digital world. Litigates against mass surveillance, fights for encryption rights.", bytes32("04-3091431"));
+        fund.addNonprofit("Doctors Without Borders", "Delivers emergency medical care in conflict zones, epidemics, and natural disasters across 70+ countries. Nobel Peace Prize 1999.", bytes32("13-3433452"));
+        fund.addNonprofit("St. Jude Children's Research Hospital", "Pediatric cancer treatment and research. Families never receive a bill. Shares discoveries freely worldwide.", bytes32("35-1044585"));
+        fund.addNonprofit("The Nature Conservancy", "The world's largest conservation organization. Protects ecologically important lands and waters across 70+ countries.", bytes32("53-0242652"));
+        fund.addNonprofit("Clean Air Task Force", "Pushes for policy and technology solutions to reduce air pollution and climate-warming emissions. EA-recommended.", bytes32("04-3512550"));
+        fund.addNonprofit("GiveDirectly", "Sends unconditional cash transfers directly to people in extreme poverty. No intermediaries, no conditions. The EA benchmark.", bytes32("27-1661997"));
+        fund.addNonprofit("The Ocean Cleanup", "Engineering organization developing technologies to remove plastic pollution from oceans and rivers.", bytes32("81-5132355"));
     }
 
     /// @dev Check if an env var is set (Foundry has no native way to do this).

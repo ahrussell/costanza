@@ -4,22 +4,28 @@ pragma solidity ^0.8.20;
 import "forge-std/Test.sol";
 import "../src/TheHumanFund.sol";
 import "../src/WorldView.sol";
+import "./helpers/MockEndaoment.sol";
 
 contract WorldViewTest is Test {
     TheHumanFund public fund;
     WorldView public wv;
 
-    address payable np1 = payable(address(0x1001));
-    address payable np2 = payable(address(0x1002));
-    address payable np3 = payable(address(0x1003));
-
     function setUp() public {
-        string[3] memory names = ["GiveDirectly", "Against Malaria Foundation", "Helen Keller International"];
-        address payable[3] memory addrs = [np1, np2, np3];
+        MockWETH mw = new MockWETH();
+        MockUSDC mu = new MockUSDC();
+        MockSwapRouter mr = new MockSwapRouter(address(mw), address(mu));
+        MockEndaomentFactory mf = new MockEndaomentFactory();
 
         fund = new TheHumanFund{value: 5 ether}(
-            names, addrs, 1000, 0.005 ether
+            1000, 0.005 ether,
+            address(mf), address(mw), address(mu), address(mr)
         );
+
+        fund.addNonprofit("GiveDirectly", "Cash transfers", bytes32("EIN-GD"));
+        fund.addNonprofit("Against Malaria Foundation", "Malaria prevention", bytes32("EIN-AMF"));
+        fund.addNonprofit("Helen Keller International", "NTDs", bytes32("EIN-HKI"));
+
+        mf.preDeployOrg(bytes32("EIN-GD"));
 
         wv = new WorldView(address(fund));
         fund.setWorldView(address(wv));
@@ -127,9 +133,10 @@ contract WorldViewTest is Test {
 
     function test_no_worldview_set_becomes_noop() public {
         // Deploy a fresh fund without WorldView linked
-        string[3] memory names = ["A", "B", "C"];
-        address payable[3] memory addrs = [np1, np2, np3];
-        TheHumanFund fund2 = new TheHumanFund{value: 1 ether}(names, addrs, 1000, 0.005 ether);
+        TheHumanFund fund2 = new TheHumanFund{value: 1 ether}(
+            1000, 0.005 ether,
+            address(0xBEEF), address(0xBEEF), address(0xBEEF), address(0xBEEF)
+        );
 
         uint256 balanceBefore = fund2.treasuryBalance();
         fund2.submitEpochAction(
@@ -234,7 +241,7 @@ contract WorldViewTest is Test {
         );
 
         // Both should have happened
-        (,, uint256 donated,) = fund.getNonprofit(1);
+        (,,, uint256 donated,) = fund.getNonprofit(1);
         assertEq(donated, 0.1 ether);
         assertEq(wv.getPolicy(2), "Invest conservatively in bear markets");
     }

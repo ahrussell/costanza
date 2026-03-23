@@ -61,10 +61,14 @@ contract InvestmentManagerTest is Test {
 
     function setUp() public {
         // Deploy fund with 10 ETH
-        string[3] memory names = ["NP1", "NP2", "NP3"];
-        address payable[3] memory addrs = [payable(address(0x1)), payable(address(0x2)), payable(address(0x3))];
+        fund = new TheHumanFund{value: 10 ether}(
+            1000, 0.0001 ether,
+            address(0xBEEF), address(0xBEEF), address(0xBEEF), address(0xBEEF)
+        );
 
-        fund = new TheHumanFund{value: 10 ether}(names, addrs, 1000, 0.0001 ether);
+        fund.addNonprofit("NP1", "Nonprofit 1", bytes32("EIN-1"));
+        fund.addNonprofit("NP2", "Nonprofit 2", bytes32("EIN-2"));
+        fund.addNonprofit("NP3", "Nonprofit 3", bytes32("EIN-3"));
 
         // Deploy InvestmentManager
         im = new InvestmentManager(address(fund), admin);
@@ -318,9 +322,10 @@ contract InvestmentManagerTest is Test {
 
     function test_investWithNoManagerIsNoop() public {
         // Deploy a fresh fund without InvestmentManager
-        string[3] memory n = ["A", "B", "C"];
-        address payable[3] memory a = [payable(address(0x1)), payable(address(0x2)), payable(address(0x3))];
-        TheHumanFund fund2 = new TheHumanFund{value: 1 ether}(n, a, 1000, 0.0001 ether);
+        TheHumanFund fund2 = new TheHumanFund{value: 1 ether}(
+            1000, 0.0001 ether,
+            address(0xBEEF), address(0xBEEF), address(0xBEEF), address(0xBEEF)
+        );
 
         bytes memory action = abi.encodePacked(uint8(4), abi.encode(uint256(1), uint256(0.1 ether)));
         uint256 balBefore = address(fund2).balance;

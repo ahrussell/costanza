@@ -24,10 +24,6 @@ contract TheHumanFundAuctionTest is Test {
     TdxVerifier public verifier;
     AuctionMockDcapVerifier public mockDcap;
 
-    address payable np1 = payable(address(0x1001));
-    address payable np2 = payable(address(0x1002));
-    address payable np3 = payable(address(0x1003));
-
     address runner1 = address(0x4001);
     address runner2 = address(0x4002);
     address runner3 = address(0x4003);
@@ -43,12 +39,14 @@ contract TheHumanFundAuctionTest is Test {
     bytes constant TEST_RTMR2 = hex"333333330000000000000000000000000000000000000000000000000000000000000000000000000000000000000044";
 
     function setUp() public {
-        string[3] memory names = ["GiveDirectly", "Against Malaria Foundation", "Helen Keller International"];
-        address payable[3] memory addrs = [np1, np2, np3];
-
         fund = new TheHumanFund{value: 10 ether}(
-            names, addrs, 1000, 0.01 ether
+            1000, 0.01 ether,
+            address(0xBEEF), address(0xBEEF), address(0xBEEF), address(0xBEEF)
         );
+
+        fund.addNonprofit("GiveDirectly", "Cash transfers", bytes32("EIN-GD"));
+        fund.addNonprofit("Against Malaria Foundation", "Malaria prevention", bytes32("EIN-AMF"));
+        fund.addNonprofit("Helen Keller International", "NTDs", bytes32("EIN-HKI"));
 
         // Deploy attestation verifier with mock DCAP
         mockDcap = new AuctionMockDcapVerifier();

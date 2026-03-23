@@ -3,27 +3,42 @@ pragma solidity ^0.8.20;
 
 import "forge-std/Test.sol";
 import "../src/TheHumanFund.sol";
+import "./helpers/MockEndaoment.sol";
 
 contract TheHumanFundTest is Test {
     TheHumanFund public fund;
-
-    address payable np1 = payable(address(0x1001));
-    address payable np2 = payable(address(0x1002));
-    address payable np3 = payable(address(0x1003));
+    MockEndaomentFactory public mockFactory;
+    MockWETH public mockWeth;
+    MockUSDC public mockUsdc;
+    MockSwapRouter public mockRouter;
 
     address donor = address(0x2001);
     address referrer = address(0x3001);
 
     function setUp() public {
-        string[3] memory names = ["GiveDirectly", "Against Malaria Foundation", "Helen Keller International"];
-        address payable[3] memory addrs = [np1, np2, np3];
+        // Deploy mock DeFi infra
+        mockWeth = new MockWETH();
+        mockUsdc = new MockUSDC();
+        mockRouter = new MockSwapRouter(address(mockWeth), address(mockUsdc));
+        mockFactory = new MockEndaomentFactory();
 
         fund = new TheHumanFund{value: 5 ether}(
-            names,
-            addrs,
-            1000,          // 10% commission
-            0.005 ether    // initial max bid
+            1000,                       // 10% commission
+            0.005 ether,                // initial max bid
+            address(mockFactory),
+            address(mockWeth),
+            address(mockUsdc),
+            address(mockRouter)
         );
+
+        fund.addNonprofit("GiveDirectly", "Cash transfers to extreme poor", bytes32("EIN-GD"));
+        fund.addNonprofit("Against Malaria Foundation", "Malaria prevention", bytes32("EIN-AMF"));
+        fund.addNonprofit("Helen Keller International", "Neglected tropical diseases", bytes32("EIN-HKI"));
+
+        // Pre-deploy mock Endaoment orgs so donations work
+        mockFactory.preDeployOrg(bytes32("EIN-GD"));
+        mockFactory.preDeployOrg(bytes32("EIN-AMF"));
+        mockFactory.preDeployOrg(bytes32("EIN-HKI"));
     }
 
     // ─── Constructor ─────────────────────────────────────────────────────
@@ -35,28 +50,25 @@ contract TheHumanFundTest is Test {
         assertEq(fund.treasuryBalance(), 5 ether);
         assertEq(fund.totalInflows(), 5 ether);
 
-        (string memory name, address addr,,) = fund.getNonprofit(1);
+        (string memory name, string memory description, bytes32 ein, uint256 totalDonated, uint256 donationCount) = fund.getNonprofit(1);
         assertEq(name, "GiveDirectly");
-        assertEq(addr, np1);
+        assertEq(description, "Cash transfers to extreme poor");
+        assertEq(ein, bytes32("EIN-GD"));
+        assertEq(totalDonated, 0);
+        assertEq(donationCount, 0);
     }
 
     function test_constructor_rejects_invalid_commission() public {
-        string[3] memory names = ["A", "B", "C"];
-        address payable[3] memory addrs = [np1, np2, np3];
+        vm.expectRevert(TheHumanFund.InvalidParams.selector);
+        new TheHumanFund{value: 1 ether}(50, 0.005 ether, address(0xBEEF), address(0xBEEF), address(0xBEEF), address(0xBEEF)); // 0.5% — too low
 
         vm.expectRevert(TheHumanFund.InvalidParams.selector);
-        new TheHumanFund{value: 1 ether}(names, addrs, 50, 0.005 ether); // 0.5% — too low
-
-        vm.expectRevert(TheHumanFund.InvalidParams.selector);
-        new TheHumanFund{value: 1 ether}(names, addrs, 9500, 0.005 ether); // 95% — too high
+        new TheHumanFund{value: 1 ether}(9500, 0.005 ether, address(0xBEEF), address(0xBEEF), address(0xBEEF), address(0xBEEF)); // 95% — too high
     }
 
-    function test_constructor_rejects_zero_address_nonprofit() public {
-        string[3] memory names = ["A", "B", "C"];
-        address payable[3] memory addrs = [np1, np2, payable(address(0))];
-
+    function test_add_nonprofit_rejects_zero_ein() public {
         vm.expectRevert(TheHumanFund.InvalidParams.selector);
-        new TheHumanFund{value: 1 ether}(names, addrs, 1000, 0.005 ether);
+        fund.addNonprofit("Bad Nonprofit", "No EIN", bytes32(0));
     }
 
     // ─── Donations to Fund ───────────────────────────────────────────────
@@ -133,9 +145,8 @@ contract TheHumanFundTest is Test {
 
         assertEq(fund.currentEpoch(), 2);
         assertEq(fund.treasuryBalance(), 4.5 ether);
-        assertEq(np1.balance, 0.5 ether);
 
-        (, , uint256 totalDonated, uint256 donationCount) = fund.getNonprofit(1);
+        (, , , uint256 totalDonated, uint256 donationCount) = fund.getNonprofit(1);
         assertEq(totalDonated, 0.5 ether);
         assertEq(donationCount, 1);
         assertEq(fund.lastDonationEpoch(), 1);
@@ -319,8 +330,8 @@ contract TheHumanFundTest is Test {
         fund.submitEpochAction(action2, bytes("donate 2"));
 
         // Check totals
-        (, , uint256 donated1,) = fund.getNonprofit(1);
-        (, , uint256 donated2,) = fund.getNonprofit(2);
+        (, , , uint256 donated1,) = fund.getNonprofit(1);
+        (, , , uint256 donated2,) = fund.getNonprofit(2);
         assertEq(donated1, 0.3 ether);
         assertEq(donated2, 0.2 ether);
         assertEq(fund.totalDonatedToNonprofits(), 0.5 ether);

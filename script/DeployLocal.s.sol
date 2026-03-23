@@ -55,17 +55,20 @@ contract DeployLocal is Script {
         // and the AttestationVerifier will call the hardcoded address which won't exist
         // We need a different approach...
 
-        // Deploy TheHumanFund
-        string[3] memory names = ["GiveDirectly", "Against Malaria Foundation", "Helen Keller International"];
-        address payable[3] memory addrs = [
-            payable(deployer),
-            payable(deployer),
-            payable(deployer)
-        ];
-
+        // Deploy TheHumanFund (use deployer as placeholder for Endaoment/DeFi addresses in local mode)
         TheHumanFund fund = new TheHumanFund{value: 1 ether}(
-            names, addrs, 1000, 0.001 ether
+            1000,           // 10% commission
+            0.001 ether,    // max bid
+            deployer,       // endaoment factory (placeholder)
+            deployer,       // weth (placeholder)
+            deployer,       // usdc (placeholder)
+            deployer        // swap router (placeholder)
         );
+
+        // Add test nonprofits
+        fund.addNonprofit("GiveDirectly", "Cash transfers to extreme poverty", bytes32("27-1661997"));
+        fund.addNonprofit("EFF", "Digital civil liberties", bytes32("04-3091431"));
+        fund.addNonprofit("MSF", "Emergency medical care", bytes32("13-3433452"));
 
         // Deploy TdxVerifier
         TdxVerifier verifier = new TdxVerifier();

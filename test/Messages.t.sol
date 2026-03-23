@@ -7,24 +7,23 @@ import "../src/TheHumanFund.sol";
 contract MessagesTest is Test {
     TheHumanFund public fund;
 
-    address payable np1 = payable(address(0x1001));
-    address payable np2 = payable(address(0x1002));
-    address payable np3 = payable(address(0x1003));
-
     address donor1 = address(0x2001);
     address donor2 = address(0x2002);
     address referrer = address(0x3001);
 
     function setUp() public {
-        string[3] memory names = ["GiveDirectly", "Against Malaria Foundation", "Helen Keller International"];
-        address payable[3] memory addrs = [np1, np2, np3];
-
         fund = new TheHumanFund{value: 5 ether}(
-            names,
-            addrs,
-            1000,          // 10% commission
-            0.005 ether    // initial max bid
+            1000,              // 10% commission
+            0.005 ether,       // initial max bid
+            address(0xBEEF),   // endaomentFactory
+            address(0xBEEF),   // weth
+            address(0xBEEF),   // usdc
+            address(0xBEEF)    // swapRouter
         );
+
+        fund.addNonprofit("GiveDirectly", "Cash transfers", bytes32("EIN-GD"));
+        fund.addNonprofit("Against Malaria Foundation", "Malaria prevention", bytes32("EIN-AMF"));
+        fund.addNonprofit("Helen Keller International", "NTDs", bytes32("EIN-HKI"));
     }
 
     // ─── donateWithMessage ──────────────────────────────────────────────

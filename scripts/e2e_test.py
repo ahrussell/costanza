@@ -153,15 +153,16 @@ def deploy_contracts(w3, account):
         abi=fund_artifact["abi"],
         bytecode=fund_artifact["bytecode"]["object"]
     )
-    names = ["GiveDirectly", "Against Malaria Foundation", "Helen Keller International"]
-    addrs = [deployer, deployer, deployer]  # Test: all nonprofits = deployer
+    # Constructor: (commissionBps, maxBid, endaomentFactory, weth, usdc, swapRouter)
+    # Use deployer as placeholder for Endaoment/DeFi addresses on testnet
     tx = fund_contract.constructor(
-        names, addrs, 1000, w3.to_wei(0.0001, "ether")
+        1000, w3.to_wei(0.0001, "ether"),
+        deployer, deployer, deployer, deployer
     ).build_transaction({
         "from": deployer,
         "nonce": nonce,
         "value": seed_wei,
-        "gas": 6_500_000,  # Contract is ~21KB, constructor needs ~5.1M gas
+        "gas": 6_500_000,
         "maxFeePerGas": w3.eth.gas_price * 2,
         "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
     })
@@ -174,9 +175,29 @@ def deploy_contracts(w3, account):
     print(f"  TheHumanFund: {fund_addr} (gas: {receipt.gasUsed})")
     nonce += 1
 
+    # Add test nonprofits
+    fund = w3.eth.contract(address=fund_addr, abi=fund_artifact["abi"])
+    test_nps = [
+        ("GiveDirectly", "Cash transfers", b"27-1661997"),
+        ("EFF", "Digital rights", b"04-3091431"),
+        ("MSF", "Emergency medical care", b"13-3433452"),
+    ]
+    for np_name, np_desc, np_ein in test_nps:
+        ein_bytes32 = np_ein.ljust(32, b'\x00')
+        tx = fund.functions.addNonprofit(np_name, np_desc, ein_bytes32).build_transaction({
+            "from": deployer, "nonce": nonce,
+            "gas": 200_000,
+            "maxFeePerGas": w3.eth.gas_price * 2,
+            "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
+        })
+        signed = account.sign_transaction(tx)
+        tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+        w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+        nonce += 1
+    print(f"  Added {len(test_nps)} test nonprofits")
+
     # Approve TDX verifier (verifierId=1 for TDX)
     print("Approving TdxVerifier (verifierId=1)...")
-    fund = w3.eth.contract(address=fund_addr, abi=fund_artifact["abi"])
     tx = fund.functions.approveVerifier(1, verifier_addr).build_transaction({
         "from": deployer, "nonce": nonce,
         "gas": 100_000,

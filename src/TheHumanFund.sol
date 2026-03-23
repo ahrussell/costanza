@@ -4,6 +4,9 @@ pragma solidity ^0.8.20;
 import "./interfaces/IProofVerifier.sol";
 import "./interfaces/IInvestmentManager.sol";
 import "./interfaces/IWorldView.sol";
+import "./interfaces/IEndaoment.sol";
+import "./adapters/IWETH.sol";
+import "./adapters/SwapHelper.sol"; // for ISwapRouter, IERC20
 
 /// @title The Human Fund
 /// @notice An autonomous AI agent that manages a charitable treasury on Base.
@@ -24,9 +27,11 @@ contract TheHumanFund {
 
     struct Nonprofit {
         string name;
-        address payable addr;
+        string description;
+        bytes32 ein;           // EIN as bytes32 (e.g., "52-0907625" → formatBytes32String)
         uint256 totalDonated;
         uint256 donationCount;
+        bool exists;
     }
 
     struct EpochRecord {
@@ -116,7 +121,7 @@ contract TheHumanFund {
     uint256 public constant MAX_BID_BPS = 200;             // 2% of treasury
     uint256 public constant MIN_DONATION_AMOUNT = 0.001 ether;
     uint256 public constant AUTO_ESCALATION_BPS = 1000;    // 10% increase per missed epoch
-    uint256 public constant NUM_NONPROFITS = 3;
+    uint256 public constant MAX_NONPROFITS = 20;
     uint256 public constant BASE_BOND = 0.01 ether;         // Fixed bond, escalates on missed epochs
     uint256 public constant MIN_MESSAGE_DONATION = 0.01 ether;  // 10x normal min to prevent spam
     uint256 public constant MAX_MESSAGE_LENGTH = 280;
@@ -146,7 +151,14 @@ contract TheHumanFund {
     uint256 public consecutiveMissedEpochs;
 
     // Nonprofits (1-indexed for the agent's benefit)
+    uint256 public nonprofitCount;
     mapping(uint256 => Nonprofit) public nonprofits;
+
+    // Endaoment integration (Base mainnet addresses passed via constructor)
+    IEndaomentFactory public immutable endaomentFactory;
+    IWETH public immutable weth;
+    address public immutable usdc;
+    address public immutable swapRouter;
 
     // Epochs
     mapping(uint256 => EpochRecord) public epochs;
@@ -212,10 +224,12 @@ contract TheHumanFund {
     // ─── Constructor ─────────────────────────────────────────────────────
 
     constructor(
-        string[3] memory _names,
-        address payable[3] memory _addrs,
         uint256 _initialCommissionBps,
-        uint256 _initialMaxBid
+        uint256 _initialMaxBid,
+        address _endaomentFactory,
+        address _weth,
+        address _usdc,
+        address _swapRouter
     ) payable {
         if (_initialCommissionBps < MIN_COMMISSION_BPS || _initialCommissionBps > MAX_COMMISSION_BPS) revert InvalidParams();
         if (_initialMaxBid < MIN_MAX_BID) revert InvalidParams();
@@ -233,19 +247,37 @@ contract TheHumanFund {
         revealWindow = 30 minutes;
         executionWindow = 2 hours;
 
-        for (uint256 i = 0; i < NUM_NONPROFITS; i++) {
-            if (_addrs[i] == address(0)) revert InvalidParams();
-            nonprofits[i + 1] = Nonprofit({
-                name: _names[i],
-                addr: _addrs[i],
-                totalDonated: 0,
-                donationCount: 0
-            });
-        }
+        // Endaoment integration addresses
+        endaomentFactory = IEndaomentFactory(_endaomentFactory);
+        weth = IWETH(_weth);
+        usdc = _usdc;
+        swapRouter = _swapRouter;
 
         if (msg.value > 0) {
             totalInflows += msg.value;
         }
+    }
+
+    /// @notice Add a nonprofit to the registry. Only callable by owner.
+    /// @param _name Display name of the nonprofit.
+    /// @param _description Human-readable description for the agent prompt.
+    /// @param _ein EIN as bytes32 (e.g., formatBytes32String("52-0907625")).
+    function addNonprofit(
+        string calldata _name,
+        string calldata _description,
+        bytes32 _ein
+    ) external onlyOwner returns (uint256 id) {
+        if (nonprofitCount >= MAX_NONPROFITS) revert InvalidParams();
+        if (_ein == bytes32(0)) revert InvalidParams();
+        id = ++nonprofitCount;
+        nonprofits[id] = Nonprofit({
+            name: _name,
+            description: _description,
+            ein: _ein,
+            totalDonated: 0,
+            donationCount: 0,
+            exists: true
+        });
     }
 
     // ─── Public: Donate to the Fund ──────────────────────────────────────
@@ -894,15 +926,41 @@ contract TheHumanFund {
 
     /// @dev Returns false if parameters are out of bounds (action becomes noop).
     function _executeDonate(uint256 epoch, uint256 nonprofitId, uint256 amount) internal returns (bool) {
-        if (nonprofitId < 1 || nonprofitId > NUM_NONPROFITS) return false;
+        if (nonprofitId < 1 || nonprofitId > nonprofitCount) return false;
         if (amount == 0) return false;
 
         uint256 maxDonation = (address(this).balance * MAX_DONATION_BPS) / 10000;
         if (amount > maxDonation) return false;
 
         Nonprofit storage np = nonprofits[nonprofitId];
-        (bool sent, ) = np.addr.call{value: amount}("");
-        if (!sent) return false;
+        if (!np.exists) return false;
+
+        // Compute Endaoment org address from EIN (deterministic via CREATE2)
+        address orgAddr = endaomentFactory.computeOrgAddress(np.ein);
+
+        // Deploy org if not yet deployed on this chain (one-time cost)
+        if (orgAddr.code.length == 0) {
+            endaomentFactory.deployOrg(np.ein);
+        }
+
+        // Swap ETH → USDC via Uniswap V3
+        weth.deposit{value: amount}();
+        weth.approve(swapRouter, amount);
+        uint256 usdcAmount = ISwapRouter(swapRouter).exactInputSingle(
+            ISwapRouter.ExactInputSingleParams({
+                tokenIn: address(weth),
+                tokenOut: usdc,
+                fee: 500,
+                recipient: address(this),
+                amountIn: amount,
+                amountOutMinimum: 0,
+                sqrtPriceLimitX96: 0
+            })
+        );
+
+        // Donate USDC to Endaoment org
+        IERC20(usdc).approve(orgAddr, usdcAmount);
+        IEndaomentOrg(orgAddr).donate(usdcAmount);
 
         np.totalDonated += amount;
         np.donationCount += 1;
@@ -984,13 +1042,17 @@ contract TheHumanFund {
         ));
     }
 
-    /// @dev Hash nonprofit state (3 entries, all integers).
+    /// @dev Hash nonprofit state (dynamic entries, includes description + EIN).
     function _hashNonprofits() internal view returns (bytes32) {
-        return keccak256(abi.encode(
-            nonprofits[1].name, nonprofits[1].addr, nonprofits[1].totalDonated, nonprofits[1].donationCount,
-            nonprofits[2].name, nonprofits[2].addr, nonprofits[2].totalDonated, nonprofits[2].donationCount,
-            nonprofits[3].name, nonprofits[3].addr, nonprofits[3].totalDonated, nonprofits[3].donationCount
-        ));
+        if (nonprofitCount == 0) return bytes32(0);
+        bytes memory packed;
+        for (uint256 i = 1; i <= nonprofitCount; i++) {
+            Nonprofit storage np = nonprofits[i];
+            packed = abi.encodePacked(packed, keccak256(abi.encode(
+                np.name, np.description, np.ein, np.totalDonated, np.donationCount
+            )));
+        }
+        return keccak256(packed);
     }
 
     /// @dev Hash unread messages using pre-cached per-message hashes.
@@ -1072,10 +1134,13 @@ contract TheHumanFund {
     }
 
     /// @notice Get nonprofit info by ID.
-    function getNonprofit(uint256 id) external view returns (string memory name, address addr, uint256 totalDonated, uint256 donationCount) {
-        if (id < 1 || id > NUM_NONPROFITS) revert InvalidParams();
+    function getNonprofit(uint256 id) external view returns (
+        string memory name, string memory description, bytes32 ein,
+        uint256 totalDonated, uint256 donationCount
+    ) {
+        if (id < 1 || id > nonprofitCount) revert InvalidParams();
         Nonprofit storage np = nonprofits[id];
-        return (np.name, np.addr, np.totalDonated, np.donationCount);
+        return (np.name, np.description, np.ein, np.totalDonated, np.donationCount);
     }
 
     /// @notice Get epoch record.
