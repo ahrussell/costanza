@@ -397,6 +397,16 @@ contract TheHumanFund {
         worldView = IWorldView(_wv);
     }
 
+    /// @notice Seed multiple worldview policies at once. Only callable by owner.
+    /// @dev Intended for initial setup before the fund goes live.
+    function seedWorldView(uint256[] calldata slots, string[] calldata policies) external onlyOwner {
+        require(address(worldView) != address(0), "no worldview");
+        require(slots.length == policies.length, "length mismatch");
+        for (uint256 i = 0; i < slots.length; i++) {
+            worldView.setPolicy(slots[i], policies[i]);
+        }
+    }
+
     // ─── Reverse Auction ──────────────────────────────────────────────────
 
     /// @notice Enable or disable auction mode.

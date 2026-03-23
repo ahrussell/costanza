@@ -51,7 +51,7 @@ from eth_account import Account
 
 PROJECT_ROOT = Path(__file__).parent.parent
 AGENT_DIR = PROJECT_ROOT / "agent"
-DEFAULT_PROMPT = AGENT_DIR / "prompts" / "system_v4.txt"
+DEFAULT_PROMPT = AGENT_DIR / "prompts" / "system_v5.txt"
 PROTOCOLS_REF = AGENT_DIR / "prompts" / "protocols_reference.txt"
 ABI_PATH = PROJECT_ROOT / "out" / "TheHumanFund.sol" / "TheHumanFund.json"
 

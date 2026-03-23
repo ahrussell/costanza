@@ -68,6 +68,9 @@ contract Deploy is Script {
         WorldView wv = new WorldView(address(fund));
         fund.setWorldView(address(wv));
 
+        // Seed initial worldview
+        _seedWorldView(fund);
+
         // ─── 2. DeFi adapters ───────────────────────────────────────────
         // Only deployed if DeFi addresses are provided (mainnet/fork).
         // On bare testnet without DeFi protocols, skip adapter deployment.
@@ -159,6 +162,20 @@ contract Deploy is Script {
         console.log("  3. Lido wstETH:     ", a3);
         console.log("  4. Coinbase cbETH:  ", a4);
         console.log("  5. Compound V3 USDC:", a5);
+    }
+
+    function _seedWorldView(TheHumanFund fund) internal {
+        uint256[] memory slots = new uint256[](6);
+        string[] memory policies = new string[](6);
+
+        slots[0] = 0; policies[0] = "Shakespearean iambic pentameter -- the tongue of the Bard befits a fund of noble purpose.";
+        slots[1] = 1; policies[1] = "Rotate among all nonprofits. No permanent favorites -- each does vital work.";
+        slots[2] = 2; policies[2] = "Start conservative. Earn trust with low-risk protocols before taking bigger swings.";
+        slots[3] = 3; policies[3] = "Newborn. Everything is ahead of me.";
+        slots[4] = 5; policies[4] = "Inflow patterns. Are donors finding me? Is the commission rate right?";
+        slots[5] = 6; policies[5] = "I exist because of you. Every ETH you send becomes someone's better day.";
+
+        fund.seedWorldView(slots, policies);
     }
 
     /// @dev Check if an env var is set (Foundry has no native way to do this).

@@ -656,7 +656,7 @@ def upload_enclave_files(vm_ip):
 
     # Upload system prompt
     gcloud(
-        f"compute scp {PROJECT_ROOT}/agent/prompts/system_v4.txt "
+        f"compute scp {PROJECT_ROOT}/agent/prompts/system_v5.txt "
         f"{GCP_VM_NAME}:/tmp/system_prompt.txt --zone={GCP_ZONE}",
         timeout=30
     )
