@@ -3,7 +3,7 @@ pragma solidity ^0.8.20;
 
 import "forge-std/Test.sol";
 import "../src/TheHumanFund.sol";
-import "../src/AttestationVerifier.sol";
+import "../src/TdxVerifier.sol";
 import "../src/interfaces/IAutomataDcapAttestation.sol";
 
 /// @dev Mock DCAP verifier for auction integration tests
@@ -21,7 +21,7 @@ contract AuctionMockDcapVerifier is IAutomataDcapAttestation {
 /// @title Auction mechanism tests for The Human Fund (Phase 2)
 contract TheHumanFundAuctionTest is Test {
     TheHumanFund public fund;
-    AttestationVerifier public verifier;
+    TdxVerifier public verifier;
     AuctionMockDcapVerifier public mockDcap;
 
     address payable np1 = payable(address(0x1001));
@@ -56,17 +56,17 @@ contract TheHumanFundAuctionTest is Test {
 
         // Deploy attestation verifier with mock DCAP
         mockDcap = new AuctionMockDcapVerifier();
-        verifier = new AttestationVerifier();
+        verifier = new TdxVerifier();
 
         // Etch mock DCAP verifier at the hardcoded address
         vm.etch(address(0xaDdeC7e85c2182202b66E331f2a4A0bBB2cEEa1F), address(mockDcap).code);
 
         // Approve the test image
-        bytes32 imageKey = keccak256(abi.encodePacked(TEST_MRTD, TEST_RTMR0, TEST_RTMR1, TEST_RTMR2));
+        bytes32 imageKey = keccak256(abi.encodePacked(TEST_RTMR1, TEST_RTMR2));
         verifier.approveImage(imageKey);
 
         // Link verifier to fund
-        fund.setVerifier(address(verifier));
+        fund.approveVerifier(1, address(verifier));
 
         // Configure short auction timing and enable
         fund.setAuctionTiming(EPOCH_DUR, BID_WIN, EXEC_WIN);
@@ -400,17 +400,18 @@ contract TheHumanFundAuctionTest is Test {
         // Runner2 (not the winner) tries to submit
         vm.prank(runner2);
         vm.expectRevert(TheHumanFund.Unauthorized.selector);
-        fund.submitAuctionResult(_noopAction(), bytes("hax"), _mockAttestation());
+        fund.submitAuctionResult(_noopAction(), bytes("hax"), _mockAttestation(), uint8(1), -1, "");
     }
 
     // ─── Auction: Input Hash ──────────────────────────────────────────────
 
-    function test_input_hash_committed_at_start() public {
+    function test_base_input_hash_committed_at_start() public {
         bytes32 expectedHash = fund.computeInputHash();
 
         fund.startEpoch();
 
-        assertEq(fund.epochInputHashes(1), expectedHash);
+        // Base hash is committed at startEpoch; final hash (with seed) set at closeAuction
+        assertEq(fund.epochBaseInputHashes(1), expectedHash);
     }
 
     function test_input_hash_deterministic() public view {
@@ -490,30 +491,25 @@ contract TheHumanFundAuctionTest is Test {
     function test_full_auction_with_attestation() public {
         // 1. Start epoch
         fund.startEpoch();
-        bytes32 inputHash = fund.epochInputHashes(1);
 
         // 2. Bid
         vm.prank(runner1);
         fund.bid{value: 0.001 ether}(0.005 ether);
 
-        // 3. Close auction (captures prevrandao)
+        // 3. Close auction (captures prevrandao, commits inputHash with seed)
         vm.warp(block.timestamp + BID_WIN);
         fund.closeAuction();
 
-        // Read randomness seed
-        (,,,,,,uint256 seed) = fund.getAuctionState(1);
+        // Read inputHash AFTER closeAuction (it now includes the randomness seed)
+        bytes32 inputHash = fund.epochInputHashes(1);
 
         // 4. Prepare action and reasoning
         bytes memory action = _noopAction();
         bytes memory reasoning = bytes("The fund is conserving resources this epoch.");
 
-        // 5. Compute expected REPORTDATA
-        bytes32 expectedReportData = sha256(abi.encodePacked(
-            inputHash,
-            sha256(action),
-            sha256(reasoning),
-            seed
-        ));
+        // 5. Compute expected REPORTDATA: sha256(inputHash || outputHash)
+        bytes32 outputHash = keccak256(abi.encodePacked(sha256(action), sha256(reasoning)));
+        bytes32 expectedReportData = sha256(abi.encodePacked(inputHash, outputHash));
 
         // 6. Set up mock DCAP to return output with correct REPORTDATA
         AuctionMockDcapVerifier etchedMock = AuctionMockDcapVerifier(0xaDdeC7e85c2182202b66E331f2a4A0bBB2cEEa1F);
@@ -523,15 +519,15 @@ contract TheHumanFundAuctionTest is Test {
         // 7. Submit result as winner
         uint256 treasuryBefore = fund.treasuryBalance();
         vm.prank(runner1);
-        fund.submitAuctionResult(action, reasoning, bytes("mock_quote"));
+        fund.submitAuctionResult(action, reasoning, bytes("mock_quote"), uint8(1), -1, "");
 
         // 8. Verify epoch advanced
         assertEq(fund.currentEpoch(), 2);
         assertEq(fund.consecutiveMissedEpochs(), 0);
 
-        // 9. Verify history hash was updated
-        bytes32 expectedHistory = keccak256(abi.encodePacked(bytes32(0), keccak256(reasoning)));
-        assertEq(fund.historyHash(), expectedHistory);
+        // 9. Verify epoch content hash was stored
+        bytes32 contentHash = fund.epochContentHashes(1);
+        assertTrue(contentHash != bytes32(0));
     }
 
     function test_attestation_reportdata_mismatch_reverts() public {
@@ -553,8 +549,8 @@ contract TheHumanFundAuctionTest is Test {
         etchedMock.setShouldSucceed(true);
 
         vm.prank(runner1);
-        vm.expectRevert(TheHumanFund.AttestationFailed.selector);
-        fund.submitAuctionResult(action, reasoning, bytes("mock_quote"));
+        vm.expectRevert(TheHumanFund.ProofFailed.selector);
+        fund.submitAuctionResult(action, reasoning, bytes("mock_quote"), uint8(1), -1, "");
     }
 
     function test_randomness_seed_captured() public {
@@ -574,7 +570,7 @@ contract TheHumanFundAuctionTest is Test {
         assertEq(seed, block.prevrandao);
     }
 
-    function test_history_hash_accumulates() public {
+    function test_epoch_content_hashes_accumulate() public {
         // Run epoch 1 via Phase 0 (direct submission, no auction)
         fund.setAuctionEnabled(false);
 
@@ -582,33 +578,31 @@ contract TheHumanFundAuctionTest is Test {
         bytes memory reasoning1 = bytes("First epoch reasoning");
         fund.submitEpochAction(action1, reasoning1);
 
-        bytes32 hash1 = fund.historyHash();
-        bytes32 expected1 = keccak256(abi.encodePacked(bytes32(0), keccak256(reasoning1)));
-        assertEq(hash1, expected1);
+        bytes32 hash1 = fund.epochContentHashes(1);
+        assertTrue(hash1 != bytes32(0));
 
         // Run epoch 2
         bytes memory reasoning2 = bytes("Second epoch reasoning");
         fund.submitEpochAction(_noopAction(), reasoning2);
 
-        bytes32 hash2 = fund.historyHash();
-        bytes32 expected2 = keccak256(abi.encodePacked(expected1, keccak256(reasoning2)));
-        assertEq(hash2, expected2);
+        bytes32 hash2 = fund.epochContentHashes(2);
+        assertTrue(hash2 != bytes32(0));
         assertTrue(hash1 != hash2);
     }
 
-    function test_history_hash_in_input_hash() public {
-        // Submit an epoch to set historyHash to non-zero
+    function test_epoch_content_hash_in_input_hash() public {
+        // Submit an epoch to create content hash
         fund.setAuctionEnabled(false);
         fund.submitEpochAction(_noopAction(), bytes("reasoning"));
 
         bytes32 hashBefore = fund.computeInputHash();
 
-        // Submit another epoch (changes historyHash)
+        // Submit another epoch (new content hash + epoch number)
         fund.submitEpochAction(_noopAction(), bytes("more reasoning"));
 
         bytes32 hashAfter = fund.computeInputHash();
 
-        // Input hash should differ because historyHash changed
+        // Input hash should differ because history changed
         assertTrue(hashBefore != hashAfter);
     }
 }

@@ -220,4 +220,46 @@ contract WorldViewTest is Test {
         vm.expectRevert("only fund");
         wv.setPolicy(0, "Unauthorized");
     }
+
+    // ─── Sidecar Policy Update ──────────────────────────────────────────
+
+    function test_policy_update_alongside_action() public {
+        // Donate AND update worldview in the same epoch
+        bytes memory donateAction = abi.encodePacked(uint8(1), abi.encode(uint256(1), uint256(0.1 ether)));
+        fund.submitEpochActionWithPolicy(
+            donateAction,
+            "Donating and recording my strategy",
+            int8(2),
+            "Invest conservatively in bear markets"
+        );
+
+        // Both should have happened
+        (,, uint256 donated,) = fund.getNonprofit(1);
+        assertEq(donated, 0.1 ether);
+        assertEq(wv.getPolicy(2), "Invest conservatively in bear markets");
+    }
+
+    function test_policy_update_with_noop() public {
+        // Noop action but still update worldview
+        fund.submitEpochActionWithPolicy(
+            abi.encodePacked(uint8(0)),
+            "Just updating my worldview",
+            int8(0),
+            "Stay patient and grow"
+        );
+
+        assertEq(wv.getPolicy(0), "Stay patient and grow");
+    }
+
+    function test_skip_policy_with_negative_slot() public {
+        // Slot -1 means no policy update
+        fund.submitEpochActionWithPolicy(
+            abi.encodePacked(uint8(0)),
+            "No policy change",
+            int8(-1),
+            "This should be ignored"
+        );
+
+        assertEq(wv.getPolicy(0), "");
+    }
 }

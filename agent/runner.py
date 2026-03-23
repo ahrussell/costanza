@@ -177,18 +177,6 @@ def read_contract_state(contract, w3):
         except Exception:
             continue
 
-    # Balance snapshots (every 5 epochs, last 30 epochs)
-    state["snapshots"] = []
-    epoch = state["epoch"]
-    for ep in range(max(1, epoch - 30), epoch, 5):
-        snap_ep = ep - (ep % 5) + 5  # Round to nearest 5
-        if snap_ep < epoch:
-            try:
-                balance = contract.functions.balanceSnapshots(snap_ep).call()
-                if balance > 0:
-                    state["snapshots"].append({"epoch": snap_ep, "balance": balance})
-            except Exception:
-                continue
 
     # Investment portfolio (if InvestmentManager is linked)
     state["investments"] = []
@@ -278,6 +266,103 @@ def read_contract_state(contract, w3):
         state["message_head"] = 0
 
     return state
+
+
+def build_contract_state_for_tee(contract, w3, state):
+    """Build the structured contract_state dict for TEE input hash verification.
+
+    This mirrors TheHumanFund._computeInputHash() exactly. The TEE computes
+    the same hash from this data and binds it into the TDX REPORTDATA.
+    """
+    cs = {}
+
+    # 1. State hash inputs — matches _hashState()
+    cs["state_hash_inputs"] = {
+        "epoch": state["epoch"],
+        "balance": state["treasury_balance"],
+        "commission_rate_bps": state["commission_rate_bps"],
+        "max_bid": state["max_bid"],
+        "consecutive_missed_epochs": state["consecutive_missed"],
+        "last_donation_epoch": state["last_donation_epoch"],
+        "last_commission_change_epoch": state["last_commission_change_epoch"],
+        "total_inflows": state["total_inflows"],
+        "total_donated_to_nonprofits": state["total_donated"],
+        "total_commissions_paid": state["total_commissions"],
+        "total_bounties_paid": state["total_bounties"],
+        "current_epoch_inflow": state["epoch_inflow"],
+        "current_epoch_donation_count": state["epoch_donation_count"],
+    }
+
+    # 2. Nonprofits — matches _hashNonprofits()
+    cs["nonprofits"] = []
+    for np in state["nonprofits"]:
+        cs["nonprofits"].append({
+            "name": np["name"],
+            "addr": np["address"],
+            "total_donated": np["total_donated"],
+            "donation_count": np["donation_count"],
+        })
+
+    # 3. Investment hash (pre-computed on-chain)
+    try:
+        im_addr = contract.functions.investmentManager().call()
+        if im_addr and im_addr != "0x0000000000000000000000000000000000000000":
+            im_abi = [{"name": "stateHash", "type": "function", "inputs": [],
+                       "outputs": [{"type": "bytes32"}], "stateMutability": "view"}]
+            im = w3.eth.contract(address=Web3.to_checksum_address(im_addr), abi=im_abi)
+            cs["invest_hash"] = "0x" + im.functions.stateHash().call().hex()
+        else:
+            cs["invest_hash"] = "0x" + "00" * 32
+    except Exception:
+        cs["invest_hash"] = "0x" + "00" * 32
+
+    # 4. Worldview hash (pre-computed on-chain)
+    try:
+        wv_addr = contract.functions.worldView().call()
+        if wv_addr and wv_addr != "0x0000000000000000000000000000000000000000":
+            wv_abi = [{"name": "stateHash", "type": "function", "inputs": [],
+                       "outputs": [{"type": "bytes32"}], "stateMutability": "view"}]
+            wv = w3.eth.contract(address=Web3.to_checksum_address(wv_addr), abi=wv_abi)
+            cs["worldview_hash"] = "0x" + wv.functions.stateHash().call().hex()
+        else:
+            cs["worldview_hash"] = "0x" + "00" * 32
+    except Exception:
+        cs["worldview_hash"] = "0x" + "00" * 32
+
+    # 5. Message hashes (pre-cached on-chain per message)
+    cs["message_hashes"] = []
+    try:
+        message_head = state["message_head"]
+        message_count = state["message_count"]
+        unread = message_count - message_head
+        count = min(unread, 20)  # MAX_MESSAGES_PER_EPOCH
+        msg_hash_abi = [{"name": "messageHashes", "type": "function",
+                         "inputs": [{"type": "uint256"}],
+                         "outputs": [{"type": "bytes32"}], "stateMutability": "view"}]
+        msg_contract = w3.eth.contract(address=contract.address, abi=msg_hash_abi)
+        for i in range(count):
+            h = msg_contract.functions.messageHashes(message_head + i).call()
+            cs["message_hashes"].append("0x" + h.hex())
+    except Exception:
+        pass
+
+    # 6. Epoch content hashes (last 10, most recent first)
+    cs["epoch_content_hashes"] = []
+    try:
+        epoch = state["epoch"]
+        max_history = min(epoch, 10)  # MAX_HISTORY_ENTRIES
+        ech_abi = [{"name": "epochContentHashes", "type": "function",
+                    "inputs": [{"type": "uint256"}],
+                    "outputs": [{"type": "bytes32"}], "stateMutability": "view"}]
+        ech_contract = w3.eth.contract(address=contract.address, abi=ech_abi)
+        for i in range(max_history):
+            hist_epoch = epoch - 1 - i
+            h = ech_contract.functions.epochContentHashes(hist_epoch).call()
+            cs["epoch_content_hashes"].append("0x" + h.hex())
+    except Exception:
+        pass
+
+    return cs
 
 
 # ─── Prompt Construction ─────────────────────────────────────────────────
@@ -857,7 +942,7 @@ def parse_model_output(text):
 
 # ─── TEE Inference ──────────────────────────────────────────────────────
 
-def run_tee_inference(tee_url, epoch_context, input_hash_hex="0x" + "00" * 32, seed=0):
+def run_tee_inference(tee_url, epoch_context, input_hash_hex="0x" + "00" * 32, seed=0, contract_state=None):
     """Call the TEE enclave's /run_epoch endpoint.
 
     Args:
@@ -865,6 +950,7 @@ def run_tee_inference(tee_url, epoch_context, input_hash_hex="0x" + "00" * 32, s
         epoch_context: Formatted epoch context string
         input_hash_hex: Contract's committed input hash (keccak256, hex with 0x prefix)
         seed: Randomness seed from block.prevrandao (for deterministic inference)
+        contract_state: Structured state dict for TEE input hash computation
 
     Returns a dict with:
         - reasoning, action_json, action_bytes, attestation_quote,
@@ -875,6 +961,8 @@ def run_tee_inference(tee_url, epoch_context, input_hash_hex="0x" + "00" * 32, s
         "input_hash": input_hash_hex,
         "seed": seed,
     }
+    if contract_state:
+        body["contract_state"] = contract_state
     payload = json.dumps(body).encode()
     req = Request(
         f"{tee_url.rstrip('/')}/run_epoch",
@@ -1095,28 +1183,27 @@ def run_single_epoch(w3, contract, account, system_prompt, max_tokens, dry_run=F
 
     # ── TEE Mode vs Direct Mode ──────────────────────────────────────────
     if tee_url:
-        # TEE mode: send epoch_context to enclave, get back action + attestation
+        # TEE mode: send structured state to enclave for input hash verification
         print(f"\n🔒 TEE mode — calling enclave at {tee_url}")
 
-        # Read the committed input hash from the contract (keccak256 of state fields)
-        # In Phase 0/1 (non-auction), input hash may not be committed — fall back to SHA256
+        # Build structured state for TEE input hash computation
+        contract_state = None
+        input_hash_hex = "0x" + "00" * 32
         try:
-            input_hash_bytes = contract.functions.epochInputHashes(state["current_epoch"]).call()
+            contract_state = build_contract_state_for_tee(contract, w3, state)
+            # Read committed input hash (only set in auction mode)
+            input_hash_bytes = contract.functions.epochInputHashes(state["epoch"]).call()
             input_hash_hex = "0x" + input_hash_bytes.hex()
-            if input_hash_bytes == b'\x00' * 32:
-                # Not committed (Phase 0 without auction) — fall back
-                input_hash = hashlib.sha256(epoch_context.encode("utf-8")).digest()
-                input_hash_hex = "0x" + input_hash.hex()
         except Exception:
-            input_hash = hashlib.sha256(epoch_context.encode("utf-8")).digest()
-            input_hash_hex = "0x" + input_hash.hex()
+            pass
 
         tee_result = None
         max_retries = 3
         for attempt in range(1, max_retries + 1):
             print(f"\n⏳ TEE inference (attempt {attempt}/{max_retries})...")
             try:
-                tee_result = run_tee_inference(tee_url, epoch_context, input_hash_hex)
+                tee_result = run_tee_inference(tee_url, epoch_context, input_hash_hex,
+                                               contract_state=contract_state)
                 break
             except Exception as e:
                 print(f"❌ TEE error: {e}")
@@ -1263,21 +1350,36 @@ def run_single_epoch(w3, contract, account, system_prompt, max_tokens, dry_run=F
         reasoning_bytes = truncated.decode("utf-8", errors="ignore").encode("utf-8")
         print(f"   Reasoning truncated from {len((parsed['think'] or '').encode('utf-8'))} to {len(reasoning_bytes)} bytes")
 
+    # Extract optional worldview sidecar from model output
+    worldview = parsed.get("action_json", {}).get("worldview")
+    policy_slot = -1
+    policy_text = ""
+    if worldview and isinstance(worldview, dict):
+        policy_slot = int(worldview.get("slot", -1))
+        policy_text = str(worldview.get("policy", ""))[:280]
+        if policy_slot >= 0:
+            print(f"   📝 Worldview update: slot {policy_slot} = \"{policy_text[:60]}{'...' if len(policy_text) > 60 else ''}\"")
+
     print(f"\n📤 Submitting to contract...")
     print(f"   Action bytes: {action_bytes.hex()}")
     print(f"   Reasoning: {len(reasoning_bytes)} bytes")
 
-    # Build and send transaction
-    tx = contract.functions.submitEpochAction(
-        action_bytes,
-        reasoning_bytes,
-    ).build_transaction({
+    # Build and send transaction — use WithPolicy variant if worldview update present
+    tx_params = {
         "from": account.address,
         "nonce": w3.eth.get_transaction_count(account.address),
         "gas": 5_000_000,
         "maxFeePerGas": w3.eth.gas_price * 2,
         "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
-    })
+    }
+    if policy_slot >= 0:
+        tx = contract.functions.submitEpochActionWithPolicy(
+            action_bytes, reasoning_bytes, policy_slot, policy_text,
+        ).build_transaction(tx_params)
+    else:
+        tx = contract.functions.submitEpochAction(
+            action_bytes, reasoning_bytes,
+        ).build_transaction(tx_params)
 
     signed = account.sign_transaction(tx)
     tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
@@ -1525,7 +1627,8 @@ def run_auction_epoch(w3, contract, account, tee_url, bid_amount_wei, log_file=N
         state = read_contract_state(contract, w3)
         epoch_context = build_epoch_context(state)
 
-        # Read the committed input hash from the contract (keccak256 of state fields)
+        # Build structured state for TEE and read committed input hash
+        contract_state = build_contract_state_for_tee(contract, w3, state)
         input_hash_bytes = contract.functions.epochInputHashes(epoch).call()
         input_hash_hex = "0x" + input_hash_bytes.hex()
         print(f"   Input hash (from contract): {input_hash_hex[:18]}...")
@@ -1539,7 +1642,8 @@ def run_auction_epoch(w3, contract, account, tee_url, bid_amount_wei, log_file=N
         for attempt in range(1, 4):
             print(f"⏳ TEE inference (attempt {attempt}/3)...")
             try:
-                tee_result = run_tee_inference(tee_url, epoch_context, input_hash_hex, seed=seed)
+                tee_result = run_tee_inference(tee_url, epoch_context, input_hash_hex,
+                                               seed=seed, contract_state=contract_state)
                 break
             except Exception as e:
                 print(f"❌ TEE error: {e}")
@@ -1563,6 +1667,16 @@ def run_auction_epoch(w3, contract, account, tee_url, bid_amount_wei, log_file=N
             reasoning_bytes = reasoning_bytes[:MAX_REASONING_BYTES].decode("utf-8", errors="ignore").encode("utf-8")
             print(f"   Reasoning truncated to {len(reasoning_bytes)} bytes")
 
+        # Extract optional worldview sidecar
+        worldview = tee_result.get("action_json", {}).get("worldview")
+        policy_slot = -1
+        policy_text = ""
+        if worldview and isinstance(worldview, dict):
+            policy_slot = int(worldview.get("slot", -1))
+            policy_text = str(worldview.get("policy", ""))[:280]
+            if policy_slot >= 0:
+                print(f"   📝 Worldview update: slot {policy_slot}")
+
         print(f"\n📤 Submitting auction result...")
         print(f"   Action: {action_bytes.hex()}")
         print(f"   Reasoning: {len(reasoning_bytes)} bytes")
@@ -1573,6 +1687,9 @@ def run_auction_epoch(w3, contract, account, tee_url, bid_amount_wei, log_file=N
                 action_bytes,
                 reasoning_bytes,
                 attestation_bytes,
+                1,  # verifierId = 1 (Intel TDX)
+                policy_slot,
+                policy_text,
             ).build_transaction({
                 "from": account.address,
                 "nonce": w3.eth.get_transaction_count(account.address),

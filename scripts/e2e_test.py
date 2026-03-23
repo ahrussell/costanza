@@ -3,8 +3,8 @@
 The Human Fund — Full E2E Test on Base Sepolia
 
 Tests the complete security model end-to-end:
-  1. Deploy TheHumanFund + AttestationVerifier to Base Sepolia
-  2. Register GCP TDX image measurements (MRTD + RTMR[0..2])
+  1. Deploy TheHumanFund + TdxVerifier to Base Sepolia
+  2. Register GCP TDX image measurements (RTMR[1] + RTMR[2] — kernel + application)
   3. Configure auction timing (short windows for testing)
   4. Spin up GCP TDX confidential VM with enclave_runner + llama-server
   5. Run full auction: startEpoch → bid → closeAuction → TEE inference → submitAuctionResult
@@ -12,7 +12,7 @@ Tests the complete security model end-to-end:
 
 Security properties verified:
   - Quote came from genuine Intel TDX hardware (Automata DCAP)
-  - VM was running an approved firmware+kernel+app stack (MRTD + RTMR[0..2])
+  - VM was running an approved kernel+app stack (RTMR[1] + RTMR[2])
   - Output was computed from the committed input hash (REPORTDATA binding)
   - Inference used the contract's randomness seed (prevents cherry-picking)
   - Only the auction winner can submit (msg.sender == winner)
@@ -23,7 +23,7 @@ Usage:
     python scripts/e2e_test.py
 
     # Skip deployment (reuse existing contracts):
-    python scripts/e2e_test.py --fund-address 0x... --verifier-address 0x...
+    python scripts/e2e_test.py --fund-address 0x... --verifier-address 0x...  # TdxVerifier address
 
     # Skip VM creation (reuse existing VM):
     python scripts/e2e_test.py --vm-ip 1.2.3.4
@@ -107,7 +107,7 @@ def gcloud(cmd, **kwargs):
 # ─── Step 1: Deploy Contracts ────────────────────────────────────────────
 
 def deploy_contracts(w3, account):
-    """Deploy TheHumanFund + AttestationVerifier to Base Sepolia."""
+    """Deploy TheHumanFund + TdxVerifier to Base Sepolia."""
     print("\n═══ STEP 1: Deploy Contracts ═══")
 
     # Build contracts first
@@ -116,14 +116,14 @@ def deploy_contracts(w3, account):
 
     # Load ABIs
     fund_artifact = json.loads((ABI_DIR / "TheHumanFund.sol" / "TheHumanFund.json").read_text())
-    verifier_artifact = json.loads((ABI_DIR / "AttestationVerifier.sol" / "AttestationVerifier.json").read_text())
+    verifier_artifact = json.loads((ABI_DIR / "TdxVerifier.sol" / "TdxVerifier.json").read_text())
 
     deployer = account.address
     nonce = w3.eth.get_transaction_count(deployer)
     seed_wei = w3.to_wei(SEED_AMOUNT_ETH, "ether")
 
-    # Deploy AttestationVerifier
-    print(f"Deploying AttestationVerifier...")
+    # Deploy TdxVerifier
+    print(f"Deploying TdxVerifier...")
     verifier_contract = w3.eth.contract(
         abi=verifier_artifact["abi"],
         bytecode=verifier_artifact["bytecode"]["object"]
@@ -141,7 +141,7 @@ def deploy_contracts(w3, account):
     if receipt.status != 1:
         raise RuntimeError(f"Verifier deployment failed! Status: {receipt.status}, gas: {receipt.gasUsed}")
     verifier_addr = receipt.contractAddress
-    print(f"  AttestationVerifier: {verifier_addr} (gas: {receipt.gasUsed})")
+    print(f"  TdxVerifier: {verifier_addr} (gas: {receipt.gasUsed})")
     nonce += 1
 
     # Deploy TheHumanFund
@@ -171,10 +171,10 @@ def deploy_contracts(w3, account):
     print(f"  TheHumanFund: {fund_addr} (gas: {receipt.gasUsed})")
     nonce += 1
 
-    # Link verifier to fund
-    print("Linking verifier to fund...")
+    # Approve TDX verifier (verifierId=1 for TDX)
+    print("Approving TdxVerifier (verifierId=1)...")
     fund = w3.eth.contract(address=fund_addr, abi=fund_artifact["abi"])
-    tx = fund.functions.setVerifier(verifier_addr).build_transaction({
+    tx = fund.functions.approveVerifier(1, verifier_addr).build_transaction({
         "from": deployer, "nonce": nonce,
         "gas": 100_000,
         "maxFeePerGas": w3.eth.gas_price * 2,
@@ -744,25 +744,25 @@ def get_vm_measurements():
     if len(measurements) != 4:
         raise RuntimeError(f"Failed to extract measurements: {result[:500]}")
 
+    # Image key = keccak256(RTMR1 + RTMR2) — kernel + application measurements only
     image_key = Web3.keccak(
-        measurements["mrtd"] + measurements["rtmr0"] +
         measurements["rtmr1"] + measurements["rtmr2"]
     )
     measurements["image_key"] = image_key
-    print(f"  MRTD:      {measurements['mrtd'].hex()[:32]}...")
-    print(f"  RTMR[0]:   {measurements['rtmr0'].hex()[:32]}...")
+    print(f"  MRTD:      {measurements['mrtd'].hex()[:32]}... (logged, not in image key)")
+    print(f"  RTMR[0]:   {measurements['rtmr0'].hex()[:32]}... (logged, not in image key)")
     print(f"  RTMR[1]:   {measurements['rtmr1'].hex()[:32]}...")
     print(f"  RTMR[2]:   {measurements['rtmr2'].hex()[:32]}...")
-    print(f"  Image key: 0x{image_key.hex()}")
+    print(f"  Image key: 0x{image_key.hex()} (keccak256(RTMR1 + RTMR2))")
     return measurements
 
 
 def register_image_key(w3, account, verifier_addr, image_key, nonce):
-    """Register the VM's image key in the AttestationVerifier."""
+    """Register the VM's image key in the TdxVerifier."""
     print("\n═══ STEP 3b: Register Image Key ═══")
 
     verifier_abi = json.loads(
-        (ABI_DIR / "AttestationVerifier.sol" / "AttestationVerifier.json").read_text()
+        (ABI_DIR / "TdxVerifier.sol" / "TdxVerifier.json").read_text()
     )["abi"]
     verifier = w3.eth.contract(address=verifier_addr, abi=verifier_abi)
 
@@ -854,9 +854,8 @@ def run_auction_e2e(w3, account, fund_addr, vm_ip, nonce):
                 epoch = fund.functions.currentEpoch().call()
             else:
                 raise
-    input_hash = fund.functions.epochInputHashes(epoch).call()
-    print(f"      Input hash: 0x{input_hash.hex()[:16]}...")
     print(f"      Gas: {receipt.gasUsed}")
+    # Note: epochInputHashes is set at closeAuction, not startEpoch
 
     # ─── 4b: bid ───
     # Use effectiveMaxBid to stay under ceiling (treasury may be small)
@@ -889,7 +888,10 @@ def run_auction_e2e(w3, account, fund_addr, vm_ip, nonce):
 
     # Read state with fresh connection (critical — seed was reading as 0 before this fix)
     _, _, _, winner, winning_bid, _, seed = fund.functions.getAuctionState(epoch).call()
+    # epochInputHashes is set at closeAuction (includes randomness seed)
+    input_hash = fund.functions.epochInputHashes(epoch).call()
     print(f"      Winner: {winner}")
+    print(f"      Input hash: 0x{input_hash.hex()[:16]}... (set at closeAuction)")
     print(f"      Randomness seed: {seed}")
     print(f"      Gas: {receipt.gasUsed}")
 
@@ -959,11 +961,14 @@ def run_auction_e2e(w3, account, fund_addr, vm_ip, nonce):
     print(f"      Reasoning: {len(reasoning_bytes)} bytes (truncated by enclave if needed)")
 
     # Verify REPORTDATA matches before submitting
-    expected_rd = hashlib.sha256(
-        input_hash +
+    # New formula: outputHash = keccak256(sha256(action) + sha256(reasoning))
+    #              REPORTDATA = sha256(inputHash + outputHash)
+    output_hash = Web3.keccak(
         hashlib.sha256(action_bytes).digest() +
-        hashlib.sha256(reasoning_bytes).digest() +
-        seed.to_bytes(32, "big")
+        hashlib.sha256(reasoning_bytes).digest()
+    )
+    expected_rd = hashlib.sha256(
+        input_hash + output_hash
     ).digest()
     tee_rd = bytes.fromhex(tee_result["report_data"].replace("0x", ""))[:32]
     print(f"      REPORTDATA match: {expected_rd == tee_rd}")
@@ -976,7 +981,7 @@ def run_auction_e2e(w3, account, fund_addr, vm_ip, nonce):
     nonce = w3.eth.get_transaction_count(account.address)
 
     tx = fund.functions.submitAuctionResult(
-        action_bytes, reasoning_bytes, attestation_bytes
+        action_bytes, reasoning_bytes, attestation_bytes, 1, -1, ""
     ).build_transaction({
         "from": account.address, "nonce": nonce,
         "gas": 15_000_000,  # DCAP verification needs ~10.2M gas
@@ -1026,7 +1031,7 @@ def cleanup(delete_vm=True):
 def main():
     parser = argparse.ArgumentParser(description="Full E2E test on Base Sepolia")
     parser.add_argument("--fund-address", help="Reuse existing TheHumanFund contract")
-    parser.add_argument("--verifier-address", help="Reuse existing AttestationVerifier contract")
+    parser.add_argument("--verifier-address", help="Reuse existing TdxVerifier contract")
     parser.add_argument("--vm-ip", help="Reuse existing GCP VM (skip creation)")
     parser.add_argument("--no-cleanup", action="store_true", help="Don't delete VM after test")
     parser.add_argument("--skip-vm", action="store_true", help="Skip VM creation (for testing)")
@@ -1181,8 +1186,8 @@ def main():
         print("  E2E TEST PASSED")
         print("  Full security model verified on Base Sepolia:")
         print("    [x] Automata DCAP: genuine TDX hardware")
-        print("    [x] Image registry: approved MRTD + RTMR[0..2]")
-        print("    [x] REPORTDATA: input hash + action + reasoning + seed bound")
+        print("    [x] Image registry: approved RTMR[1] + RTMR[2] (kernel + application)")
+        print("    [x] REPORTDATA: sha256(inputHash + keccak256(sha256(action) + sha256(reasoning)))")
         print("    [x] Auction: only winner can submit within execution window")
         print("    [x] Randomness seed: block.prevrandao prevents cherry-picking")
     else:

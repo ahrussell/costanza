@@ -178,7 +178,7 @@ Epochs since last donation: 0
     print("=== Step 7: submitAuctionResult() ===")
     try:
         tx = contract.functions.submitAuctionResult(
-            action_bytes, reasoning_bytes, quote_bytes
+            action_bytes, reasoning_bytes, quote_bytes, 1, -1, ""
         ).build_transaction({
             "from": account.address,
             "nonce": w3.eth.get_transaction_count(account.address),

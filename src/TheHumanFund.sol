@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "./interfaces/IAutomataDcapAttestation.sol";
-import "./interfaces/IAttestationVerifier.sol";
+import "./interfaces/IProofVerifier.sol";
 import "./interfaces/IInvestmentManager.sol";
 import "./interfaces/IWorldView.sol";
 
@@ -19,7 +18,7 @@ contract TheHumanFund {
     error TimingError();
     error TransferFailed();
     error AlreadyDone();
-    error AttestationFailed();
+    error ProofFailed();
 
     // ─── Types ───────────────────────────────────────────────────────────
 
@@ -45,13 +44,6 @@ contract TheHumanFund {
         uint256 totalReferred;
         uint256 referralCount;
         bool exists;
-    }
-
-    struct PendingCommission {
-        address payable referrer;
-        uint256 amount;
-        uint256 releaseTime;
-        bool claimed;
     }
 
     struct DonorMessage {
@@ -101,7 +93,7 @@ contract TheHumanFund {
     event CommissionRateChanged(uint256 indexed epoch, uint256 newRateBps);
     event MaxBidChanged(uint256 indexed epoch, uint256 newMaxBid);
     event ReferralCodeMinted(uint256 indexed codeId, address indexed owner);
-    event CommissionClaimed(uint256 indexed codeId, uint256 amount);
+    event CommissionPaid(address indexed referrer, uint256 amount, uint256 referralCodeId);
     event EpochStarted(uint256 indexed epoch, bytes32 inputHash);
 
     // Phase 2: Auction events
@@ -122,7 +114,6 @@ contract TheHumanFund {
     uint256 public constant MIN_MAX_BID = 0.0001 ether;
     uint256 public constant MAX_BID_BPS = 200;             // 2% of treasury
     uint256 public constant MIN_DONATION_AMOUNT = 0.001 ether;
-    uint256 public constant COMMISSION_DELAY = 7 days;
     uint256 public constant AUTO_ESCALATION_BPS = 1000;    // 10% increase per missed epoch
     uint256 public constant NUM_NONPROFITS = 3;
     uint256 public constant BOND_BPS = 2000;               // 20% bond on bids
@@ -163,22 +154,22 @@ contract TheHumanFund {
     // Referral system
     uint256 public nextReferralCodeId;
     mapping(uint256 => ReferralCode) public referralCodes;
-    PendingCommission[] public pendingCommissions;
 
     // Per-epoch inflow tracking (reset each epoch)
     uint256 public currentEpochInflow;
     uint256 public currentEpochDonationCount;
     uint256 public currentEpochCommissions;
 
-    // Balance snapshots for treasury trend (stored every 5 epochs)
-    mapping(uint256 => uint256) public balanceSnapshots;
 
-    // TEE attestation verifier (separate contract — see AttestationVerifier.sol)
-    IAttestationVerifier public verifier;
-    mapping(uint256 => bytes) public epochAttestations; // Raw attestation quotes per epoch
+    // Proof verifier registry — supports TEE (TDX) and future ZK verifiers
+    mapping(uint8 => IProofVerifier) public verifiers;
+    mapping(uint256 => bytes) public epochProofs; // Raw proofs per epoch (attestation quotes, ZK proofs)
 
-    // Rolling history hash — Merkle chain over all epoch reasoning
-    bytes32 public historyHash;
+    // Base input hashes (pre-seed) — extended with randomness seed at closeAuction()
+    mapping(uint256 => bytes32) public epochBaseInputHashes;
+
+    // Per-epoch content hashes — cached at settlement for cheap history verification
+    mapping(uint256 => bytes32) public epochContentHashes;
 
     // Investment manager (separate contract — see InvestmentManager.sol)
     IInvestmentManager public investmentManager;
@@ -188,6 +179,7 @@ contract TheHumanFund {
 
     // Donor messages
     DonorMessage[] public messages;
+    mapping(uint256 => bytes32) public messageHashes;  // messageId => keccak256(sender, amount, text, epoch)
     uint256 public messageHead;  // index of first unread message
 
     // Phase 2: Auction state
@@ -253,15 +245,7 @@ contract TheHumanFund {
         uint256 commission = 0;
 
         if (referralCodeId > 0 && referralCodes[referralCodeId].exists) {
-            commission = (msg.value * commissionRateBps) / 10000;
-            pendingCommissions.push(PendingCommission({
-                referrer: payable(referralCodes[referralCodeId].owner),
-                amount: commission,
-                releaseTime: block.timestamp + COMMISSION_DELAY,
-                claimed: false
-            }));
-            referralCodes[referralCodeId].totalReferred += msg.value;
-            referralCodes[referralCodeId].referralCount += 1;
+            commission = _payCommission(referralCodeId);
         }
 
         totalInflows += msg.value;
@@ -280,15 +264,7 @@ contract TheHumanFund {
         // Process donation (same logic as donate)
         uint256 commission = 0;
         if (referralCodeId > 0 && referralCodes[referralCodeId].exists) {
-            commission = (msg.value * commissionRateBps) / 10000;
-            pendingCommissions.push(PendingCommission({
-                referrer: payable(referralCodes[referralCodeId].owner),
-                amount: commission,
-                releaseTime: block.timestamp + COMMISSION_DELAY,
-                claimed: false
-            }));
-            referralCodes[referralCodeId].totalReferred += msg.value;
-            referralCodes[referralCodeId].referralCount += 1;
+            commission = _payCommission(referralCodeId);
         }
 
         totalInflows += msg.value;
@@ -314,6 +290,7 @@ contract TheHumanFund {
             text: truncated,
             epoch: currentEpoch
         }));
+        messageHashes[messageId] = keccak256(abi.encode(msg.sender, msg.value, truncated, currentEpoch));
 
         emit DonationReceived(msg.sender, msg.value, referralCodeId, commission);
         emit MessageReceived(msg.sender, msg.value, messageId);
@@ -332,33 +309,47 @@ contract TheHumanFund {
         return codeId;
     }
 
-    /// @notice Claim all matured commissions for a referral code.
-    function claimCommissions() external {
-        uint256 totalClaimed = 0;
-        for (uint256 i = 0; i < pendingCommissions.length; i++) {
-            PendingCommission storage pc = pendingCommissions[i];
-            if (pc.referrer == msg.sender && !pc.claimed && block.timestamp >= pc.releaseTime) {
-                pc.claimed = true;
-                totalClaimed += pc.amount;
-            }
-        }
-        if (totalClaimed == 0) revert InvalidParams();
-        totalCommissionsPaid += totalClaimed;
-        (bool sent, ) = payable(msg.sender).call{value: totalClaimed}("");
+    /// @dev Pay commission to the referrer immediately.
+    function _payCommission(uint256 referralCodeId) internal returns (uint256 commission) {
+        commission = (msg.value * commissionRateBps) / 10000;
+        address payable referrer = payable(referralCodes[referralCodeId].owner);
+        referralCodes[referralCodeId].totalReferred += msg.value;
+        referralCodes[referralCodeId].referralCount += 1;
+        totalCommissionsPaid += commission;
+        (bool sent, ) = referrer.call{value: commission}("");
         if (!sent) revert TransferFailed();
+        emit CommissionPaid(referrer, commission, referralCodeId);
     }
 
     // ─── Owner: Epoch Execution (Phase 0) ────────────────────────────────
 
     /// @notice Submit the AI agent's action for the current epoch.
     /// @dev Phase 0: Only the owner can call this. No auction, no TEE.
-    /// @param action The JSON-encoded action blob.
+    /// @param action The encoded action blob.
     /// @param reasoning The agent's chain-of-thought reasoning.
     function submitEpochAction(bytes calldata action, bytes calldata reasoning) external onlyOwner {
         if (auctionEnabled) revert WrongPhase();
         uint256 epoch = currentEpoch;
         if (epochs[epoch].executed) revert AlreadyDone();
-        _recordAndExecuteEpoch(epoch, action, reasoning, 0);
+        _recordAndExecute(epoch, action, reasoning, 0);
+    }
+
+    /// @notice Submit the AI agent's action with an optional worldview update.
+    /// @param action The encoded action blob.
+    /// @param reasoning The agent's chain-of-thought reasoning.
+    /// @param policySlot The worldview slot to update (0-9), or -1 to skip.
+    /// @param policyText The policy text (max 280 chars). Ignored if policySlot is -1.
+    function submitEpochActionWithPolicy(
+        bytes calldata action,
+        bytes calldata reasoning,
+        int8 policySlot,
+        string calldata policyText
+    ) external onlyOwner {
+        if (auctionEnabled) revert WrongPhase();
+        uint256 epoch = currentEpoch;
+        if (epochs[epoch].executed) revert AlreadyDone();
+        _applyPolicyUpdate(policySlot, policyText);
+        _recordAndExecute(epoch, action, reasoning, 0);
     }
 
     /// @notice Skip the current epoch (no runner bid or missed deadline).
@@ -376,12 +367,25 @@ contract TheHumanFund {
         currentEpochCommissions = 0;
     }
 
-    // ─── Owner: Attestation Verifier Configuration ──────────────────────
+    // ─── Owner: Proof Verifier Registry ──────────────────────────────────
 
-    /// @notice Set the attestation verifier contract address.
-    /// @dev The verifier handles DCAP verification, image registry, and REPORTDATA checks.
-    function setVerifier(address _verifier) external onlyOwner {
-        verifier = IAttestationVerifier(_verifier);
+    event VerifierApproved(uint8 indexed verifierId, address verifier);
+    event VerifierRevoked(uint8 indexed verifierId);
+
+    /// @notice Register a proof verifier (TEE, ZK, etc.) at a given ID.
+    /// @param id Verifier ID (1+ recommended; 0 is valid but unusual).
+    /// @param _verifier The IProofVerifier contract address.
+    function approveVerifier(uint8 id, address _verifier) external onlyOwner {
+        if (_verifier == address(0)) revert InvalidParams();
+        verifiers[id] = IProofVerifier(_verifier);
+        emit VerifierApproved(id, _verifier);
+    }
+
+    /// @notice Remove a proof verifier from the registry.
+    function revokeVerifier(uint8 id) external onlyOwner {
+        if (address(verifiers[id]) == address(0)) revert InvalidParams();
+        delete verifiers[id];
+        emit VerifierRevoked(id);
     }
 
     /// @notice Set the investment manager contract address.
@@ -428,18 +432,25 @@ contract TheHumanFund {
         uint256 epoch = currentEpoch;
         if (auctions[epoch].phase != EpochPhase.IDLE) revert AlreadyDone();
 
-        // Enforce timing: previous epoch must have finished
+        // Enforce timing: previous epoch must have finished.
+        // If the previous winner failed to deliver and the execution window has passed,
+        // auto-forfeit their bond so we can start the next epoch without a separate call.
         if (epoch > 1) {
             AuctionState storage prevAuction = auctions[epoch - 1];
-            if (prevAuction.phase != EpochPhase.IDLE) {
-                if (prevAuction.phase != EpochPhase.SETTLED) revert WrongPhase();
+            if (prevAuction.phase == EpochPhase.EXECUTION) {
+                // Auto-forfeit if execution window expired
+                if (block.timestamp < prevAuction.epochStartTime + biddingWindow + executionWindow)
+                    revert TimingError();
+                _forfeitBond(epoch - 1, prevAuction);
+            }
+            if (prevAuction.phase == EpochPhase.SETTLED) {
                 if (block.timestamp < prevAuction.epochStartTime + epochDuration) revert TimingError();
             }
         }
 
-        // Compute and commit the input hash
-        bytes32 inputHash = _computeInputHash();
-        epochInputHashes[epoch] = inputHash;
+        // Compute and commit the base input hash (seed added at closeAuction)
+        bytes32 baseInputHash = _computeInputHash();
+        epochBaseInputHashes[epoch] = baseInputHash;
 
         // Open the auction
         auctions[epoch] = AuctionState({
@@ -453,7 +464,7 @@ contract TheHumanFund {
             randomnessSeed: 0
         });
 
-        emit AuctionOpened(epoch, inputHash, effectiveMaxBid());
+        emit AuctionOpened(epoch, baseInputHash, effectiveMaxBid());
     }
 
     /// @notice Submit a bid for the current epoch's auction.
@@ -548,70 +559,89 @@ contract TheHumanFund {
             // Winner determined — enter execution phase
             auction.phase = EpochPhase.EXECUTION;
             auction.randomnessSeed = block.prevrandao;
+
+            // Extend base input hash with randomness seed to produce final input hash
+            epochInputHashes[epoch] = keccak256(abi.encodePacked(
+                epochBaseInputHashes[epoch],
+                block.prevrandao
+            ));
+
             emit AuctionClosed(epoch, auction.winner, auction.winningBid);
         }
     }
 
     /// @notice Submit the auction result (winner only).
-    /// @dev The winner submits the attested inference result. On success,
-    ///      the action is executed, the bounty is paid from treasury, and
-    ///      the bond is refunded. Verifies:
-    ///      1. DCAP quote is genuine TDX hardware (via Automata)
-    ///      2. MRTD + RTMR[0..2] match an approved image
-    ///      3. REPORTDATA matches sha256(inputHash || sha256(action) || sha256(reasoning) || seed)
+    /// @dev The winner submits a proof (TEE attestation, ZK proof, etc.) that binds
+    ///      the epoch inputs to the submitted outputs. On success, the bounty is paid,
+    ///      the bond is refunded, and the action is executed.
     /// @param action The encoded action blob.
     /// @param reasoning The agent's chain-of-thought reasoning.
-    /// @param attestationQuote Raw TDX DCAP attestation quote.
+    /// @param proof Opaque proof bytes (attestation quote for TDX, ZK proof for future).
+    /// @param verifierId Which registered verifier to route the proof to.
     function submitAuctionResult(
         bytes calldata action,
         bytes calldata reasoning,
-        bytes calldata attestationQuote
+        bytes calldata proof,
+        uint8 verifierId,
+        int8 policySlot,
+        string calldata policyText
     ) external payable {
         if (!auctionEnabled) revert WrongPhase();
-        uint256 epoch = currentEpoch;
-        AuctionState storage auction = auctions[epoch];
 
+        // Verify proof, settle auction, and pay prover (scoped to reduce stack depth)
+        uint256 bountyAmount;
+        {
+            IProofVerifier v = verifiers[verifierId];
+            if (address(v) == address(0)) revert InvalidParams();
+            bytes32 outputHash = keccak256(abi.encodePacked(sha256(action), sha256(reasoning)));
+
+            uint256 bondRefund;
+            address winner;
+            (bountyAmount, bondRefund, winner) =
+                _verifyAndSettleAuction(currentEpoch, proof, outputHash, v);
+            _payProver(winner, bountyAmount, bondRefund);
+            emit EpochExecuted(currentEpoch, winner, bountyAmount);
+        }
+
+        // Apply optional worldview update + execute action + record epoch
+        _applyPolicyUpdate(policySlot, policyText);
+        _recordAndExecute(currentEpoch, action, reasoning, bountyAmount);
+    }
+
+    /// @dev Pay the auction winner their bounty + bond refund.
+    function _payProver(address winner, uint256 bountyAmount, uint256 bondRefund) internal {
+        totalBountiesPaid += bountyAmount;
+        (bool paid, ) = payable(winner).call{value: bountyAmount + bondRefund}("");
+        if (!paid) revert TransferFailed();
+    }
+
+    /// @dev Verify proof and settle auction. Returns bounty, bond, winner.
+    function _verifyAndSettleAuction(
+        uint256 epoch,
+        bytes calldata proof,
+        bytes32 outputHash,
+        IProofVerifier v
+    ) internal returns (uint256 bountyAmount, uint256 bondRefund, address winner) {
+        AuctionState storage auction = auctions[epoch];
         if (auction.phase != EpochPhase.EXECUTION) revert WrongPhase();
         if (msg.sender != auction.winner) revert Unauthorized();
         if (block.timestamp >= auction.epochStartTime + biddingWindow + executionWindow) revert TimingError();
 
-        // Compute expected REPORTDATA: sha256(inputHash || sha256(action) || sha256(reasoning) || seed)
-        bytes32 expectedReportData = sha256(abi.encodePacked(
-            epochInputHashes[epoch],
-            sha256(action),
-            sha256(reasoning),
-            auction.randomnessSeed
-        ));
+        if (!v.verify{value: msg.value}(epochInputHashes[epoch], outputHash, proof))
+            revert ProofFailed();
+        epochProofs[epoch] = proof;
 
-        // Verify TEE attestation (DCAP + image measurements + REPORTDATA)
-        bool verified = verifier.verifyAttestation{value: msg.value}(attestationQuote, expectedReportData);
-        if (!verified) revert AttestationFailed();
-        epochAttestations[epoch] = attestationQuote;
-
-        // Capture bounty and bond amounts before state changes
-        uint256 bountyAmount = auction.winningBid;
-        uint256 bondRefund = auction.bondAmount;
-        address winner = auction.winner;
-
-        // Mark auction as settled
+        bountyAmount = auction.winningBid;
+        bondRefund = auction.bondAmount;
+        winner = auction.winner;
         auction.phase = EpochPhase.SETTLED;
-
-        // Execute action and record epoch
-        _recordAndExecuteEpoch(epoch, action, reasoning, bountyAmount);
-
-        // Pay bounty from treasury + refund bond
-        uint256 totalPayout = bountyAmount + bondRefund;
-        totalBountiesPaid += bountyAmount;
-
-        (bool paid, ) = payable(winner).call{value: totalPayout}("");
-        if (!paid) revert TransferFailed();
-
-        emit EpochExecuted(epoch, winner, bountyAmount);
     }
 
     /// @notice Forfeit the winner's bond after the execution window expires.
     /// @dev Anyone can call this to advance the epoch when the winner fails to deliver.
     ///      The bond stays in the contract as additional treasury.
+    ///      Note: startEpoch() will auto-forfeit if needed, so calling this directly
+    ///      is only necessary if you want to forfeit without immediately starting a new epoch.
     function forfeitBond() external {
         if (!auctionEnabled) revert WrongPhase();
         uint256 epoch = currentEpoch;
@@ -620,28 +650,41 @@ contract TheHumanFund {
         if (auction.phase != EpochPhase.EXECUTION) revert WrongPhase();
         if (block.timestamp < auction.epochStartTime + biddingWindow + executionWindow) revert TimingError();
 
+        _forfeitBond(epoch, auction);
+    }
+
+    /// @dev Internal forfeit logic shared by forfeitBond() and startEpoch().
+    function _forfeitBond(uint256 epoch, AuctionState storage auction) internal {
         address forfeitedRunner = auction.winner;
         uint256 forfeitedBond = auction.bondAmount;
 
-        // Mark auction as settled
         auction.phase = EpochPhase.SETTLED;
 
-        // Skip the epoch
         consecutiveMissedEpochs += 1;
         currentEpoch = epoch + 1;
 
-        // Reset per-epoch counters
         currentEpochInflow = 0;
         currentEpochDonationCount = 0;
         currentEpochCommissions = 0;
 
-        // Bond stays in contract as treasury (no transfer needed)
         emit BondForfeited(epoch, forfeitedRunner, forfeitedBond);
     }
 
     // ─── Internal: Epoch Recording ─────────────────────────────────────
 
-    function _recordAndExecuteEpoch(
+    /// @dev Apply optional worldview policy update. Best-effort — failures
+    ///      are silently ignored so they can't block prover payment or epoch recording.
+    function _applyPolicyUpdate(int8 policySlot, string memory policyText) internal {
+        if (policySlot >= 0 && address(worldView) != address(0)) {
+            try worldView.setPolicy(uint256(uint8(policySlot)), policyText) {
+                // success
+            } catch {
+                // Silently ignore — invalid slot, too-long text, etc.
+            }
+        }
+    }
+
+    function _recordAndExecute(
         uint256 epoch,
         bytes calldata action,
         bytes calldata reasoning,
@@ -661,14 +704,13 @@ contract TheHumanFund {
             executed: true
         });
 
-        if (epoch % 5 == 0) {
-            balanceSnapshots[epoch] = treasuryAfter;
-        }
-
         emit DiaryEntry(epoch, reasoning, action, treasuryBefore, treasuryAfter);
 
-        // Extend rolling history hash (Merkle chain over all reasoning)
-        historyHash = keccak256(abi.encodePacked(historyHash, keccak256(reasoning)));
+        // Cache content hash for this epoch — used by _computeInputHash() to verify
+        // that the TEE sees the same history as on-chain without re-hashing calldata.
+        epochContentHashes[epoch] = keccak256(abi.encode(
+            keccak256(reasoning), keccak256(action), treasuryBefore, treasuryAfter
+        ));
 
         // Advance message head (up to MAX_MESSAGES_PER_EPOCH)
         uint256 unread = messages.length - messageHead;
@@ -784,7 +826,7 @@ contract TheHumanFund {
 
         Nonprofit storage np = nonprofits[nonprofitId];
         (bool sent, ) = np.addr.call{value: amount}("");
-        if (!sent) revert TransferFailed();
+        if (!sent) return false;
 
         np.totalDonated += amount;
         np.donationCount += 1;
@@ -816,38 +858,90 @@ contract TheHumanFund {
 
     // ─── Internal: Input Hash ────────────────────────────────────────────
 
+    uint256 public constant MAX_HISTORY_ENTRIES = 10;
+
     /// @notice Deterministically compute the epoch input hash from contract state.
-    /// @dev Runners reconstruct this hash from on-chain state to verify their input.
+    /// @dev The TEE computes this same hash from the structured data it receives
+    ///      and includes it in the TDX REPORTDATA. The contract then verifies:
+    ///      1. The TDX attestation is genuine (DCAP + approved image)
+    ///      2. The REPORTDATA contains this hash — proving the TEE saw these inputs
+    ///      The TEE is a dumb signer: it hashes whatever it's given. The contract
+    ///      is the verifier that checks the hash matches real on-chain state.
+    ///      All heavy data (reasoning, messages) uses pre-cached hashes.
     function _computeInputHash() internal view returns (bytes32) {
-        // Split into two hashes to avoid stack-too-deep
-        bytes32 stateHash = keccak256(abi.encode(
-            currentEpoch,
-            address(this).balance,
-            commissionRateBps,
-            maxBid,
-            consecutiveMissedEpochs,
-            lastDonationEpoch,
-            lastCommissionChangeEpoch
-        ));
+        bytes32 stateHash = _hashState();
+        bytes32 nonprofitHash = _hashNonprofits();
         bytes32 investHash = address(investmentManager) != address(0)
             ? investmentManager.stateHash()
             : bytes32(0);
         bytes32 worldviewHash = address(worldView) != address(0)
             ? worldView.stateHash()
             : bytes32(0);
-        bytes32 messageHash = keccak256(abi.encode(messageHead, messages.length));
+        bytes32 msgHash = _hashUnreadMessages();
+        bytes32 histHash = _hashRecentHistory();
         return keccak256(abi.encode(
             stateHash,
-            currentEpochInflow,
-            currentEpochDonationCount,
-            nonprofits[1].totalDonated,
-            nonprofits[2].totalDonated,
-            nonprofits[3].totalDonated,
-            historyHash,
+            nonprofitHash,
             investHash,
             worldviewHash,
-            messageHash
+            msgHash,
+            histHash
         ));
+    }
+
+    /// @dev Hash current state variables (all cheap SLOADs).
+    function _hashState() internal view returns (bytes32) {
+        return keccak256(abi.encode(
+            currentEpoch,
+            address(this).balance,
+            commissionRateBps,
+            maxBid,
+            consecutiveMissedEpochs,
+            lastDonationEpoch,
+            lastCommissionChangeEpoch,
+            totalInflows,
+            totalDonatedToNonprofits,
+            totalCommissionsPaid,
+            totalBountiesPaid,
+            currentEpochInflow,
+            currentEpochDonationCount
+        ));
+    }
+
+    /// @dev Hash nonprofit state (3 entries, all integers).
+    function _hashNonprofits() internal view returns (bytes32) {
+        return keccak256(abi.encode(
+            nonprofits[1].name, nonprofits[1].addr, nonprofits[1].totalDonated, nonprofits[1].donationCount,
+            nonprofits[2].name, nonprofits[2].addr, nonprofits[2].totalDonated, nonprofits[2].donationCount,
+            nonprofits[3].name, nonprofits[3].addr, nonprofits[3].totalDonated, nonprofits[3].donationCount
+        ));
+    }
+
+    /// @dev Hash unread messages using pre-cached per-message hashes.
+    function _hashUnreadMessages() internal view returns (bytes32) {
+        uint256 unread = messages.length - messageHead;
+        uint256 count = unread > MAX_MESSAGES_PER_EPOCH ? MAX_MESSAGES_PER_EPOCH : unread;
+        if (count == 0) return bytes32(0);
+
+        bytes memory packed;
+        for (uint256 i = 0; i < count; i++) {
+            packed = abi.encodePacked(packed, messageHashes[messageHead + i]);
+        }
+        return keccak256(packed);
+    }
+
+    /// @dev Hash the last N epoch content hashes (pre-cached at settlement).
+    function _hashRecentHistory() internal view returns (bytes32) {
+        uint256 epoch = currentEpoch;
+        if (epoch == 0) return bytes32(0);
+
+        uint256 count = epoch > MAX_HISTORY_ENTRIES ? MAX_HISTORY_ENTRIES : epoch;
+        bytes memory packed;
+        for (uint256 i = 0; i < count; i++) {
+            uint256 histEpoch = epoch - 1 - i;  // most recent first
+            packed = abi.encodePacked(packed, epochContentHashes[histEpoch]);
+        }
+        return keccak256(packed);
     }
 
     // ─── Views ───────────────────────────────────────────────────────────
@@ -916,10 +1010,6 @@ contract TheHumanFund {
         return (r.timestamp, r.action, r.reasoning, r.treasuryBefore, r.treasuryAfter, r.bountyPaid, r.executed);
     }
 
-    /// @notice Get number of pending commissions.
-    function pendingCommissionsCount() external view returns (uint256) {
-        return pendingCommissions.length;
-    }
 
     /// @notice Get the total number of messages.
     function messageCount() external view returns (uint256) {

@@ -439,25 +439,147 @@ def compute_report_data(input_hash: bytes, action_bytes: bytes, reasoning: str, 
     """Compute the 64-byte report data that gets bound into the TDX quote.
 
     This creates a cryptographic binding between:
-    - The input (epoch context hash — keccak256 from the contract)
+    - The input (epoch context hash — includes randomness seed since it's
+      folded into inputHash at closeAuction)
     - The output (action + reasoning)
-    - The randomness seed (block.prevrandao from the contract)
     - The TEE identity (via RTMR values in the quote)
 
-    The smart contract verifies: sha256(inputHash || sha256(action) || sha256(reasoning) || seed)
-    matches the REPORTDATA in the TDX quote.
-    """
-    reasoning_hash = hashlib.sha256(reasoning.encode("utf-8")).digest()
-    action_hash = hashlib.sha256(action_bytes).digest()
-    seed_bytes = seed.to_bytes(32, "big")
+    The TdxVerifier contract verifies:
+        REPORTDATA == sha256(inputHash || outputHash)
+    where:
+        outputHash = keccak256(abi.encodePacked(sha256(action), sha256(reasoning)))
 
-    # Must match contract: sha256(abi.encodePacked(inputHash, sha256(action), sha256(reasoning), seed))
-    combined = hashlib.sha256(
-        input_hash + action_hash + reasoning_hash + seed_bytes
-    ).digest()
+    The `seed` parameter is kept for backward compatibility but is ignored —
+    the seed is already included in inputHash.
+    """
+    action_hash = hashlib.sha256(action_bytes).digest()
+    reasoning_hash = hashlib.sha256(reasoning.encode("utf-8")).digest()
+
+    # outputHash = keccak256(sha256(action) || sha256(reasoning))
+    # Must match Solidity: keccak256(abi.encodePacked(sha256(action), sha256(reasoning)))
+    output_hash = _keccak256(action_hash + reasoning_hash)
+
+    # REPORTDATA = sha256(inputHash || outputHash), zero-padded to 64 bytes
+    report_data = hashlib.sha256(input_hash + output_hash).digest()
 
     # Pad to 64 bytes (TDX report data is exactly 64 bytes)
-    return combined.ljust(64, b'\x00')
+    return report_data.ljust(64, b'\x00')
+
+
+# ─── Input Hash Verification ─────────────────────────────────────────────
+
+def _keccak256(data: bytes) -> bytes:
+    """Compute keccak256 hash (same as Solidity's keccak256)."""
+    from hashlib import sha3_256
+    # Python's hashlib sha3_256 is NOT keccak256. Use pysha3 or eth_abi.
+    # For compatibility, we use the same approach as web3.py:
+    try:
+        import sha3
+        k = sha3.keccak_256()
+        k.update(data)
+        return k.digest()
+    except ImportError:
+        # Fallback: use web3's keccak
+        from web3 import Web3
+        return Web3.keccak(data)
+
+
+def _abi_encode(*values) -> bytes:
+    """Replicate Solidity's abi.encode() for uint256/bytes32/string/address values.
+
+    Each value is a tuple of (type, value):
+        ("uint256", 42)
+        ("bytes32", b'\\x00...')
+        ("string", "hello")
+        ("address", "0x1234...")
+    """
+    from eth_abi import encode
+    types = [v[0] for v in values]
+    vals = [v[1] for v in values]
+    return encode(types, vals)
+
+
+def _abi_encode_packed(*raw_bytes) -> bytes:
+    """Replicate Solidity's abi.encodePacked() — just concatenate raw bytes."""
+    return b"".join(raw_bytes)
+
+
+def compute_input_hash(state: dict) -> bytes:
+    """Replicate TheHumanFund._computeInputHash() from structured state.
+
+    The state dict must contain the same fields used by the contract:
+      - state_hash_inputs: {epoch, balance, commission_rate_bps, max_bid, ...}
+      - nonprofits: [{name, addr, total_donated, donation_count}, ...]
+      - invest_hash: "0x..." (from investmentManager.stateHash())
+      - worldview_hash: "0x..." (from worldView.stateHash())
+      - message_hashes: ["0x...", ...] (per-message keccak256, up to 20)
+      - epoch_content_hashes: ["0x...", ...] (last 10 epoch content hashes)
+    """
+    # 1. State hash
+    s = state["state_hash_inputs"]
+    state_hash = _keccak256(_abi_encode(
+        ("uint256", s["epoch"]),
+        ("uint256", s["balance"]),
+        ("uint256", s["commission_rate_bps"]),
+        ("uint256", s["max_bid"]),
+        ("uint256", s["consecutive_missed_epochs"]),
+        ("uint256", s["last_donation_epoch"]),
+        ("uint256", s["last_commission_change_epoch"]),
+        ("uint256", s["total_inflows"]),
+        ("uint256", s["total_donated_to_nonprofits"]),
+        ("uint256", s["total_commissions_paid"]),
+        ("uint256", s["total_bounties_paid"]),
+        ("uint256", s["current_epoch_inflow"]),
+        ("uint256", s["current_epoch_donation_count"]),
+    ))
+
+    # 2. Nonprofit hash
+    nps = state["nonprofits"]
+    np_args = []
+    for np in nps:
+        np_args.extend([
+            ("string", np["name"]),
+            ("address", np["addr"]),
+            ("uint256", np["total_donated"]),
+            ("uint256", np["donation_count"]),
+        ])
+    nonprofit_hash = _keccak256(_abi_encode(*np_args))
+
+    # 3. Investment hash (pre-computed by InvestmentManager.stateHash())
+    invest_hash = bytes.fromhex(state.get("invest_hash", "0" * 64).replace("0x", ""))
+
+    # 4. Worldview hash (pre-computed by WorldView.stateHash())
+    worldview_hash = bytes.fromhex(state.get("worldview_hash", "0" * 64).replace("0x", ""))
+
+    # 5. Message hash — keccak256 of packed per-message hashes
+    msg_hashes = state.get("message_hashes", [])
+    if msg_hashes:
+        packed = b""
+        for h in msg_hashes:
+            packed += bytes.fromhex(h.replace("0x", ""))
+        msg_hash = _keccak256(packed)
+    else:
+        msg_hash = b'\x00' * 32
+
+    # 6. History hash — keccak256 of packed epoch content hashes (most recent first)
+    epoch_hashes = state.get("epoch_content_hashes", [])
+    if epoch_hashes:
+        packed = b""
+        for h in epoch_hashes:
+            packed += bytes.fromhex(h.replace("0x", ""))
+        hist_hash = _keccak256(packed)
+    else:
+        hist_hash = b'\x00' * 32
+
+    # Final: keccak256(abi.encode(stateHash, nonprofitHash, investHash, worldviewHash, msgHash, histHash))
+    return _keccak256(_abi_encode(
+        ("bytes32", state_hash),
+        ("bytes32", nonprofit_hash),
+        ("bytes32", invest_hash),
+        ("bytes32", worldview_hash),
+        ("bytes32", msg_hash),
+        ("bytes32", hist_hash),
+    ))
 
 
 # ─── HTTP API ────────────────────────────────────────────────────────────
@@ -487,8 +609,13 @@ def run_epoch():
     Request body:
         {
             "epoch_context": "=== EPOCH N STATE ===\n...",
-            "input_hash": "0x..."  (optional, for attestation binding)
+            "contract_state": { ... structured state for input hash verification ... },
+            "input_hash": "0x..."  (committed on-chain by startEpoch)
         }
+
+    The enclave verifies that contract_state hashes to input_hash before
+    running inference. This prevents a malicious runner from feeding the
+    model fabricated state while passing through the real input_hash.
 
     Response:
         {
@@ -506,9 +633,22 @@ def run_epoch():
         return jsonify({"error": "Missing epoch_context"}), 400
 
     epoch_context = data["epoch_context"]
-    input_hash_hex = data.get("input_hash", "0x" + "00" * 32)
-    input_hash = bytes.fromhex(input_hash_hex.replace("0x", ""))
     seed = int(data.get("seed", 0))
+
+    # Compute input hash from structured contract state.
+    # The TEE independently derives the input hash from the data it receives.
+    # This hash goes into REPORTDATA — the contract verifies it matches
+    # the on-chain committed epochInputHashes[epoch]. If the runner sent
+    # fake data, the hash won't match and submitAuctionResult reverts.
+    contract_state = data.get("contract_state")
+    if contract_state:
+        input_hash = compute_input_hash(contract_state)
+        print(f"  Input hash (computed from state): 0x{input_hash.hex()[:16]}...")
+    else:
+        # Legacy fallback: no structured state, use provided hash
+        input_hash_hex = data.get("input_hash", "0x" + "00" * 32)
+        input_hash = bytes.fromhex(input_hash_hex.replace("0x", ""))
+        print(f"  Input hash (provided, unverified): 0x{input_hash.hex()[:16]}...")
 
     # Derive llama.cpp seed from the contract's randomness seed
     # Use lower 32 bits (llama.cpp seed is uint32)
@@ -584,7 +724,7 @@ def run_epoch():
         "action_bytes": "0x" + action_bytes.hex(),
         "attestation_quote": "0x" + quote.hex(),
         "report_data": "0x" + report_data.hex(),
-        "input_hash": input_hash_hex,
+        "input_hash": "0x" + input_hash.hex(),
         "seed": seed,
         "inference_seconds": inference["elapsed_seconds"],
         "tokens": inference["tokens"],

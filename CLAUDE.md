@@ -176,12 +176,11 @@ thehumanfund/
 
 ### Core Features
 - Treasury management with 3 hardcoded nonprofits
-- Referral system with mintable codes and 7-day commission escrow
+- Referral system with mintable codes and immediate commission payout
 - Donor messages: donateWithMessage() stores messages on-chain, queue advances each epoch
 - 4 agent actions with contract-enforced bounds
 - Auto-escalation: `effectiveMaxBid` increases 10% per consecutive missed epoch
 - `DiaryEntry` event emits reasoning + action on-chain
-- Balance snapshots every 5 epochs
 
 ### TEE Attestation — see SECURITY.md for full model
 - `AttestationVerifier.sol` — separate contract handles all attestation verification

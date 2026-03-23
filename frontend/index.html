@@ -708,10 +708,8 @@ const ABI = [
   "function currentEpochDonationCount() view returns (uint256)",
   "function currentEpochCommissions() view returns (uint256)",
   "function nextReferralCodeId() view returns (uint256)",
-  "function pendingCommissionsCount() view returns (uint256)",
   "function getNonprofit(uint256 id) view returns (string name, address addr, uint256 totalDonated, uint256 donationCount)",
   "function getEpochRecord(uint256 epoch) view returns (uint256 timestamp, bytes action, bytes reasoning, uint256 treasuryBefore, uint256 treasuryAfter, uint256 bountyPaid, bool executed)",
-  "function balanceSnapshots(uint256) view returns (uint256)",
   "function auctionEnabled() view returns (bool)",
   "function epochDuration() view returns (uint256)",
   "function biddingWindow() view returns (uint256)",
@@ -876,7 +874,7 @@ async function loadState() {
     missedEpochs, lastDonation, lastCommChange,
     deployTs, ownerAddr,
     epochInflow, epochDonations, epochComm,
-    nextRefCode, pendingCommCount,
+    nextRefCode,
   ] = await Promise.all([
     contract.treasuryBalance(),
     contract.currentEpoch(),
@@ -896,7 +894,6 @@ async function loadState() {
     contract.currentEpochDonationCount(),
     contract.currentEpochCommissions(),
     contract.nextReferralCodeId(),
-    contract.pendingCommissionsCount(),
   ]);
 
   const age = Math.floor(Date.now() / 1000) - Number(deployTs);
@@ -974,10 +971,6 @@ async function loadState() {
     <div class="stat">
       <span class="stat-label">Referral codes minted</span>
       <span class="stat-value">${(nextRefCode - 1n).toString()}</span>
-    </div>
-    <div class="stat">
-      <span class="stat-label">Pending commissions</span>
-      <span class="stat-value">${pendingCommCount.toString()}</span>
     </div>
   `;
 

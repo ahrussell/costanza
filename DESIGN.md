@@ -100,7 +100,7 @@ The nonprofit list is **immutable** for the MVP. Donations are simple ETH transf
 
 **Commission economics:** The commission rate is set by the agent (bounded 1–90% / 100–9000 basis points). Because commissions are strictly a percentage of incoming donations, the fund always nets positive on every referred donation. At 90% commission on a 1 ETH donation: the referrer gets 0.9 ETH, the fund keeps 0.1 ETH. A self-referral (Sybil) costs the attacker 0.1 ETH. There is no profitable Sybil attack at any commission rate.
 
-**Commission payout:** Commissions are paid to the referrer's address with a 7-day delay. During this window, commissions are held in escrow by the contract. This provides a modest anti-spam measure and allows referred donations to "settle" before commissions are released.
+**Commission payout:** Commissions are paid to the referrer immediately when the donation is received. No escrow or delay — the economics already guarantee no profitable Sybil attack at any commission rate.
 
 **Minimum donation:** 0.001 ETH minimum to trigger a commission (prevents dust spam).
 

@@ -3,7 +3,7 @@ pragma solidity ^0.8.20;
 
 import "forge-std/Script.sol";
 import "../src/TheHumanFund.sol";
-import "../src/AttestationVerifier.sol";
+import "../src/TdxVerifier.sol";
 import "../src/interfaces/IAutomataDcapAttestation.sol";
 
 /// @dev Mock DCAP verifier for local testing — accepts any quote and returns
@@ -67,16 +67,17 @@ contract DeployLocal is Script {
             names, addrs, 1000, 0.001 ether
         );
 
-        // Deploy AttestationVerifier
-        AttestationVerifier verifier = new AttestationVerifier();
+        // Deploy TdxVerifier
+        TdxVerifier verifier = new TdxVerifier();
 
         // Approve the all-zeros image key (local testing — no real RTMR values)
-        bytes memory zeros192 = new bytes(192);
-        bytes32 imageKey = keccak256(zeros192);
+        // Now only RTMR[1] + RTMR[2] = 96 bytes
+        bytes memory zeros96 = new bytes(96);
+        bytes32 imageKey = keccak256(zeros96);
         verifier.approveImage(imageKey);
 
-        // Link verifier to fund
-        fund.setVerifier(address(verifier));
+        // Register TDX verifier at ID 1
+        fund.approveVerifier(1, address(verifier));
 
         // Configure short timing for local testing (30s epoch, 10s bid, 15s exec)
         fund.setAuctionTiming(30, 10, 15);
@@ -84,7 +85,7 @@ contract DeployLocal is Script {
 
         console.log("=== Local Deployment ===");
         console.log("TheHumanFund:", address(fund));
-        console.log("AttestationVerifier:", address(verifier));
+        console.log("TdxVerifier (ID 1):", address(verifier));
         console.log("MockDcapVerifier:", address(mockDcap));
         console.log("Deployer:", deployer);
         console.log("");

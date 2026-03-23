@@ -82,9 +82,9 @@ contract TheHumanFundTest is Test {
         vm.prank(donor);
         fund.donate{value: 1 ether}(codeId);
 
-        // Commission = 10% of 1 ETH = 0.1 ETH (held in escrow)
-        assertEq(fund.treasuryBalance(), 6 ether); // 5 + 1 (commission still in contract)
-        assertEq(fund.pendingCommissionsCount(), 1);
+        // Commission = 10% of 1 ETH = 0.1 ETH (paid immediately)
+        // Treasury = 5 seed + 1 donation - 0.1 commission = 5.9 ETH
+        assertEq(fund.treasuryBalance(), 5.9 ether);
     }
 
     function test_donate_rejects_dust() public {
@@ -96,28 +96,18 @@ contract TheHumanFundTest is Test {
 
     // ─── Referral & Commissions ──────────────────────────────────────────
 
-    function test_claim_commission_after_delay() public {
+    function test_commission_paid_immediately() public {
         vm.prank(referrer);
         uint256 codeId = fund.mintReferralCode();
 
+        uint256 balBefore = referrer.balance;
         vm.deal(donor, 1 ether);
         vm.prank(donor);
         fund.donate{value: 1 ether}(codeId);
 
-        // Cannot claim before delay
-        vm.prank(referrer);
-        vm.expectRevert(TheHumanFund.InvalidParams.selector);
-        fund.claimCommissions();
-
-        // Fast-forward 7 days
-        vm.warp(block.timestamp + 7 days);
-
-        uint256 balBefore = referrer.balance;
-        vm.prank(referrer);
-        fund.claimCommissions();
-
-        // Referrer should have received 0.1 ETH (10% of 1 ETH)
+        // Referrer should have received 0.1 ETH (10% of 1 ETH) immediately
         assertEq(referrer.balance - balBefore, 0.1 ether);
+        assertEq(fund.totalCommissionsPaid(), 0.1 ether);
     }
 
     // ─── Epoch: Noop ─────────────────────────────────────────────────────
@@ -317,22 +307,6 @@ contract TheHumanFundTest is Test {
         fund.skipEpoch();
     }
 
-    // ─── Balance Snapshots ───────────────────────────────────────────────
-
-    function test_balance_snapshot_every_5_epochs() public {
-        bytes memory action = abi.encodePacked(uint8(0));
-
-        // Run 5 epochs
-        for (uint256 i = 0; i < 5; i++) {
-            fund.submitEpochAction(action, bytes("snapshot test"));
-        }
-
-        // Epoch 5 should have a snapshot
-        assertEq(fund.balanceSnapshots(5), 5 ether);
-        // Epoch 3 should not
-        assertEq(fund.balanceSnapshots(3), 0);
-    }
-
     // ─── Multi-epoch Donation Tracking ───────────────────────────────────
 
     function test_multiple_donations_across_epochs() public {
@@ -353,27 +327,35 @@ contract TheHumanFundTest is Test {
         assertEq(fund.lastDonationEpoch(), 2);
     }
 
-    // ─── History Hash ──────────────────────────────────────────────────────
+    // ─── Epoch Content Hashes ───────────────────────────────────────────────
 
-    function test_history_hash_updates_on_submit() public {
-        assertEq(fund.historyHash(), bytes32(0));
-
+    function test_epoch_content_hash_stored_on_submit() public {
+        bytes memory action = abi.encodePacked(uint8(0));
         bytes memory reasoning = bytes("First epoch thoughts.");
-        fund.submitEpochAction(abi.encodePacked(uint8(0)), reasoning);
 
-        bytes32 expected = keccak256(abi.encodePacked(bytes32(0), keccak256(reasoning)));
-        assertEq(fund.historyHash(), expected);
+        uint256 treasuryBefore = address(fund).balance;
+        fund.submitEpochAction(action, reasoning);
+
+        // epochContentHash should be set for epoch 1
+        bytes32 contentHash = fund.epochContentHashes(1);
+        assertTrue(contentHash != bytes32(0));
+
+        // Verify it matches the expected formula
+        bytes32 expected = keccak256(abi.encode(
+            keccak256(reasoning), keccak256(action), treasuryBefore, treasuryBefore // noop: before == after
+        ));
+        assertEq(contentHash, expected);
     }
 
-    function test_history_hash_included_in_input_hash() public {
+    function test_epoch_content_hash_included_in_input_hash() public {
         bytes32 hash1 = fund.computeInputHash();
 
-        // Submit epoch (changes historyHash)
+        // Submit epoch (creates epochContentHash + advances epoch)
         fund.submitEpochAction(abi.encodePacked(uint8(0)), bytes("reasoning"));
 
         bytes32 hash2 = fund.computeInputHash();
 
-        // Input hash should differ (historyHash changed + epoch number changed)
+        // Input hash should differ (history changed + epoch number changed)
         assertTrue(hash1 != hash2);
     }
 

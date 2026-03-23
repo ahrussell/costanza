@@ -66,7 +66,8 @@ contract MessagesTest is Test {
         fund.donateWithMessage{value: 0.1 ether}(codeId, "Referred donation with message");
 
         assertEq(fund.messageCount(), 1);
-        assertEq(fund.treasuryBalance(), 5.1 ether);
+        // 5 seed + 0.1 donation - 0.01 commission (10% paid immediately) = 5.09
+        assertEq(fund.treasuryBalance(), 5.09 ether);
 
         // Check referral tracking
         (,uint256 totalReferred, uint256 referralCount,) = fund.referralCodes(codeId);
