@@ -125,7 +125,7 @@ contract TheHumanFundAuctionTest is Test {
         assertEq(commitCount, 0);
         assertEq(winner, address(0));
         assertEq(winningBid, 0);
-        assertEq(bondAmount, 0.01 ether); // BASE_BOND
+        assertEq(bondAmount, 0.001 ether); // BASE_BOND
     }
 
     function test_cannot_start_twice() public {
@@ -146,7 +146,7 @@ contract TheHumanFundAuctionTest is Test {
         fund.startEpoch();
 
         vm.prank(runner1);
-        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, bytes32("salt1")));
+        fund.commit{value: 0.001 ether}(_commitHash(0.005 ether, bytes32("salt1")));
 
         (,, uint256 commitCount,,,,, ) = fund.getAuctionState(1);
         assertEq(commitCount, 1);
@@ -158,7 +158,7 @@ contract TheHumanFundAuctionTest is Test {
 
         vm.prank(runner1);
         vm.expectRevert(TheHumanFund.InvalidParams.selector);
-        fund.commit{value: 0.005 ether}(_commitHash(0.005 ether, bytes32("salt1")));
+        fund.commit{value: 0.0005 ether}(_commitHash(0.005 ether, bytes32("salt1")));
     }
 
     function test_commit_refunds_excess() public {
@@ -168,19 +168,19 @@ contract TheHumanFundAuctionTest is Test {
         vm.prank(runner1);
         fund.commit{value: 0.05 ether}(_commitHash(0.005 ether, bytes32("salt1")));
 
-        // Only 0.01 bond held
-        assertEq(runner1.balance, balBefore - 0.01 ether);
+        // Only 0.001 bond held
+        assertEq(runner1.balance, balBefore - 0.001 ether);
     }
 
     function test_duplicate_commit_rejected() public {
         fund.startEpoch();
 
         vm.prank(runner1);
-        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, bytes32("salt1")));
+        fund.commit{value: 0.001 ether}(_commitHash(0.005 ether, bytes32("salt1")));
 
         vm.prank(runner1);
         vm.expectRevert(TheHumanFund.AlreadyDone.selector);
-        fund.commit{value: 0.01 ether}(_commitHash(0.003 ether, bytes32("salt2")));
+        fund.commit{value: 0.001 ether}(_commitHash(0.003 ether, bytes32("salt2")));
     }
 
     function test_commit_after_window_rejected() public {
@@ -189,7 +189,7 @@ contract TheHumanFundAuctionTest is Test {
 
         vm.prank(runner1);
         vm.expectRevert(TheHumanFund.TimingError.selector);
-        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, bytes32("salt1")));
+        fund.commit{value: 0.001 ether}(_commitHash(0.005 ether, bytes32("salt1")));
     }
 
     function test_empty_commit_hash_rejected() public {
@@ -197,7 +197,7 @@ contract TheHumanFundAuctionTest is Test {
 
         vm.prank(runner1);
         vm.expectRevert(TheHumanFund.InvalidParams.selector);
-        fund.commit{value: 0.01 ether}(bytes32(0));
+        fund.commit{value: 0.001 ether}(bytes32(0));
     }
 
     // ─── Auction: Close Commit ──────────────────────────────────────────────
@@ -215,7 +215,7 @@ contract TheHumanFundAuctionTest is Test {
         fund.startEpoch();
 
         vm.prank(runner1);
-        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, bytes32("salt1")));
+        fund.commit{value: 0.001 ether}(_commitHash(0.005 ether, bytes32("salt1")));
 
         vm.warp(block.timestamp + COMMIT_WIN);
         fund.closeCommit();
@@ -239,7 +239,7 @@ contract TheHumanFundAuctionTest is Test {
         uint256 bidAmount = 0.005 ether;
 
         vm.prank(runner1);
-        fund.commit{value: 0.01 ether}(_commitHash(bidAmount, salt));
+        fund.commit{value: 0.001 ether}(_commitHash(bidAmount, salt));
 
         vm.warp(block.timestamp + COMMIT_WIN);
         fund.closeCommit();
@@ -261,11 +261,11 @@ contract TheHumanFundAuctionTest is Test {
         bytes32 salt3 = bytes32("salt3");
 
         vm.prank(runner1);
-        fund.commit{value: 0.01 ether}(_commitHash(0.008 ether, salt1));
+        fund.commit{value: 0.001 ether}(_commitHash(0.008 ether, salt1));
         vm.prank(runner2);
-        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, salt2));
+        fund.commit{value: 0.001 ether}(_commitHash(0.005 ether, salt2));
         vm.prank(runner3);
-        fund.commit{value: 0.01 ether}(_commitHash(0.009 ether, salt3));
+        fund.commit{value: 0.001 ether}(_commitHash(0.009 ether, salt3));
 
         vm.warp(block.timestamp + COMMIT_WIN);
         fund.closeCommit();
@@ -286,7 +286,7 @@ contract TheHumanFundAuctionTest is Test {
         fund.startEpoch();
 
         vm.prank(runner1);
-        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, bytes32("salt1")));
+        fund.commit{value: 0.001 ether}(_commitHash(0.005 ether, bytes32("salt1")));
 
         vm.warp(block.timestamp + COMMIT_WIN);
         fund.closeCommit();
@@ -301,7 +301,7 @@ contract TheHumanFundAuctionTest is Test {
         fund.startEpoch();
 
         vm.prank(runner1);
-        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, bytes32("salt1")));
+        fund.commit{value: 0.001 ether}(_commitHash(0.005 ether, bytes32("salt1")));
 
         vm.warp(block.timestamp + COMMIT_WIN);
         fund.closeCommit();
@@ -317,7 +317,7 @@ contract TheHumanFundAuctionTest is Test {
 
         bytes32 salt = bytes32("salt1");
         vm.prank(runner1);
-        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, salt));
+        fund.commit{value: 0.001 ether}(_commitHash(0.005 ether, salt));
 
         vm.warp(block.timestamp + COMMIT_WIN);
         fund.closeCommit();
@@ -337,7 +337,7 @@ contract TheHumanFundAuctionTest is Test {
         uint256 tooHigh = 0.02 ether; // max bid is 0.01
 
         vm.prank(runner1);
-        fund.commit{value: 0.01 ether}(_commitHash(tooHigh, salt));
+        fund.commit{value: 0.001 ether}(_commitHash(tooHigh, salt));
 
         vm.warp(block.timestamp + COMMIT_WIN);
         fund.closeCommit();
@@ -352,7 +352,7 @@ contract TheHumanFundAuctionTest is Test {
 
         bytes32 salt = bytes32("salt1");
         vm.prank(runner1);
-        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, salt));
+        fund.commit{value: 0.001 ether}(_commitHash(0.005 ether, salt));
 
         vm.warp(block.timestamp + COMMIT_WIN);
         fund.closeCommit();
@@ -371,9 +371,9 @@ contract TheHumanFundAuctionTest is Test {
 
         // Two runners commit but neither reveals
         vm.prank(runner1);
-        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, bytes32("s1")));
+        fund.commit{value: 0.001 ether}(_commitHash(0.005 ether, bytes32("s1")));
         vm.prank(runner2);
-        fund.commit{value: 0.01 ether}(_commitHash(0.003 ether, bytes32("s2")));
+        fund.commit{value: 0.001 ether}(_commitHash(0.003 ether, bytes32("s2")));
 
         vm.warp(block.timestamp + COMMIT_WIN);
         fund.closeCommit();
@@ -396,9 +396,9 @@ contract TheHumanFundAuctionTest is Test {
         bytes32 s2 = bytes32("s2");
 
         vm.prank(runner1);
-        fund.commit{value: 0.01 ether}(_commitHash(0.008 ether, s1));
+        fund.commit{value: 0.001 ether}(_commitHash(0.008 ether, s1));
         vm.prank(runner2);
-        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, s2));
+        fund.commit{value: 0.001 ether}(_commitHash(0.005 ether, s2));
 
         vm.warp(block.timestamp + COMMIT_WIN);
         fund.closeCommit();
@@ -414,7 +414,7 @@ contract TheHumanFundAuctionTest is Test {
         fund.closeReveal();
 
         // Runner1 (non-winner who revealed) gets bond back
-        assertEq(runner1.balance, runner1BalBefore + 0.01 ether);
+        assertEq(runner1.balance, runner1BalBefore + 0.001 ether);
     }
 
     function test_close_reveal_non_revealer_loses_bond() public {
@@ -424,9 +424,9 @@ contract TheHumanFundAuctionTest is Test {
         bytes32 s2 = bytes32("s2");
 
         vm.prank(runner1);
-        fund.commit{value: 0.01 ether}(_commitHash(0.008 ether, s1));
+        fund.commit{value: 0.001 ether}(_commitHash(0.008 ether, s1));
         vm.prank(runner2);
-        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, s2));
+        fund.commit{value: 0.001 ether}(_commitHash(0.005 ether, s2));
 
         vm.warp(block.timestamp + COMMIT_WIN);
         fund.closeCommit();
@@ -449,7 +449,7 @@ contract TheHumanFundAuctionTest is Test {
 
         bytes32 salt = bytes32("s1");
         vm.prank(runner1);
-        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, salt));
+        fund.commit{value: 0.001 ether}(_commitHash(0.005 ether, salt));
 
         vm.warp(block.timestamp + COMMIT_WIN);
         fund.closeCommit();
@@ -469,7 +469,7 @@ contract TheHumanFundAuctionTest is Test {
         fund.startEpoch();
 
         vm.prank(runner1);
-        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, bytes32("s1")));
+        fund.commit{value: 0.001 ether}(_commitHash(0.005 ether, bytes32("s1")));
 
         vm.warp(block.timestamp + COMMIT_WIN);
         fund.closeCommit();
@@ -507,7 +507,7 @@ contract TheHumanFundAuctionTest is Test {
     // ─── Auction: Bond Escalation ───────────────────────────────────────────
 
     function test_bond_escalates_on_missed_epochs() public {
-        assertEq(fund.currentBond(), 0.01 ether);
+        assertEq(fund.currentBond(), 0.001 ether);
 
         // Miss epoch 1
         fund.startEpoch();
@@ -515,7 +515,7 @@ contract TheHumanFundAuctionTest is Test {
         fund.closeCommit();
 
         assertEq(fund.consecutiveMissedEpochs(), 1);
-        assertEq(fund.currentBond(), 0.011 ether); // 0.01 * 1.1
+        assertEq(fund.currentBond(), 0.0011 ether); // 0.001 * 1.1
 
         // Miss epoch 2
         vm.warp(block.timestamp + EPOCH_DUR);
@@ -524,7 +524,7 @@ contract TheHumanFundAuctionTest is Test {
         fund.closeCommit();
 
         assertEq(fund.consecutiveMissedEpochs(), 2);
-        assertEq(fund.currentBond(), 0.0121 ether); // 0.01 * 1.1^2
+        assertEq(fund.currentBond(), 0.00121 ether); // 0.001 * 1.1^2
     }
 
     function test_bond_escalates_after_forfeit() public {
@@ -534,7 +534,7 @@ contract TheHumanFundAuctionTest is Test {
         fund.forfeitBond();
 
         assertEq(fund.consecutiveMissedEpochs(), 1);
-        assertEq(fund.currentBond(), 0.011 ether);
+        assertEq(fund.currentBond(), 0.0011 ether);
     }
 
     // ─── Auction: Bid Ceiling Auto-Escalation ───────────────────────────────

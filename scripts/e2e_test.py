@@ -85,9 +85,9 @@ EXECUTION_WINDOW = EXECUTION_WINDOW_GPU
 BID_AMOUNT_ETH = 0.0001  # Minimum bid
 SEED_AMOUNT_ETH = 0.0005  # Treasury seed (keep small for testnet)
 
-# Model for testing (14B Q4_K_M, CPU-only)
-MODEL_URL = "https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-14B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf"
-MODEL_SHA256 = "0b319bd0572f2730bfe11cc751defe82045fad5085b4e60591ac2cd2d9633181"
+# Production model: DeepSeek R1 Distill Llama 70B (Q4_K_M, 42.5GB GGUF)
+MODEL_URL = "https://huggingface.co/bartowski/DeepSeek-R1-Distill-Llama-70B-GGUF/resolve/main/DeepSeek-R1-Distill-Llama-70B-Q4_K_M.gguf"
+MODEL_SHA256 = "181a82a1d6d2fa24fe4db83a68eee030384986bdbdd4773ba76424e3a6eb9fd8"
 
 
 def run_cmd(cmd, check=True, capture=True, timeout=300):
@@ -333,7 +333,10 @@ def deploy_contracts(w3, account):
 
 def snapshot_image_name():
     """Return the expected snapshot image name for current mode."""
-    return f"humanfund-tee-{'gpu' if USE_GPU else 'cpu'}-14b"
+    return f"humanfund-tee-{'gpu' if USE_GPU else 'cpu'}-70b"
+
+# Note: Boot disk size must accommodate the 70B model (42.5GB) + OS + llama.cpp
+BOOT_DISK_SIZE_GB = 200
 
 
 def snapshot_image_exists():
@@ -376,12 +379,31 @@ for attempt in 1 2 3; do
     sleep 5
 done
 
-if nvidia-smi > /dev/null 2>&1; then
-    echo "Starting llama-server (GPU)..."
+if ! nvidia-smi > /dev/null 2>&1; then
+    echo "FATAL: GPU not available after 3 attempts. Cannot load 70B model without GPU."
+    exit 1
+fi
+
+echo "Starting llama-server (GPU)..."
+export LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}
+nohup llama-server -m /models/model.gguf -c 4096 --host 0.0.0.0 --port 8080 -ngl 99 > /tmp/llama.log 2>&1 &
+
+# Wait up to 60s, then check if CUDA actually initialized
+sleep 10
+if grep -q "failed to initialize CUDA" /tmp/llama.log 2>/dev/null; then
+    echo "CUDA init failed! Rebuilding llama.cpp against runtime CUDA..."
+    pkill -f llama-server || true
+    cd /tmp
+    rm -rf llama.cpp
+    git clone --depth 1 --branch b5170 https://github.com/ggml-org/llama.cpp.git
+    cd llama.cpp
+    cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=90
+    cmake --build build --config Release -j$(nproc) --target llama-server
+    cp build/bin/llama-server /usr/local/bin/
+    find build -name '*.so' -exec cp {} /usr/local/lib/ \; 2>/dev/null || true
+    ldconfig
+    echo "Rebuilt. Restarting llama-server..."
     nohup llama-server -m /models/model.gguf -c 4096 --host 0.0.0.0 --port 8080 -ngl 99 > /tmp/llama.log 2>&1 &
-else
-    echo "WARNING: GPU not available after 3 attempts, falling back to CPU"
-    nohup llama-server -m /models/model.gguf -c 4096 --host 0.0.0.0 --port 8080 -t $(nproc) > /tmp/llama.log 2>&1 &
 fi
 
 for i in $(seq 1 120); do
@@ -390,9 +412,9 @@ for i in $(seq 1 120); do
         break
     fi
     if ! pgrep -f llama-server > /dev/null; then
-        echo "llama-server crashed! Restarting in CPU mode..."
-        tail -10 /tmp/llama.log
-        nohup llama-server -m /models/model.gguf -c 4096 --host 0.0.0.0 --port 8080 -t $(nproc) > /tmp/llama.log 2>&1 &
+        echo "FATAL: llama-server crashed on GPU!"
+        tail -20 /tmp/llama.log
+        exit 1
     fi
     sleep 5
 done
@@ -430,9 +452,37 @@ python3 -m venv /opt/humanfund-venv
 source /opt/humanfund-venv/bin/activate
 pip install flask web3 requests
 
-echo "Installing NVIDIA drivers..."
-apt-get install -y -qq linux-headers-$(uname -r) nvidia-driver-575-open nvidia-utils-575 2>/dev/null || true
-apt-get install -y -qq nvidia-cuda-toolkit 2>/dev/null || true
+echo "Checking for NVIDIA GPU..."
+# GCP a3-highgpu machines come with CC drivers pre-installed
+# Try loading the driver modules first
+modprobe nvidia 2>/dev/null || true
+modprobe nvidia_uvm 2>/dev/null || true
+sleep 3
+
+if ! nvidia-smi > /dev/null 2>&1; then
+    echo "nvidia-smi not available, installing drivers..."
+    apt-get install -y -qq linux-headers-$(uname -r) nvidia-driver-575-open nvidia-utils-575 2>/dev/null || true
+    apt-get install -y -qq nvidia-cuda-toolkit 2>/dev/null || true
+    modprobe nvidia 2>/dev/null || true
+    modprobe nvidia_uvm 2>/dev/null || true
+    sleep 5
+fi
+
+if ! nvidia-smi > /dev/null 2>&1; then
+    echo "FATAL: Cannot initialize NVIDIA GPU. Aborting."
+    exit 1
+fi
+nvidia-smi
+echo "GPU initialized successfully."
+
+# Find CUDA path for llama.cpp build
+CUDA_PATH=""
+if [ -d "/usr/local/cuda" ]; then
+    CUDA_PATH="/usr/local/cuda"
+elif [ -d "/usr/lib/x86_64-linux-gnu/cuda" ]; then
+    CUDA_PATH="/usr/lib/x86_64-linux-gnu/cuda"
+fi
+echo "CUDA path: $CUDA_PATH"
 
 echo "Building llama.cpp with CUDA..."
 cd /tmp
@@ -444,29 +494,40 @@ cp build/bin/llama-server /usr/local/bin/
 find build -name '*.so' -exec cp {{}} /usr/local/lib/ \; 2>/dev/null || true
 ldconfig
 
-echo "Downloading model..."
+echo "Downloading model (42.5GB, may take 5-10 min)..."
 mkdir -p /models
-wget -q -O /models/model.gguf "{MODEL_URL}"
+wget --progress=dot:giga -O /models/model.gguf "{MODEL_URL}"
 
 echo "Verifying model hash..."
 ACTUAL_HASH=$(sha256sum /models/model.gguf | cut -d' ' -f1)
 if [ "$ACTUAL_HASH" != "{MODEL_SHA256}" ]; then
-    echo "FATAL: Model hash mismatch!"
+    echo "FATAL: Model hash mismatch! Expected {MODEL_SHA256}, got $ACTUAL_HASH"
     exit 1
 fi
 echo "Model hash verified."
 
-echo "Starting llama-server (GPU)..."
+echo "Starting llama-server (GPU, -ngl 99)..."
 nohup llama-server -m /models/model.gguf -c 4096 --host 0.0.0.0 --port 8080 -ngl 99 > /tmp/llama.log 2>&1 &
 
-echo "Waiting for llama-server..."
-for i in $(seq 1 120); do
+echo "Waiting for llama-server to load model..."
+for i in $(seq 1 180); do
     if curl -s http://127.0.0.1:8080/health | grep -q ok; then
         echo "llama-server ready after $((i*5))s"
         break
     fi
+    if ! pgrep -f llama-server > /dev/null; then
+        echo "FATAL: llama-server crashed!"
+        tail -30 /tmp/llama.log
+        exit 1
+    fi
     sleep 5
 done
+
+if ! curl -s http://127.0.0.1:8080/health | grep -q ok; then
+    echo "FATAL: llama-server never became ready after 15 minutes"
+    tail -30 /tmp/llama.log
+    exit 1
+fi
 
 echo "=== Setup complete at $(date) ==="
 """
@@ -616,7 +677,7 @@ def create_gcp_vm(force_fresh=False):
         f"--instance-termination-action=STOP "
         f'--min-cpu-platform="Intel Sapphire Rapids" '
         f"{image_flags} "
-        f"--boot-disk-size=80GB "
+        f"--boot-disk-size=200GB "
         f"--metadata-from-file=startup-script={startup_path}",
         timeout=120
     )

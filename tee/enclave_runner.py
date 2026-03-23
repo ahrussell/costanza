@@ -616,7 +616,7 @@ def run_epoch():
 
     # Use system prompt from runner request (includes protocol reference from chain),
     # falling back to local file if not provided.
-    system_prompt = state.get("system_prompt", "").strip()
+    system_prompt = data.get("system_prompt", "").strip()
     if not system_prompt:
         system_prompt = SYSTEM_PROMPT_PATH.read_text().strip()
 

@@ -122,7 +122,7 @@ contract TheHumanFund {
     uint256 public constant MIN_DONATION_AMOUNT = 0.001 ether;
     uint256 public constant AUTO_ESCALATION_BPS = 1000;    // 10% increase per missed epoch
     uint256 public constant MAX_NONPROFITS = 20;
-    uint256 public constant BASE_BOND = 0.01 ether;         // Fixed bond, escalates on missed epochs
+    uint256 public constant BASE_BOND = 0.001 ether;        // Fixed bond, escalates on missed epochs
     uint256 public constant MIN_MESSAGE_DONATION = 0.01 ether;  // 10x normal min to prevent spam
     uint256 public constant MAX_MESSAGE_LENGTH = 280;
     uint256 public constant MAX_MESSAGES_PER_EPOCH = 20;
