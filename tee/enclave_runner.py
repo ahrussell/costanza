@@ -38,7 +38,6 @@ app = Flask(__name__)
 # ─── Config ──────────────────────────────────────────────────────────────
 
 SYSTEM_PROMPT_PATH = Path(os.environ.get("SYSTEM_PROMPT_PATH", "/app/system_prompt.txt"))
-PROTOCOLS_REF_PATH = Path(os.environ.get("PROTOCOLS_REF_PATH", "/app/protocols_reference.txt"))
 LLAMA_SERVER_URL = f"http://127.0.0.1:{os.environ.get('LLAMA_SERVER_PORT', '8080')}"
 
 # Max reasoning bytes to include on-chain. Truncate BEFORE computing REPORTDATA
@@ -383,25 +382,33 @@ def get_tdx_quote(report_data: bytes) -> bytes:
     return report_data
 
 
-def compute_report_data(input_hash: bytes, action_bytes: bytes, reasoning: str) -> bytes:
+def compute_report_data(input_hash: bytes, action_bytes: bytes, reasoning: str,
+                        system_prompt: str) -> bytes:
     """Compute the 64-byte report data that gets bound into the TDX quote.
 
     This creates a cryptographic binding between:
     - The input (epoch context hash, which includes the randomness seed)
-    - The output (action + reasoning)
+    - The output (action + reasoning + prompt hash)
     - The TEE identity (via RTMR values in the quote)
 
     The contract verifies:
         REPORTDATA == sha256(inputHash || outputHash)
     where:
-        outputHash = keccak256(abi.encodePacked(sha256(action), sha256(reasoning)))
+        promptHash  = sha256(systemPrompt)
+        outputHash  = keccak256(abi.encodePacked(
+                          sha256(action), sha256(reasoning), promptHash))
+
+    The promptHash must match the contract's approvedPromptHash. This proves
+    the TEE used the approved system prompt without the verifier needing to
+    see the prompt text.
     """
     action_hash = hashlib.sha256(action_bytes).digest()
     reasoning_hash = hashlib.sha256(reasoning.encode("utf-8")).digest()
+    prompt_hash = hashlib.sha256(system_prompt.encode("utf-8")).digest()
 
-    # outputHash = keccak256(sha256(action) || sha256(reasoning))
-    # Must match Solidity: keccak256(abi.encodePacked(sha256(action), sha256(reasoning)))
-    output_hash = _keccak256(action_hash + reasoning_hash)
+    # outputHash = keccak256(sha256(action) || sha256(reasoning) || sha256(prompt))
+    # Must match Solidity: keccak256(abi.encodePacked(sha256(action), sha256(reasoning), approvedPromptHash))
+    output_hash = _keccak256(action_hash + reasoning_hash + prompt_hash)
 
     # REPORTDATA = sha256(inputHash || outputHash), zero-padded to 64 bytes
     report_data = hashlib.sha256(input_hash + output_hash).digest()
@@ -598,11 +605,11 @@ def run_epoch():
     # Use lower 32 bits (llama.cpp seed is uint32).
     llama_seed = seed & 0xFFFFFFFF if seed > 0 else -1
 
-    # Load system prompt + protocols reference
-    system_prompt = SYSTEM_PROMPT_PATH.read_text().strip()
-    if PROTOCOLS_REF_PATH.exists():
-        protocols_ref = PROTOCOLS_REF_PATH.read_text().strip()
-        system_prompt = system_prompt + "\n\n" + protocols_ref
+    # Use system prompt from runner request (includes protocol reference from chain),
+    # falling back to local file if not provided.
+    system_prompt = state.get("system_prompt", "").strip()
+    if not system_prompt:
+        system_prompt = SYSTEM_PROMPT_PATH.read_text().strip()
 
     # Construct full prompt
     full_prompt = system_prompt + "\n\n" + epoch_context + "\n\n<think>\n"
@@ -659,7 +666,7 @@ def run_epoch():
         }), 500
 
     # Get TDX attestation quote — uses truncated reasoning
-    report_data = compute_report_data(input_hash, action_bytes, reasoning)
+    report_data = compute_report_data(input_hash, action_bytes, reasoning, system_prompt)
     quote = get_tdx_quote(report_data)
 
     return jsonify({

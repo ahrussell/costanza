@@ -134,27 +134,32 @@ contract Deploy is Script {
 
         // Protocol 1: Aave V3 WETH (risk 1, ~3% APY)
         address a1 = address(new AaveV3WETHAdapter(d.aavePool, d.weth, d.aWeth, mgr));
-        im.addProtocol(a1, "Aave V3 WETH", 1, 300);
+        im.addProtocol(a1, "Aave V3 WETH",
+            "Lend ETH on Aave V3. Borrowers pay interest. Extensively audited, instant liquidity.", 1, 300);
 
         // Protocol 2: Aave V3 USDC (risk 2, ~5% APY)
         address a2 = address(new AaveV3USDCAdapter(
             d.aavePool, d.usdc, d.aUsdc, d.weth, d.swapRouter, d.ethUsdFeed, mgr
         ));
-        im.addProtocol(a2, "Aave V3 USDC", 2, 500);
+        im.addProtocol(a2, "Aave V3 USDC",
+            "Swap ETH to USDC, lend on Aave. Higher APY but you lose if ETH rises.", 2, 500);
 
         // Protocol 3: Lido wstETH (risk 1, ~3.5% APY)
         address a3 = address(new WstETHAdapter(d.wstETH, d.swapRouter, mgr));
-        im.addProtocol(a3, "Lido wstETH", 1, 350);
+        im.addProtocol(a3, "Lido wstETH",
+            "Stake ETH via Lido for validator rewards. Risk: stETH depeg, slashing.", 1, 350);
 
         // Protocol 4: Coinbase cbETH (risk 1, ~3% APY)
         address a4 = address(new CbETHAdapter(d.cbETH, d.swapRouter, mgr));
-        im.addProtocol(a4, "Coinbase cbETH", 1, 300);
+        im.addProtocol(a4, "Coinbase cbETH",
+            "Coinbase staked ETH. Institutional backing. Deep liquidity on Base.", 1, 300);
 
         // Protocol 5: Compound V3 USDC (risk 2, ~4% APY)
         address a5 = address(new CompoundV3USDCAdapter(
             d.comet, d.usdc, d.weth, d.swapRouter, d.ethUsdFeed, mgr
         ));
-        im.addProtocol(a5, "Compound V3 USDC", 2, 400);
+        im.addProtocol(a5, "Compound V3 USDC",
+            "Lend USDC on Compound V3. Simpler contract than Aave, less attack surface.", 2, 400);
 
         console.log("--- Adapters ---");
         console.log("  1. Aave V3 WETH:    ", a1);

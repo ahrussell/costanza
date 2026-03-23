@@ -79,9 +79,9 @@ contract InvestmentManagerTest is Test {
 
         // Register protocols (as admin)
         vm.startPrank(admin);
-        im.addProtocol(address(adapterA), "Aave V3 WETH", 1, 500);   // protocol 1
-        im.addProtocol(address(adapterB), "Lido wstETH", 2, 380);     // protocol 2
-        im.addProtocol(address(adapterC), "Compound V3 USDC", 1, 450); // protocol 3
+        im.addProtocol(address(adapterA), "Aave V3 WETH", "Lend ETH on Aave", 1, 500);   // protocol 1
+        im.addProtocol(address(adapterB), "Lido wstETH", "Stake ETH via Lido", 2, 380);     // protocol 2
+        im.addProtocol(address(adapterC), "Compound V3 USDC", "Lend USDC on Compound", 1, 450); // protocol 3
         vm.stopPrank();
     }
 
@@ -103,7 +103,7 @@ contract InvestmentManagerTest is Test {
 
     function test_onlyAdminCanAddProtocol() public {
         vm.expectRevert(InvestmentManager.Unauthorized.selector);
-        im.addProtocol(address(adapterA), "Test", 1, 100);
+        im.addProtocol(address(adapterA), "Test", "Test protocol", 1, 100);
     }
 
     function test_pauseProtocol() public {

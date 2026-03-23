@@ -508,7 +508,9 @@ contract TheHumanFundAuctionTest is Test {
         bytes memory reasoning = bytes("The fund is conserving resources this epoch.");
 
         // 5. Compute expected REPORTDATA: sha256(inputHash || outputHash)
-        bytes32 outputHash = keccak256(abi.encodePacked(sha256(action), sha256(reasoning)));
+        //    outputHash includes approvedPromptHash (bytes32(0) if not set)
+        bytes32 promptHash = fund.approvedPromptHash();
+        bytes32 outputHash = keccak256(abi.encodePacked(sha256(action), sha256(reasoning), promptHash));
         bytes32 expectedReportData = sha256(abi.encodePacked(inputHash, outputHash));
 
         // 6. Set up mock DCAP to return output with correct REPORTDATA

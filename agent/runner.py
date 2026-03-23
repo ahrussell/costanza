@@ -52,13 +52,75 @@ from eth_account import Account
 PROJECT_ROOT = Path(__file__).parent.parent
 AGENT_DIR = PROJECT_ROOT / "agent"
 DEFAULT_PROMPT = AGENT_DIR / "prompts" / "system_v5.txt"
-PROTOCOLS_REF = AGENT_DIR / "prompts" / "protocols_reference.txt"
 ABI_PATH = PROJECT_ROOT / "out" / "TheHumanFund.sol" / "TheHumanFund.json"
 
 LLAMA_SERVER_URL = os.environ.get(
     "LLAMA_SERVER_URL",
     "http://localhost:8080"
 )
+
+RISK_LABELS = {1: "LOW", 2: "MEDIUM", 3: "MEDIUM-HIGH", 4: "HIGH"}
+
+
+def build_protocol_reference(contract):
+    """Generate the PROTOCOL REFERENCE prompt section entirely from on-chain data.
+
+    Reads protocol names, descriptions, risk tiers, and APY from InvestmentManager.
+    Descriptions are stored on-chain so they can be updated without changing the TEE image.
+    """
+    lines = [
+        "PROTOCOL REFERENCE:",
+        "",
+        "When investing, weigh: YIELD (higher APY = faster growth), RISK (exploits, depegs, slashing),",
+        "LIQUIDITY (can you exit quickly?), and DIVERSIFICATION (don't concentrate).",
+        "",
+    ]
+
+    try:
+        im_addr = contract.functions.investmentManager().call()
+        if im_addr == "0x" + "00" * 20:
+            return None
+
+        im_abi = [
+            {"name": "protocolCount", "type": "function", "inputs": [], "outputs": [{"type": "uint256"}], "stateMutability": "view"},
+            {"name": "protocols", "type": "function",
+             "inputs": [{"name": "protocolId", "type": "uint256"}],
+             "outputs": [
+                 {"name": "adapter", "type": "address"},
+                 {"name": "protocolName", "type": "string"},
+                 {"name": "description", "type": "string"},
+                 {"name": "riskTier", "type": "uint8"},
+                 {"name": "expectedApyBps", "type": "uint16"},
+                 {"name": "active", "type": "bool"},
+                 {"name": "exists", "type": "bool"},
+             ], "stateMutability": "view"},
+        ]
+        im = contract.w3.eth.contract(address=im_addr, abi=im_abi)
+        count = im.functions.protocolCount().call()
+
+        for pid in range(1, count + 1):
+            info = im.functions.protocols(pid).call()
+            name = info[1]
+            desc = info[2]
+            risk_tier = info[3]
+            apy_bps = info[4]
+            active = info[5]
+
+            if not active:
+                continue
+
+            risk_label = RISK_LABELS.get(risk_tier, f"TIER {risk_tier}")
+            apy_pct = apy_bps / 100
+            lines.append(f"#{pid} {name} [{risk_label} risk, ~{apy_pct:.0f}% APY]")
+            if desc:
+                lines.append(f"   {desc}")
+            lines.append("")
+
+    except Exception as e:
+        print(f"   ⚠️  Could not build protocol reference from chain: {e}")
+        return None
+
+    return "\n".join(lines).strip()
 
 
 # ─── Spotlighting (Datamarking) ────────────────────────────────────────────
@@ -942,12 +1004,13 @@ def parse_model_output(text):
 
 # ─── TEE Inference ──────────────────────────────────────────────────────
 
-def run_tee_inference(tee_url, epoch_context, input_hash_hex="0x" + "00" * 32, seed=0, contract_state=None):
+def run_tee_inference(tee_url, epoch_context, system_prompt, input_hash_hex="0x" + "00" * 32, seed=0, contract_state=None):
     """Call the TEE enclave's /run_epoch endpoint.
 
     Args:
         tee_url: TEE enclave URL
         epoch_context: Formatted epoch context string
+        system_prompt: Full system prompt (including protocol reference)
         input_hash_hex: Contract's committed input hash (keccak256, hex with 0x prefix)
         seed: Randomness seed from block.prevrandao (for deterministic inference)
         contract_state: Structured state dict for TEE input hash computation
@@ -958,6 +1021,7 @@ def run_tee_inference(tee_url, epoch_context, input_hash_hex="0x" + "00" * 32, s
     """
     body = {
         "epoch_context": epoch_context,
+        "system_prompt": system_prompt,
         "input_hash": input_hash_hex,
         "seed": seed,
     }
@@ -1202,8 +1266,8 @@ def run_single_epoch(w3, contract, account, system_prompt, max_tokens, dry_run=F
         for attempt in range(1, max_retries + 1):
             print(f"\n⏳ TEE inference (attempt {attempt}/{max_retries})...")
             try:
-                tee_result = run_tee_inference(tee_url, epoch_context, input_hash_hex,
-                                               contract_state=contract_state)
+                tee_result = run_tee_inference(tee_url, epoch_context, system_prompt,
+                                               input_hash_hex, contract_state=contract_state)
                 break
             except Exception as e:
                 print(f"❌ TEE error: {e}")
@@ -1558,7 +1622,7 @@ def _get_eth_price_usd():
         return None
 
 
-def run_auction_epoch(w3, contract, account, tee_url, log_file=None):
+def run_auction_epoch(w3, contract, account, tee_url, system_prompt, log_file=None):
     """Run a single epoch through the auction mechanism.
 
     Flow:
@@ -1713,8 +1777,8 @@ def run_auction_epoch(w3, contract, account, tee_url, log_file=None):
         for attempt in range(1, 4):
             print(f"⏳ TEE inference (attempt {attempt}/3)...")
             try:
-                tee_result = run_tee_inference(tee_url, epoch_context, input_hash_hex,
-                                               seed=seed, contract_state=contract_state)
+                tee_result = run_tee_inference(tee_url, epoch_context, system_prompt,
+                                               input_hash_hex, seed=seed, contract_state=contract_state)
                 break
             except Exception as e:
                 print(f"❌ TEE error: {e}")
@@ -1810,7 +1874,7 @@ def run_auction_epoch(w3, contract, account, tee_url, log_file=None):
     return None
 
 
-def run_auction_loop(w3, contract, account, tee_url, log_file=None, max_epochs=None):
+def run_auction_loop(w3, contract, account, tee_url, system_prompt, log_file=None, max_epochs=None):
     """Continuously monitor and participate in auctions.
 
     Bids are computed dynamically based on current gas prices and compute costs.
@@ -1829,7 +1893,7 @@ def run_auction_loop(w3, contract, account, tee_url, log_file=None, max_epochs=N
         if max_epochs and epoch_count >= max_epochs:
             break
 
-        result = run_auction_epoch(w3, contract, account, tee_url, log_file=log_file)
+        result = run_auction_epoch(w3, contract, account, tee_url, system_prompt, log_file=log_file)
         if result:
             results.append(result)
             if result.get("status") in ("success", "no_bids", "not_winner", "already_settled"):
@@ -1883,12 +1947,19 @@ def main():
             print("       Or use --dry-run to skip contract submission")
             sys.exit(1)
 
-    # Load system prompt + protocols reference
+    # Load system prompt
     system_prompt = Path(args.prompt).read_text().strip()
-    if PROTOCOLS_REF.exists():
-        protocols_ref = PROTOCOLS_REF.read_text().strip()
-        system_prompt = system_prompt + "\n\n" + protocols_ref
-    print(f"📄 System prompt: {Path(args.prompt).name} ({len(system_prompt.split())} words)")
+
+    # Append protocol reference from on-chain data
+    if contract:
+        protocols_ref = build_protocol_reference(contract)
+        if protocols_ref:
+            system_prompt = system_prompt + "\n\n" + protocols_ref
+            print(f"📄 System prompt: {Path(args.prompt).name} + on-chain protocols ({len(system_prompt.split())} words)")
+        else:
+            print(f"📄 System prompt: {Path(args.prompt).name} (no protocols, {len(system_prompt.split())} words)")
+    else:
+        print(f"📄 System prompt: {Path(args.prompt).name} ({len(system_prompt.split())} words)")
 
     # Set up log file
     log_file = args.log
@@ -1948,7 +2019,7 @@ def main():
             sys.exit(1)
 
         results = run_auction_loop(
-            w3, contract, account, args.tee_url,
+            w3, contract, account, args.tee_url, system_prompt,
             log_file=log_file, max_epochs=args.epochs,
         )
         if len(results) > 1:

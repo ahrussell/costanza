@@ -271,6 +271,7 @@ def deploy_contracts(w3, account):
     mock_artifact = json.loads((ABI_DIR / "MockAdapter.sol" / "MockAdapter.json").read_text())
     im = w3.eth.contract(address=im_addr, abi=im_artifact["abi"])
     protocol_names = ["Aave V3 WETH (Mock)", "Lido wstETH (Mock)", "Compound V3 USDC (Mock)"]
+    descriptions = ["Mock Aave WETH lending", "Mock Lido staking", "Mock Compound USDC lending"]
     risk_tiers = [1, 2, 1]
     apys = [500, 380, 450]
 
@@ -290,7 +291,7 @@ def deploy_contracts(w3, account):
         nonce += 1
 
         # Register in InvestmentManager (deployer is admin)
-        tx = im.functions.addProtocol(adapter_addr, pname, risk_tiers[i], apys[i]).build_transaction({
+        tx = im.functions.addProtocol(adapter_addr, pname, descriptions[i], risk_tiers[i], apys[i]).build_transaction({
             "from": deployer, "nonce": nonce, "gas": 200_000,
             "maxFeePerGas": w3.eth.gas_price * 2, "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
         })

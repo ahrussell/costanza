@@ -177,6 +177,11 @@ contract TheHumanFund {
     // Worldview (separate contract — see WorldView.sol)
     IWorldView public worldView;
 
+    /// @notice SHA-256 hash of the approved system prompt. The TEE must hash
+    ///         the prompt it receives and include it in REPORTDATA. The contract
+    ///         verifies it matches this value. Owner can update to change the prompt.
+    bytes32 public approvedPromptHash;
+
     // Donor messages
     DonorMessage[] public messages;
     mapping(uint256 => bytes32) public messageHashes;  // messageId => keccak256(sender, amount, text, epoch)
@@ -397,6 +402,13 @@ contract TheHumanFund {
         worldView = IWorldView(_wv);
     }
 
+    /// @notice Set the approved system prompt hash.
+    /// @dev The TEE hashes the prompt it receives and includes it in REPORTDATA.
+    ///      The contract verifies it matches this value during auction settlement.
+    function setApprovedPromptHash(bytes32 _hash) external onlyOwner {
+        approvedPromptHash = _hash;
+    }
+
     /// @notice Seed multiple worldview policies at once. Only callable by owner.
     /// @dev Intended for initial setup before the fund goes live.
     function seedWorldView(uint256[] calldata slots, string[] calldata policies) external onlyOwner {
@@ -603,7 +615,12 @@ contract TheHumanFund {
         {
             IProofVerifier v = verifiers[verifierId];
             if (address(v) == address(0)) revert InvalidParams();
-            bytes32 outputHash = keccak256(abi.encodePacked(sha256(action), sha256(reasoning)));
+            // outputHash binds action + reasoning + approved prompt.
+            // The TEE computes: keccak256(sha256(action) || sha256(reasoning) || sha256(prompt))
+            // and the prompt hash must equal approvedPromptHash.
+            bytes32 outputHash = keccak256(abi.encodePacked(
+                sha256(action), sha256(reasoning), approvedPromptHash
+            ));
 
             uint256 bondRefund;
             address winner;

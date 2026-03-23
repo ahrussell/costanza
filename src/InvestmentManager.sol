@@ -43,6 +43,7 @@ contract InvestmentManager is IInvestmentManager {
     struct ProtocolInfo {
         IProtocolAdapter adapter;
         string name;
+        string description;    // Human-readable description for the agent prompt
         uint8 riskTier;        // 1=low, 2=medium, 3=medium-high, 4=high
         uint16 expectedApyBps; // Expected APY in basis points (informational)
         bool active;           // Can accept new deposits
@@ -114,6 +115,7 @@ contract InvestmentManager is IInvestmentManager {
     function addProtocol(
         address adapter,
         string calldata _name,
+        string calldata _description,
         uint8 riskTier,
         uint16 expectedApyBps
     ) external onlyAdmin returns (uint256 protocolId) {
@@ -121,6 +123,7 @@ contract InvestmentManager is IInvestmentManager {
         protocols[protocolId] = ProtocolInfo({
             adapter: IProtocolAdapter(adapter),
             name: _name,
+            description: _description,
             riskTier: riskTier,
             expectedApyBps: expectedApyBps,
             active: true,
