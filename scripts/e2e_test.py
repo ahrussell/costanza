@@ -226,7 +226,7 @@ def deploy_contracts(w3, account):
 
     # Set approved system prompt hash
     import hashlib
-    prompt_path = Path(__file__).parent.parent / "agent" / "prompts" / "system_v5.txt"
+    prompt_path = Path(__file__).parent.parent / "agent" / "prompts" / "system_v6.txt"
     # Strip to match enclave behavior (enclave does .strip() on the prompt text)
     prompt_hash = hashlib.sha256(prompt_path.read_text().strip().encode("utf-8")).digest()
     print(f"Setting approved prompt hash: 0x{prompt_hash.hex()[:16]}...")
@@ -755,7 +755,7 @@ def upload_enclave_files(vm_ip):
 
     # Upload system prompt
     gcloud(
-        f"compute scp {PROJECT_ROOT}/agent/prompts/system_v5.txt "
+        f"compute scp {PROJECT_ROOT}/agent/prompts/system_v6.txt "
         f"{GCP_VM_NAME}:/tmp/system_prompt.txt --zone={GCP_ZONE}",
         timeout=30
     )

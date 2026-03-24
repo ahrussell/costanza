@@ -1032,9 +1032,9 @@ def load_system_prompt(prompt_name=None):
     """Load system prompt (and protocols reference if present).
 
     Args:
-        prompt_name: Optional filename (e.g., 'system_v5a.txt'). Defaults to 'system_v5.txt'.
+        prompt_name: Optional filename (e.g., 'system_v5a.txt'). Defaults to 'system_v6.txt'.
     """
-    filename = prompt_name or "system_v5.txt"
+    filename = prompt_name or "system_v6.txt"
     system_prompt_path = PROJECT_ROOT / "agent" / "prompts" / filename
     protocols_ref_path = PROJECT_ROOT / "agent" / "prompts" / "protocols_reference.txt"
 
@@ -1403,7 +1403,7 @@ def main():
     parser.add_argument("--stress", action="store_true",
                         help="Run all scenarios sequentially with summary report")
     parser.add_argument("--prompt", type=str, default=None,
-                        help="System prompt filename (default: system_v5.txt)")
+                        help="System prompt filename (default: system_v6.txt)")
     args = parser.parse_args()
 
     # Check server health (needed for all modes)
