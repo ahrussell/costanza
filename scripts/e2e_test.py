@@ -385,7 +385,7 @@ def deploy_contracts(w3, account):
 
 def snapshot_image_name():
     """Return the expected snapshot image name for current mode."""
-    return f"humanfund-tee-{'gpu' if USE_GPU else 'cpu'}-70b-v2"
+    return f"humanfund-tee-{'gpu' if USE_GPU else 'cpu'}-70b-v3"
 
 # Note: Boot disk size must accommodate the 70B model (42.5GB) + OS + llama.cpp
 BOOT_DISK_SIZE_GB = 200
@@ -848,16 +848,16 @@ def wait_for_vm_ready(vm_ip):
 
 
 def upload_enclave_files(vm_ip):
-    """Upload enclave_runner.py and system_prompt.txt to the VM."""
+    """Upload modular enclave package and system prompt to the VM."""
     print("\n═══ STEP 2c: Upload Enclave Files ═══")
 
-    # Upload enclave_runner.py
+    # Upload the modular tee/enclave/ package
     gcloud(
-        f"compute scp {PROJECT_ROOT}/tee/enclave_runner.py "
-        f"{GCP_VM_NAME}:/tmp/enclave_runner.py --zone={GCP_ZONE}",
-        timeout=30
+        f"compute scp --recurse {PROJECT_ROOT}/tee/enclave "
+        f"{GCP_VM_NAME}:/tmp/enclave --zone={GCP_ZONE}",
+        timeout=60
     )
-    print("  Uploaded enclave_runner.py")
+    print("  Uploaded tee/enclave/ package")
 
     # Upload system prompt
     gcloud(
@@ -865,21 +865,27 @@ def upload_enclave_files(vm_ip):
         f"{GCP_VM_NAME}:/tmp/system_prompt.txt --zone={GCP_ZONE}",
         timeout=30
     )
-    print("  Uploaded system_prompt.txt (v4)")
+    print("  Uploaded system_prompt.txt")
 
-    # Protocol descriptions are now on-chain (no file to upload)
-
-    # Install dependencies on the VM (flask for API, pycryptodome for keccak256)
+    # Install dependencies on the VM (flask for API, pycryptodome for keccak256, eth_abi for input hash)
     gcloud(
         f"compute ssh {GCP_VM_NAME} --zone={GCP_ZONE} "
-        f"--command='pip3 install --break-system-packages flask pycryptodome 2>/dev/null || "
-        f"source /opt/humanfund-venv/bin/activate && pip install flask pycryptodome 2>/dev/null || true'",
+        f"--command='pip3 install --break-system-packages flask pycryptodome eth_abi 2>/dev/null || "
+        f"source /opt/humanfund-venv/bin/activate && pip install flask pycryptodome eth_abi 2>/dev/null || true'",
         check=False, timeout=120
     )
 
-    # Start enclave_runner.py as root (needs root for configfs-tsm TDX quote generation)
-    # Upload a startup script to avoid shell quoting issues
-    startup = "#!/bin/bash\npkill -f enclave_runner 2>/dev/null; sleep 1\nrm -rf /tmp/__pycache__ 2>/dev/null\nsource /opt/humanfund-venv/bin/activate 2>/dev/null || true\nexport PYTHONUNBUFFERED=1\nSYSTEM_PROMPT_PATH=/tmp/system_prompt.txt nohup python3 -u /tmp/enclave_runner.py > /tmp/enclave.log 2>&1 &\n"
+    # Start the modular enclave runner as root (needs root for configfs-tsm TDX quote generation)
+    startup = (
+        "#!/bin/bash\n"
+        "pkill -f enclave_runner 2>/dev/null; pkill -f 'python3 -u -m enclave' 2>/dev/null; sleep 1\n"
+        "rm -rf /tmp/__pycache__ /tmp/enclave/__pycache__ 2>/dev/null\n"
+        "source /opt/humanfund-venv/bin/activate 2>/dev/null || true\n"
+        "export PYTHONUNBUFFERED=1\n"
+        "cd /tmp\n"
+        "ENCLAVE_HOST=0.0.0.0 ENCLAVE_PORT=8090 SYSTEM_PROMPT_PATH=/tmp/system_prompt.txt "
+        "nohup python3 -u -m enclave.enclave_runner > /tmp/enclave.log 2>&1 &\n"
+    )
     with open("/tmp/start_enclave.sh", "w") as f:
         f.write(startup)
     gcloud(
@@ -891,7 +897,7 @@ def upload_enclave_files(vm_ip):
         f"--command='sudo rm -f /tmp/enclave.log && sudo bash /tmp/start_enclave.sh'",
         timeout=30
     )
-    print("  Started enclave_runner.py on port 8090 (as root for configfs-tsm)")
+    print("  Started modular enclave runner on port 8090 (as root for configfs-tsm)")
 
     # Wait for it to be ready
     for i in range(12):
@@ -1207,17 +1213,22 @@ def run_auction_e2e(w3, account, fund_addr, am_addr, vm_ip, nonce):
     # ─── 4d: Run TEE inference on GCP VM ───
     print(f"\n  4d. Running TEE inference on GCP VM...")
 
-    # Build epoch context
-    sys.path.insert(0, str(PROJECT_ROOT / "agent"))
-    from runner_legacy import read_contract_state, build_epoch_context
+    # Build epoch context using legacy runner (state reading + prompt building)
+    sys.path.insert(0, str(PROJECT_ROOT))
+    from runner.epoch_state import read_contract_state, build_epoch_context
 
     state = read_contract_state(fund, w3)
     epoch_context = build_epoch_context(state)
     input_hash_hex = "0x" + input_hash.hex()
 
+    # Read system prompt (new modular enclave expects it in the payload)
+    prompt_path = PROJECT_ROOT / "agent" / "prompts" / "system_v6.txt"
+    system_prompt = prompt_path.read_text().strip()
+
     # Save payload and upload to VM
     payload = json.dumps({
         "epoch_context": epoch_context,
+        "system_prompt": system_prompt,
         "input_hash": input_hash_hex,
         "seed": seed,
     })

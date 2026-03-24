@@ -25,7 +25,7 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 - GPU image key (a3-highgpu-1g, H100): `0xababa83b...` — approved
 - **E2E gas costs**: deployment ~5.1M, DCAP verification ~10-12M (15M limit recommended)
 - **GPU inference**: ~30s per epoch on H100 (vs ~22 min on CPU)
-- **GCP snapshot**: `humanfund-gpu-70b-boot-v1` — boot disk with llama.cpp CUDA build
+- **GCP snapshot**: `humanfund-tee-gpu-70b-v3` — boot disk with llama.cpp CUDA + modular enclave code
 - **Model gauntlet**: 3 models tested across 75-epoch scenario (honeymoon → boom → crisis → drought → recovery → endgame). DeepSeek R1 70B: 6.12 ETH donated, 3.05 ETH final assets, diversified across 3 protocols. Llama 3.3 70B: 7.20 ETH donated but only 2.00 ETH final assets (less sustainable). QwQ 32B: 0.80 ETH donated, 17 parse failures.
 - **Remaining**: message spotlighting (prompt injection defense), production Docker image, audit, mainnet deployment
 - Deployer address: `0xffea30B0DbDAd460B9b6293fb51a059129fCCdAf`
@@ -158,7 +158,6 @@ thehumanfund/
 │       ├── base.py             # ABC: run_epoch() → result
 │       └── gcp.py              # GCP TDX VM lifecycle (create → tunnel → call → delete)
 ├── agent/
-│   ├── runner_legacy.py        # Legacy runner (reference, to be removed)
 │   ├── prompts/
 │   │   └── system_v6.txt       # System prompt v6 (USD mission, ETH/USD price)
 │   └── scenarios/
@@ -172,7 +171,6 @@ thehumanfund/
 │   │   ├── prompt_builder.py   # System prompt + epoch context → full prompt
 │   │   ├── attestation.py      # TDX quote generation (configfs-tsm)
 │   │   └── model_config.py     # Pinned model SHA-256 + verification
-│   ├── enclave_runner.py       # Legacy enclave runner (reference, to be removed)
 │   ├── boot.sh                 # VM boot: measure code+model into RTMR[3], start services
 │   ├── setup_gpu.sh            # Snapshot setup: NVIDIA + CUDA + llama.cpp + model
 │   └── setup_cpu.sh            # Snapshot setup: CPU llama.cpp + model
@@ -376,7 +374,7 @@ RPC_URL=https://sepolia.base.org
 CONTRACT_ADDRESS=0x...         # Deployed TheHumanFund contract address
 GCP_PROJECT=my-project         # GCP project ID
 GCP_ZONE=us-central1-a         # GCP zone with TDX support
-GCP_SNAPSHOT=humanfund-tee-gpu-70b  # Snapshot name
+GCP_SNAPSHOT=humanfund-tee-gpu-70b-v3  # Snapshot name
 NTFY_CHANNEL=my-runner         # Optional: ntfy.sh channel
 ```
 
