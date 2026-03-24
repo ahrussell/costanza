@@ -28,7 +28,7 @@ from enclave_runner import encode_action_bytes, parse_action, _extract_json_obje
 SERVER_URL = os.environ.get("LLAMA_SERVER_URL", "http://localhost:8080")
 
 # Load system prompt
-PROMPT_PATH = os.path.join(os.path.dirname(__file__), "agent", "prompts", "system_v5.txt")
+PROMPT_PATH = os.path.join(os.path.dirname(__file__), "agent", "prompts", "system_v6.txt")
 PROTOCOLS_PATH = os.path.join(os.path.dirname(__file__), "agent", "prompts", "protocols_reference.txt")
 
 def load_system_prompt():
