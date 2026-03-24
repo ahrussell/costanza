@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import "forge-std/Script.sol";
 import "../src/TheHumanFund.sol";
+import "../src/AuctionManager.sol";
 import "../src/TdxVerifier.sol";
 import "../src/InvestmentManager.sol";
 import "../src/WorldView.sol";
@@ -67,6 +68,9 @@ contract Deploy is Script {
         TdxVerifier tdxVerifier = new TdxVerifier(address(fund));
         fund.approveVerifier(1, address(tdxVerifier));  // ID 1 = Intel TDX
 
+        AuctionManager am = new AuctionManager(address(fund));
+        fund.setAuctionManager(address(am));
+
         InvestmentManager im = new InvestmentManager(address(fund), deployer);
         fund.setInvestmentManager(address(im));
 
@@ -91,6 +95,7 @@ contract Deploy is Script {
         console.log("");
         console.log("=== Deployment Summary ===");
         console.log("TheHumanFund:         ", address(fund));
+        console.log("AuctionManager:       ", address(am));
         console.log("TdxVerifier (ID 1):   ", address(tdxVerifier));
         console.log("InvestmentManager:    ", address(im));
         console.log("WorldView:            ", address(wv));

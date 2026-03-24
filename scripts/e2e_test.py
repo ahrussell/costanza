@@ -125,39 +125,17 @@ def deploy_contracts(w3, account):
     nonce = w3.eth.get_transaction_count(deployer)
     seed_wei = w3.to_wei(SEED_AMOUNT_ETH, "ether")
 
-    # Deploy TdxVerifier
-    print(f"Deploying TdxVerifier...")
-    verifier_contract = w3.eth.contract(
-        abi=verifier_artifact["abi"],
-        bytecode=verifier_artifact["bytecode"]["object"]
-    )
-    tx = verifier_contract.constructor().build_transaction({
-        "from": deployer,
-        "nonce": nonce,
-        "gas": 1_000_000,
-        "maxFeePerGas": w3.eth.gas_price * 2,
-        "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
-    })
-    signed = account.sign_transaction(tx)
-    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-    receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
-    if receipt.status != 1:
-        raise RuntimeError(f"Verifier deployment failed! Status: {receipt.status}, gas: {receipt.gasUsed}")
-    verifier_addr = receipt.contractAddress
-    print(f"  TdxVerifier: {verifier_addr} (gas: {receipt.gasUsed})")
-    nonce += 1
-
-    # Deploy TheHumanFund
+    # Deploy TheHumanFund first (TdxVerifier needs fund address)
     print(f"Deploying TheHumanFund (seed: {SEED_AMOUNT_ETH} ETH)...")
     fund_contract = w3.eth.contract(
         abi=fund_artifact["abi"],
         bytecode=fund_artifact["bytecode"]["object"]
     )
-    # Constructor: (commissionBps, maxBid, endaomentFactory, weth, usdc, swapRouter)
+    # Constructor: (commissionBps, maxBid, endaomentFactory, weth, usdc, swapRouter, ethUsdFeed)
     # Use deployer as placeholder for Endaoment/DeFi addresses on testnet
     tx = fund_contract.constructor(
         1000, w3.to_wei(0.0001, "ether"),
-        deployer, deployer, deployer, deployer
+        deployer, deployer, deployer, deployer, deployer
     ).build_transaction({
         "from": deployer,
         "nonce": nonce,
@@ -195,6 +173,56 @@ def deploy_contracts(w3, account):
         w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
         nonce += 1
     print(f"  Added {len(test_nps)} test nonprofits")
+
+    # Deploy TdxVerifier (needs fund address)
+    print(f"Deploying TdxVerifier...")
+    verifier_contract = w3.eth.contract(
+        abi=verifier_artifact["abi"],
+        bytecode=verifier_artifact["bytecode"]["object"]
+    )
+    tx = verifier_contract.constructor(fund_addr).build_transaction({
+        "from": deployer,
+        "nonce": nonce,
+        "gas": 1_000_000,
+        "maxFeePerGas": w3.eth.gas_price * 2,
+        "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
+    })
+    signed = account.sign_transaction(tx)
+    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+    receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+    if receipt.status != 1:
+        raise RuntimeError(f"Verifier deployment failed! Status: {receipt.status}, gas: {receipt.gasUsed}")
+    verifier_addr = receipt.contractAddress
+    print(f"  TdxVerifier: {verifier_addr} (gas: {receipt.gasUsed})")
+    nonce += 1
+
+    # Deploy AuctionManager
+    print(f"Deploying AuctionManager...")
+    am_artifact = json.loads((ABI_DIR / "AuctionManager.sol" / "AuctionManager.json").read_text())
+    am_contract = w3.eth.contract(abi=am_artifact["abi"], bytecode=am_artifact["bytecode"]["object"])
+    tx = am_contract.constructor(fund_addr).build_transaction({
+        "from": deployer, "nonce": nonce, "gas": 1_500_000,
+        "maxFeePerGas": w3.eth.gas_price * 2, "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
+    })
+    signed = account.sign_transaction(tx)
+    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+    receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+    if receipt.status != 1:
+        raise RuntimeError(f"AuctionManager deployment failed! Gas: {receipt.gasUsed}")
+    am_addr = receipt.contractAddress
+    print(f"  AuctionManager: {am_addr} (gas: {receipt.gasUsed})")
+    nonce += 1
+
+    # Wire AuctionManager to fund
+    print("Wiring AuctionManager...")
+    tx = fund.functions.setAuctionManager(am_addr).build_transaction({
+        "from": deployer, "nonce": nonce, "gas": 100_000,
+        "maxFeePerGas": w3.eth.gas_price * 2, "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
+    })
+    signed = account.sign_transaction(tx)
+    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+    w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+    nonce += 1
 
     # Approve TDX verifier (verifierId=1 for TDX)
     print("Approving TdxVerifier (verifierId=1)...")
@@ -925,9 +953,9 @@ def run_auction_e2e(w3, account, fund_addr, vm_ip, nonce):
     commit_win = fund.functions.commitWindow().call()
     reveal_win = fund.functions.revealWindow().call()
 
-    auction_state = fund.functions.auctions(epoch).call()
-    phase = auction_state[1]  # 0=IDLE, 1=COMMIT, 2=REVEAL, 3=EXECUTION
+    auction_state = fund.functions.getAuctionState(epoch).call()
     start_time = auction_state[0]
+    phase = auction_state[1]  # 0=IDLE, 1=COMMIT, 2=REVEAL, 3=EXECUTION
 
     if phase != 0 and start_time > 0:
         now = int(time.time())
@@ -945,7 +973,7 @@ def run_auction_e2e(w3, account, fund_addr, vm_ip, nonce):
                 print(f"      closeCommit failed: {e}")
             w3, fund = fresh_connection()
             nonce = w3.eth.get_transaction_count(account.address)
-            auction_state = fund.functions.auctions(epoch).call()
+            auction_state = fund.functions.getAuctionState(epoch).call()
             phase = auction_state[1]
 
         if phase == 2:  # REVEAL
@@ -962,7 +990,7 @@ def run_auction_e2e(w3, account, fund_addr, vm_ip, nonce):
                 print(f"      closeReveal failed: {e}")
             w3, fund = fresh_connection()
             nonce = w3.eth.get_transaction_count(account.address)
-            auction_state = fund.functions.auctions(epoch).call()
+            auction_state = fund.functions.getAuctionState(epoch).call()
             phase = auction_state[1]
 
         if phase == 3:  # EXECUTION — need to forfeit bond
@@ -1038,7 +1066,7 @@ def run_auction_e2e(w3, account, fund_addr, vm_ip, nonce):
     print(f"      Gas: {receipt.gasUsed}")
 
     # ─── 4c: Wait for commit window, closeCommit, reveal, closeReveal ───
-    start_time, phase, _, _, _, _, _, _ = fund.functions.getAuctionState(epoch).call()
+    start_time, phase, _, _, _, _ = fund.functions.getAuctionState(epoch).call()
     commit_win = fund.functions.commitWindow().call()
     now = w3.eth.get_block("latest").timestamp
     wait_secs = max(0, start_time + commit_win - now + 5)
@@ -1071,7 +1099,7 @@ def run_auction_e2e(w3, account, fund_addr, vm_ip, nonce):
     print("      Closing reveal phase...")
     receipt = send_tx(fund.functions.closeReveal())
 
-    _, _, _, _, winner, winning_bid, _, seed = fund.functions.getAuctionState(epoch).call()
+    _, _, winner, winning_bid, _, seed = fund.functions.getAuctionState(epoch).call()
     input_hash = fund.functions.epochInputHashes(epoch).call()
     print(f"      Winner: {winner}")
     print(f"      Input hash: 0x{input_hash.hex()[:16]}... (set at closeReveal)")

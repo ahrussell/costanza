@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import "forge-std/Test.sol";
 import "../src/TheHumanFund.sol";
+import "../src/AuctionManager.sol";
 import "../src/TdxVerifier.sol";
 import "../src/interfaces/IAutomataDcapAttestation.sol";
 
@@ -21,6 +22,7 @@ contract AuctionMockDcapVerifier is IAutomataDcapAttestation {
 /// @title Auction mechanism tests — commit-reveal sealed bids with fixed escalating bond
 contract TheHumanFundAuctionTest is Test {
     TheHumanFund public fund;
+    AuctionManager public am;
     TdxVerifier public verifier;
     AuctionMockDcapVerifier public mockDcap;
 
@@ -43,6 +45,10 @@ contract TheHumanFundAuctionTest is Test {
             1000, 0.01 ether,
             address(0xBEEF), address(0xBEEF), address(0xBEEF), address(0xBEEF), address(0)
         );
+
+        // Deploy and wire auction manager
+        am = new AuctionManager(address(fund));
+        fund.setAuctionManager(address(am));
 
         fund.addNonprofit("GiveDirectly", "Cash transfers", bytes32("EIN-GD"));
         fund.addNonprofit("Against Malaria Foundation", "Malaria prevention", bytes32("EIN-AMF"));
@@ -117,12 +123,11 @@ contract TheHumanFundAuctionTest is Test {
     function test_start_epoch() public {
         fund.startEpoch();
 
-        (uint256 startTime, TheHumanFund.EpochPhase phase, uint256 commitCount,
-         , address winner, uint256 winningBid, uint256 bondAmount,) = fund.getAuctionState(1);
+        (uint256 startTime, IAuctionManager.AuctionPhase phase,
+         address winner, uint256 winningBid, uint256 bondAmount,) = fund.getAuctionState(1);
 
         assertEq(startTime, block.timestamp);
-        assertEq(uint256(phase), uint256(TheHumanFund.EpochPhase.COMMIT));
-        assertEq(commitCount, 0);
+        assertEq(uint256(phase), uint256(IAuctionManager.AuctionPhase.COMMIT));
         assertEq(winner, address(0));
         assertEq(winningBid, 0);
         assertEq(bondAmount, 0.001 ether); // BASE_BOND
@@ -130,7 +135,7 @@ contract TheHumanFundAuctionTest is Test {
 
     function test_cannot_start_twice() public {
         fund.startEpoch();
-        vm.expectRevert(TheHumanFund.AlreadyDone.selector);
+        vm.expectRevert(AuctionManager.WrongPhase.selector);
         fund.startEpoch();
     }
 
@@ -148,9 +153,8 @@ contract TheHumanFundAuctionTest is Test {
         vm.prank(runner1);
         fund.commit{value: 0.001 ether}(_commitHash(0.005 ether, bytes32("salt1")));
 
-        (,, uint256 commitCount,,,,, ) = fund.getAuctionState(1);
-        assertEq(commitCount, 1);
-        assertTrue(fund.hasCommitted(1, runner1));
+        // Verify commit was recorded via auction manager
+        assertEq(am.getCommitters(1).length, 1);
     }
 
     function test_commit_requires_bond() public {
@@ -220,8 +224,8 @@ contract TheHumanFundAuctionTest is Test {
         vm.warp(block.timestamp + COMMIT_WIN);
         fund.closeCommit();
 
-        (, TheHumanFund.EpochPhase phase,,,,,,) = fund.getAuctionState(1);
-        assertEq(uint256(phase), uint256(TheHumanFund.EpochPhase.REVEAL));
+        (, IAuctionManager.AuctionPhase phase,,,,) = fund.getAuctionState(1);
+        assertEq(uint256(phase), uint256(IAuctionManager.AuctionPhase.REVEAL));
     }
 
     function test_cannot_close_commit_before_window() public {
@@ -247,8 +251,7 @@ contract TheHumanFundAuctionTest is Test {
         vm.prank(runner1);
         fund.reveal(bidAmount, salt);
 
-        (,,, uint256 revealCount, address winner, uint256 winningBid,,) = fund.getAuctionState(1);
-        assertEq(revealCount, 1);
+        (,, address winner, uint256 winningBid,,) = fund.getAuctionState(1);
         assertEq(winner, runner1);
         assertEq(winningBid, bidAmount);
     }
@@ -277,7 +280,7 @@ contract TheHumanFundAuctionTest is Test {
         vm.prank(runner3);
         fund.reveal(0.009 ether, salt3);
 
-        (,,,, address winner, uint256 winningBid,,) = fund.getAuctionState(1);
+        (,, address winner, uint256 winningBid,,) = fund.getAuctionState(1);
         assertEq(winner, runner2);
         assertEq(winningBid, 0.005 ether);
     }
@@ -378,13 +381,11 @@ contract TheHumanFundAuctionTest is Test {
         vm.warp(block.timestamp + COMMIT_WIN);
         fund.closeCommit();
 
-        uint256 treasuryBefore = fund.treasuryBalance();
-
         vm.warp(block.timestamp + REVEAL_WIN);
         fund.closeReveal();
 
-        // Both bonds stay in treasury (forfeited)
-        assertEq(fund.treasuryBalance(), treasuryBefore);
+        // Both bonds stay in AM (forfeited, not refunded)
+        assertEq(address(am).balance, 0.002 ether);
         assertEq(fund.currentEpoch(), 2);
         assertEq(fund.consecutiveMissedEpochs(), 1);
     }
@@ -442,6 +443,8 @@ contract TheHumanFundAuctionTest is Test {
 
         // Runner1 (non-revealer) does NOT get bond back
         assertEq(runner1.balance, runner1BalBefore);
+        // Non-revealer's bond stays in AM (winner's bond also still in AM until settlement)
+        assertEq(address(am).balance, 0.002 ether);
     }
 
     function test_close_reveal_enters_execution() public {
@@ -460,8 +463,8 @@ contract TheHumanFundAuctionTest is Test {
         vm.warp(block.timestamp + REVEAL_WIN);
         fund.closeReveal();
 
-        (, TheHumanFund.EpochPhase phase,,,,,,) = fund.getAuctionState(1);
-        assertEq(uint256(phase), uint256(TheHumanFund.EpochPhase.EXECUTION));
+        (, IAuctionManager.AuctionPhase phase,,,,) = fund.getAuctionState(1);
+        assertEq(uint256(phase), uint256(IAuctionManager.AuctionPhase.EXECUTION));
         assertEq(fund.currentEpoch(), 1); // Not advanced yet
     }
 
@@ -487,7 +490,8 @@ contract TheHumanFundAuctionTest is Test {
         vm.warp(block.timestamp + EXEC_WIN);
         fund.forfeitBond();
 
-        assertEq(fund.treasuryBalance(), treasuryBefore); // Bond stays
+        // Forfeited bond transferred from AM to fund
+        assertEq(fund.treasuryBalance(), treasuryBefore + 0.001 ether);
         assertEq(fund.currentEpoch(), 2);
         assertEq(fund.consecutiveMissedEpochs(), 1);
     }
@@ -500,7 +504,8 @@ contract TheHumanFundAuctionTest is Test {
     }
 
     function test_forfeit_requires_execution_phase() public {
-        vm.expectRevert(TheHumanFund.WrongPhase.selector);
+        // No auction started — AM reverts with InvalidParams (epoch mismatch)
+        vm.expectRevert(AuctionManager.InvalidParams.selector);
         fund.forfeitBond();
     }
 
@@ -615,7 +620,7 @@ contract TheHumanFundAuctionTest is Test {
     function test_randomness_seed_captured() public {
         _runAuctionTo(runner1, 0.005 ether, bytes32("s1"));
 
-        (,,,,,,,uint256 seed) = fund.getAuctionState(1);
+        (,,,,, uint256 seed) = fund.getAuctionState(1);
         assertEq(seed, block.prevrandao);
     }
 
