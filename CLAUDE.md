@@ -79,7 +79,7 @@ Each epoch (24 hours in production, configurable for testnet):
 - **Phase 0** (COMPLETE): End-to-end loop on testnet with trusted operator, no TEE
 - **Phase 1** (COMPLETE): TEE integration — enclave on Phala Cloud, real TDX attestation, on-chain DCAP verification code
 - **Phase 2** (COMPLETE): Reverse auction — contract + runner deployed, full attestation verified on Base Sepolia (CPU + GPU TDX)
-- **Phase 3** (IN PROGRESS): Investment portfolio — InvestmentManager + 5 adapters (Aave, wstETH, cbETH, Compound, Aerodrome), 137 tests pass, Chainlink ETH/USD oracle, system prompt v6
+- **Phase 3** (IN PROGRESS): Investment portfolio — InvestmentManager + 7 adapters (Aave WETH/USDC, wstETH, cbETH, Compound USDC, Morpho Gauntlet/Steakhouse WETH), 137 tests pass, Chainlink ETH/USD oracle, system prompt v6
 - **Phase 4**: Frontend (diary viewer, treasury dashboard, investment portfolio UI)
 - **Phase 5**: Audit and mainnet deployment
 
@@ -125,6 +125,7 @@ thehumanfund/
 │   │   ├── IAutomataDcapAttestation.sol  # Automata DCAP interface
 │   │   ├── IAttestationVerifier.sol     # Attestation verifier interface
 │   │   ├── IInvestmentManager.sol       # Investment manager interface
+│   │   ├── IERC4626.sol                 # Minimal ERC-4626 vault interface
 │   │   ├── IProtocolAdapter.sol         # Protocol adapter interface
 │   │   └── IWorldView.sol               # WorldView interface
 │   └── adapters/                # DeFi protocol adapters
@@ -133,6 +134,7 @@ thehumanfund/
 │       ├── WstETHAdapter.sol        # Lido wstETH liquid staking
 │       ├── CbETHAdapter.sol         # Coinbase cbETH staking
 │       ├── CompoundV3USDCAdapter.sol # Compound V3 USDC lending
+│       ├── MorphoWETHAdapter.sol    # Morpho ERC-4626 WETH vaults (Gauntlet, Steakhouse)
 │       ├── SwapHelper.sol           # Shared ETH<->USDC swap logic
 │       └── IWETH.sol                # WETH9 interface
 ├── test/
