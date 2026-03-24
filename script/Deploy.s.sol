@@ -47,13 +47,17 @@ contract Deploy is Script {
 
         // ─── 1. Core contracts ──────────────────────────────────────────
 
+        // ETH/USD feed (required for price snapshots; adapters also use it)
+        address ethUsdFeedAddr = vm.envOr("ETH_USD_FEED", address(0));
+
         TheHumanFund fund = new TheHumanFund{value: seedAmount}(
             1000,               // 10% initial commission
             0.0001 ether,       // initial max bid (minimum allowed)
             endaomentFactory,
             wethAddr,
             usdcAddr,
-            swapRouterAddr
+            swapRouterAddr,
+            ethUsdFeedAddr
         );
 
         // Add all 9 nonprofits

@@ -5,6 +5,7 @@ import "./interfaces/IProofVerifier.sol";
 import "./interfaces/IInvestmentManager.sol";
 import "./interfaces/IWorldView.sol";
 import "./interfaces/IEndaoment.sol";
+import "./interfaces/IAggregatorV3.sol";
 import "./adapters/IWETH.sol";
 import "./adapters/SwapHelper.sol"; // for ISwapRouter, IERC20
 
@@ -30,6 +31,7 @@ contract TheHumanFund {
         string description;
         bytes32 ein;           // EIN as bytes32 (e.g., "52-0907625" → formatBytes32String)
         uint256 totalDonated;
+        uint256 totalDonatedUsd;  // USDC amount (6 decimals) — actual swap output
         uint256 donationCount;
         bool exists;
     }
@@ -92,7 +94,8 @@ contract TheHumanFund {
     event NonprofitDonation(
         uint256 indexed epoch,
         uint256 indexed nonprofitId,
-        uint256 amount
+        uint256 amountEth,
+        uint256 amountUsd
     );
 
     event CommissionRateChanged(uint256 indexed epoch, uint256 newRateBps);
@@ -142,6 +145,7 @@ contract TheHumanFund {
     // Treasury tracking
     uint256 public totalInflows;
     uint256 public totalDonatedToNonprofits;
+    uint256 public totalDonatedToNonprofitsUsd;  // USDC (6 decimals) — actual swap outputs
     uint256 public totalCommissionsPaid;
     uint256 public totalBountiesPaid;
 
@@ -159,6 +163,10 @@ contract TheHumanFund {
     IWETH public immutable weth;
     address public immutable usdc;
     address public immutable swapRouter;
+
+    // Chainlink ETH/USD price feed
+    IAggregatorV3 public immutable ethUsdFeed;
+    uint256 public epochEthUsdPrice;  // Snapshotted at epoch start (feed decimals, typically 8)
 
     // Epochs
     mapping(uint256 => EpochRecord) public epochs;
@@ -229,7 +237,8 @@ contract TheHumanFund {
         address _endaomentFactory,
         address _weth,
         address _usdc,
-        address _swapRouter
+        address _swapRouter,
+        address _ethUsdFeed
     ) payable {
         if (_initialCommissionBps < MIN_COMMISSION_BPS || _initialCommissionBps > MAX_COMMISSION_BPS) revert InvalidParams();
         if (_initialMaxBid < MIN_MAX_BID) revert InvalidParams();
@@ -252,6 +261,7 @@ contract TheHumanFund {
         weth = IWETH(_weth);
         usdc = _usdc;
         swapRouter = _swapRouter;
+        ethUsdFeed = IAggregatorV3(_ethUsdFeed);
 
         if (msg.value > 0) {
             totalInflows += msg.value;
@@ -275,6 +285,7 @@ contract TheHumanFund {
             description: _description,
             ein: _ein,
             totalDonated: 0,
+            totalDonatedUsd: 0,
             donationCount: 0,
             exists: true
         });
@@ -376,6 +387,7 @@ contract TheHumanFund {
         if (auctionEnabled) revert WrongPhase();
         uint256 epoch = currentEpoch;
         if (epochs[epoch].executed) revert AlreadyDone();
+        _snapshotEthUsdPrice();
         _recordAndExecute(epoch, action, reasoning, 0);
     }
 
@@ -393,6 +405,7 @@ contract TheHumanFund {
         if (auctionEnabled) revert WrongPhase();
         uint256 epoch = currentEpoch;
         if (epochs[epoch].executed) revert AlreadyDone();
+        _snapshotEthUsdPrice();
         _applyPolicyUpdate(policySlot, policyText);
         _recordAndExecute(epoch, action, reasoning, 0);
     }
@@ -520,6 +533,7 @@ contract TheHumanFund {
             }
         }
 
+        _snapshotEthUsdPrice();
         bytes32 baseInputHash = _computeInputHash();
         epochBaseInputHashes[epoch] = baseInputHash;
 
@@ -778,6 +792,24 @@ contract TheHumanFund {
         emit BondForfeited(epoch, forfeitedRunner, forfeitedBond);
     }
 
+    // ─── Internal: Price Snapshot ───────────────────────────────────────
+
+    /// @dev Snapshot Chainlink ETH/USD price for this epoch.
+    ///      Silently sets 0 if feed is not configured or returns stale/negative data.
+    function _snapshotEthUsdPrice() internal {
+        if (address(ethUsdFeed) == address(0)) {
+            epochEthUsdPrice = 0;
+            return;
+        }
+        try ethUsdFeed.latestRoundData() returns (
+            uint80, int256 answer, uint256, uint256, uint80
+        ) {
+            epochEthUsdPrice = answer > 0 ? uint256(answer) : 0;
+        } catch {
+            epochEthUsdPrice = 0;
+        }
+    }
+
     // ─── Internal: Epoch Recording ─────────────────────────────────────
 
     /// @dev Apply optional worldview policy update. Best-effort — failures
@@ -963,11 +995,13 @@ contract TheHumanFund {
         IEndaomentOrg(orgAddr).donate(usdcAmount);
 
         np.totalDonated += amount;
+        np.totalDonatedUsd += usdcAmount;
         np.donationCount += 1;
         totalDonatedToNonprofits += amount;
+        totalDonatedToNonprofitsUsd += usdcAmount;
         lastDonationEpoch = epoch;
 
-        emit NonprofitDonation(epoch, nonprofitId, amount);
+        emit NonprofitDonation(epoch, nonprofitId, amount, usdcAmount);
         return true;
     }
 
@@ -1038,7 +1072,8 @@ contract TheHumanFund {
             totalCommissionsPaid,
             totalBountiesPaid,
             currentEpochInflow,
-            currentEpochDonationCount
+            currentEpochDonationCount,
+            epochEthUsdPrice
         ));
     }
 
@@ -1049,7 +1084,7 @@ contract TheHumanFund {
         for (uint256 i = 1; i <= nonprofitCount; i++) {
             Nonprofit storage np = nonprofits[i];
             packed = abi.encodePacked(packed, keccak256(abi.encode(
-                np.name, np.description, np.ein, np.totalDonated, np.donationCount
+                np.name, np.description, np.ein, np.totalDonated, np.totalDonatedUsd, np.donationCount
             )));
         }
         return keccak256(packed);
@@ -1136,11 +1171,11 @@ contract TheHumanFund {
     /// @notice Get nonprofit info by ID.
     function getNonprofit(uint256 id) external view returns (
         string memory name, string memory description, bytes32 ein,
-        uint256 totalDonated, uint256 donationCount
+        uint256 totalDonated, uint256 totalDonatedUsd, uint256 donationCount
     ) {
         if (id < 1 || id > nonprofitCount) revert InvalidParams();
         Nonprofit storage np = nonprofits[id];
-        return (np.name, np.description, np.ein, np.totalDonated, np.donationCount);
+        return (np.name, np.description, np.ein, np.totalDonated, np.totalDonatedUsd, np.donationCount);
     }
 
     /// @notice Get epoch record.

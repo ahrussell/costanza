@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import "../interfaces/IProtocolAdapter.sol";
+import "../interfaces/IAggregatorV3.sol";
 import "./SwapHelper.sol";
 
 /// @notice Minimal Compound V3 (Comet) interface.
@@ -11,14 +12,6 @@ interface IComet {
     function balanceOf(address account) external view returns (uint256);
 }
 
-/// @notice Chainlink price feed interface.
-interface IAggregatorV3ForCompound {
-    function latestRoundData() external view returns (
-        uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound
-    );
-    function decimals() external view returns (uint8);
-}
-
 /// @title CompoundV3USDCAdapter
 /// @notice Swaps ETH to USDC, deposits into Compound V3 (Comet) to earn lending interest.
 /// @dev Risk: Low. APY: 3-5%. Liquidity: Instant.
@@ -26,7 +19,7 @@ interface IAggregatorV3ForCompound {
 ///      Similar USD exposure risk as AaveV3USDCAdapter.
 contract CompoundV3USDCAdapter is IProtocolAdapter, SwapHelper {
     IComet public immutable comet;
-    IAggregatorV3ForCompound public immutable ethUsdFeed;
+    IAggregatorV3 public immutable ethUsdFeed;
     address public immutable manager;
 
     constructor(
@@ -38,7 +31,7 @@ contract CompoundV3USDCAdapter is IProtocolAdapter, SwapHelper {
         address _manager
     ) SwapHelper(_weth, _usdc, _swapRouter, 500) {
         comet = IComet(_comet);
-        ethUsdFeed = IAggregatorV3ForCompound(_ethUsdFeed);
+        ethUsdFeed = IAggregatorV3(_ethUsdFeed);
         manager = _manager;
 
         // Approve comet to spend our USDC

@@ -18,8 +18,8 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 - **Phase 3 contract (latest, 70B GPU e2e)**: `0xa507366987417e0E4247a827B48536DA11235CC7` (Base Sepolia) — 5 consecutive successful epochs with investments, withdrawals, and guiding policies
 - **Phase 2 contract (CPU e2e)**: `0x9043B54B7E5d2f98Bc12ff10799cf8d5d38c7ab2` (Base Sepolia) — CPU + GPU verified
 - Phase 0 original contract: `0x2F213Ea0D3F6D8349e2162b37Cc8cE6605dc9420` (Base Sepolia) — 21 epochs executed (legacy)
-- **126 tests pass** (28 Phase 0 + 34 auction + 12 attestation verifier + 25 investment + 13 worldview + 14 messages)
-- Contract sizes: TheHumanFund ~18.0KB (6.5KB margin, optimizer enabled), AttestationVerifier ~3.4KB, InvestmentManager ~10.4KB, WorldView ~2.6KB
+- **137 tests pass** (28 Phase 0 + 34 auction + 12 attestation verifier + 25 investment + 16 worldview + 14 messages + 8 TDX verifier)
+- Contract sizes: TheHumanFund ~24.2KB (374B margin, optimizer enabled), AttestationVerifier ~3.4KB, InvestmentManager ~10.4KB, WorldView ~2.6KB
 - GCP TDX FMSPC `00806f050000` registered in Automata DCAP Dashboard
 - CPU image key (c3-standard-4): `0x1ff10986...` — approved
 - GPU image key (a3-highgpu-1g, H100): `0xababa83b...` — approved
@@ -58,6 +58,7 @@ Each epoch (24 hours in production, configurable for testnet):
 
 ## Key Design Decisions
 
+- **USD-denominated mission**: Agent's goal is to maximize USD donated, not ETH. Chainlink ETH/USD price is snapshotted each epoch and included in the inputHash. Donations are tracked in both ETH and USDC (actual swap output). The model sees all values in both ETH and USD.
 - **Single action per epoch**: donate, set_commission_rate, set_max_bid, invest, withdraw, set_guiding_policy, or noop
 - **Donor messages**: donateWithMessage() accepts a string (max 280 chars, min 0.01 ETH). Messages queued, up to 20 per epoch shown to model with datamarking spotlighting (whitespace replaced with dynamic marker token) to mitigate prompt injection — based on [Hines et al. 2024](https://arxiv.org/abs/2403.14720)
 - **Hard bounds enforced by contract**: max 10% treasury donated/epoch, commission 1-90%, max bid 0.0001 ETH to 2% treasury, investment bounds 80% max / 25% per protocol / 20% min reserve
@@ -78,7 +79,7 @@ Each epoch (24 hours in production, configurable for testnet):
 - **Phase 0** (COMPLETE): End-to-end loop on testnet with trusted operator, no TEE
 - **Phase 1** (COMPLETE): TEE integration — enclave on Phala Cloud, real TDX attestation, on-chain DCAP verification code
 - **Phase 2** (COMPLETE): Reverse auction — contract + runner deployed, full attestation verified on Base Sepolia (CPU + GPU TDX)
-- **Phase 3** (IN PROGRESS): Investment portfolio — InvestmentManager + 5 adapters (Aave, wstETH, cbETH, Compound, Aerodrome), 99 tests pass, Chainlink ETH/USD oracle, system prompt v2
+- **Phase 3** (IN PROGRESS): Investment portfolio — InvestmentManager + 5 adapters (Aave, wstETH, cbETH, Compound, Aerodrome), 137 tests pass, Chainlink ETH/USD oracle, system prompt v6
 - **Phase 4**: Frontend (diary viewer, treasury dashboard, investment portfolio UI)
 - **Phase 5**: Audit and mainnet deployment
 
@@ -88,6 +89,7 @@ Each epoch (24 hours in production, configurable for testnet):
 - **Inference**: llama.cpp + DeepSeek R1 Distill Llama 70B Q4_K_M (GCP TDX H100, production)
 - **TEE**: Intel TDX via Phala Cloud / dstack (v0.5.x)
 - **Attestation**: Automata Network DCAP contracts at `0xaDdeC7e85c2182202b66E331f2a4A0bBB2cEEa1F`
+- **Oracle**: Chainlink ETH/USD price feed (shared interface `IAggregatorV3.sol`, used by main contract + USDC adapters)
 - **Tooling**: Foundry (Solidity), Python 3.9+ with venv (runner + enclave)
 
 ## Python Environment
@@ -119,6 +121,7 @@ thehumanfund/
 │   ├── InvestmentManager.sol    # DeFi portfolio manager (10.4KB)
 │   ├── WorldView.sol            # Agent worldview — 10 guiding policy slots
 │   ├── interfaces/
+│   │   ├── IAggregatorV3.sol            # Chainlink V3 price feed interface
 │   │   ├── IAutomataDcapAttestation.sol  # Automata DCAP interface
 │   │   ├── IAttestationVerifier.sol     # Attestation verifier interface
 │   │   ├── IInvestmentManager.sol       # Investment manager interface
@@ -137,7 +140,7 @@ thehumanfund/
 │   ├── TheHumanFundAuction.t.sol # Phase 2 auction + attestation tests (34 tests)
 │   ├── AttestationVerifier.t.sol # Verifier unit tests (12 tests)
 │   ├── InvestmentManager.t.sol  # Investment tests (25 tests)
-│   ├── WorldView.t.sol          # Worldview tests (13 tests)
+│   ├── WorldView.t.sol          # Worldview tests (16 tests)
 │   └── Messages.t.sol           # Donor messages tests (14 tests)
 ├── script/
 │   └── Deploy.s.sol             # Foundry deployment script
@@ -147,7 +150,8 @@ thehumanfund/
 │   ├── prompts/
 │   │   ├── system_v1.txt        # System prompt v1 (Phase 0-2, no investments)
 │   │   ├── system_v2.txt        # System prompt v2 (Phase 3, with investments)
-│   │   └── system_v3.txt        # System prompt v3 (Phase 3+, with worldview)
+│   │   ├── system_v3.txt        # System prompt v3 (Phase 3+, with worldview)
+│   │   └── system_v6.txt        # System prompt v6 (USD mission, ETH/USD price)
 │   └── scenarios/
 │       └── scenarios.json       # 5 synthetic test scenarios
 ├── tee/                         # Phase 1: TEE enclave image
@@ -175,10 +179,12 @@ thehumanfund/
 **`src/TheHumanFund.sol`** — Full contract with Phase 0 + 1 (TEE) + 2 (auction):
 
 ### Core Features
-- Treasury management with 3 hardcoded nonprofits
+- Treasury management with dynamic nonprofit registry (up to 20)
+- Chainlink ETH/USD price feed: snapshotted each epoch, included in inputHash, shown to model
+- USD donation tracking: `totalDonatedUsd` per nonprofit and globally (USDC 6 decimals, actual swap output)
 - Referral system with mintable codes and immediate commission payout
 - Donor messages: donateWithMessage() stores messages on-chain, queue advances each epoch
-- 4 agent actions with contract-enforced bounds
+- 7 agent actions with contract-enforced bounds
 - Auto-escalation: `effectiveMaxBid` increases 10% per consecutive missed epoch
 - `DiaryEntry` event emits reasoning + action on-chain
 

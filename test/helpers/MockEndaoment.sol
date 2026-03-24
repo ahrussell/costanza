@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import "../../src/interfaces/IEndaoment.sol";
+import "../../src/interfaces/IAggregatorV3.sol";
 import "../../src/adapters/IWETH.sol";
 import "../../src/adapters/SwapHelper.sol";
 
@@ -118,5 +119,26 @@ contract MockSwapRouter {
 
         // Mint USDC to recipient
         usdcToken.mint(params.recipient, amountOut);
+    }
+}
+
+/// @dev Mock Chainlink V3 price feed for testing. Returns fixed ETH/USD price.
+contract MockChainlinkFeed is IAggregatorV3 {
+    int256 public price;
+    uint8 public override decimals;
+
+    constructor(int256 _price, uint8 _decimals) {
+        price = _price;
+        decimals = _decimals;
+    }
+
+    function setPrice(int256 _price) external {
+        price = _price;
+    }
+
+    function latestRoundData() external view override returns (
+        uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound
+    ) {
+        return (1, price, block.timestamp, block.timestamp, 1);
     }
 }

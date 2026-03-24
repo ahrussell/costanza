@@ -18,7 +18,8 @@ contract MessagesTest is Test {
             address(0xBEEF),   // endaomentFactory
             address(0xBEEF),   // weth
             address(0xBEEF),   // usdc
-            address(0xBEEF)    // swapRouter
+            address(0xBEEF),   // swapRouter
+            address(0)         // ethUsdFeed (not needed for message tests)
         );
 
         fund.addNonprofit("GiveDirectly", "Cash transfers", bytes32("EIN-GD"));

@@ -63,7 +63,7 @@ contract InvestmentManagerTest is Test {
         // Deploy fund with 10 ETH
         fund = new TheHumanFund{value: 10 ether}(
             1000, 0.0001 ether,
-            address(0xBEEF), address(0xBEEF), address(0xBEEF), address(0xBEEF)
+            address(0xBEEF), address(0xBEEF), address(0xBEEF), address(0xBEEF), address(0)
         );
 
         fund.addNonprofit("NP1", "Nonprofit 1", bytes32("EIN-1"));
@@ -324,7 +324,7 @@ contract InvestmentManagerTest is Test {
         // Deploy a fresh fund without InvestmentManager
         TheHumanFund fund2 = new TheHumanFund{value: 1 ether}(
             1000, 0.0001 ether,
-            address(0xBEEF), address(0xBEEF), address(0xBEEF), address(0xBEEF)
+            address(0xBEEF), address(0xBEEF), address(0xBEEF), address(0xBEEF), address(0)
         );
 
         bytes memory action = abi.encodePacked(uint8(4), abi.encode(uint256(1), uint256(0.1 ether)));

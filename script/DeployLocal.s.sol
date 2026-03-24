@@ -62,7 +62,8 @@ contract DeployLocal is Script {
             deployer,       // endaoment factory (placeholder)
             deployer,       // weth (placeholder)
             deployer,       // usdc (placeholder)
-            deployer        // swap router (placeholder)
+            deployer,       // swap router (placeholder)
+            address(0)      // ethUsdFeed (not needed for local testing)
         );
 
         // Add test nonprofits

@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import "../interfaces/IProtocolAdapter.sol";
+import "../interfaces/IAggregatorV3.sol";
 import "./SwapHelper.sol";
 
 /// @notice Minimal Aave V3 Pool interface for supply/withdraw.
@@ -13,14 +14,6 @@ interface IAavePoolForUSDC {
 /// @notice Minimal aToken interface.
 interface IATokenForUSDC {
     function balanceOf(address account) external view returns (uint256);
-}
-
-/// @notice Chainlink price feed interface.
-interface IAggregatorV3 {
-    function latestRoundData() external view returns (
-        uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound
-    );
-    function decimals() external view returns (uint8);
 }
 
 /// @title AaveV3USDCAdapter

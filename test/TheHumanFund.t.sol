@@ -11,6 +11,7 @@ contract TheHumanFundTest is Test {
     MockWETH public mockWeth;
     MockUSDC public mockUsdc;
     MockSwapRouter public mockRouter;
+    MockChainlinkFeed public mockFeed;
 
     address donor = address(0x2001);
     address referrer = address(0x3001);
@@ -21,6 +22,7 @@ contract TheHumanFundTest is Test {
         mockUsdc = new MockUSDC();
         mockRouter = new MockSwapRouter(address(mockWeth), address(mockUsdc));
         mockFactory = new MockEndaomentFactory();
+        mockFeed = new MockChainlinkFeed(2000e8, 8);  // $2000/ETH, 8 decimals
 
         fund = new TheHumanFund{value: 5 ether}(
             1000,                       // 10% commission
@@ -28,7 +30,8 @@ contract TheHumanFundTest is Test {
             address(mockFactory),
             address(mockWeth),
             address(mockUsdc),
-            address(mockRouter)
+            address(mockRouter),
+            address(mockFeed)
         );
 
         fund.addNonprofit("GiveDirectly", "Cash transfers to extreme poor", bytes32("EIN-GD"));
@@ -50,20 +53,21 @@ contract TheHumanFundTest is Test {
         assertEq(fund.treasuryBalance(), 5 ether);
         assertEq(fund.totalInflows(), 5 ether);
 
-        (string memory name, string memory description, bytes32 ein, uint256 totalDonated, uint256 donationCount) = fund.getNonprofit(1);
+        (string memory name, string memory description, bytes32 ein, uint256 totalDonated, uint256 totalDonatedUsd, uint256 donationCount) = fund.getNonprofit(1);
         assertEq(name, "GiveDirectly");
         assertEq(description, "Cash transfers to extreme poor");
         assertEq(ein, bytes32("EIN-GD"));
         assertEq(totalDonated, 0);
+        assertEq(totalDonatedUsd, 0);
         assertEq(donationCount, 0);
     }
 
     function test_constructor_rejects_invalid_commission() public {
         vm.expectRevert(TheHumanFund.InvalidParams.selector);
-        new TheHumanFund{value: 1 ether}(50, 0.005 ether, address(0xBEEF), address(0xBEEF), address(0xBEEF), address(0xBEEF)); // 0.5% — too low
+        new TheHumanFund{value: 1 ether}(50, 0.005 ether, address(0xBEEF), address(0xBEEF), address(0xBEEF), address(0xBEEF), address(0)); // 0.5% — too low
 
         vm.expectRevert(TheHumanFund.InvalidParams.selector);
-        new TheHumanFund{value: 1 ether}(9500, 0.005 ether, address(0xBEEF), address(0xBEEF), address(0xBEEF), address(0xBEEF)); // 95% — too high
+        new TheHumanFund{value: 1 ether}(9500, 0.005 ether, address(0xBEEF), address(0xBEEF), address(0xBEEF), address(0xBEEF), address(0)); // 95% — too high
     }
 
     function test_add_nonprofit_rejects_zero_ein() public {
@@ -146,7 +150,7 @@ contract TheHumanFundTest is Test {
         assertEq(fund.currentEpoch(), 2);
         assertEq(fund.treasuryBalance(), 4.5 ether);
 
-        (, , , uint256 totalDonated, uint256 donationCount) = fund.getNonprofit(1);
+        (, , , uint256 totalDonated,, uint256 donationCount) = fund.getNonprofit(1);
         assertEq(totalDonated, 0.5 ether);
         assertEq(donationCount, 1);
         assertEq(fund.lastDonationEpoch(), 1);
@@ -330,8 +334,8 @@ contract TheHumanFundTest is Test {
         fund.submitEpochAction(action2, bytes("donate 2"));
 
         // Check totals
-        (, , , uint256 donated1,) = fund.getNonprofit(1);
-        (, , , uint256 donated2,) = fund.getNonprofit(2);
+        (, , , uint256 donated1,,) = fund.getNonprofit(1);
+        (, , , uint256 donated2,,) = fund.getNonprofit(2);
         assertEq(donated1, 0.3 ether);
         assertEq(donated2, 0.2 ether);
         assertEq(fund.totalDonatedToNonprofits(), 0.5 ether);
