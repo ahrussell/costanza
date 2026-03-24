@@ -47,7 +47,7 @@ contract TdxVerifierTest is Test {
 
     function setUp() public {
         TdxMockDcapVerifier mockDcap = new TdxMockDcapVerifier();
-        verifier = new TdxVerifier();
+        verifier = new TdxVerifier(address(0));
 
         bytes memory mockCode = address(mockDcap).code;
         vm.etch(DCAP_ADDR, mockCode);
@@ -235,5 +235,51 @@ contract TdxVerifierTest is Test {
         TdxMockDcapVerifier(DCAP_ADDR).setOutput(output);
 
         assertFalse(verifier.verify(inputHash, outputHash, bytes("quote")));
+    }
+
+    // ─── Kill Switch ──────────────────────────────────────────────────────
+
+    function test_freeze() public {
+        bytes32 key = _imageKey(RTMR1_1, RTMR2_1);
+        verifier.approveImage(key);
+
+        verifier.freeze();
+        assertTrue(verifier.frozenImages());
+
+        vm.expectRevert(TdxVerifier.Frozen.selector);
+        verifier.approveImage(_imageKey(RTMR1_2, RTMR2_2));
+
+        vm.expectRevert(TdxVerifier.Frozen.selector);
+        verifier.revokeImage(key);
+    }
+
+    function test_freeze_onlyOwner() public {
+        vm.prank(address(0xdead));
+        vm.expectRevert(TdxVerifier.Unauthorized.selector);
+        verifier.freeze();
+    }
+
+    function test_freeze_emitsEvent() public {
+        vm.expectEmit(false, false, false, true);
+        emit TdxVerifier.PermissionFrozen("images");
+        verifier.freeze();
+    }
+
+    function test_freeze_idempotent() public {
+        verifier.freeze();
+        verifier.freeze(); // should not revert
+        assertTrue(verifier.frozenImages());
+    }
+
+    function test_freeze_verification_still_works() public {
+        // Approve an image, then freeze
+        _setupApprovedImage1();
+        verifier.freeze();
+
+        // Verification should still work (freeze only blocks registry changes)
+        bytes32 inputHash = bytes32(uint256(0x1));
+        bytes32 outputHash = bytes32(uint256(0x2));
+        _setupMockOutput(MRTD_1, RTMR0_1, RTMR1_1, RTMR2_1, inputHash, outputHash);
+        assertTrue(verifier.verify(inputHash, outputHash, bytes("quote")));
     }
 }

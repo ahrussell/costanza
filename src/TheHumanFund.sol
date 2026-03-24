@@ -23,6 +23,7 @@ contract TheHumanFund {
     error TransferFailed();
     error AlreadyDone();
     error ProofFailed();
+    error Frozen();
 
     // ─── Types ───────────────────────────────────────────────────────────
 
@@ -112,7 +113,11 @@ contract TheHumanFund {
     event EpochExecuted(uint256 indexed epoch, address indexed runner, uint256 bountyPaid);
     event BondForfeited(uint256 indexed epoch, address indexed runner, uint256 bondAmount);
     event AuctionModeChanged(bool enabled);
-    event ActionRejected(uint256 indexed epoch, bytes action, string reason);
+    event ActionRejected(uint256 indexed epoch, bytes action, uint8 reason);
+    // ActionRejected reason codes:
+    // 1 = empty, 2 = malformed, 3 = out_of_bounds, 4 = invest_err,
+    // 5 = invest_fail, 6 = withdraw_err, 7 = withdraw_fail,
+    // 8 = policy_err, 9 = policy_fail, 10 = unknown_type
     event MessageReceived(address indexed sender, uint256 amount, uint256 indexed messageId);
 
     // ─── Constants ───────────────────────────────────────────────────────
@@ -222,6 +227,19 @@ contract TheHumanFund {
     mapping(uint256 => mapping(address => bool)) public hasRevealed;   // epoch -> runner -> revealed?
     mapping(uint256 => address[]) internal epochCommitters;            // epoch -> list of committers (for refunds)
 
+    // Kill switches — bitmask flags, once set permanently disable the corresponding methods.
+    uint256 public constant FREEZE_NONPROFITS          = 1 << 0;
+    uint256 public constant FREEZE_INVESTMENT_WIRING   = 1 << 1;
+    uint256 public constant FREEZE_WORLDVIEW_WIRING    = 1 << 2;
+    uint256 public constant FREEZE_AUCTION_CONFIG      = 1 << 3;
+    uint256 public constant FREEZE_VERIFIERS           = 1 << 4;
+    uint256 public constant FREEZE_PROMPT              = 1 << 5;
+    uint256 public constant FREEZE_DIRECT_MODE         = 1 << 6;
+    uint256 public constant FREEZE_EMERGENCY_WITHDRAWAL = 1 << 7;
+    uint256 public frozenFlags;
+
+    event PermissionFrozen(uint256 indexed flag);
+
     // ─── Modifiers ───────────────────────────────────────────────────────
 
     modifier onlyOwner() {
@@ -277,6 +295,7 @@ contract TheHumanFund {
         string calldata _description,
         bytes32 _ein
     ) external onlyOwner returns (uint256 id) {
+        if (frozenFlags & FREEZE_NONPROFITS != 0) revert Frozen();
         if (nonprofitCount >= MAX_NONPROFITS) revert InvalidParams();
         if (_ein == bytes32(0)) revert InvalidParams();
         id = ++nonprofitCount;
@@ -379,29 +398,18 @@ contract TheHumanFund {
 
     // ─── Owner: Direct Epoch Submission ───────────────────────────────────
 
-    /// @notice Submit the AI agent's action for the current epoch.
-    /// @dev Owner-only direct submission (no auction, no proof required).
-    /// @param action The encoded action blob.
-    /// @param reasoning The agent's chain-of-thought reasoning.
-    function submitEpochAction(bytes calldata action, bytes calldata reasoning) external onlyOwner {
-        if (auctionEnabled) revert WrongPhase();
-        uint256 epoch = currentEpoch;
-        if (epochs[epoch].executed) revert AlreadyDone();
-        _snapshotEthUsdPrice();
-        _recordAndExecute(epoch, action, reasoning, 0);
-    }
-
     /// @notice Submit the AI agent's action with an optional worldview update.
     /// @param action The encoded action blob.
     /// @param reasoning The agent's chain-of-thought reasoning.
     /// @param policySlot The worldview slot to update (0-9), or -1 to skip.
     /// @param policyText The policy text (max 280 chars). Ignored if policySlot is -1.
-    function submitEpochActionWithPolicy(
+    function submitEpochAction(
         bytes calldata action,
         bytes calldata reasoning,
         int8 policySlot,
         string calldata policyText
     ) external onlyOwner {
+        if (frozenFlags & FREEZE_DIRECT_MODE != 0) revert Frozen();
         if (auctionEnabled) revert WrongPhase();
         uint256 epoch = currentEpoch;
         if (epochs[epoch].executed) revert AlreadyDone();
@@ -412,6 +420,7 @@ contract TheHumanFund {
 
     /// @notice Skip the current epoch (no runner bid or missed deadline).
     function skipEpoch() external onlyOwner {
+        if (frozenFlags & FREEZE_DIRECT_MODE != 0) revert Frozen();
         if (auctionEnabled) revert WrongPhase();
         uint256 epoch = currentEpoch;
         if (epochs[epoch].executed) revert AlreadyDone();
@@ -434,6 +443,7 @@ contract TheHumanFund {
     /// @param id Verifier ID (1+ recommended; 0 is valid but unusual).
     /// @param _verifier The IProofVerifier contract address.
     function approveVerifier(uint8 id, address _verifier) external onlyOwner {
+        if (frozenFlags & FREEZE_VERIFIERS != 0) revert Frozen();
         if (_verifier == address(0)) revert InvalidParams();
         verifiers[id] = IProofVerifier(_verifier);
         emit VerifierApproved(id, _verifier);
@@ -441,6 +451,7 @@ contract TheHumanFund {
 
     /// @notice Remove a proof verifier from the registry.
     function revokeVerifier(uint8 id) external onlyOwner {
+        if (frozenFlags & FREEZE_VERIFIERS != 0) revert Frozen();
         if (address(verifiers[id]) == address(0)) revert InvalidParams();
         delete verifiers[id];
         emit VerifierRevoked(id);
@@ -448,10 +459,29 @@ contract TheHumanFund {
 
     /// @notice Set the investment manager contract address.
     function setInvestmentManager(address _im) external onlyOwner {
+        if (frozenFlags & FREEZE_INVESTMENT_WIRING != 0) revert Frozen();
         investmentManager = IInvestmentManager(_im);
     }
 
+    /// @notice Withdraw all DeFi positions and transfer entire treasury to owner.
+    /// @dev Emergency shutdown: unwinds all investments, sends everything to owner.
+    function withdrawAll() external onlyOwner {
+        if (frozenFlags & FREEZE_EMERGENCY_WITHDRAWAL != 0) revert Frozen();
+        // Unwind all DeFi positions — ETH sent directly to owner
+        if (address(investmentManager) != address(0)) {
+            investmentManager.withdrawAll(owner);
+        }
+
+        // Transfer remaining liquid balance to owner
+        uint256 bal = address(this).balance;
+        if (bal > 0) {
+            (bool sent, ) = owner.call{value: bal}("");
+            if (!sent) revert TransferFailed();
+        }
+    }
+
     function setWorldView(address _wv) external onlyOwner {
+        if (frozenFlags & FREEZE_WORLDVIEW_WIRING != 0) revert Frozen();
         worldView = IWorldView(_wv);
     }
 
@@ -459,17 +489,36 @@ contract TheHumanFund {
     /// @dev The TEE hashes the prompt it receives and includes it in REPORTDATA.
     ///      The contract verifies it matches this value during auction settlement.
     function setApprovedPromptHash(bytes32 _hash) external onlyOwner {
+        if (frozenFlags & FREEZE_PROMPT != 0) revert Frozen();
         approvedPromptHash = _hash;
     }
 
     /// @notice Seed multiple worldview policies at once. Only callable by owner.
     /// @dev Intended for initial setup before the fund goes live.
     function seedWorldView(uint256[] calldata slots, string[] calldata policies) external onlyOwner {
+        if (frozenFlags & FREEZE_WORLDVIEW_WIRING != 0) revert Frozen();
         require(address(worldView) != address(0), "no worldview");
         require(slots.length == policies.length, "length mismatch");
         for (uint256 i = 0; i < slots.length; i++) {
             worldView.setPolicy(slots[i], policies[i]);
         }
+    }
+
+    // ─── Kill Switches ────────────────────────────────────────────────────
+
+    /// @notice Permanently freeze a permission group. Once frozen, methods guarded
+    ///         by that flag will revert with Frozen(). Cannot be undone.
+    /// @param flag The permission flag (e.g., FREEZE_NONPROFITS, FREEZE_DIRECT_MODE).
+    function freeze(uint256 flag) external onlyOwner {
+        frozenFlags |= flag;
+        emit PermissionFrozen(flag);
+    }
+
+    /// @notice Freeze a specific verifier's internal state (e.g., image registry).
+    /// @dev Calls freeze() on the verifier contract via IProofVerifier interface.
+    function freezeVerifier(uint8 id) external onlyOwner {
+        if (address(verifiers[id]) == address(0)) revert InvalidParams();
+        verifiers[id].freeze();
     }
 
     // ─── Reverse Auction ──────────────────────────────────────────────────
@@ -478,6 +527,7 @@ contract TheHumanFund {
     /// @dev When enabled, owner-only direct submission functions are blocked.
     ///      Epochs are managed through the auction lifecycle instead.
     function setAuctionEnabled(bool enabled) external onlyOwner {
+        if (frozenFlags & FREEZE_AUCTION_CONFIG != 0) revert Frozen();
         auctionEnabled = enabled;
         emit AuctionModeChanged(enabled);
     }
@@ -493,6 +543,7 @@ contract TheHumanFund {
         uint256 _revealWindow,
         uint256 _executionWindow
     ) external onlyOwner {
+        if (frozenFlags & FREEZE_AUCTION_CONFIG != 0) revert Frozen();
         if (_commitWindow + _revealWindow + _executionWindow > _epochDuration) revert InvalidParams();
         if (_commitWindow == 0 || _revealWindow == 0 || _executionWindow == 0) revert InvalidParams();
         epochDuration = _epochDuration;
@@ -875,7 +926,7 @@ contract TheHumanFund {
     ///      history so future prompts can see what was attempted.
     function _executeAction(uint256 epoch, bytes calldata action) internal {
         if (action.length < 1) {
-            emit ActionRejected(epoch, action, "empty");
+            emit ActionRejected(epoch, action, 1);
             return;
         }
 
@@ -887,61 +938,61 @@ contract TheHumanFund {
         } else if (actionType == 1) {
             // donate
             if (action.length < 65) {
-                emit ActionRejected(epoch, action, "malformed");
+                emit ActionRejected(epoch, action, 2);
                 return;
             }
             (uint256 nonprofitId, uint256 amount) = abi.decode(action[1:], (uint256, uint256));
             if (!_executeDonate(epoch, nonprofitId, amount)) {
-                emit ActionRejected(epoch, action, "out_of_bounds");
+                emit ActionRejected(epoch, action, 3);
             }
         } else if (actionType == 2) {
             // set_commission_rate
             if (action.length < 33) {
-                emit ActionRejected(epoch, action, "malformed");
+                emit ActionRejected(epoch, action, 2);
                 return;
             }
             uint256 rateBps = abi.decode(action[1:], (uint256));
             if (!_executeSetCommissionRate(epoch, rateBps)) {
-                emit ActionRejected(epoch, action, "out_of_bounds");
+                emit ActionRejected(epoch, action, 3);
             }
         } else if (actionType == 3) {
             // set_max_bid
             if (action.length < 33) {
-                emit ActionRejected(epoch, action, "malformed");
+                emit ActionRejected(epoch, action, 2);
                 return;
             }
             uint256 amount = abi.decode(action[1:], (uint256));
             if (!_executeSetMaxBid(epoch, amount)) {
-                emit ActionRejected(epoch, action, "out_of_bounds");
+                emit ActionRejected(epoch, action, 3);
             }
         } else if (actionType == 4) {
             // invest — delegate to InvestmentManager
             if (action.length < 65 || address(investmentManager) == address(0)) {
-                emit ActionRejected(epoch, action, "invest_err");
+                emit ActionRejected(epoch, action, 4);
                 return;
             }
             (uint256 pid, uint256 amt) = abi.decode(action[1:], (uint256, uint256));
             try investmentManager.deposit{value: amt}(pid, amt) {
                 // success
             } catch {
-                emit ActionRejected(epoch, action, "invest_fail");
+                emit ActionRejected(epoch, action, 5);
             }
         } else if (actionType == 5) {
             // withdraw — delegate to InvestmentManager
             if (action.length < 65 || address(investmentManager) == address(0)) {
-                emit ActionRejected(epoch, action, "withdraw_err");
+                emit ActionRejected(epoch, action, 6);
                 return;
             }
             (uint256 pid, uint256 amt) = abi.decode(action[1:], (uint256, uint256));
             try investmentManager.withdraw(pid, amt) {
                 // success — ETH comes back to this contract via receive()
             } catch {
-                emit ActionRejected(epoch, action, "withdraw_fail");
+                emit ActionRejected(epoch, action, 7);
             }
         } else if (actionType == 6) {
             // set_guiding_policy — delegate to WorldView contract
             if (action.length < 33 || address(worldView) == address(0)) {
-                emit ActionRejected(epoch, action, "policy_err");
+                emit ActionRejected(epoch, action, 8);
                 return;
             }
             // Forward raw ABI-encoded (uint256 slot, string policy) to WorldView
@@ -949,10 +1000,10 @@ contract TheHumanFund {
                 abi.encodePacked(IWorldView.setPolicy.selector, action[1:])
             );
             if (!ok) {
-                emit ActionRejected(epoch, action, "policy_fail");
+                emit ActionRejected(epoch, action, 9);
             }
         } else {
-            emit ActionRejected(epoch, action, "unknown_type");
+            emit ActionRejected(epoch, action, 10);
         }
     }
 

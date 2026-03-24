@@ -123,7 +123,7 @@ contract InvestmentManagerTest is Test {
     function test_deposit() public {
         // Fund submits an invest action (action type 4)
         bytes memory action = abi.encodePacked(uint8(4), abi.encode(uint256(1), uint256(1 ether)));
-        fund.submitEpochAction(action, "test invest");
+        fund.submitEpochAction(action, "test invest", -1, "");
 
         // Check position
         (uint256 deposited, uint256 shares, uint256 value, , , , ) = im.getPosition(1);
@@ -135,11 +135,11 @@ contract InvestmentManagerTest is Test {
     function test_depositMultipleProtocols() public {
         // Invest in protocol 1
         bytes memory action1 = abi.encodePacked(uint8(4), abi.encode(uint256(1), uint256(1 ether)));
-        fund.submitEpochAction(action1, "invest 1");
+        fund.submitEpochAction(action1, "invest 1", -1, "");
 
         // Invest in protocol 2
         bytes memory action2 = abi.encodePacked(uint8(4), abi.encode(uint256(2), uint256(0.5 ether)));
-        fund.submitEpochAction(action2, "invest 2");
+        fund.submitEpochAction(action2, "invest 2", -1, "");
 
         assertEq(im.totalInvestedValue(), 1.5 ether);
     }
@@ -149,7 +149,7 @@ contract InvestmentManagerTest is Test {
         // Try to invest 9 ETH — should fail silently (noop via try/catch)
         bytes memory action = abi.encodePacked(uint8(4), abi.encode(uint256(1), uint256(9 ether)));
         uint256 balBefore = address(fund).balance;
-        fund.submitEpochAction(action, "too much");
+        fund.submitEpochAction(action, "too much", -1, "");
 
         // Fund balance should be unchanged (action was rejected)
         assertEq(address(fund).balance, balBefore);
@@ -161,7 +161,7 @@ contract InvestmentManagerTest is Test {
         // Try to invest 3 ETH in one protocol
         bytes memory action = abi.encodePacked(uint8(4), abi.encode(uint256(1), uint256(3 ether)));
         uint256 balBefore = address(fund).balance;
-        fund.submitEpochAction(action, "too much per protocol");
+        fund.submitEpochAction(action, "too much per protocol", -1, "");
 
         assertEq(address(fund).balance, balBefore);
     }
@@ -170,20 +170,20 @@ contract InvestmentManagerTest is Test {
         // Min reserve is 20%. If treasury is 10 ETH, min liquid = 2 ETH.
         // If we invest 2 ETH first (ok), then try another 7 ETH (would leave only 1 ETH)
         bytes memory action1 = abi.encodePacked(uint8(4), abi.encode(uint256(1), uint256(2 ether)));
-        fund.submitEpochAction(action1, "invest ok");
+        fund.submitEpochAction(action1, "invest ok", -1, "");
         assertEq(im.totalInvestedValue(), 2 ether);
 
         // Now try 7 ETH more — total invested would be 9 ETH, fund has 1 ETH = 10% < 20%
         bytes memory action2 = abi.encodePacked(uint8(4), abi.encode(uint256(2), uint256(7 ether)));
         uint256 balBefore = address(fund).balance;
-        fund.submitEpochAction(action2, "breaks reserve");
+        fund.submitEpochAction(action2, "breaks reserve", -1, "");
         assertEq(address(fund).balance, balBefore); // unchanged
     }
 
     function test_depositToInvalidProtocol() public {
         bytes memory action = abi.encodePacked(uint8(4), abi.encode(uint256(99), uint256(1 ether)));
         uint256 balBefore = address(fund).balance;
-        fund.submitEpochAction(action, "bad protocol");
+        fund.submitEpochAction(action, "bad protocol", -1, "");
         assertEq(address(fund).balance, balBefore); // noop
     }
 
@@ -193,7 +193,7 @@ contract InvestmentManagerTest is Test {
 
         bytes memory action = abi.encodePacked(uint8(4), abi.encode(uint256(1), uint256(1 ether)));
         uint256 balBefore = address(fund).balance;
-        fund.submitEpochAction(action, "paused protocol");
+        fund.submitEpochAction(action, "paused protocol", -1, "");
         assertEq(address(fund).balance, balBefore); // noop
     }
 
@@ -202,7 +202,7 @@ contract InvestmentManagerTest is Test {
     function test_withdraw() public {
         // Invest first
         bytes memory invest = abi.encodePacked(uint8(4), abi.encode(uint256(1), uint256(2 ether)));
-        fund.submitEpochAction(invest, "invest");
+        fund.submitEpochAction(invest, "invest", -1, "");
         assertEq(im.totalInvestedValue(), 2 ether);
 
         // Fund the adapter so it can pay out
@@ -211,7 +211,7 @@ contract InvestmentManagerTest is Test {
         // Withdraw
         uint256 balBefore = address(fund).balance;
         bytes memory withdraw_ = abi.encodePacked(uint8(5), abi.encode(uint256(1), uint256(1 ether)));
-        fund.submitEpochAction(withdraw_, "withdraw");
+        fund.submitEpochAction(withdraw_, "withdraw", -1, "");
 
         // Fund balance should increase by ~1 ETH
         assertGt(address(fund).balance, balBefore);
@@ -220,13 +220,13 @@ contract InvestmentManagerTest is Test {
 
     function test_withdrawAll() public {
         bytes memory invest = abi.encodePacked(uint8(4), abi.encode(uint256(1), uint256(2 ether)));
-        fund.submitEpochAction(invest, "invest");
+        fund.submitEpochAction(invest, "invest", -1, "");
 
         vm.deal(address(adapterA), 2 ether);
 
         // Withdraw more than balance — should withdraw everything
         bytes memory withdraw_ = abi.encodePacked(uint8(5), abi.encode(uint256(1), uint256(10 ether)));
-        fund.submitEpochAction(withdraw_, "withdraw all");
+        fund.submitEpochAction(withdraw_, "withdraw all", -1, "");
 
         (uint256 deposited, uint256 shares, , , , , ) = im.getPosition(1);
         assertEq(shares, 0);
@@ -237,14 +237,14 @@ contract InvestmentManagerTest is Test {
         // Try to withdraw when nothing invested — should noop
         bytes memory action = abi.encodePacked(uint8(5), abi.encode(uint256(1), uint256(1 ether)));
         uint256 balBefore = address(fund).balance;
-        fund.submitEpochAction(action, "withdraw empty");
+        fund.submitEpochAction(action, "withdraw empty", -1, "");
         assertEq(address(fund).balance, balBefore);
     }
 
     function test_withdrawFromPausedProtocolStillWorks() public {
         // Invest
         bytes memory invest = abi.encodePacked(uint8(4), abi.encode(uint256(1), uint256(1 ether)));
-        fund.submitEpochAction(invest, "invest");
+        fund.submitEpochAction(invest, "invest", -1, "");
 
         // Pause protocol
         vm.prank(admin);
@@ -256,7 +256,7 @@ contract InvestmentManagerTest is Test {
         // Withdraw should still work even though protocol is paused
         bytes memory withdraw_ = abi.encodePacked(uint8(5), abi.encode(uint256(1), uint256(1 ether)));
         uint256 balBefore = address(fund).balance;
-        fund.submitEpochAction(withdraw_, "withdraw from paused");
+        fund.submitEpochAction(withdraw_, "withdraw from paused", -1, "");
         assertGt(address(fund).balance, balBefore);
     }
 
@@ -264,7 +264,7 @@ contract InvestmentManagerTest is Test {
 
     function test_valueWithGains() public {
         bytes memory invest = abi.encodePacked(uint8(4), abi.encode(uint256(1), uint256(2 ether)));
-        fund.submitEpochAction(invest, "invest");
+        fund.submitEpochAction(invest, "invest", -1, "");
 
         // Simulate 10% gain
         adapterA.setExchangeRate(11000);
@@ -276,7 +276,7 @@ contract InvestmentManagerTest is Test {
 
     function test_valueWithLoss() public {
         bytes memory invest = abi.encodePacked(uint8(4), abi.encode(uint256(1), uint256(2 ether)));
-        fund.submitEpochAction(invest, "invest");
+        fund.submitEpochAction(invest, "invest", -1, "");
 
         // Simulate 20% loss
         adapterA.setExchangeRate(8000);
@@ -289,7 +289,7 @@ contract InvestmentManagerTest is Test {
 
     function test_stateHashDeterministic() public {
         bytes memory invest = abi.encodePacked(uint8(4), abi.encode(uint256(1), uint256(1 ether)));
-        fund.submitEpochAction(invest, "invest");
+        fund.submitEpochAction(invest, "invest", -1, "");
 
         bytes32 hash1 = im.stateHash();
         bytes32 hash2 = im.stateHash();
@@ -300,7 +300,7 @@ contract InvestmentManagerTest is Test {
         bytes32 hashBefore = im.stateHash();
 
         bytes memory invest = abi.encodePacked(uint8(4), abi.encode(uint256(1), uint256(1 ether)));
-        fund.submitEpochAction(invest, "invest");
+        fund.submitEpochAction(invest, "invest", -1, "");
 
         bytes32 hashAfter = im.stateHash();
         assertTrue(hashBefore != hashAfter);
@@ -312,7 +312,7 @@ contract InvestmentManagerTest is Test {
         assertEq(fund.totalAssets(), 10 ether);
 
         bytes memory invest = abi.encodePacked(uint8(4), abi.encode(uint256(1), uint256(2 ether)));
-        fund.submitEpochAction(invest, "invest");
+        fund.submitEpochAction(invest, "invest", -1, "");
 
         // Total assets should still be 10 ETH (8 liquid + 2 invested)
         assertEq(fund.totalAssets(), 10 ether);
@@ -329,7 +329,7 @@ contract InvestmentManagerTest is Test {
 
         bytes memory action = abi.encodePacked(uint8(4), abi.encode(uint256(1), uint256(0.1 ether)));
         uint256 balBefore = address(fund2).balance;
-        fund2.submitEpochAction(action, "invest without IM");
+        fund2.submitEpochAction(action, "invest without IM", -1, "");
         assertEq(address(fund2).balance, balBefore); // noop
     }
 
@@ -359,5 +359,133 @@ contract InvestmentManagerTest is Test {
     function test_onlyFundCanWithdraw() public {
         vm.expectRevert(InvestmentManager.Unauthorized.selector);
         im.withdraw(1, 1 ether);
+    }
+
+    // Accept ETH (owner is this test contract, needed for withdrawAll)
+    receive() external payable {}
+
+    // ─── WithdrawAll ──────────────────────────────────────────────────────
+
+    function test_withdrawAll_basic() public {
+        // Invest in two protocols
+        bytes memory action1 = abi.encodePacked(uint8(4), abi.encode(uint256(1), uint256(2 ether)));
+        fund.submitEpochAction(action1, "invest 1", -1, "");
+        bytes memory action2 = abi.encodePacked(uint8(4), abi.encode(uint256(2), uint256(1 ether)));
+        fund.submitEpochAction(action2, "invest 2", -1, "");
+
+        assertEq(im.totalInvestedValue(), 3 ether);
+
+        // Fund adapters so they can pay out
+        vm.deal(address(adapterA), 2 ether);
+        vm.deal(address(adapterB), 1 ether);
+
+        uint256 ownerBalBefore = address(owner).balance;
+        fund.withdrawAll();
+
+        // All positions should be zeroed
+        (uint256 dep1, uint256 sh1, , , , , ) = im.getPosition(1);
+        (uint256 dep2, uint256 sh2, , , , , ) = im.getPosition(2);
+        assertEq(sh1, 0);
+        assertEq(dep1, 0);
+        assertEq(sh2, 0);
+        assertEq(dep2, 0);
+        assertEq(im.totalInvestedValue(), 0);
+
+        // Owner should have received everything (invested ETH + liquid treasury)
+        assertGt(address(owner).balance, ownerBalBefore);
+        assertEq(address(fund).balance, 0);
+    }
+
+    function test_withdrawAll_noInvestments() public {
+        // withdrawAll with no investments should still send liquid balance to owner
+        uint256 ownerBalBefore = address(owner).balance;
+        uint256 fundBal = address(fund).balance;
+        assertGt(fundBal, 0);
+
+        fund.withdrawAll();
+
+        assertEq(address(fund).balance, 0);
+        assertEq(address(owner).balance, ownerBalBefore + fundBal);
+    }
+
+    function test_withdrawAll_onlyOwner() public {
+        vm.prank(address(0xDEAD));
+        vm.expectRevert(TheHumanFund.Unauthorized.selector);
+        fund.withdrawAll();
+    }
+
+    function test_withdrawAll_withGains() public {
+        // Invest 2 ETH
+        bytes memory action = abi.encodePacked(uint8(4), abi.encode(uint256(1), uint256(2 ether)));
+        fund.submitEpochAction(action, "invest", -1, "");
+
+        // Simulate 50% gain
+        adapterA.setExchangeRate(15000);
+        vm.deal(address(adapterA), 3 ether); // fund adapter with enough to pay out gains
+
+        uint256 ownerBalBefore = address(owner).balance;
+        fund.withdrawAll();
+
+        // Owner gets: 3 ETH from investment (2 * 1.5) + 8 ETH liquid = 11 ETH
+        uint256 received = address(owner).balance - ownerBalBefore;
+        assertEq(received, 11 ether);
+    }
+
+    function test_withdrawAll_skipsEmptyProtocols() public {
+        // Only invest in protocol 1, leave 2 and 3 empty
+        bytes memory action = abi.encodePacked(uint8(4), abi.encode(uint256(1), uint256(1 ether)));
+        fund.submitEpochAction(action, "invest", -1, "");
+        vm.deal(address(adapterA), 1 ether);
+
+        // Should succeed without reverting on empty protocols
+        fund.withdrawAll();
+        assertEq(address(fund).balance, 0);
+        assertEq(im.totalInvestedValue(), 0);
+    }
+
+    // ─── Kill Switches ────────────────────────────────────────────────────
+
+    function test_freezeInvestments() public {
+        vm.prank(admin);
+        im.freezeInvestments();
+        assertTrue(im.frozenInvestments());
+
+        vm.startPrank(admin);
+        vm.expectRevert(InvestmentManager.Frozen.selector);
+        im.addProtocol(address(adapterA), "New", "New protocol", 1, 100);
+
+        vm.expectRevert(InvestmentManager.Frozen.selector);
+        im.setProtocolActive(1, false);
+
+        vm.expectRevert(InvestmentManager.Frozen.selector);
+        im.setBounds(7000, 3000, 3000);
+        vm.stopPrank();
+    }
+
+    function test_freezeInvestments_onlyAdmin() public {
+        vm.expectRevert(InvestmentManager.Unauthorized.selector);
+        im.freezeInvestments();
+    }
+
+    function test_freezeInvestments_emitsEvent() public {
+        vm.prank(admin);
+        vm.expectEmit(false, false, false, true);
+        emit InvestmentManager.PermissionFrozen("investments");
+        im.freezeInvestments();
+    }
+
+    function test_freezeAdmin() public {
+        vm.prank(admin);
+        im.freezeAdmin();
+        assertTrue(im.frozenAdmin());
+
+        vm.prank(admin);
+        vm.expectRevert(InvestmentManager.Frozen.selector);
+        im.setAdmin(address(0x1234));
+    }
+
+    function test_freezeAdmin_onlyAdmin() public {
+        vm.expectRevert(InvestmentManager.Unauthorized.selector);
+        im.freezeAdmin();
     }
 }

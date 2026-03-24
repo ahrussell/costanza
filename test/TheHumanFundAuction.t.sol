@@ -50,7 +50,7 @@ contract TheHumanFundAuctionTest is Test {
 
         // Deploy attestation verifier with mock DCAP
         mockDcap = new AuctionMockDcapVerifier();
-        verifier = new TdxVerifier();
+        verifier = new TdxVerifier(address(fund));
         vm.etch(address(0xaDdeC7e85c2182202b66E331f2a4A0bBB2cEEa1F), address(mockDcap).code);
 
         bytes32 imageKey = keccak256(abi.encodePacked(TEST_RTMR1, TEST_RTMR2));
@@ -510,17 +510,19 @@ contract TheHumanFundAuctionTest is Test {
         assertEq(fund.currentBond(), 0.001 ether);
 
         // Miss epoch 1
+        uint256 t0 = block.timestamp;
         fund.startEpoch();
-        vm.warp(block.timestamp + COMMIT_WIN);
+        vm.warp(t0 + COMMIT_WIN);
         fund.closeCommit();
 
         assertEq(fund.consecutiveMissedEpochs(), 1);
         assertEq(fund.currentBond(), 0.0011 ether); // 0.001 * 1.1
 
         // Miss epoch 2
-        vm.warp(block.timestamp + EPOCH_DUR);
+        uint256 t1 = t0 + EPOCH_DUR;
+        vm.warp(t1);
         fund.startEpoch();
-        vm.warp(block.timestamp + COMMIT_WIN);
+        vm.warp(t1 + COMMIT_WIN);
         fund.closeCommit();
 
         assertEq(fund.consecutiveMissedEpochs(), 2);
@@ -554,12 +556,12 @@ contract TheHumanFundAuctionTest is Test {
 
     function test_phase0_blocked_when_auction_enabled() public {
         vm.expectRevert(TheHumanFund.WrongPhase.selector);
-        fund.submitEpochAction(_noopAction(), bytes("nope"));
+        fund.submitEpochAction(_noopAction(), bytes("nope"), -1, "");
     }
 
     function test_phase0_works_when_auction_disabled() public {
         fund.setAuctionEnabled(false);
-        fund.submitEpochAction(_noopAction(), bytes("back to phase 0"));
+        fund.submitEpochAction(_noopAction(), bytes("back to phase 0"), -1, "");
         assertEq(fund.currentEpoch(), 2);
     }
 
@@ -663,11 +665,11 @@ contract TheHumanFundAuctionTest is Test {
     function test_epoch_content_hashes_accumulate() public {
         fund.setAuctionEnabled(false);
 
-        fund.submitEpochAction(_noopAction(), bytes("First"));
+        fund.submitEpochAction(_noopAction(), bytes("First"), -1, "");
         bytes32 hash1 = fund.epochContentHashes(1);
         assertTrue(hash1 != bytes32(0));
 
-        fund.submitEpochAction(_noopAction(), bytes("Second"));
+        fund.submitEpochAction(_noopAction(), bytes("Second"), -1, "");
         bytes32 hash2 = fund.epochContentHashes(2);
         assertTrue(hash2 != bytes32(0));
         assertTrue(hash1 != hash2);
@@ -675,10 +677,10 @@ contract TheHumanFundAuctionTest is Test {
 
     function test_epoch_content_hash_in_input_hash() public {
         fund.setAuctionEnabled(false);
-        fund.submitEpochAction(_noopAction(), bytes("reasoning"));
+        fund.submitEpochAction(_noopAction(), bytes("reasoning"), -1, "");
         bytes32 hashBefore = fund.computeInputHash();
 
-        fund.submitEpochAction(_noopAction(), bytes("more reasoning"));
+        fund.submitEpochAction(_noopAction(), bytes("more reasoning"), -1, "");
         bytes32 hashAfter = fund.computeInputHash();
 
         assertTrue(hashBefore != hashAfter);

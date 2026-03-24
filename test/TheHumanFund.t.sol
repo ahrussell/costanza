@@ -132,7 +132,7 @@ contract TheHumanFundTest is Test {
         bytes memory action = abi.encodePacked(uint8(0));
         bytes memory reasoning = bytes("I decided to do nothing this epoch.");
 
-        fund.submitEpochAction(action, reasoning);
+        fund.submitEpochAction(action, reasoning, -1, "");
 
         assertEq(fund.currentEpoch(), 2);
         assertEq(fund.treasuryBalance(), 5 ether); // unchanged
@@ -145,7 +145,7 @@ contract TheHumanFundTest is Test {
         bytes memory action = abi.encodePacked(uint8(1), abi.encode(uint256(1), uint256(0.5 ether)));
         bytes memory reasoning = bytes("Donating to GiveDirectly.");
 
-        fund.submitEpochAction(action, reasoning);
+        fund.submitEpochAction(action, reasoning, -1, "");
 
         assertEq(fund.currentEpoch(), 2);
         assertEq(fund.treasuryBalance(), 4.5 ether);
@@ -162,7 +162,7 @@ contract TheHumanFundTest is Test {
         bytes memory reasoning = bytes("Trying to donate too much.");
 
         uint256 treasuryBefore = fund.treasuryBalance();
-        fund.submitEpochAction(action, reasoning);
+        fund.submitEpochAction(action, reasoning, -1, "");
 
         // Epoch advances but treasury unchanged (noop)
         assertEq(fund.currentEpoch(), 2);
@@ -175,7 +175,7 @@ contract TheHumanFundTest is Test {
         bytes memory reasoning = bytes("Bad nonprofit.");
 
         uint256 treasuryBefore = fund.treasuryBalance();
-        fund.submitEpochAction(action, reasoning);
+        fund.submitEpochAction(action, reasoning, -1, "");
 
         assertEq(fund.currentEpoch(), 2);
         assertEq(fund.treasuryBalance(), treasuryBefore);
@@ -187,7 +187,7 @@ contract TheHumanFundTest is Test {
         bytes memory action = abi.encodePacked(uint8(2), abi.encode(uint256(2500)));
         bytes memory reasoning = bytes("Raising commission to attract referrers.");
 
-        fund.submitEpochAction(action, reasoning);
+        fund.submitEpochAction(action, reasoning, -1, "");
 
         assertEq(fund.commissionRateBps(), 2500);
         assertEq(fund.lastCommissionChangeEpoch(), 1);
@@ -198,13 +198,13 @@ contract TheHumanFundTest is Test {
 
         // Too low — should noop
         bytes memory action = abi.encodePacked(uint8(2), abi.encode(uint256(50)));
-        fund.submitEpochAction(action, bytes("rate too low"));
+        fund.submitEpochAction(action, bytes("rate too low"), -1, "");
         assertEq(fund.commissionRateBps(), originalRate);
         assertEq(fund.currentEpoch(), 2);
 
         // Too high — should noop
         action = abi.encodePacked(uint8(2), abi.encode(uint256(9500)));
-        fund.submitEpochAction(action, bytes("rate too high"));
+        fund.submitEpochAction(action, bytes("rate too high"), -1, "");
         assertEq(fund.commissionRateBps(), originalRate);
         assertEq(fund.currentEpoch(), 3);
     }
@@ -215,7 +215,7 @@ contract TheHumanFundTest is Test {
         bytes memory action = abi.encodePacked(uint8(3), abi.encode(uint256(0.01 ether)));
         bytes memory reasoning = bytes("Increasing bid ceiling.");
 
-        fund.submitEpochAction(action, reasoning);
+        fund.submitEpochAction(action, reasoning, -1, "");
 
         assertEq(fund.maxBid(), 0.01 ether);
     }
@@ -223,7 +223,7 @@ contract TheHumanFundTest is Test {
     function test_set_max_bid_too_low_becomes_noop() public {
         uint256 originalBid = fund.maxBid();
         bytes memory action = abi.encodePacked(uint8(3), abi.encode(uint256(0.00005 ether)));
-        fund.submitEpochAction(action, bytes("bid too low"));
+        fund.submitEpochAction(action, bytes("bid too low"), -1, "");
 
         assertEq(fund.maxBid(), originalBid);
         assertEq(fund.currentEpoch(), 2);
@@ -233,7 +233,7 @@ contract TheHumanFundTest is Test {
         // 2% of 5 ETH = 0.1 ETH. Try 0.15 ETH — should noop.
         uint256 originalBid = fund.maxBid();
         bytes memory action = abi.encodePacked(uint8(3), abi.encode(uint256(0.15 ether)));
-        fund.submitEpochAction(action, bytes("bid too high"));
+        fund.submitEpochAction(action, bytes("bid too high"), -1, "");
 
         assertEq(fund.maxBid(), originalBid);
         assertEq(fund.currentEpoch(), 2);
@@ -243,7 +243,7 @@ contract TheHumanFundTest is Test {
 
     function test_epoch_advances_prevents_double_execution() public {
         bytes memory action = abi.encodePacked(uint8(0));
-        fund.submitEpochAction(action, bytes("first"));
+        fund.submitEpochAction(action, bytes("first"), -1, "");
 
         // After execution, epoch advances (1 → 2), so the next call acts on epoch 2.
         // The contract prevents double-execution by design: each submitEpochAction
@@ -258,9 +258,9 @@ contract TheHumanFundTest is Test {
     function test_epoch_advances() public {
         bytes memory action = abi.encodePacked(uint8(0));
 
-        fund.submitEpochAction(action, bytes("epoch 1")); // epoch 1 → 2
-        fund.submitEpochAction(action, bytes("epoch 2")); // epoch 2 → 3
-        fund.submitEpochAction(action, bytes("epoch 3")); // epoch 3 → 4
+        fund.submitEpochAction(action, bytes("epoch 1"), -1, ""); // epoch 1 → 2
+        fund.submitEpochAction(action, bytes("epoch 2"), -1, ""); // epoch 2 → 3
+        fund.submitEpochAction(action, bytes("epoch 3"), -1, ""); // epoch 3 → 4
 
         assertEq(fund.currentEpoch(), 4);
     }
@@ -288,7 +288,7 @@ contract TheHumanFundTest is Test {
 
         // Execute an epoch — resets escalation
         bytes memory action = abi.encodePacked(uint8(0));
-        fund.submitEpochAction(action, bytes("back online"));
+        fund.submitEpochAction(action, bytes("back online"), -1, "");
 
         assertEq(fund.effectiveMaxBid(), 0.005 ether);
         assertEq(fund.consecutiveMissedEpochs(), 0);
@@ -303,7 +303,7 @@ contract TheHumanFundTest is Test {
         vm.expectEmit(true, false, false, true);
         emit TheHumanFund.DiaryEntry(1, reasoning, action, 5 ether, 5 ether);
 
-        fund.submitEpochAction(action, reasoning);
+        fund.submitEpochAction(action, reasoning, -1, "");
     }
 
     // ─── Auth ────────────────────────────────────────────────────────────
@@ -313,7 +313,7 @@ contract TheHumanFundTest is Test {
 
         vm.prank(donor);
         vm.expectRevert(TheHumanFund.Unauthorized.selector);
-        fund.submitEpochAction(action, bytes("unauthorized"));
+        fund.submitEpochAction(action, bytes("unauthorized"), -1, "");
     }
 
     function test_only_owner_can_skip() public {
@@ -327,11 +327,11 @@ contract TheHumanFundTest is Test {
     function test_multiple_donations_across_epochs() public {
         // Epoch 1: donate to np1
         bytes memory action1 = abi.encodePacked(uint8(1), abi.encode(uint256(1), uint256(0.3 ether)));
-        fund.submitEpochAction(action1, bytes("donate 1"));
+        fund.submitEpochAction(action1, bytes("donate 1"), -1, "");
 
         // Epoch 2: donate to np2
         bytes memory action2 = abi.encodePacked(uint8(1), abi.encode(uint256(2), uint256(0.2 ether)));
-        fund.submitEpochAction(action2, bytes("donate 2"));
+        fund.submitEpochAction(action2, bytes("donate 2"), -1, "");
 
         // Check totals
         (, , , uint256 donated1,,) = fund.getNonprofit(1);
@@ -349,7 +349,7 @@ contract TheHumanFundTest is Test {
         bytes memory reasoning = bytes("First epoch thoughts.");
 
         uint256 treasuryBefore = address(fund).balance;
-        fund.submitEpochAction(action, reasoning);
+        fund.submitEpochAction(action, reasoning, -1, "");
 
         // epochContentHash should be set for epoch 1
         bytes32 contentHash = fund.epochContentHashes(1);
@@ -366,7 +366,7 @@ contract TheHumanFundTest is Test {
         bytes32 hash1 = fund.computeInputHash();
 
         // Submit epoch (creates epochContentHash + advances epoch)
-        fund.submitEpochAction(abi.encodePacked(uint8(0)), bytes("reasoning"));
+        fund.submitEpochAction(abi.encodePacked(uint8(0)), bytes("reasoning"), -1, "");
 
         bytes32 hash2 = fund.computeInputHash();
 
@@ -383,5 +383,104 @@ contract TheHumanFundTest is Test {
         assertTrue(sent);
         assertEq(fund.treasuryBalance(), 6 ether);
         assertEq(fund.totalInflows(), 6 ether);
+    }
+
+    // ─── Kill Switches ────────────────────────────────────────────────────
+
+    function test_freezeNonprofits() public {
+        fund.freeze(fund.FREEZE_NONPROFITS());
+        assertTrue(fund.frozenFlags() & fund.FREEZE_NONPROFITS() != 0);
+
+        vm.expectRevert(TheHumanFund.Frozen.selector);
+        fund.addNonprofit("New NP", "Test", bytes32("EIN-NEW"));
+    }
+
+    function test_freeze_onlyOwner() public {
+        uint256 flag = fund.FREEZE_NONPROFITS();
+        vm.prank(address(0xDEAD));
+        vm.expectRevert(TheHumanFund.Unauthorized.selector);
+        fund.freeze(flag);
+    }
+
+    function test_freeze_emitsEvent() public {
+        vm.expectEmit(true, false, false, false);
+        emit TheHumanFund.PermissionFrozen(fund.FREEZE_NONPROFITS());
+        fund.freeze(fund.FREEZE_NONPROFITS());
+    }
+
+    function test_freeze_idempotent() public {
+        fund.freeze(fund.FREEZE_NONPROFITS());
+        fund.freeze(fund.FREEZE_NONPROFITS()); // should not revert
+        assertTrue(fund.frozenFlags() & fund.FREEZE_NONPROFITS() != 0);
+    }
+
+    function test_freezeDirectMode() public {
+        // Submit works before freeze
+        bytes memory noop = abi.encodePacked(uint8(0));
+        fund.submitEpochAction(noop, "ok", -1, "");
+
+        fund.freeze(fund.FREEZE_DIRECT_MODE());
+
+        vm.expectRevert(TheHumanFund.Frozen.selector);
+        fund.submitEpochAction(noop, "frozen", -1, "");
+
+        vm.expectRevert(TheHumanFund.Frozen.selector);
+        fund.skipEpoch();
+    }
+
+    function test_freezeVerifiers() public {
+        fund.approveVerifier(1, address(0x1234));
+        fund.freeze(fund.FREEZE_VERIFIERS());
+
+        vm.expectRevert(TheHumanFund.Frozen.selector);
+        fund.approveVerifier(2, address(0x5678));
+
+        vm.expectRevert(TheHumanFund.Frozen.selector);
+        fund.revokeVerifier(1);
+    }
+
+    function test_freezeInvestmentWiring() public {
+        fund.freeze(fund.FREEZE_INVESTMENT_WIRING());
+
+        vm.expectRevert(TheHumanFund.Frozen.selector);
+        fund.setInvestmentManager(address(0x1234));
+    }
+
+    function test_freezeWorldViewWiring() public {
+        fund.freeze(fund.FREEZE_WORLDVIEW_WIRING());
+
+        vm.expectRevert(TheHumanFund.Frozen.selector);
+        fund.setWorldView(address(0x1234));
+
+        vm.expectRevert(TheHumanFund.Frozen.selector);
+        uint256[] memory slots = new uint256[](1);
+        string[] memory policies = new string[](1);
+        slots[0] = 0;
+        policies[0] = "test";
+        fund.seedWorldView(slots, policies);
+    }
+
+    function test_freezeAuctionConfig() public {
+        fund.freeze(fund.FREEZE_AUCTION_CONFIG());
+
+        vm.expectRevert(TheHumanFund.Frozen.selector);
+        fund.setAuctionEnabled(true);
+
+        vm.expectRevert(TheHumanFund.Frozen.selector);
+        fund.setAuctionTiming(86400, 3600, 1800, 7200);
+    }
+
+    function test_freezePrompt() public {
+        fund.freeze(fund.FREEZE_PROMPT());
+
+        vm.expectRevert(TheHumanFund.Frozen.selector);
+        fund.setApprovedPromptHash(bytes32("hash"));
+    }
+
+    function test_freezeEmergencyWithdrawal() public {
+        fund.freeze(fund.FREEZE_EMERGENCY_WITHDRAWAL());
+
+        vm.expectRevert(TheHumanFund.Frozen.selector);
+        fund.withdrawAll();
     }
 }

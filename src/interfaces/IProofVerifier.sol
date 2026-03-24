@@ -17,4 +17,7 @@ interface IProofVerifier {
         bytes32 outputHash,
         bytes calldata proof
     ) external payable returns (bool valid);
+
+    /// @notice Permanently freeze the verifier's internal state (e.g., image registry).
+    function freeze() external;
 }

@@ -21,6 +21,9 @@ interface IInvestmentManager {
     /// @notice Deterministic hash of all investment state, for input hash binding.
     function stateHash() external view returns (bytes32);
 
+    /// @notice Withdraw all positions across all protocols, sending ETH to recipient.
+    function withdrawAll(address recipient) external;
+
     /// @notice Number of registered protocols.
     function protocolCount() external view returns (uint256);
 }

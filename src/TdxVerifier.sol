@@ -32,6 +32,7 @@ contract TdxVerifier is IProofVerifier {
 
     error Unauthorized();
     error InvalidParams();
+    error Frozen();
 
     // ─── Constants ───────────────────────────────────────────────────────
 
@@ -49,21 +50,26 @@ contract TdxVerifier is IProofVerifier {
     // ─── State ───────────────────────────────────────────────────────────
 
     address public owner;
+    address public fund; // The fund contract, authorized to call freeze()
 
     /// @notice Registry of approved kernel + application measurements.
     ///         Key = keccak256(RTMR[1] || RTMR[2])
     ///         where each field is 48 bytes (SHA-384), total 96 bytes hashed.
     mapping(bytes32 => bool) public approvedImages;
 
+    bool public frozenImages;
+
     // ─── Events ──────────────────────────────────────────────────────────
 
     event ImageApproved(bytes32 indexed imageKey);
     event ImageRevoked(bytes32 indexed imageKey);
+    event PermissionFrozen(string name);
 
     // ─── Constructor ─────────────────────────────────────────────────────
 
-    constructor() {
+    constructor(address _fund) {
         owner = msg.sender;
+        fund = _fund;
     }
 
     // ─── Modifiers ───────────────────────────────────────────────────────
@@ -77,14 +83,25 @@ contract TdxVerifier is IProofVerifier {
 
     /// @notice Approve a kernel + application image by its measurement key.
     function approveImage(bytes32 imageKey) external onlyOwner {
+        if (frozenImages) revert Frozen();
         approvedImages[imageKey] = true;
         emit ImageApproved(imageKey);
     }
 
     /// @notice Revoke a previously approved image.
     function revokeImage(bytes32 imageKey) external onlyOwner {
+        if (frozenImages) revert Frozen();
         approvedImages[imageKey] = false;
         emit ImageRevoked(imageKey);
+    }
+
+    // ─── Kill Switch ───────────────────────────────────────────────────
+
+    /// @notice Permanently freeze the image registry. Callable by owner or fund contract.
+    function freeze() external override {
+        if (msg.sender != owner && msg.sender != fund) revert Unauthorized();
+        frozenImages = true;
+        emit PermissionFrozen("images");
     }
 
     // ─── IProofVerifier ─────────────────────────────────────────────────
