@@ -420,19 +420,32 @@ def compute_report_data(input_hash: bytes, action_bytes: bytes, reasoning: str,
 # ─── Input Hash Verification ─────────────────────────────────────────────
 
 def _keccak256(data: bytes) -> bytes:
-    """Compute keccak256 hash (same as Solidity's keccak256)."""
-    from hashlib import sha3_256
-    # Python's hashlib sha3_256 is NOT keccak256. Use pysha3 or eth_abi.
-    # For compatibility, we use the same approach as web3.py:
+    """Compute keccak256 hash (same as Solidity's keccak256).
+
+    IMPORTANT: Python's hashlib.sha3_256 is SHA-3 (FIPS 202), NOT Keccak-256.
+    They use different padding and produce different outputs. Ethereum uses
+    the original Keccak-256, not the NIST-standardized SHA-3.
+    """
     try:
         import sha3
-        k = sha3.keccak_256()
+        return sha3.keccak_256(data).digest()
+    except ImportError:
+        pass
+    try:
+        from Crypto.Hash import keccak as _keccak
+        k = _keccak.new(digest_bits=256)
         k.update(data)
         return k.digest()
     except ImportError:
-        # Fallback: use web3's keccak
+        pass
+    try:
         from web3 import Web3
         return Web3.keccak(data)
+    except ImportError:
+        raise ImportError(
+            "No keccak256 implementation available. "
+            "Install one of: pysha3, pycryptodome, or web3"
+        )
 
 
 def _abi_encode(*values) -> bytes:
@@ -673,6 +686,14 @@ def run_epoch():
             "action": action_json,
             "raw_output": inference["text"][:2000],
         }), 500
+
+    # Debug: log exact bytes going into hash computation
+    import sys
+    print(f"  HASH DEBUG: action_bytes={action_bytes.hex()[:32]}... ({len(action_bytes)} bytes)", flush=True)
+    print(f"  HASH DEBUG: reasoning={len(reasoning.encode('utf-8'))} bytes, sha256={hashlib.sha256(reasoning.encode('utf-8')).hexdigest()[:16]}", flush=True)
+    print(f"  HASH DEBUG: prompt sha256={hashlib.sha256(system_prompt.encode('utf-8')).hexdigest()[:16]}", flush=True)
+    print(f"  HASH DEBUG: input_hash={input_hash.hex()[:16]}", flush=True)
+    sys.stdout.flush()
 
     # Get TDX attestation quote — uses truncated reasoning
     report_data = compute_report_data(input_hash, action_bytes, reasoning, system_prompt)

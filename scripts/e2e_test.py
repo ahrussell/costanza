@@ -224,6 +224,23 @@ def deploy_contracts(w3, account):
     w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
     nonce += 1
 
+    # Set approved system prompt hash
+    import hashlib
+    prompt_path = Path(__file__).parent.parent / "agent" / "prompts" / "system_v5.txt"
+    # Strip to match enclave behavior (enclave does .strip() on the prompt text)
+    prompt_hash = hashlib.sha256(prompt_path.read_text().strip().encode("utf-8")).digest()
+    print(f"Setting approved prompt hash: 0x{prompt_hash.hex()[:16]}...")
+    tx = fund.functions.setApprovedPromptHash(prompt_hash).build_transaction({
+        "from": deployer, "nonce": nonce,
+        "gas": 100_000,
+        "maxFeePerGas": w3.eth.gas_price * 2,
+        "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
+    })
+    signed = account.sign_transaction(tx)
+    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+    w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+    nonce += 1
+
     # Enable auction mode
     print("Enabling auction mode...")
     tx = fund.functions.setAuctionEnabled(True).build_transaction({
@@ -746,16 +763,17 @@ def upload_enclave_files(vm_ip):
 
     # Protocol descriptions are now on-chain (no file to upload)
 
-    # Install flask on the VM (in case startup script isn't done)
+    # Install dependencies on the VM (flask for API, pycryptodome for keccak256)
     gcloud(
         f"compute ssh {GCP_VM_NAME} --zone={GCP_ZONE} "
-        f"--command='pip3 install flask 2>/dev/null || true'",
-        check=False, timeout=60
+        f"--command='pip3 install --break-system-packages flask pycryptodome 2>/dev/null || "
+        f"source /opt/humanfund-venv/bin/activate && pip install flask pycryptodome 2>/dev/null || true'",
+        check=False, timeout=120
     )
 
     # Start enclave_runner.py as root (needs root for configfs-tsm TDX quote generation)
     # Upload a startup script to avoid shell quoting issues
-    startup = "#!/bin/bash\nsource /opt/humanfund-venv/bin/activate\nSYSTEM_PROMPT_PATH=/tmp/system_prompt.txt nohup python3 /tmp/enclave_runner.py > /tmp/enclave.log 2>&1 &\n"
+    startup = "#!/bin/bash\npkill -f enclave_runner 2>/dev/null; sleep 1\nrm -rf /tmp/__pycache__ 2>/dev/null\nsource /opt/humanfund-venv/bin/activate 2>/dev/null || true\nexport PYTHONUNBUFFERED=1\nSYSTEM_PROMPT_PATH=/tmp/system_prompt.txt nohup python3 -u /tmp/enclave_runner.py > /tmp/enclave.log 2>&1 &\n"
     with open("/tmp/start_enclave.sh", "w") as f:
         f.write(startup)
     gcloud(
@@ -900,27 +918,96 @@ def run_auction_e2e(w3, account, fund_addr, vm_ip, nonce):
     print(f"  Treasury: {w3.from_wei(fund.functions.treasuryBalance().call(), 'ether')} ETH")
 
     # ─── 4a: startEpoch ───
-    # The contract requires: block.timestamp >= prevAuction.epochStartTime + epochDuration
-    # So we check the previous epoch's actual start time, not the scheduled time
+    # Clean up any stale auction state before starting a new epoch.
+    # If the current epoch has an active auction (e.g., from a previous failed run),
+    # close it out so we can proceed.
     epoch_dur = fund.functions.epochDuration().call()
-    if epoch > 1:
-        prev_state = fund.functions.getAuctionState(epoch - 1).call()
-        earliest_start = prev_state[0] + epoch_dur
+    commit_win = fund.functions.commitWindow().call()
+    reveal_win = fund.functions.revealWindow().call()
+
+    auction_state = fund.functions.auctions(epoch).call()
+    phase = auction_state[1]  # 0=IDLE, 1=COMMIT, 2=REVEAL, 3=EXECUTION
+    start_time = auction_state[0]
+
+    if phase != 0 and start_time > 0:
         now = int(time.time())
-        if now < earliest_start:
-            wait_secs = earliest_start - now + 5  # +5s buffer
-            print(f"\n  4a. Waiting {wait_secs}s for epoch {epoch} window to open...")
-            time.sleep(wait_secs)
+        print(f"  4a. Cleaning up stale epoch {epoch} (phase={phase})...")
+        if phase == 1:  # COMMIT
+            close_time = start_time + commit_win
+            if now < close_time:
+                wait = close_time - now + 3
+                print(f"      Waiting {wait}s for commit window to close...")
+                time.sleep(wait)
+            try:
+                receipt = send_tx(fund.functions.closeCommit())
+                print(f"      closeCommit: gas={receipt.gasUsed}")
+            except Exception as e:
+                print(f"      closeCommit failed: {e}")
+            w3, fund = fresh_connection()
+            nonce = w3.eth.get_transaction_count(account.address)
+            auction_state = fund.functions.auctions(epoch).call()
+            phase = auction_state[1]
+
+        if phase == 2:  # REVEAL
+            close_time = start_time + commit_win + reveal_win
+            now = int(time.time())
+            if now < close_time:
+                wait = close_time - now + 3
+                print(f"      Waiting {wait}s for reveal window to close...")
+                time.sleep(wait)
+            try:
+                receipt = send_tx(fund.functions.closeReveal())
+                print(f"      closeReveal: gas={receipt.gasUsed}")
+            except Exception as e:
+                print(f"      closeReveal failed: {e}")
+            w3, fund = fresh_connection()
+            nonce = w3.eth.get_transaction_count(account.address)
+            auction_state = fund.functions.auctions(epoch).call()
+            phase = auction_state[1]
+
+        if phase == 3:  # EXECUTION — need to forfeit bond
+            exec_win = fund.functions.executionWindow().call()
+            deadline = start_time + commit_win + reveal_win + exec_win
+            now = int(time.time())
+            if now < deadline:
+                wait = deadline - now + 3
+                print(f"      Waiting {wait}s for execution window to expire...")
+                time.sleep(wait)
+            try:
+                receipt = send_tx(fund.functions.forfeitBond())
+                print(f"      forfeitBond: gas={receipt.gasUsed}")
+            except Exception as e:
+                print(f"      forfeitBond failed: {e}")
             w3, fund = fresh_connection()
             nonce = w3.eth.get_transaction_count(account.address)
 
-    # Retry startEpoch up to 5 times (timing edge cases)
+        # Epoch may have advanced
+        epoch = fund.functions.currentEpoch().call()
+        print(f"      Now on epoch {epoch}")
+
+    # Wait for previous epoch's duration if needed
+    if epoch > 1:
+        try:
+            prev_state = fund.functions.getAuctionState(epoch - 1).call()
+            if prev_state[0] > 0:
+                earliest_start = prev_state[0] + epoch_dur
+                now = int(time.time())
+                if now < earliest_start:
+                    wait_secs = earliest_start - now + 5
+                    print(f"  4a. Waiting {wait_secs}s for epoch {epoch} window to open...")
+                    time.sleep(wait_secs)
+                    w3, fund = fresh_connection()
+                    nonce = w3.eth.get_transaction_count(account.address)
+        except Exception:
+            pass  # getAuctionState may fail for epoch 0
+
+    # Start the fresh epoch
     print(f"  4a. Starting epoch {epoch}...")
     for attempt in range(5):
         try:
             receipt = send_tx(fund.functions.startEpoch())
             break
-        except AssertionError as e:
+        except (AssertionError, Exception) as e:
             if attempt < 4:
                 wait = 30
                 print(f"      startEpoch reverted, retrying in {wait}s (attempt {attempt + 2}/5)...")
@@ -1057,11 +1144,13 @@ def run_auction_e2e(w3, account, fund_addr, vm_ip, nonce):
     print(f"      Reasoning: {len(reasoning_bytes)} bytes (truncated by enclave if needed)")
 
     # Verify REPORTDATA matches before submitting
-    # New formula: outputHash = keccak256(sha256(action) + sha256(reasoning))
-    #              REPORTDATA = sha256(inputHash + outputHash)
+    # Formula: outputHash = keccak256(sha256(action) + sha256(reasoning) + promptHash)
+    #          REPORTDATA = sha256(inputHash + outputHash)
+    prompt_hash = fund.functions.approvedPromptHash().call()
     output_hash = Web3.keccak(
         hashlib.sha256(action_bytes).digest() +
-        hashlib.sha256(reasoning_bytes).digest()
+        hashlib.sha256(reasoning_bytes).digest() +
+        prompt_hash
     )
     expected_rd = hashlib.sha256(
         input_hash + output_hash
@@ -1295,7 +1384,7 @@ def main():
         print("  Full security model verified on Base Sepolia:")
         print("    [x] Automata DCAP: genuine TDX hardware")
         print("    [x] Image registry: approved RTMR[1] + RTMR[2] (kernel + application)")
-        print("    [x] REPORTDATA: sha256(inputHash + keccak256(sha256(action) + sha256(reasoning)))")
+        print("    [x] REPORTDATA: sha256(inputHash + keccak256(sha256(action) + sha256(reasoning) + promptHash))")
         print("    [x] Auction: only winner can submit within execution window")
         print("    [x] Randomness seed: block.prevrandao prevents cherry-picking")
     else:
