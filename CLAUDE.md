@@ -7,8 +7,8 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 - **Smart contract** (Solidity, Base L2): Treasury, referral system, epoch actions, reverse auction, TEE attestation, diary events
 - **Agent inference**: DeepSeek R1 Distill Llama 70B (Q4_K_M, 42.5GB GGUF) via llama.cpp on GCP TDX H100 (production model)
 - **Model selection**: DeepSeek R1 70B chosen via 3-model gauntlet (75 epochs each): 100% parse success, best reasoning depth, diversified investment strategy. Llama 3.3 70B also 100% reliable but less strategic. QwQ 32B eliminated (23% parse failure rate).
-- **Runner software**: Python script that reads contract state, runs inference (direct or via TEE), parses output, submits on-chain
-- **TEE enclave**: Docker image with llama.cpp + model + Flask API, runs in TDX Confidential VM on Phala Cloud
+- **Runner client** (`runner/`): Cron-based auction runner — monitors phases, bids, orchestrates GCP TEE VMs
+- **TEE enclave** (`tee/enclave/`): Attested Python code measured into RTMR[3] — inference, action encoding, attestation
 - **Frontend**: Diary viewer, treasury dashboard, donation/referral interface (Phase 4)
 
 ## Current Status
@@ -18,7 +18,7 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 - **Phase 3 contract (latest, 70B GPU e2e)**: `0xa507366987417e0E4247a827B48536DA11235CC7` (Base Sepolia) — 5 consecutive successful epochs with investments, withdrawals, and guiding policies
 - **Phase 2 contract (CPU e2e)**: `0x9043B54B7E5d2f98Bc12ff10799cf8d5d38c7ab2` (Base Sepolia) — CPU + GPU verified
 - Phase 0 original contract: `0x2F213Ea0D3F6D8349e2162b37Cc8cE6605dc9420` (Base Sepolia) — 21 epochs executed (legacy)
-- **137 tests pass** (28 Phase 0 + 34 auction + 12 attestation verifier + 25 investment + 16 worldview + 14 messages + 8 TDX verifier)
+- **164 tests pass** (28 Phase 0 + 42 auction + 16 TDX verifier + 25 investment + 16 worldview + 14 messages + 23 other)
 - Contract sizes: TheHumanFund ~24.2KB (374B margin, optimizer enabled), AttestationVerifier ~3.4KB, InvestmentManager ~10.4KB, WorldView ~2.6KB
 - GCP TDX FMSPC `00806f050000` registered in Automata DCAP Dashboard
 - CPU image key (c3-standard-4): `0x1ff10986...` — approved
@@ -51,7 +51,7 @@ Each epoch (24 hours in production, configurable for testnet):
 4. Winner boots TEE, mounts model (verified via SHA-256), runs inference with deterministic seed
 5. Winner submits via `submitAuctionResult()` — contract verifies:
    - Automata DCAP: quote is genuine TDX hardware
-   - MRTD + RTMR[0..2]: approved image was running
+   - RTMR[1..3]: approved boot loader, kernel, and application code were running
    - REPORTDATA: `SHA256(inputHash || SHA256(action) || SHA256(reasoning))` matches
 6. Contract executes action, pays bounty + refunds bond
 7. If winner doesn't deliver: anyone calls `forfeitBond()`, bond kept by treasury
@@ -69,7 +69,7 @@ Each epoch (24 hours in production, configurable for testnet):
 - **Epoch state machine**: IDLE → BIDDING → EXECUTION → SETTLED with configurable timing
 - **Verifiable randomness**: RNG seed derived from `block.prevrandao` at auction close — runner cannot re-roll inference
 - **Model loaded from disk**: Runner provides model file, enclave verifies SHA-256 hash baked into image — no runtime download
-- **Platform-agnostic attestation**: Verify MRTD + RTMR[0..2] (skip RTMR[3] — platform/instance-specific)
+- **Platform-agnostic attestation**: Verify RTMR[1] (boot loader) + RTMR[2] (kernel) + RTMR[3] (application code) — skip MRTD and RTMR[0] which vary by firmware
 - **Rolling history hash**: On-chain `historyHash` extended each epoch, binds decision history to input commitment
 - **Full design doc**: See DESIGN.md for complete specification
 - **Security model**: See SECURITY.md for TEE attestation analysis and threat model
@@ -77,7 +77,7 @@ Each epoch (24 hours in production, configurable for testnet):
 ## Implementation Phases
 
 - **Phase 0** (COMPLETE): End-to-end loop on testnet with trusted operator, no TEE
-- **Phase 1** (COMPLETE): TEE integration — enclave on Phala Cloud, real TDX attestation, on-chain DCAP verification code
+- **Phase 1** (COMPLETE): TEE integration — TDX attestation, on-chain DCAP verification, RTMR[1..3] image registry
 - **Phase 2** (COMPLETE): Reverse auction — contract + runner deployed, full attestation verified on Base Sepolia (CPU + GPU TDX)
 - **Phase 3** (IN PROGRESS): Investment portfolio — InvestmentManager + 7 adapters (Aave WETH/USDC, wstETH, cbETH, Compound USDC, Morpho Gauntlet/Steakhouse WETH), 137 tests pass, Chainlink ETH/USD oracle, system prompt v6
 - **Phase 4**: Frontend (diary viewer, treasury dashboard, investment portfolio UI)
@@ -87,7 +87,7 @@ Each epoch (24 hours in production, configurable for testnet):
 
 - **Chain**: Base (Coinbase L2), Solidity ^0.8.20
 - **Inference**: llama.cpp + DeepSeek R1 Distill Llama 70B Q4_K_M (GCP TDX H100, production)
-- **TEE**: Intel TDX via Phala Cloud / dstack (v0.5.x)
+- **TEE**: Intel TDX on GCP Confidential VMs (configfs-tsm attestation)
 - **Attestation**: Automata Network DCAP contracts at `0xaDdeC7e85c2182202b66E331f2a4A0bBB2cEEa1F`
 - **Oracle**: Chainlink ETH/USD price feed (shared interface `IAggregatorV3.sol`, used by main contract + USDC adapters)
 - **Tooling**: Foundry (Solidity), Python 3.9+ with venv (runner + enclave)
@@ -146,30 +146,48 @@ thehumanfund/
 │   └── Messages.t.sol           # Donor messages tests (14 tests)
 ├── script/
 │   └── Deploy.s.sol             # Foundry deployment script
+├── runner/                      # Auction runner client (cron job, untrusted)
+│   ├── client.py               # Main entry point — checks phase, acts accordingly
+│   ├── chain.py                # Contract interaction (read state, submit tx)
+│   ├── auction.py              # Auction state machine (commit/reveal/submit)
+│   ├── bid_strategy.py         # Bid calculation (gas + compute + margin)
+│   ├── notifier.py             # ntfy.sh push notifications
+│   ├── state.py                # Persistent state (~/.humanfund/state.json)
+│   ├── config.py               # CLI args + env var configuration
+│   └── tee_clients/
+│       ├── base.py             # ABC: run_epoch() → result
+│       └── gcp.py              # GCP TDX VM lifecycle (create → tunnel → call → delete)
 ├── agent/
-│   ├── runner.py                # Runner: state → prompt → inference → submit (Phase 0 + 1)
-│   ├── run_eval.py              # Prompt evaluation framework
+│   ├── runner_legacy.py        # Legacy runner (reference, to be removed)
 │   ├── prompts/
-│   │   ├── system_v1.txt        # System prompt v1 (Phase 0-2, no investments)
-│   │   ├── system_v2.txt        # System prompt v2 (Phase 3, with investments)
-│   │   ├── system_v3.txt        # System prompt v3 (Phase 3+, with worldview)
-│   │   └── system_v6.txt        # System prompt v6 (USD mission, ETH/USD price)
+│   │   └── system_v6.txt       # System prompt v6 (USD mission, ETH/USD price)
 │   └── scenarios/
-│       └── scenarios.json       # 5 synthetic test scenarios
-├── tee/                         # Phase 1: TEE enclave image
-│   ├── Dockerfile               # Multi-stage: llama.cpp + enclave runner (model downloaded at runtime)
-│   ├── docker-compose.yaml      # Phala Cloud / dstack deployment config
-│   ├── enclave_runner.py        # Flask API: /health, /run_epoch (inference + attestation)
-│   ├── start.sh                 # Container entrypoint (model download + SHA-256 verify)
-│   └── system_prompt.txt        # Copy of agent/prompts/system_v1.txt
+│       └── scenarios.json      # 5 synthetic test scenarios
+├── tee/                         # TEE enclave + VM setup
+│   ├── enclave/                # Attested code (measured into RTMR[3])
+│   │   ├── enclave_runner.py   # Flask API: /health, /run_epoch
+│   │   ├── inference.py        # Two-pass llama-server calls
+│   │   ├── action_encoder.py   # Action JSON → contract bytes
+│   │   ├── input_hash.py       # Independent input hash computation
+│   │   ├── prompt_builder.py   # System prompt + epoch context → full prompt
+│   │   ├── attestation.py      # TDX quote generation (configfs-tsm)
+│   │   └── model_config.py     # Pinned model SHA-256 + verification
+│   ├── enclave_runner.py       # Legacy enclave runner (reference, to be removed)
+│   ├── boot.sh                 # VM boot: measure code+model into RTMR[3], start services
+│   ├── setup_gpu.sh            # Snapshot setup: NVIDIA + CUDA + llama.cpp + model
+│   └── setup_cpu.sh            # Snapshot setup: CPU llama.cpp + model
 ├── frontend/
 │   └── index.html               # Internal dashboard (reads contract state)
 ├── models/                      # Local model files (gitignored)
 ├── scripts/
+│   ├── create_gcp_snapshot.py   # Build GCP TDX disk image (GPU or CPU)
+│   ├── verify_measurements.py   # Verify VM RTMR values match registered key
+│   ├── register_image.py        # Extract RTMR[1..3] + register on-chain
+│   ├── extract_measurements.py  # Low-level RTMR extraction from TDX quote
+│   ├── e2e_test.py              # Full e2e test on Base Sepolia with TDX attestation
 │   ├── simulate.py              # Local simulation mode (scenario presets, stress testing)
 │   ├── arena.py                 # Model comparison arena (run + blind review UI)
 │   ├── gauntlet.py              # Multi-model gauntlet runner (75-epoch scenarios)
-│   ├── e2e_test.py              # Full e2e test on Base Sepolia with TDX attestation
 │   ├── rpod                     # SSH wrapper for RunPod
 │   ├── runpod-setup.sh          # First-time RunPod pod setup
 │   └── runpod-ssh.exp           # Low-level expect script for RunPod SSH
@@ -193,8 +211,8 @@ thehumanfund/
 ### TEE Attestation — see SECURITY.md for full model
 - `AttestationVerifier.sol` — separate contract handles all attestation verification
 - Automata DCAP verifier at `0xaDdeC7e85c2182202b66E331f2a4A0bBB2cEEa1F`
-- **GAPs 1+2 CLOSED**: contract now verifies MRTD + RTMR[0..2] (image identity) + REPORTDATA (input/output binding)
-- Approved image registry: `mapping(bytes32 => bool) approvedImages` (key = `keccak256(MRTD || RTMR[0..2])`)
+- **GAPs 1+2 CLOSED**: contract verifies RTMR[1..3] (boot loader + kernel + application code) + REPORTDATA (input/output binding)
+- Approved image registry: `mapping(bytes32 => bool) approvedImages` (key = `keccak256(RTMR[1] || RTMR[2] || RTMR[3])`)
 - REPORTDATA formula: `sha256(inputHash || sha256(action) || sha256(reasoning) || randomnessSeed)`
 - Rolling `historyHash` extends each epoch, included in `_computeInputHash()`
 - `block.prevrandao` captured in `closeAuction()` as verifiable randomness seed
@@ -219,59 +237,43 @@ thehumanfund/
 - 5 = withdraw(protocol_id, amount) — delegate to InvestmentManager
 - 6 = set_guiding_policy(slot, policy) — delegate to WorldView
 
-## Runner Script
+## Runner Client
 
-**`agent/runner.py`** — Reads contract state, builds prompt, runs inference, submits action.
+**`runner/client.py`** — Cron-based auction runner. Checks contract state and acts on each phase.
 
-Supports two modes:
-- **Direct mode** (Phase 0): `python agent/runner.py` — calls llama-server directly
-- **TEE mode** (Phase 1): `python agent/runner.py --tee-url http://host:8090` — sends epoch context to TEE enclave
+Designed as a cron job (`*/5 * * * *`). Each run is idempotent:
+- **IDLE** → calls `startEpoch()`
+- **COMMIT** → calculates bid (gas + compute cost), commits with bond
+- **REVEAL** → reveals bid (reads saved salt from `~/.humanfund/state.json`)
+- **EXECUTION** → if winner: boots GCP TDX VM, runs inference, submits result
+- **SETTLED** → clears state, waits for next epoch
 
-Key implementation details:
-- **Two-pass inference**: Pass 1 generates reasoning with `stop=["</think>"]`, Pass 2 generates JSON action with `temperature=0.3`
-- **JSON parsing**: Custom `_extract_json_object()` with brace depth tracking (regex fails on nested JSON)
-- **Gas limit**: 5,000,000 (reasoning calldata can be 3KB+, ~16 gas per non-zero byte)
-- **Reasoning cap**: 8KB on-chain to stay within gas budget
-- **Pre-submission bounds check**: Clamps donate to 9.9%, commission 100-9000 bps, max_bid to valid range
-- **Retry logic**: Up to 3 attempts on parse failure
-- **Custom User-Agent**: `TheHumanFund/1.0` to bypass Cloudflare blocking on RunPod proxy
+**TEE client** (`runner/tee_clients/gcp.py`): Creates VM from snapshot → SSH tunnel → POST to enclave → delete VM. The VM is always deleted in a `finally` block.
 
-**Auction mode** (Phase 2): `python agent/runner.py --auction --tee-url http://host:8090 --bid 0.0001`
-- Monitors auction state, calls `startEpoch()`, bids, `closeAuction()`
-- On win: reads state, runs TEE inference, submits via `submitAuctionResult()`
+**Notifications** (`runner/notifier.py`): Push notifications via ntfy.sh for all events.
 
-**Known issue**: The Phala gateway has HTTP timeouts (~60s), so long CPU inference (~22 min) fails through the gateway. Use an SSH tunnel or run inference directly on the CVM:
-```bash
-# SSH tunnel (bypasses gateway timeout)
-phala ssh humanfund-tee -- -L 18090:localhost:8091 -N &
-python agent/runner.py --auction --tee-url http://localhost:18090 --bid 0.0001
-
-# Or launch inference directly on CVM (survives wifi drops)
-phala cp payload.json humanfund-tee:/tmp/payload.json
-phala ssh humanfund-tee -- 'docker exec -d dstack-agent-1 python3 /tmp/run_inference.py'
-```
+See [RUNNER_README.md](RUNNER_README.md) for full setup instructions.
 
 ## TEE Enclave
 
-**Image**: `ghcr.io/ahrussell/humanfund-tee:v3` (amd64, Ubuntu 22.04)
+**Platform**: GCP TDX Confidential VMs (boot from pre-built disk image / snapshot)
 
 **Production model**: DeepSeek R1 Distill Llama 70B Q4_K_M (42.5 GB GGUF) — selected via 3-model gauntlet
 **Development model**: DeepSeek R1 Distill Qwen 14B Q4_K_M (8.99 GB GGUF) — used for Phase 1 CPU testing
-- SHA-256: `0b319bd0572f2730bfe11cc751defe82045fad5085b4e60591ac2cd2d9633181`
-- Mounted from disk by runner, SHA-256 verified at boot (no network download)
-- CPU-only inference: ~0.33 tok/s on 16 vCPU, ~22 min/epoch
-- Production will use 70B model (or larger) — just change `MODEL_SHA256` in Dockerfile and register new RTMR measurements
+- Model SHA-256 pinned in `tee/enclave/model_config.py` (verified at boot, measured into RTMR[3])
+- Mounted from disk, no network download at runtime
+- GPU inference: ~30s per epoch on H100 | CPU inference: ~22 min per epoch
 
-**Phala Cloud CVM**: `humanfund-tee` (tdx.2xlarge, 16 vCPU, 32 GB RAM)
-- App ID: `5dcad829680b2ea7a0ac01021da00fa913eea815`
-- Endpoint: `https://5dcad829680b2ea7a0ac01021da00fa913eea815-8091.dstack-pha-prod5.phala.network`
-- dstack socket: `/var/run/dstack.sock` (v0.5.x API)
+**Attestation flow**:
+1. `boot.sh` measures enclave code + model weights into RTMR[3] via configfs-tsm
+2. Enclave runner starts on `127.0.0.1:8090` (only accessible via SSH tunnel)
+3. Runner client sends epoch state, receives (action, reasoning, TDX quote)
+4. Contract verifies: RTMR[1..3] approved + REPORTDATA matches (input, output)
 
-**dstack attestation API**: `POST /GetQuote` on Unix socket
-- Request: `{"report_data": "<hex>"}`
-- Response: `{"quote": "<hex>", "event_log": "<json>"}`
-- dstack v0.5.x passes report_data **verbatim** to TDX driver (zero-padded to 64 bytes, no hashing)
-- The old v0.3.x `tappd` API applied SHA-256 — that behavior is deprecated
+**RTMR measurements** (verified on-chain, image key = `keccak256(RTMR[1] || RTMR[2] || RTMR[3])`):
+- RTMR[1]: Boot loader (GRUB/shim) — determined by GCP base image
+- RTMR[2]: Kernel + command line — determined by GCP base image
+- RTMR[3]: Application code + model weights — extended by boot.sh at startup
 
 ## RunPod Development Environment
 
@@ -339,48 +341,43 @@ source .venv/bin/activate
 
 # Smart contracts
 forge build                                    # Compile contracts
-forge test                                     # Run all tests (55 tests)
+forge test                                     # Run all tests (164 tests)
 forge test -vvv                                # Verbose test output
-forge test --match-path test/TheHumanFundAuction.t.sol  # Auction tests only
+forge test --match-path test/TdxVerifier.t.sol # TDX verifier tests only
 forge script script/Deploy.s.sol \
   --rpc-url $RPC_URL --broadcast              # Deploy to testnet
 
-# Runner (direct mode — Phase 0)
-python agent/runner.py                         # Run one epoch (reads .env)
-python agent/runner.py --epochs 5              # Run 5 epochs in sequence
-python agent/runner.py --dry-run               # Inference only, no submission
+# Runner client (cron mode — intended for production)
+python -m runner.client                        # Check auction state, act accordingly
+python -m runner.client --dry-run              # Log what would happen, no txs
+python -m runner.client --ntfy-channel my-ch   # With push notifications
 
-# Runner (TEE mode -- Phase 1)
-python agent/runner.py --tee-url http://host:8090
+# GCP snapshot management
+python scripts/create_gcp_snapshot.py --gpu    # Build GPU snapshot
+python scripts/create_gcp_snapshot.py --cpu    # Build CPU snapshot
+python scripts/verify_measurements.py \
+  --vm-name my-vm --verifier 0x...            # Verify RTMR match
+python scripts/register_image.py \
+  --vm-name my-vm --verifier 0x...            # Register image key on-chain
 
-# Runner (auction mode -- Phase 2)
-python agent/runner.py --auction --tee-url http://host:8090 --bid 0.0001
-python agent/runner.py --auction --tee-url http://localhost:18090 --bid 0.0001  # via SSH tunnel
-
-# TEE enclave (local testing with 1.5B model)
+# TEE enclave (local testing)
 llama-server -m models/DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf -c 4096 --port 8080 &
-cd tee && python enclave_runner.py             # Starts on :8090
+ENCLAVE_HOST=127.0.0.1 python -m tee.enclave.enclave_runner  # Starts on :8090
 
-# TEE enclave (Phala Cloud)
-# Requires: nvm use 20 && phala login
-phala deploy -c tee/docker-compose.yaml -n humanfund-tee --instance-type tdx.2xlarge
-phala ps --cvm-id humanfund-tee                # Check container status
-phala logs dstack-agent-1 --cvm-id humanfund-tee --stderr  # Container logs
-
-# RunPod
+# RunPod (development inference)
 ./scripts/rpod "command"                       # Run command on RunPod pod
-bash scripts/runpod-setup.sh                   # First-time setup (run ON the pod)
 ```
 
 ## Environment Variables (.env)
 
 ```
-PRIVATE_KEY=0x...              # Deployer/runner wallet private key
-DEPLOYER_ADDRESS=0x...         # Wallet address
+PRIVATE_KEY=0x...              # Runner wallet private key (NOT the fund owner)
 RPC_URL=https://sepolia.base.org
-CONTRACT_ADDRESS=0x...         # Deployed contract address
-LLAMA_SERVER_URL=https://...   # RunPod proxy URL for llama-server
-TEE_URL=https://...            # Phala Cloud enclave URL (Phase 1)
+CONTRACT_ADDRESS=0x...         # Deployed TheHumanFund contract address
+GCP_PROJECT=my-project         # GCP project ID
+GCP_ZONE=us-central1-a         # GCP zone with TDX support
+GCP_SNAPSHOT=humanfund-tee-gpu-70b  # Snapshot name
+NTFY_CHANNEL=my-runner         # Optional: ntfy.sh channel
 ```
 
 ## Agent Action Space

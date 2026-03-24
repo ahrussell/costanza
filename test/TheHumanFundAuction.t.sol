@@ -39,6 +39,7 @@ contract TheHumanFundAuctionTest is Test {
     // Test measurement values (48 bytes each, SHA-384)
     bytes constant TEST_RTMR1 = hex"222222220000000000000000000000000000000000000000000000000000000000000000000000000000000000000033";
     bytes constant TEST_RTMR2 = hex"333333330000000000000000000000000000000000000000000000000000000000000000000000000000000000000044";
+    bytes constant TEST_RTMR3 = hex"444444440000000000000000000000000000000000000000000000000000000000000000000000000000000000000055";
 
     function setUp() public {
         fund = new TheHumanFund{value: 10 ether}(
@@ -59,7 +60,7 @@ contract TheHumanFundAuctionTest is Test {
         verifier = new TdxVerifier(address(fund));
         vm.etch(address(0xaDdeC7e85c2182202b66E331f2a4A0bBB2cEEa1F), address(mockDcap).code);
 
-        bytes32 imageKey = keccak256(abi.encodePacked(TEST_RTMR1, TEST_RTMR2));
+        bytes32 imageKey = keccak256(abi.encodePacked(TEST_RTMR1, TEST_RTMR2, TEST_RTMR3));
         verifier.approveImage(imageKey);
         fund.approveVerifier(1, address(verifier));
 
@@ -111,6 +112,7 @@ contract TheHumanFundAuctionTest is Test {
         for (uint256 i = 0; i < 48; i++) {
             output[387 + i] = TEST_RTMR1[i];
             output[435 + i] = TEST_RTMR2[i];
+            output[483 + i] = TEST_RTMR3[i];
         }
         for (uint256 i = 0; i < 32; i++) {
             output[531 + i] = reportData[i];
@@ -123,14 +125,11 @@ contract TheHumanFundAuctionTest is Test {
     function test_start_epoch() public {
         fund.startEpoch();
 
-        (uint256 startTime, IAuctionManager.AuctionPhase phase,
-         address winner, uint256 winningBid, uint256 bondAmount,) = fund.getAuctionState(1);
-
-        assertEq(startTime, block.timestamp);
-        assertEq(uint256(phase), uint256(IAuctionManager.AuctionPhase.COMMIT));
-        assertEq(winner, address(0));
-        assertEq(winningBid, 0);
-        assertEq(bondAmount, 0.001 ether); // BASE_BOND
+        assertEq(am.getStartTime(1), block.timestamp);
+        assertEq(uint256(am.getPhase(1)), uint256(IAuctionManager.AuctionPhase.COMMIT));
+        assertEq(am.getWinner(1), address(0));
+        assertEq(am.getWinningBid(1), 0);
+        assertEq(am.getBond(1), 0.001 ether); // BASE_BOND
     }
 
     function test_cannot_start_twice() public {
@@ -224,8 +223,7 @@ contract TheHumanFundAuctionTest is Test {
         vm.warp(block.timestamp + COMMIT_WIN);
         fund.closeCommit();
 
-        (, IAuctionManager.AuctionPhase phase,,,,) = fund.getAuctionState(1);
-        assertEq(uint256(phase), uint256(IAuctionManager.AuctionPhase.REVEAL));
+        assertEq(uint256(am.getPhase(1)), uint256(IAuctionManager.AuctionPhase.REVEAL));
     }
 
     function test_cannot_close_commit_before_window() public {
@@ -251,9 +249,8 @@ contract TheHumanFundAuctionTest is Test {
         vm.prank(runner1);
         fund.reveal(bidAmount, salt);
 
-        (,, address winner, uint256 winningBid,,) = fund.getAuctionState(1);
-        assertEq(winner, runner1);
-        assertEq(winningBid, bidAmount);
+        assertEq(am.getWinner(1), runner1);
+        assertEq(am.getWinningBid(1), bidAmount);
     }
 
     function test_lowest_reveal_wins() public {
@@ -280,9 +277,8 @@ contract TheHumanFundAuctionTest is Test {
         vm.prank(runner3);
         fund.reveal(0.009 ether, salt3);
 
-        (,, address winner, uint256 winningBid,,) = fund.getAuctionState(1);
-        assertEq(winner, runner2);
-        assertEq(winningBid, 0.005 ether);
+        assertEq(am.getWinner(1), runner2);
+        assertEq(am.getWinningBid(1), 0.005 ether);
     }
 
     function test_wrong_hash_reveal_reverts() public {
@@ -463,8 +459,7 @@ contract TheHumanFundAuctionTest is Test {
         vm.warp(block.timestamp + REVEAL_WIN);
         fund.closeReveal();
 
-        (, IAuctionManager.AuctionPhase phase,,,,) = fund.getAuctionState(1);
-        assertEq(uint256(phase), uint256(IAuctionManager.AuctionPhase.EXECUTION));
+        assertEq(uint256(am.getPhase(1)), uint256(IAuctionManager.AuctionPhase.EXECUTION));
         assertEq(fund.currentEpoch(), 1); // Not advanced yet
     }
 
@@ -620,8 +615,7 @@ contract TheHumanFundAuctionTest is Test {
     function test_randomness_seed_captured() public {
         _runAuctionTo(runner1, 0.005 ether, bytes32("s1"));
 
-        (,,,,, uint256 seed) = fund.getAuctionState(1);
-        assertEq(seed, block.prevrandao);
+        assertEq(am.getRandomnessSeed(1), block.prevrandao);
     }
 
     // ─── Attestation Integration ────────────────────────────────────────────

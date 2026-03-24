@@ -75,9 +75,9 @@ contract DeployLocal is Script {
         TdxVerifier verifier = new TdxVerifier(address(fund));
 
         // Approve the all-zeros image key (local testing — no real RTMR values)
-        // Now only RTMR[1] + RTMR[2] = 96 bytes
-        bytes memory zeros96 = new bytes(96);
-        bytes32 imageKey = keccak256(zeros96);
+        // RTMR[1] + RTMR[2] + RTMR[3] = 144 bytes
+        bytes memory zeros144 = new bytes(144);
+        bytes32 imageKey = keccak256(zeros144);
         verifier.approveImage(imageKey);
 
         // Register TDX verifier at ID 1

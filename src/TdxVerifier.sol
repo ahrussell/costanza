@@ -6,8 +6,8 @@ import "./interfaces/IProofVerifier.sol";
 
 /// @title TdxVerifier
 /// @notice Verifies Intel TDX DCAP attestation quotes for TheHumanFund.
-///         Only checks RTMR[1] (kernel) and RTMR[2] (application) for platform
-///         portability — skips MRTD and RTMR[0] which vary by cloud provider firmware.
+///         Checks RTMR[1] (boot loader), RTMR[2] (kernel), and RTMR[3] (application code)
+///         for platform portability — skips MRTD and RTMR[0] which vary by cloud provider firmware.
 ///
 /// @dev Automata DCAP output layout (abi.encodePacked, TDX V4 quote):
 ///        Bytes 0-1:     quoteVersion (uint16, always 4)
@@ -20,9 +20,9 @@ import "./interfaces/IProofVerifier.sol";
 ///      Within quoteBody (offsets relative to output start):
 ///        147-194:  MRTD        (48 bytes, SHA-384) — NOT verified (firmware-specific)
 ///        339-386:  RTMR[0]     (48 bytes) — NOT verified (firmware config)
-///        387-434:  RTMR[1]     (48 bytes) — verified (kernel)
-///        435-482:  RTMR[2]     (48 bytes) — verified (application / rootfs)
-///        483-530:  RTMR[3]     (48 bytes) — NOT verified (runtime / platform-specific)
+///        387-434:  RTMR[1]     (48 bytes) — verified (boot loader / GRUB+shim)
+///        435-482:  RTMR[2]     (48 bytes) — verified (kernel + command line)
+///        483-530:  RTMR[3]     (48 bytes) — verified (application code, user-defined)
 ///        531-594:  REPORTDATA  (64 bytes) — verified
 ///
 ///      REPORTDATA formula: sha256(inputHash || outputHash), zero-padded to 64 bytes.
@@ -43,6 +43,7 @@ contract TdxVerifier is IProofVerifier {
     /// @dev Byte offsets in the Automata DCAP output for TD10ReportBody fields
     uint256 private constant RTMR1_OFFSET = 387;
     uint256 private constant RTMR2_OFFSET = 435;
+    uint256 private constant RTMR3_OFFSET = 483;
     uint256 private constant REPORTDATA_OFFSET = 531;
     uint256 private constant MEASUREMENT_LEN = 48; // SHA-384 output
     uint256 private constant MIN_OUTPUT_LEN = 595;  // Must have at least through REPORTDATA
@@ -52,9 +53,9 @@ contract TdxVerifier is IProofVerifier {
     address public owner;
     address public fund; // The fund contract, authorized to call freeze()
 
-    /// @notice Registry of approved kernel + application measurements.
-    ///         Key = keccak256(RTMR[1] || RTMR[2])
-    ///         where each field is 48 bytes (SHA-384), total 96 bytes hashed.
+    /// @notice Registry of approved boot loader + kernel + application measurements.
+    ///         Key = keccak256(RTMR[1] || RTMR[2] || RTMR[3])
+    ///         where each field is 48 bytes (SHA-384), total 144 bytes hashed.
     mapping(bytes32 => bool) public approvedImages;
 
     bool public frozenImages;
@@ -147,23 +148,25 @@ contract TdxVerifier is IProofVerifier {
 
     // ─── Views ───────────────────────────────────────────────────────────
 
-    /// @notice Compute the image key from raw RTMR[1] and RTMR[2] measurement bytes.
-    /// @dev For off-chain computation: hash the concatenation of RTMR[1] + RTMR[2].
+    /// @notice Compute the image key from raw RTMR[1], RTMR[2], and RTMR[3] measurement bytes.
+    /// @dev For off-chain computation: hash the concatenation of RTMR[1] + RTMR[2] + RTMR[3].
     function computeImageKey(
         bytes calldata rtmr1,
-        bytes calldata rtmr2
+        bytes calldata rtmr2,
+        bytes calldata rtmr3
     ) external pure returns (bytes32) {
         if (rtmr1.length != MEASUREMENT_LEN) revert InvalidParams();
         if (rtmr2.length != MEASUREMENT_LEN) revert InvalidParams();
-        return keccak256(abi.encodePacked(rtmr1, rtmr2));
+        if (rtmr3.length != MEASUREMENT_LEN) revert InvalidParams();
+        return keccak256(abi.encodePacked(rtmr1, rtmr2, rtmr3));
     }
 
     // ─── Internal ────────────────────────────────────────────────────────
 
-    /// @dev Extract RTMR[1] + RTMR[2] from DCAP output and compute image key.
+    /// @dev Extract RTMR[1] + RTMR[2] + RTMR[3] from DCAP output and compute image key.
     function _computeImageKey(bytes memory output) internal pure returns (bytes32) {
-        // Extract 96 bytes: RTMR[1](48) || RTMR[2](48)
-        bytes memory measurements = new bytes(96);
+        // Extract 144 bytes: RTMR[1](48) || RTMR[2](48) || RTMR[3](48)
+        bytes memory measurements = new bytes(144);
 
         assembly {
             let src := add(output, 32) // skip bytes length prefix
@@ -178,6 +181,11 @@ contract TdxVerifier is IProofVerifier {
             let rtmr2Src := add(src, RTMR2_OFFSET)
             mstore(add(dst, 48), mload(rtmr2Src))            // bytes 48-79
             mstore(add(dst, 80), mload(add(rtmr2Src, 32)))   // bytes 80-95 (+ 16 overflow, ok)
+
+            // Copy RTMR[3] (48 bytes at offset 483)
+            let rtmr3Src := add(src, RTMR3_OFFSET)
+            mstore(add(dst, 96), mload(rtmr3Src))            // bytes 96-127
+            mstore(add(dst, 128), mload(add(rtmr3Src, 32)))  // bytes 128-143 (+ 16 overflow, ok)
         }
 
         return keccak256(measurements);
