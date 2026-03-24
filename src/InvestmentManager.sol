@@ -29,6 +29,7 @@ contract InvestmentManager is IInvestmentManager {
     error WithdrawFailed();
     error ZeroAmount();
     error TransferFailed();
+    error Frozen();
 
     // ─── Events ──────────────────────────────────────────────────────────
 
@@ -85,6 +86,12 @@ contract InvestmentManager is IInvestmentManager {
     /// @dev 2000 = 20%. Fund balance must stay >= this % of total assets.
     uint256 public minReserveBps = 2000;
 
+    // Kill switches
+    bool public frozenInvestments;
+    bool public frozenAdmin;
+
+    event PermissionFrozen(string name);
+
     // ─── Constructor ─────────────────────────────────────────────────────
 
     constructor(address _fund, address _admin) {
@@ -119,6 +126,7 @@ contract InvestmentManager is IInvestmentManager {
         uint8 riskTier,
         uint16 expectedApyBps
     ) external onlyAdmin returns (uint256 protocolId) {
+        if (frozenInvestments) revert Frozen();
         protocolId = ++protocolCount;
         protocols[protocolId] = ProtocolInfo({
             adapter: IProtocolAdapter(adapter),
@@ -134,6 +142,7 @@ contract InvestmentManager is IInvestmentManager {
 
     /// @notice Pause or unpause a protocol (paused = no new deposits, withdrawals still work).
     function setProtocolActive(uint256 protocolId, bool active) external onlyAdmin {
+        if (frozenInvestments) revert Frozen();
         if (!protocols[protocolId].exists) revert ProtocolNotFound();
         protocols[protocolId].active = active;
         emit ProtocolPausedEvent(protocolId, !active);
@@ -141,6 +150,7 @@ contract InvestmentManager is IInvestmentManager {
 
     /// @notice Update allocation bounds.
     function setBounds(uint256 _maxTotalBps, uint256 _maxPerProtocolBps, uint256 _minReserveBps) external onlyAdmin {
+        if (frozenInvestments) revert Frozen();
         require(_maxTotalBps <= 10000 && _maxPerProtocolBps <= 10000 && _minReserveBps <= 10000);
         require(_maxTotalBps + _minReserveBps <= 10000, "total + reserve > 100%");
         maxTotalBps = _maxTotalBps;
@@ -151,7 +161,20 @@ contract InvestmentManager is IInvestmentManager {
 
     /// @notice Transfer admin role.
     function setAdmin(address _admin) external onlyAdmin {
+        if (frozenAdmin) revert Frozen();
         admin = _admin;
+    }
+
+    // ─── Kill Switches ───────────────────────────────────────────────────
+
+    function freezeInvestments() external onlyAdmin {
+        frozenInvestments = true;
+        emit PermissionFrozen("investments");
+    }
+
+    function freezeAdmin() external onlyAdmin {
+        frozenAdmin = true;
+        emit PermissionFrozen("admin");
     }
 
     // ─── Deposit / Withdraw ──────────────────────────────────────────────
@@ -236,6 +259,30 @@ contract InvestmentManager is IInvestmentManager {
         if (!sent) revert TransferFailed();
 
         emit Withdrawn(protocolId, sharesToWithdraw, ethReturned);
+    }
+
+    /// @notice Withdraw all positions across all protocols and send ETH to recipient.
+    /// @dev Only callable by the fund contract. Skips protocols with no shares.
+    function withdrawAll(address recipient) external override onlyFund {
+        for (uint256 i = 1; i <= protocolCount; i++) {
+            Position storage pos = positions[i];
+            if (pos.shares == 0 || !protocols[i].exists) continue;
+
+            uint256 shares = pos.shares;
+            uint256 ethReturned = protocols[i].adapter.withdraw(shares);
+
+            pos.shares = 0;
+            pos.depositedEth = 0;
+
+            emit Withdrawn(i, shares, ethReturned);
+        }
+
+        // Send all recovered ETH to recipient in a single transfer
+        uint256 bal = address(this).balance;
+        if (bal > 0) {
+            (bool sent, ) = recipient.call{value: bal}("");
+            if (!sent) revert TransferFailed();
+        }
     }
 
     // ─── Views ───────────────────────────────────────────────────────────

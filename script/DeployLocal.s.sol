@@ -71,7 +71,7 @@ contract DeployLocal is Script {
         fund.addNonprofit("MSF", "Emergency medical care", bytes32("13-3433452"));
 
         // Deploy TdxVerifier
-        TdxVerifier verifier = new TdxVerifier();
+        TdxVerifier verifier = new TdxVerifier(address(fund));
 
         // Approve the all-zeros image key (local testing — no real RTMR values)
         // Now only RTMR[1] + RTMR[2] = 96 bytes

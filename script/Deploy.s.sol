@@ -59,7 +59,7 @@ contract Deploy is Script {
         // Add all 9 nonprofits
         _addNonprofits(fund);
 
-        TdxVerifier tdxVerifier = new TdxVerifier();
+        TdxVerifier tdxVerifier = new TdxVerifier(address(fund));
         fund.approveVerifier(1, address(tdxVerifier));  // ID 1 = Intel TDX
 
         InvestmentManager im = new InvestmentManager(address(fund), deployer);

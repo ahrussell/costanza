@@ -113,7 +113,7 @@ contract MessagesTest is Test {
 
         // Execute an epoch (advances head)
         bytes memory noopAction = bytes(hex"00");
-        fund.submitEpochAction(noopAction, "reasoning");
+        fund.submitEpochAction(noopAction, "reasoning", -1, "");
 
         assertEq(fund.messageHead(), 3);
 
@@ -133,7 +133,7 @@ contract MessagesTest is Test {
 
         // Execute epoch — should only advance by 20
         bytes memory noopAction = bytes(hex"00");
-        fund.submitEpochAction(noopAction, "reasoning");
+        fund.submitEpochAction(noopAction, "reasoning", -1, "");
 
         assertEq(fund.messageHead(), 20);
 
@@ -165,11 +165,11 @@ contract MessagesTest is Test {
 
         // Epoch 1: advances head to 20
         bytes memory noopAction = bytes(hex"00");
-        fund.submitEpochAction(noopAction, "reasoning");
+        fund.submitEpochAction(noopAction, "reasoning", -1, "");
         assertEq(fund.messageHead(), 20);
 
         // Epoch 2: advances head to 25
-        fund.submitEpochAction(noopAction, "reasoning");
+        fund.submitEpochAction(noopAction, "reasoning", -1, "");
         assertEq(fund.messageHead(), 25);
 
         // All read
