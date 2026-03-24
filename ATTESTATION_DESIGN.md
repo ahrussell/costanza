@@ -233,8 +233,53 @@ When a runner calls `submitAuctionResult(action, reasoning, proof, ...)`:
    If any fail → revert
 ```
 
+## Limitations: What RTMR[3] Does and Doesn't Prevent
+
+### The Runtime Code-Swap Attack
+
+A natural question: what stops a malicious runner from booting the approved snapshot (so RTMR[3] gets the correct measurement at boot), then SSH'ing in, killing the enclave runner, swapping in modified code, and restarting it?
+
+**Answer: RTMR[3] alone doesn't prevent this.** The runner controls the VM — they have root access. TDX protects the VM from the *host* (Google, the hypervisor), not from code running *inside* the VM. RTMR extension is append-only, but nothing forces a new extension when code is swapped at runtime. The quote would still show the boot-time RTMR[3].
+
+### What RTMR[3] Actually Prevents
+
+RTMR[3] prevents a runner from **building a modified snapshot** with different enclave code pre-installed. In that case, `boot.sh` would hash the modified code at boot, producing a different RTMR[3], and the image key wouldn't match. This forces the attacker to at least start with the approved code on disk.
+
+### What Actually Prevents the Attack: Deterministic Verification
+
+The real defense is that **anyone can re-run the inference and check the result**:
+
+1. The randomness seed (`block.prevrandao`) is captured on-chain at `closeReveal()` and baked into the input hash
+2. Given the same input + seed + model + prompt, llama.cpp produces the same output (deterministic inference)
+3. Both `action` and `reasoning` are published on-chain
+4. Anyone can boot a legit VM, run the same inference, and compare
+
+If a runner hot-swapped code and produced a different output, the discrepancy is publicly detectable. This is **optimistic verification** — we assume honesty and can verify after the fact.
+
+### The Layered Defense
+
+| Layer | What it prevents | How |
+|-------|-----------------|-----|
+| RTMR[1]+[2] | Modified kernel/boot chain | Hardware measurement at boot |
+| RTMR[3] | Modified snapshot (different code pre-installed) | boot.sh hashes code at boot |
+| REPORTDATA | Tampered input or output | sha256(inputHash \|\| outputHash) bound in quote |
+| Deterministic seed | Cherry-picked inference | block.prevrandao captured after bids committed |
+| Public outputs | Undetectable cheating | Anyone can re-run and compare |
+
+No single layer is sufficient. Together, they make cheating detectable and expensive (forfeited bond + lost reputation).
+
+### Stronger Alternatives (Not Yet Implemented)
+
+To fully prevent runtime code swaps, we could add:
+
+- **IMA (Integrity Measurement Architecture)** — the kernel measures every executed binary into RTMR, so running modified code changes the measurement. Downside: measures all system binaries, making RTMRs non-deterministic across VMs.
+- **dm-verity root filesystem** — the kernel verifies every disk read against a Merkle tree, so modified files cause I/O errors. The root hash would be in the kernel command line (measured by RTMR[2]).
+
+These are potential future hardening steps if optimistic verification proves insufficient.
+
 ## What Attestation Does NOT Prove
 
 - **That the inference is "correct"** — a different random seed would produce different reasoning. Attestation proves the approved code ran, not that the output is optimal.
 - **That the runner is honest about timing** — a runner could delay submission (within the execution window). The contract enforces timing via the auction mechanism.
 - **That the model is "good"** — the model hash is pinned, but whether DeepSeek R1 70B makes good decisions is a separate question. Model selection was done via a 75-epoch gauntlet before deployment.
+- **That code wasn't swapped at runtime** — RTMR[3] measures boot-time state only. Runtime integrity relies on deterministic verification (see above).
