@@ -638,32 +638,31 @@ contract TheHumanFund {
     ) external payable {
         if (!auctionEnabled) revert WrongPhase();
         uint256 epoch = currentEpoch;
-        IAuctionManager am = auctionManager;
 
         // Settle auction — AM validates phase, caller==winner, and timing.
         // Refunds bond to the winner.
-        am.settleExecution(epoch, msg.sender);
-        address winner = msg.sender;
+        auctionManager.settleExecution(epoch, msg.sender);
 
-        // Verify proof
-        IProofVerifier v = verifiers[verifierId];
-        if (address(v) == address(0)) revert InvalidParams();
-        bytes32 outputHash = keccak256(abi.encodePacked(
-            sha256(action), sha256(reasoning), approvedPromptHash
-        ));
-        if (!v.verify{value: msg.value}(epochInputHashes[epoch], outputHash, proof))
-            revert ProofFailed();
-        epochProofs[epoch] = proof;
+        // Verify proof and pay bounty (scoped to reduce stack depth)
+        uint256 bountyAmount;
+        {
+            IProofVerifier v = verifiers[verifierId];
+            if (address(v) == address(0)) revert InvalidParams();
+            bytes32 outputHash = keccak256(abi.encodePacked(
+                sha256(action), sha256(reasoning), approvedPromptHash
+            ));
+            if (!v.verify{value: msg.value}(epochInputHashes[epoch], outputHash, proof))
+                revert ProofFailed();
+            epochProofs[epoch] = proof;
 
-        // Pay bounty from treasury
-        uint256 bountyAmount = am.getWinningBid(epoch);
-        totalBountiesPaid += bountyAmount;
-        (bool paid, ) = payable(winner).call{value: bountyAmount}("");
-        if (!paid) revert TransferFailed();
+            bountyAmount = auctionManager.getWinningBid(epoch);
+            totalBountiesPaid += bountyAmount;
+            (bool paid, ) = payable(msg.sender).call{value: bountyAmount}("");
+            if (!paid) revert TransferFailed();
+        }
 
-        emit EpochExecuted(epoch, winner, bountyAmount);
+        emit EpochExecuted(epoch, msg.sender, bountyAmount);
 
-        // Apply optional worldview update + execute action + record epoch
         _applyPolicyUpdate(policySlot, policyText);
         _recordAndExecute(epoch, action, reasoning, bountyAmount);
     }
@@ -1039,31 +1038,6 @@ contract TheHumanFund {
     function computeInputHash() external view returns (bytes32) {
         return _computeInputHash();
     }
-
-    /// @notice Get the current auction state for an epoch (delegates to AuctionManager).
-    function getAuctionState(uint256 epoch) external view returns (
-        uint256 startTime,
-        IAuctionManager.AuctionPhase phase,
-        address winner,
-        uint256 winningBid,
-        uint256 bondAmount,
-        uint256 randomnessSeed
-    ) {
-        IAuctionManager am = auctionManager;
-        return (
-            am.getStartTime(epoch),
-            am.getPhase(epoch),
-            am.getWinner(epoch),
-            am.getWinningBid(epoch),
-            am.getBond(epoch),
-            am.getRandomnessSeed(epoch)
-        );
-    }
-
-    /// @notice Get auction timing (delegates to AuctionManager).
-    function commitWindow() external view returns (uint256) { return auctionManager.commitWindow(); }
-    function revealWindow() external view returns (uint256) { return auctionManager.revealWindow(); }
-    function executionWindow() external view returns (uint256) { return auctionManager.executionWindow(); }
 
     /// @notice Get the current treasury balance (liquid ETH only).
     function treasuryBalance() external view returns (uint256) {

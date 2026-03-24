@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import os
+os.environ["PYTHONUNBUFFERED"] = "1"
 """
 The Human Fund — Full E2E Test on Base Sepolia
 
@@ -39,6 +41,7 @@ import argparse
 import hashlib
 import json
 import os
+import requests
 import subprocess
 import sys
 import time
@@ -66,10 +69,10 @@ USE_GPU = True
 
 # Timing constants (adjusted at runtime based on CPU vs GPU)
 # GPU: inference takes ~30s, so keep windows tight
-EPOCH_DURATION_GPU = 600      # 10 min
+EPOCH_DURATION_GPU = 1800     # 30 min (generous for SSH/inference overhead)
 COMMIT_WINDOW_GPU = 60        # 1 min
 REVEAL_WINDOW_GPU = 30        # 30 sec
-EXECUTION_WINDOW_GPU = 300    # 5 min
+EXECUTION_WINDOW_GPU = 1500   # 25 min
 
 EPOCH_DURATION_CPU = 3600     # 60 min
 COMMIT_WINDOW_CPU = 120       # 2 min
@@ -133,9 +136,11 @@ def deploy_contracts(w3, account):
     )
     # Constructor: (commissionBps, maxBid, endaomentFactory, weth, usdc, swapRouter, ethUsdFeed)
     # Use deployer as placeholder for Endaoment/DeFi addresses on testnet
+    # ethUsdFeed must be address(0) — deployer is an EOA, calling latestRoundData() on it reverts
+    ZERO_ADDR = "0x0000000000000000000000000000000000000000"
     tx = fund_contract.constructor(
         1000, w3.to_wei(0.0001, "ether"),
-        deployer, deployer, deployer, deployer, deployer
+        deployer, deployer, deployer, deployer, ZERO_ADDR
     ).build_transaction({
         "from": deployer,
         "nonce": nonce,
@@ -237,19 +242,21 @@ def deploy_contracts(w3, account):
     w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
     nonce += 1
 
-    # Configure auction timing
+    # Configure auction timing (cross-contract call to AuctionManager.setTiming)
     print(f"Setting auction timing (epoch={EPOCH_DURATION}s, commit={COMMIT_WINDOW}s, reveal={REVEAL_WINDOW}s, exec={EXECUTION_WINDOW}s)...")
     tx = fund.functions.setAuctionTiming(
         EPOCH_DURATION, COMMIT_WINDOW, REVEAL_WINDOW, EXECUTION_WINDOW
     ).build_transaction({
         "from": deployer, "nonce": nonce,
-        "gas": 100_000,
+        "gas": 200_000,
         "maxFeePerGas": w3.eth.gas_price * 2,
         "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
     })
     signed = account.sign_transaction(tx)
     tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-    w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+    receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+    if receipt.status != 1:
+        raise RuntimeError(f"setAuctionTiming failed! Gas: {receipt.gasUsed}")
     nonce += 1
 
     # Set approved system prompt hash
@@ -371,7 +378,7 @@ def deploy_contracts(w3, account):
         print(f"  Protocol #{i+1}: {pname} -> {adapter_addr}")
 
     print(f"  Contracts deployed and configured!")
-    return fund_addr, verifier_addr, nonce
+    return fund_addr, verifier_addr, am_addr, nonce
 
 
 # ─── Step 2: Spin up GCP TDX VM ─────────────────────────────────────────
@@ -429,6 +436,19 @@ if ! nvidia-smi > /dev/null 2>&1; then
     exit 1
 fi
 
+# Activate Confidential Computing GPU Ready State (required for TDX VMs)
+# Without this, CUDA reports "system not yet initialized" and llama.cpp silently falls back to CPU
+echo "Activating CC GPU Ready State..."
+nvidia-smi conf-compute -srs 1
+sleep 2
+CC_STATE=$(nvidia-smi conf-compute -grs 2>&1 | grep -o 'ready\|not-ready')
+echo "CC GPU state: $CC_STATE"
+if [ "$CC_STATE" = "not-ready" ]; then
+    echo "WARNING: CC GPU state still not-ready, retrying..."
+    nvidia-smi conf-compute -srs 1
+    sleep 5
+fi
+
 echo "Starting llama-server (GPU)..."
 export LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}
 nohup llama-server -m /models/model.gguf -c 4096 --host 0.0.0.0 --port 8080 -ngl 99 > /tmp/llama.log 2>&1 &
@@ -463,6 +483,16 @@ for i in $(seq 1 120); do
     fi
     sleep 5
 done
+
+# Verify model is actually loaded on GPU (not silent CPU fallback)
+GPU_MEM=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1)
+echo "GPU memory used: ${GPU_MEM} MiB"
+if [ -n "$GPU_MEM" ] && [ "$GPU_MEM" -lt 1000 ]; then
+    echo "FATAL: Model not loaded on GPU (only ${GPU_MEM} MiB used). Likely silent CPU fallback!"
+    echo "CC state: $(nvidia-smi conf-compute -grs 2>&1)"
+    tail -30 /tmp/llama.log
+    exit 1
+fi
 echo "=== Snapshot boot complete at $(date) ==="
 """
     else:
@@ -551,6 +581,18 @@ if [ "$ACTUAL_HASH" != "{MODEL_SHA256}" ]; then
 fi
 echo "Model hash verified."
 
+# Activate Confidential Computing GPU Ready State (required for TDX VMs)
+echo "Activating CC GPU Ready State..."
+nvidia-smi conf-compute -srs 1
+sleep 2
+CC_STATE=$(nvidia-smi conf-compute -grs 2>&1 | grep -o 'ready\|not-ready')
+echo "CC GPU state: $CC_STATE"
+if [ "$CC_STATE" = "not-ready" ]; then
+    echo "WARNING: CC GPU state still not-ready, retrying..."
+    nvidia-smi conf-compute -srs 1
+    sleep 5
+fi
+
 echo "Starting llama-server (GPU, -ngl 99)..."
 nohup llama-server -m /models/model.gguf -c 4096 --host 0.0.0.0 --port 8080 -ngl 99 > /tmp/llama.log 2>&1 &
 
@@ -570,6 +612,16 @@ done
 
 if ! curl -s http://127.0.0.1:8080/health | grep -q ok; then
     echo "FATAL: llama-server never became ready after 15 minutes"
+    tail -30 /tmp/llama.log
+    exit 1
+fi
+
+# Verify model is actually loaded on GPU (not silent CPU fallback)
+GPU_MEM=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1)
+echo "GPU memory used: ${{GPU_MEM}} MiB"
+if [ -n "$GPU_MEM" ] && [ "$GPU_MEM" -lt 1000 ]; then
+    echo "FATAL: Model not loaded on GPU (only ${{GPU_MEM}} MiB used). Likely silent CPU fallback!"
+    echo "CC state: $(nvidia-smi conf-compute -grs 2>&1)"
     tail -30 /tmp/llama.log
     exit 1
 fi
@@ -749,6 +801,32 @@ def wait_for_vm_ready(vm_ip):
             )
             if '"status":"ok"' in result or '"status": "ok"' in result:
                 print(f"  llama-server ready after {i * 30}s")
+                # In GPU mode, verify model is actually on GPU (not silent CPU fallback)
+                if USE_GPU:
+                    try:
+                        gpu_check = gcloud(
+                            f"compute ssh {GCP_VM_NAME} --zone={GCP_ZONE} "
+                            f"--command='nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null'",
+                            check=False, timeout=15
+                        )
+                        gpu_mem = int(gpu_check.strip().split()[0]) if gpu_check.strip() else 0
+                        if gpu_mem < 1000:
+                            print(f"  WARNING: Only {gpu_mem} MiB GPU memory used — model may be on CPU!")
+                            print(f"  Activating CC and restarting llama-server...")
+                            gcloud(
+                                f"compute ssh {GCP_VM_NAME} --zone={GCP_ZONE} "
+                                f"--command='sudo nvidia-smi conf-compute -srs 1 && sleep 2 && "
+                                f"cat > /tmp/restart_gpu.sh << \"EOF\"\n"
+                                f"#!/bin/bash\npkill -9 -f llama-server\nsleep 3\n"
+                                f"nohup /tmp/llama.cpp/build/bin/llama-server -m /models/model.gguf -c 4096 --host 0.0.0.0 --port 8080 -ngl 99 > /tmp/llama.log 2>&1 &\n"
+                                f"EOF\nsudo bash /tmp/restart_gpu.sh'",
+                                check=False, timeout=30
+                            )
+                            continue  # Re-check after restart
+                        else:
+                            print(f"  GPU memory: {gpu_mem} MiB — model loaded on GPU ✓")
+                    except Exception:
+                        pass  # If GPU check fails, proceed anyway
                 return True
             elif "NOT_READY" in result:
                 # SSH works but llama-server not ready yet
@@ -908,9 +986,14 @@ def register_image_key(w3, account, verifier_addr, image_key, nonce):
 
 # ─── Step 4: Run Full Auction Flow ───────────────────────────────────────
 
-def run_auction_e2e(w3, account, fund_addr, vm_ip, nonce):
+def run_auction_e2e(w3, account, fund_addr, am_addr, vm_ip, nonce):
     """Run the full auction lifecycle with real TDX attestation."""
     print("\n═══ STEP 4: Full Auction E2E ═══")
+
+    am_abi = json.loads(
+        (ABI_DIR / "AuctionManager.sol" / "AuctionManager.json").read_text()
+    )["abi"]
+    am = w3.eth.contract(address=am_addr, abi=am_abi)
 
     fund_abi = json.loads(
         (ABI_DIR / "TheHumanFund.sol" / "TheHumanFund.json").read_text()
@@ -919,8 +1002,10 @@ def run_auction_e2e(w3, account, fund_addr, vm_ip, nonce):
 
     # Helper to get fresh Web3 connection (Base Sepolia RPC returns stale data after writes)
     def fresh_connection():
+        nonlocal am
         w3_ = Web3(Web3.HTTPProvider(RPC_URL, request_kwargs={"timeout": 120}))
         fund_ = w3_.eth.contract(address=fund_addr, abi=fund_abi)
+        am = w3_.eth.contract(address=am_addr, abi=am_abi)
         return w3_, fund_
 
     def send_tx(fn, value=0, gas=300_000):
@@ -950,12 +1035,11 @@ def run_auction_e2e(w3, account, fund_addr, vm_ip, nonce):
     # If the current epoch has an active auction (e.g., from a previous failed run),
     # close it out so we can proceed.
     epoch_dur = fund.functions.epochDuration().call()
-    commit_win = fund.functions.commitWindow().call()
-    reveal_win = fund.functions.revealWindow().call()
+    commit_win = am.functions.commitWindow().call()
+    reveal_win = am.functions.revealWindow().call()
 
-    auction_state = fund.functions.getAuctionState(epoch).call()
-    start_time = auction_state[0]
-    phase = auction_state[1]  # 0=IDLE, 1=COMMIT, 2=REVEAL, 3=EXECUTION
+    start_time = am.functions.getStartTime(epoch).call()
+    phase = am.functions.getPhase(epoch).call()  # 0=IDLE, 1=COMMIT, 2=REVEAL, 3=EXECUTION
 
     if phase != 0 and start_time > 0:
         now = int(time.time())
@@ -973,8 +1057,7 @@ def run_auction_e2e(w3, account, fund_addr, vm_ip, nonce):
                 print(f"      closeCommit failed: {e}")
             w3, fund = fresh_connection()
             nonce = w3.eth.get_transaction_count(account.address)
-            auction_state = fund.functions.getAuctionState(epoch).call()
-            phase = auction_state[1]
+            phase = am.functions.getPhase(epoch).call()
 
         if phase == 2:  # REVEAL
             close_time = start_time + commit_win + reveal_win
@@ -990,11 +1073,10 @@ def run_auction_e2e(w3, account, fund_addr, vm_ip, nonce):
                 print(f"      closeReveal failed: {e}")
             w3, fund = fresh_connection()
             nonce = w3.eth.get_transaction_count(account.address)
-            auction_state = fund.functions.getAuctionState(epoch).call()
-            phase = auction_state[1]
+            phase = am.functions.getPhase(epoch).call()
 
         if phase == 3:  # EXECUTION — need to forfeit bond
-            exec_win = fund.functions.executionWindow().call()
+            exec_win = am.functions.executionWindow().call()
             deadline = start_time + commit_win + reveal_win + exec_win
             now = int(time.time())
             if now < deadline:
@@ -1016,9 +1098,9 @@ def run_auction_e2e(w3, account, fund_addr, vm_ip, nonce):
     # Wait for previous epoch's duration if needed
     if epoch > 1:
         try:
-            prev_state = fund.functions.getAuctionState(epoch - 1).call()
-            if prev_state[0] > 0:
-                earliest_start = prev_state[0] + epoch_dur
+            prev_start = am.functions.getStartTime(epoch - 1).call()
+            if prev_start > 0:
+                earliest_start = prev_start + epoch_dur
                 now = int(time.time())
                 if now < earliest_start:
                     wait_secs = earliest_start - now + 5
@@ -1027,7 +1109,7 @@ def run_auction_e2e(w3, account, fund_addr, vm_ip, nonce):
                     w3, fund = fresh_connection()
                     nonce = w3.eth.get_transaction_count(account.address)
         except Exception:
-            pass  # getAuctionState may fail for epoch 0
+            pass  # AM query may fail for epoch 0
 
     # Start the fresh epoch
     print(f"  4a. Starting epoch {epoch}...")
@@ -1066,8 +1148,8 @@ def run_auction_e2e(w3, account, fund_addr, vm_ip, nonce):
     print(f"      Gas: {receipt.gasUsed}")
 
     # ─── 4c: Wait for commit window, closeCommit, reveal, closeReveal ───
-    start_time, phase, _, _, _, _ = fund.functions.getAuctionState(epoch).call()
-    commit_win = fund.functions.commitWindow().call()
+    start_time = am.functions.getStartTime(epoch).call()
+    commit_win = am.functions.commitWindow().call()
     now = w3.eth.get_block("latest").timestamp
     wait_secs = max(0, start_time + commit_win - now + 5)
     print(f"\n  4c. Waiting {wait_secs}s for commit window to close...")
@@ -1086,7 +1168,7 @@ def run_auction_e2e(w3, account, fund_addr, vm_ip, nonce):
     print(f"      Gas: {receipt.gasUsed}")
 
     # Wait for reveal window, then close
-    reveal_win = fund.functions.revealWindow().call()
+    reveal_win = am.functions.revealWindow().call()
     now = w3.eth.get_block("latest").timestamp
     reveal_close_time = start_time + commit_win + reveal_win
     wait_secs = max(0, reveal_close_time - now + 5)
@@ -1099,7 +1181,14 @@ def run_auction_e2e(w3, account, fund_addr, vm_ip, nonce):
     print("      Closing reveal phase...")
     receipt = send_tx(fund.functions.closeReveal())
 
-    _, _, winner, winning_bid, _, seed = fund.functions.getAuctionState(epoch).call()
+    # Fresh connection to avoid stale reads after closeReveal
+    time.sleep(3)
+    w3, fund = fresh_connection()
+    nonce = w3.eth.get_transaction_count(account.address)
+
+    winner = am.functions.getWinner(epoch).call()
+    winning_bid = am.functions.getWinningBid(epoch).call()
+    seed = am.functions.getRandomnessSeed(epoch).call()
     input_hash = fund.functions.epochInputHashes(epoch).call()
     print(f"      Winner: {winner}")
     print(f"      Input hash: 0x{input_hash.hex()[:16]}... (set at closeReveal)")
@@ -1171,10 +1260,22 @@ def run_auction_e2e(w3, account, fund_addr, vm_ip, nonce):
     attestation_bytes = bytes.fromhex(tee_result["attestation_quote"].replace("0x", ""))
     print(f"      Reasoning: {len(reasoning_bytes)} bytes (truncated by enclave if needed)")
 
+    # Extract worldview update if present
+    action_json = tee_result.get("action", {})
+    if isinstance(action_json, str):
+        action_json = json.loads(action_json)
+    wv = action_json.get("worldview", {})
+    policy_slot = wv.get("slot", -1)  # -1 = no update
+    policy_text = wv.get("policy", "")
+    if policy_slot >= 0:
+        print(f"      Worldview update: slot {policy_slot} = {policy_text!r}")
+
     # Verify REPORTDATA matches before submitting
     # Formula: outputHash = keccak256(sha256(action) + sha256(reasoning) + promptHash)
     #          REPORTDATA = sha256(inputHash + outputHash)
-    prompt_hash = fund.functions.approvedPromptHash().call()
+    # Compute prompt hash locally (avoids stale RPC connection after long inference)
+    prompt_path = Path(__file__).parent.parent / "agent" / "prompts" / "system_v6.txt"
+    prompt_hash = hashlib.sha256(prompt_path.read_text().strip().encode("utf-8")).digest()
     output_hash = Web3.keccak(
         hashlib.sha256(action_bytes).digest() +
         hashlib.sha256(reasoning_bytes).digest() +
@@ -1189,23 +1290,106 @@ def run_auction_e2e(w3, account, fund_addr, vm_ip, nonce):
         print(f"      MISMATCH! Contract: {expected_rd.hex()[:32]}... TEE: {tee_rd.hex()[:32]}...")
         return False
 
-    # Fresh connection for submission
-    w3, fund = fresh_connection()
-    nonce = w3.eth.get_transaction_count(account.address)
+    # Fetch RPC params with retry (public RPC may be flaky after long inference wait)
+    for rpc_attempt in range(5):
+        try:
+            w3 = Web3(Web3.HTTPProvider(RPC_URL, request_kwargs={"timeout": 60}))
+            fund = w3.eth.contract(address=fund_addr, abi=fund_abi)
+            am = w3.eth.contract(address=am_addr, abi=am_abi)
+            nonce = w3.eth.get_transaction_count(account.address)
+            gas_price = w3.eth.gas_price
+            chain_id = w3.eth.chain_id
+            break
+        except Exception as e:
+            print(f"      RPC fetch failed (attempt {rpc_attempt + 1}/5): {str(e)[:80]}")
+            time.sleep(5)
+    else:
+        raise RuntimeError("Failed to fetch RPC params after 5 attempts")
 
-    tx = fund.functions.submitAuctionResult(
-        action_bytes, reasoning_bytes, attestation_bytes, 1, -1, ""
-    ).build_transaction({
-        "from": account.address, "nonce": nonce,
-        "gas": 15_000_000,  # DCAP verification needs ~10.2M gas
-        "maxFeePerGas": w3.eth.gas_price * 3,
+    # Build tx manually — no RPC calls needed after this point
+    print(f"      Building tx (nonce={nonce}, chain_id={chain_id})...")
+    calldata = fund.functions.submitAuctionResult(
+        action_bytes, reasoning_bytes, attestation_bytes, 1,
+        policy_slot, policy_text
+    )._encode_transaction_data()
+    tx = {
+        "from": account.address,
+        "to": fund_addr,
+        "data": calldata,
+        "nonce": nonce,
+        "gas": 15_000_000,
+        "maxFeePerGas": gas_price * 3,
         "maxPriorityFeePerGas": w3.to_wei(0.01, "gwei"),
-    })
+        "chainId": chain_id,
+        "type": 2,
+    }
     signed = account.sign_transaction(tx)
-    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+    raw_tx = signed.raw_transaction
+    tx_hash = Web3.keccak(raw_tx)
     print(f"      Tx: https://sepolia.basescan.org/tx/{tx_hash.hex()}")
+    print(f"      Raw tx size: {len(raw_tx)} bytes")
 
-    receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=180)
+    # Send raw tx via HTTP POST with retry (public RPC drops connection on large ~12KB txs)
+    raw_tx_hex = "0x" + raw_tx.hex()
+    tx_hash_hex = tx_hash.hex() if tx_hash.hex().startswith("0x") else "0x" + tx_hash.hex()
+    for send_attempt in range(5):
+        try:
+            send_resp = requests.post(RPC_URL, json={
+                "jsonrpc": "2.0", "method": "eth_sendRawTransaction",
+                "params": [raw_tx_hex], "id": 1,
+            }, timeout=300)
+            send_json = send_resp.json()
+            if "error" in send_json:
+                err_msg = str(send_json['error'])
+                if "already known" in err_msg or "nonce too low" in err_msg:
+                    print(f"      Tx already in mempool (attempt {send_attempt + 1})")
+                    break
+                raise RuntimeError(f"eth_sendRawTransaction failed: {send_json['error']}")
+            print(f"      Sent successfully via HTTP POST")
+            break
+        except (requests.ConnectionError, requests.Timeout, ConnectionResetError) as e:
+            print(f"      Send failed (attempt {send_attempt + 1}/5): {str(e)[:80]}")
+            # The tx may have been received despite the connection error — check for receipt
+            time.sleep(5)
+            try:
+                rcpt_check = requests.post(RPC_URL, json={
+                    "jsonrpc": "2.0", "method": "eth_getTransactionReceipt",
+                    "params": [tx_hash_hex], "id": 1,
+                }, timeout=15)
+                if rcpt_check.json().get("result") is not None:
+                    print(f"      Tx was received despite connection error!")
+                    break
+            except Exception:
+                pass
+            if send_attempt == 4:
+                raise RuntimeError(f"Failed to send tx after 5 attempts: {e}")
+
+    # Poll for receipt via HTTP POST (avoids Web3.py connection issues on large txs)
+    receipt = None
+    for wait_attempt in range(36):  # 36 x 5s = 3 min
+        time.sleep(5)
+        try:
+            rcpt_resp = requests.post(RPC_URL, json={
+                "jsonrpc": "2.0", "method": "eth_getTransactionReceipt",
+                "params": [tx_hash_hex], "id": 1,
+            }, timeout=30)
+            rcpt_json = rcpt_resp.json()
+            result = rcpt_json.get("result")
+            if result is not None:
+                # Parse receipt from raw JSON-RPC response
+                receipt_status = int(result["status"], 16)
+                receipt_gas = int(result["gasUsed"], 16)
+                # Build a simple namespace so downstream code can use receipt.status / receipt.gasUsed
+                class _Receipt:
+                    pass
+                receipt = _Receipt()
+                receipt.status = receipt_status
+                receipt.gasUsed = receipt_gas
+                break
+        except Exception as e:
+            print(f"      Polling for receipt (attempt {wait_attempt + 1}/36): {str(e)[:80]}")
+    if receipt is None:
+        raise RuntimeError("Failed to get receipt for submitAuctionResult")
     nonce += 1
 
     if receipt.status == 1:
@@ -1231,7 +1415,7 @@ def cleanup(delete_vm=True):
     if delete_vm:
         print("\n═══ STEP 5: Cleanup ═══")
         try:
-            gcloud(f"compute instances delete {GCP_VM_NAME} --zone={GCP_ZONE} --quiet", timeout=60)
+            gcloud(f"compute instances delete {GCP_VM_NAME} --zone={GCP_ZONE} --quiet", timeout=120)
             print("  VM deleted")
         except Exception as e:
             print(f"  Failed to delete VM: {e}")
@@ -1311,9 +1495,13 @@ def main():
             fund_addr = Web3.to_checksum_address(args.fund_address)
             verifier_addr = Web3.to_checksum_address(args.verifier_address)
             nonce = w3.eth.get_transaction_count(account.address)
-            print(f"\nReusing contracts: fund={fund_addr}, verifier={verifier_addr}")
+            # Read AM address from fund contract
+            fund_abi = json.loads((ABI_DIR / "TheHumanFund.sol" / "TheHumanFund.json").read_text())["abi"]
+            fund_tmp = w3.eth.contract(address=fund_addr, abi=fund_abi)
+            am_addr = fund_tmp.functions.auctionManager().call()
+            print(f"\nReusing contracts: fund={fund_addr}, verifier={verifier_addr}, am={am_addr}")
         else:
-            fund_addr, verifier_addr, nonce = deploy_contracts(w3, account)
+            fund_addr, verifier_addr, am_addr, nonce = deploy_contracts(w3, account)
 
         # Step 2: Create GCP TDX VM (or reuse)
         if args.vm_ip:
@@ -1362,7 +1550,7 @@ def main():
                 w3 = Web3(Web3.HTTPProvider(RPC_URL, request_kwargs={"timeout": 120}))
                 nonce = w3.eth.get_transaction_count(account.address, "pending")
                 try:
-                    success = run_auction_e2e(w3, account, fund_addr, vm_ip, nonce)
+                    success = run_auction_e2e(w3, account, fund_addr, am_addr, vm_ip, nonce)
                 except Exception as e:
                     print(f"\n  ❌ Epoch {epoch_i + 1} crashed: {e}")
                     success = False
@@ -1373,12 +1561,10 @@ def main():
                         w3 = Web3(Web3.HTTPProvider(RPC_URL, request_kwargs={"timeout": 120}))
                         fund = w3.eth.contract(address=fund_addr, abi=json.loads((ABI_DIR / "TheHumanFund.sol" / "TheHumanFund.json").read_text())["abi"])
                         epoch = fund.functions.currentEpoch().call()
-                        state = fund.functions.getAuctionState(epoch).call()
-                        if state[1] == 3:  # EXECUTION phase
-                            commit_win = fund.functions.commitWindow().call()
-                            reveal_win = fund.functions.revealWindow().call()
-                            exec_win = fund.functions.executionWindow().call()
-                            deadline = state[0] + commit_win + reveal_win + exec_win
+                        am_tmp = w3.eth.contract(address=am_addr, abi=json.loads((ABI_DIR / "AuctionManager.sol" / "AuctionManager.json").read_text())["abi"])
+                        phase = am_tmp.functions.getPhase(epoch).call()
+                        if phase == 3:  # EXECUTION phase
+                            deadline = am_tmp.functions.executionDeadline().call()
                             wait = max(0, deadline - int(time.time())) + 5
                             print(f"      Waiting {wait}s to forfeit bond...")
                             time.sleep(wait)

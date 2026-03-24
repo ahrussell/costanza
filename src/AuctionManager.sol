@@ -75,9 +75,7 @@ contract AuctionManager is IAuctionManager {
     // ─── State Transitions ───────────────────────────────────────────────
 
     /// @inheritdoc IAuctionManager
-    function openAuction(uint256 epoch, uint256 bond) external override onlyFund
-        returns (address, uint256)
-    {
+    function openAuction(uint256 epoch, uint256 bond) external override onlyFund {
         if (bond == 0) revert InvalidParams();
         if (currentPhase != AuctionPhase.IDLE && currentPhase != AuctionPhase.SETTLED) revert WrongPhase();
 
@@ -88,8 +86,6 @@ contract AuctionManager is IAuctionManager {
         currentPhase = AuctionPhase.COMMIT;
         currentStartTime = block.timestamp;
         currentBondAmount = bond;
-
-        return (address(0), 0);
     }
 
     /// @inheritdoc IAuctionManager

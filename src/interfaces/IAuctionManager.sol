@@ -22,12 +22,9 @@ interface IAuctionManager {
     // ─── State Transitions (onlyFund) ───────────────────────────────────
 
     /// @notice Open a new auction. IDLE → COMMIT.
-    ///         Also handles auto-forfeiting a stale EXECUTION phase from the previous auction.
     /// @param epoch The epoch identifier (opaque to the AM).
     /// @param bond The bond amount each committer must stake.
-    /// @return forfeitedRunner If non-zero, the previous auction's winner was auto-forfeited.
-    /// @return forfeitedBond The bond amount that was forfeited (sent to fund).
-    function openAuction(uint256 epoch, uint256 bond) external returns (address forfeitedRunner, uint256 forfeitedBond);
+    function openAuction(uint256 epoch, uint256 bond) external;
 
     /// @notice Record a sealed bid commitment. Must be called with bond ETH attached.
     function commit(uint256 epoch, address runner, bytes32 commitHash) external payable;
