@@ -495,6 +495,7 @@ def compute_input_hash(state: dict) -> bytes:
         ("uint256", s["total_bounties_paid"]),
         ("uint256", s["current_epoch_inflow"]),
         ("uint256", s["current_epoch_donation_count"]),
+        ("uint256", s.get("epoch_eth_usd_price", 0)),
     ))
 
     # 2. Nonprofit hash
@@ -503,7 +504,7 @@ def compute_input_hash(state: dict) -> bytes:
         nonprofit_hash = b'\x00' * 32
     else:
         # Match contract: keccak256(abi.encodePacked(hash1, hash2, ...))
-        # where each hash = keccak256(abi.encode(name, description, ein, totalDonated, donationCount))
+        # where each hash = keccak256(abi.encode(name, description, ein, totalDonated, totalDonatedUsd, donationCount))
         packed = b""
         for np in nps:
             ein_bytes = bytes.fromhex(np["ein"].replace("0x", "")) if isinstance(np["ein"], str) else np["ein"]
@@ -513,6 +514,7 @@ def compute_input_hash(state: dict) -> bytes:
                 ("string", np["description"]),
                 ("bytes32", ein_bytes32),
                 ("uint256", np["total_donated"]),
+                ("uint256", np.get("total_donated_usd", 0)),
                 ("uint256", np["donation_count"]),
             ))
             packed += per_np_hash

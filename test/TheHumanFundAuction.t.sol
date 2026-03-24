@@ -41,7 +41,7 @@ contract TheHumanFundAuctionTest is Test {
     function setUp() public {
         fund = new TheHumanFund{value: 10 ether}(
             1000, 0.01 ether,
-            address(0xBEEF), address(0xBEEF), address(0xBEEF), address(0xBEEF)
+            address(0xBEEF), address(0xBEEF), address(0xBEEF), address(0xBEEF), address(0)
         );
 
         fund.addNonprofit("GiveDirectly", "Cash transfers", bytes32("EIN-GD"));

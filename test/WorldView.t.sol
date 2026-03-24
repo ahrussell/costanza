@@ -16,9 +16,10 @@ contract WorldViewTest is Test {
         MockSwapRouter mr = new MockSwapRouter(address(mw), address(mu));
         MockEndaomentFactory mf = new MockEndaomentFactory();
 
+        MockChainlinkFeed mfeed = new MockChainlinkFeed(2000e8, 8);
         fund = new TheHumanFund{value: 5 ether}(
             1000, 0.005 ether,
-            address(mf), address(mw), address(mu), address(mr)
+            address(mf), address(mw), address(mu), address(mr), address(mfeed)
         );
 
         fund.addNonprofit("GiveDirectly", "Cash transfers", bytes32("EIN-GD"));
@@ -135,7 +136,7 @@ contract WorldViewTest is Test {
         // Deploy a fresh fund without WorldView linked
         TheHumanFund fund2 = new TheHumanFund{value: 1 ether}(
             1000, 0.005 ether,
-            address(0xBEEF), address(0xBEEF), address(0xBEEF), address(0xBEEF)
+            address(0xBEEF), address(0xBEEF), address(0xBEEF), address(0xBEEF), address(0)
         );
 
         uint256 balanceBefore = fund2.treasuryBalance();
@@ -241,7 +242,7 @@ contract WorldViewTest is Test {
         );
 
         // Both should have happened
-        (,,, uint256 donated,) = fund.getNonprofit(1);
+        (,,, uint256 donated,,) = fund.getNonprofit(1);
         assertEq(donated, 0.1 ether);
         assertEq(wv.getPolicy(2), "Invest conservatively in bear markets");
     }
