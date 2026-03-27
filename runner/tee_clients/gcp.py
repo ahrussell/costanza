@@ -1,37 +1,42 @@
 #!/usr/bin/env python3
 """GCP TEE client — manages TDX Confidential VM lifecycle.
 
-Flow:
-1. Create VM from snapshot (no public ports)
-2. Wait for SSH ready
-3. Open SSH tunnel (port 8090 → localhost:8090)
-4. Wait for enclave health check
-5. POST epoch state to enclave
-6. Parse response
-7. Kill tunnel, delete VM
+New architecture (no SSH, no Docker, no HTTP server):
+1. Create VM from dm-verity image with epoch state in metadata
+2. VM boots, runs one-shot inference, writes result to serial console
+3. Runner polls serial console for output
+4. Parse result
+5. Delete VM
 
-The VM is ALWAYS deleted in the finally block, even on error.
+The VM runs a one-shot enclave program on a dm-verity rootfs.
+No SSH, no Docker, no network listeners. The only I/O channels are:
+  - Input: GCP instance metadata (epoch state JSON)
+  - Output: Serial console (result JSON between delimiters)
 """
 
 import json
 import os
-import signal
 import subprocess
 import time
-from urllib.request import urlopen, Request
 
 from .base import TEEClient
 
+# Delimiters matching enclave_runner.py
+OUTPUT_START_MARKER = "===HUMANFUND_OUTPUT_START==="
+OUTPUT_END_MARKER = "===HUMANFUND_OUTPUT_END==="
+
 
 class GCPTEEClient(TEEClient):
-    def __init__(self, project=None, zone="us-central1-a", snapshot="humanfund-tee-gpu-70b",
-                 machine_type="a3-highgpu-1g"):
+    def __init__(self, project=None, zone="us-central1-a",
+                 image="humanfund-dmverity-gpu-v5",
+                 machine_type="a3-highgpu-1g",
+                 inference_timeout=900):
         self.project = project
         self.zone = zone
-        self.snapshot = snapshot
+        self.image = image
         self.machine_type = machine_type
+        self.inference_timeout = inference_timeout  # seconds to wait for result
         self.vm_name = None
-        self.tunnel_proc = None
 
     def _gcloud(self, args, check=True, timeout=120):
         """Run a gcloud command."""
@@ -45,106 +50,85 @@ class GCPTEEClient(TEEClient):
             raise RuntimeError(f"gcloud failed: {result.stderr[:500]}")
         return result.stdout.strip()
 
-    def _create_vm(self):
-        """Create a TDX Confidential VM from snapshot."""
+    def _create_vm(self, epoch_state_json: str):
+        """Create a TDX Confidential VM with epoch state in metadata."""
+        import tempfile
         import uuid
         self.vm_name = f"humanfund-runner-{uuid.uuid4().hex[:8]}"
         print(f"  Creating VM: {self.vm_name}")
+        print(f"  Image: {self.image}")
+        print(f"  Machine: {self.machine_type}")
 
-        self._gcloud(
-            f"compute instances create {self.vm_name} "
-            f"--zone={self.zone} "
-            f"--machine-type={self.machine_type} "
-            f"--image={self.snapshot} "
-            f"--confidential-compute-type=TDX "
-            f"--boot-disk-size=200GB "
-            f"--no-address "  # No public IP
-            f"--maintenance-policy=TERMINATE",
-            timeout=180,
-        )
+        # Write epoch state to a temp file to avoid gcloud's special char parsing
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            f.write(epoch_state_json)
+            metadata_file = f.name
+
+        try:
+            self._gcloud(
+                f"compute instances create {self.vm_name} "
+                f"--zone={self.zone} "
+                f"--machine-type={self.machine_type} "
+                f"--image={self.image} "
+                f"--confidential-compute-type=TDX "
+                f"--boot-disk-size=300GB "
+                f"--maintenance-policy=TERMINATE "
+                f"--metadata-from-file=epoch-state={metadata_file}",
+                timeout=180,
+            )
+        finally:
+            os.unlink(metadata_file)
+
         print(f"  VM created: {self.vm_name}")
 
-    def _wait_ssh_ready(self, max_wait=300):
-        """Wait for SSH to be available on the VM."""
-        print("  Waiting for SSH...")
+    def _poll_serial_output(self, timeout=None):
+        """Poll the serial console for the enclave's output.
+
+        The enclave writes JSON between OUTPUT_START_MARKER and OUTPUT_END_MARKER.
+        We poll every 30 seconds until we see the output or timeout.
+        """
+        if timeout is None:
+            timeout = self.inference_timeout
+
+        print(f"  Polling serial console (timeout: {timeout}s)...")
         start = time.time()
-        while time.time() - start < max_wait:
+        last_line_count = 0
+
+        while time.time() - start < timeout:
             try:
-                result = subprocess.run(
-                    f"gcloud compute ssh {self.vm_name} --zone={self.zone} "
-                    f"--command='echo ready' --ssh-flag='-o ConnectTimeout=5'",
-                    shell=True, capture_output=True, text=True, timeout=15,
+                output = self._gcloud(
+                    f"compute instances get-serial-port-output {self.vm_name} "
+                    f"--zone={self.zone}",
+                    check=False, timeout=30,
                 )
-                if "ready" in result.stdout:
-                    print(f"  SSH ready after {int(time.time() - start)}s")
-                    return
-            except (subprocess.TimeoutExpired, Exception):
-                pass
-            time.sleep(10)
-        raise RuntimeError(f"SSH not ready after {max_wait}s")
 
-    def _open_tunnel(self, local_port=8090, remote_port=8090):
-        """Open SSH tunnel to the VM."""
-        print(f"  Opening SSH tunnel (localhost:{local_port} → VM:{remote_port})")
-        self.tunnel_proc = subprocess.Popen(
-            f"gcloud compute ssh {self.vm_name} --zone={self.zone} "
-            f"-- -L {local_port}:localhost:{remote_port} -N -o ServerAliveInterval=30",
-            shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        # Give tunnel a moment to establish
-        time.sleep(3)
-        if self.tunnel_proc.poll() is not None:
-            raise RuntimeError("SSH tunnel failed to start")
-        print("  Tunnel established")
+                # Show progress (new lines since last check)
+                lines = output.split('\n')
+                if len(lines) > last_line_count:
+                    for line in lines[last_line_count:]:
+                        if '[enclave]' in line:
+                            print(f"    {line.strip()}")
+                    last_line_count = len(lines)
 
-    def _wait_enclave_ready(self, port=8090, max_wait=600):
-        """Wait for the enclave runner to be healthy."""
-        print("  Waiting for enclave runner...")
-        start = time.time()
-        while time.time() - start < max_wait:
-            try:
-                resp = urlopen(f"http://localhost:{port}/health", timeout=5)
-                status = json.loads(resp.read())
-                if status.get("status") == "ok":
-                    print(f"  Enclave ready after {int(time.time() - start)}s")
-                    return
-            except Exception:
-                pass
-            time.sleep(10)
-        raise RuntimeError(f"Enclave not ready after {max_wait}s")
+                # Look for the output markers
+                start_idx = output.find(OUTPUT_START_MARKER)
+                end_idx = output.find(OUTPUT_END_MARKER)
 
-    def _call_enclave(self, contract_state, epoch_context, system_prompt, seed, port=8090):
-        """Send epoch state to enclave and get result."""
-        payload = json.dumps({
-            "contract_state": contract_state,
-            "epoch_context": epoch_context,
-            "system_prompt": system_prompt,
-            "seed": seed,
-        }).encode()
+                if start_idx >= 0 and end_idx > start_idx:
+                    result_json = output[start_idx + len(OUTPUT_START_MARKER):end_idx].strip()
+                    elapsed = time.time() - start
+                    print(f"  Result received after {elapsed:.0f}s")
+                    return json.loads(result_json)
 
-        req = Request(
-            f"http://localhost:{port}/run_epoch",
-            data=payload,
-            headers={"Content-Type": "application/json"},
-        )
+            except (subprocess.TimeoutExpired, json.JSONDecodeError) as e:
+                print(f"    Poll error: {e}")
 
-        print("  Calling enclave for inference...")
-        resp = urlopen(req, timeout=1800)  # 30 min timeout for CPU inference
-        return json.loads(resp.read())
+            time.sleep(30)
+
+        raise RuntimeError(f"No output after {timeout}s — enclave may have failed")
 
     def _cleanup(self):
-        """Kill tunnel and delete VM."""
-        if self.tunnel_proc:
-            try:
-                os.kill(self.tunnel_proc.pid, signal.SIGTERM)
-                self.tunnel_proc.wait(timeout=5)
-            except Exception:
-                try:
-                    os.kill(self.tunnel_proc.pid, signal.SIGKILL)
-                except Exception:
-                    pass
-            self.tunnel_proc = None
-
+        """Delete the VM."""
         if self.vm_name:
             print(f"  Deleting VM: {self.vm_name}")
             try:
@@ -161,17 +145,30 @@ class GCPTEEClient(TEEClient):
     def run_epoch(self, contract_state, epoch_context, system_prompt, seed):
         """Run inference inside a fresh GCP TDX VM.
 
-        Returns the enclave result dict, with an added `vm_minutes` field
-        indicating actual billable VM uptime.
+        Input is passed via GCP instance metadata.
+        Output is read from the serial console.
+
+        Returns the enclave result dict with an added `vm_minutes` field.
         """
+        # Build the epoch state that the enclave will read
+        epoch_data = {
+            "contract_state": contract_state,
+            "epoch_context": epoch_context,
+            "seed": seed,
+            # system_prompt is on the dm-verity rootfs, not passed via metadata
+        }
+        epoch_state_json = json.dumps(epoch_data)
+
         vm_start = time.time()
         try:
-            self._create_vm()
-            self._wait_ssh_ready()
-            self._open_tunnel()
-            self._wait_enclave_ready()
-            result = self._call_enclave(contract_state, epoch_context, system_prompt, seed)
+            self._create_vm(epoch_state_json)
+            result = self._poll_serial_output()
+
+            if result.get("status") == "error":
+                raise RuntimeError(f"Enclave error: {result.get('error')}")
+
             result["vm_minutes"] = (time.time() - vm_start) / 60
             return result
+
         finally:
             self._cleanup()

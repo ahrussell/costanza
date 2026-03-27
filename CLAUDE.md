@@ -8,7 +8,7 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 - **Agent inference**: DeepSeek R1 Distill Llama 70B (Q4_K_M, 42.5GB GGUF) via llama.cpp on GCP TDX H100 (production model)
 - **Model selection**: DeepSeek R1 70B chosen via 3-model gauntlet (75 epochs each): 100% parse success, best reasoning depth, diversified investment strategy. Llama 3.3 70B also 100% reliable but less strategic. QwQ 32B eliminated (23% parse failure rate).
 - **Runner client** (`runner/`): Cron-based auction runner — monitors phases, bids, orchestrates GCP TEE VMs
-- **TEE enclave** (`tee/enclave/`): Attested Python code measured into RTMR[3] — inference, action encoding, attestation
+- **TEE enclave** (`tee/enclave/`): One-shot Python program + llama-server running directly on full dm-verity rootfs (no Docker, no SSH). Input via GCP metadata, output via serial console
 - **Frontend**: Diary viewer, treasury dashboard, donation/referral interface (Phase 4)
 
 ## Current Status
@@ -18,20 +18,21 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 - **Phase 3 contract (latest, 70B GPU e2e)**: `0xa507366987417e0E4247a827B48536DA11235CC7` (Base Sepolia) — 5 consecutive successful epochs with investments, withdrawals, and guiding policies
 - **Phase 2 contract (CPU e2e)**: `0x9043B54B7E5d2f98Bc12ff10799cf8d5d38c7ab2` (Base Sepolia) — CPU + GPU verified
 - Phase 0 original contract: `0x2F213Ea0D3F6D8349e2162b37Cc8cE6605dc9420` (Base Sepolia) — 21 epochs executed (legacy)
-- **164 tests pass** (28 Phase 0 + 42 auction + 16 TDX verifier + 25 investment + 16 worldview + 14 messages + 23 other)
-- Contract sizes: TheHumanFund ~24.2KB (374B margin, optimizer enabled), AttestationVerifier ~3.4KB, InvestmentManager ~10.4KB, WorldView ~2.6KB
+- **187 tests pass** (38 Phase 0 + 42 auction + 19 TDX verifier + 23 DstackVerifier + 35 investment + 16 worldview + 14 messages)
+- Contract sizes: TheHumanFund ~24.2KB (374B margin, optimizer enabled), AttestationVerifier ~3.4KB, DstackVerifier (split platform/app keys), InvestmentManager ~10.4KB, WorldView ~2.6KB
 - GCP TDX FMSPC `00806f050000` registered in Automata DCAP Dashboard
 - CPU image key (c3-standard-4): `0x1ff10986...` — approved
 - GPU image key (a3-highgpu-1g, H100): `0xababa83b...` — approved
 - **E2E gas costs**: deployment ~5.1M, DCAP verification ~10-12M (15M limit recommended)
-- **GPU inference**: ~30s per epoch on H100 (vs ~22 min on CPU)
-- **GCP snapshot**: `humanfund-tee-gpu-70b-v3` — boot disk with llama.cpp CUDA + modular enclave code
+- **GPU inference**: ~15.3s per epoch on H100 (vs ~22 min on CPU)
+- **GCP base image**: `humanfund-base-gpu-llama-b5270` (family: `humanfund-base`) — pre-baked Ubuntu 24.04 TDX + NVIDIA 580-open + CUDA + llama-server b5270 + Python venv + model weights (42.5GB). Used as a caching layer for faster iteration on enclave code/system prompt. Rebuild when llama.cpp/NVIDIA/Ubuntu versions change.
+- **GCP production image**: `humanfund-dmverity-gpu-v6` — built on top of base image by adding enclave code + system prompt, then sealing with two-disk dm-verity build (`build_full_dmverity_image.sh`). Full dm-verity rootfs, no Docker, direct execution.
 - **Model gauntlet**: 3 models tested across 75-epoch scenario (honeymoon → boom → crisis → drought → recovery → endgame). DeepSeek R1 70B: 6.12 ETH donated, 3.05 ETH final assets, diversified across 3 protocols. Llama 3.3 70B: 7.20 ETH donated but only 2.00 ETH final assets (less sustainable). QwQ 32B: 0.80 ETH donated, 17 parse failures.
-- **Remaining**: message spotlighting (prompt injection defense), production Docker image, audit, mainnet deployment
+- **Remaining**: message spotlighting (prompt injection defense), audit, mainnet deployment
 - Deployer address: `0xffea30B0DbDAd460B9b6293fb51a059129fCCdAf`
 
 **DESIGN.md is a living document** — see it for the full specification and implementation checklist.
-**SECURITY.md** — formal TEE attestation security model, threat analysis, and implementation spec for contract verification.
+**ATTESTATION_SECURITY_V2.md** — dm-verity + DstackVerifier attestation security model and threat analysis.
 
 ## Architecture
 
@@ -48,11 +49,11 @@ Each epoch (24 hours in production, configurable for testnet):
 1. Anyone calls `startEpoch()` — opens bidding, commits input hash
 2. Runners submit bids during bidding window (1 hour production)
 3. Anyone calls `closeAuction()` — lowest bid wins, bond locked, `prevrandao` captured for RNG seed
-4. Winner boots TEE, mounts model (verified via SHA-256), runs inference with deterministic seed
-5. Winner submits via `submitAuctionResult()` — contract verifies:
+4. Winner boots TDX VM from dm-verity disk image, one-shot enclave program runs inference directly from immutable rootfs with deterministic seed
+5. Winner submits via `submitAuctionResult()` — DstackVerifier verifies:
    - Automata DCAP: quote is genuine TDX hardware
-   - RTMR[1..3]: approved boot loader, kernel, and application code were running
-   - REPORTDATA: `SHA256(inputHash || SHA256(action) || SHA256(reasoning))` matches
+   - Platform key: `sha256(MRTD || RTMR[1] || RTMR[2])` — firmware + kernel + dm-verity rootfs (transitively covers all code)
+   - REPORTDATA: `SHA256(inputHash || outputHash)` matches
 6. Contract executes action, pays bounty + refunds bond
 7. If winner doesn't deliver: anyone calls `forfeitBond()`, bond kept by treasury
 
@@ -68,11 +69,13 @@ Each epoch (24 hours in production, configurable for testnet):
 - **Reverse auction**: First-price sealed-bid, 20% bond, inline refunds when outbid
 - **Epoch state machine**: IDLE → BIDDING → EXECUTION → SETTLED with configurable timing
 - **Verifiable randomness**: RNG seed derived from `block.prevrandao` at auction close — runner cannot re-roll inference
-- **Model loaded from disk**: Runner provides model file, enclave verifies SHA-256 hash baked into image — no runtime download
-- **Platform-agnostic attestation**: Verify RTMR[1] (boot loader) + RTMR[2] (kernel) + RTMR[3] (application code) — skip MRTD and RTMR[0] which vary by firmware
+- **Model on dm-verity partition**: Model weights live on a separate dm-verity partition, hash baked into GRUB command line (measured into RTMR[2]). Enclave also verifies SHA-256 at startup (defense-in-depth). No runtime download.
+- **Platform-only attestation**: DstackVerifier uses platform key = `sha256(MRTD || RTMR[1] || RTMR[2])`. dm-verity rootfs hash in RTMR[2] transitively covers all code, so no separate app key (RTMR[3]) is needed. RTMR[0] (VM hardware config) intentionally skipped so runners can use different VM sizes.
 - **Rolling history hash**: On-chain `historyHash` extended each epoch, binds decision history to input commitment
+- **No Docker enclave**: Enclave runs directly on dm-verity rootfs (no Docker, no container runtime). One-shot program: reads input from GCP metadata, writes output to serial console. No network listeners, no SSH in production.
 - **Full design doc**: See DESIGN.md for complete specification
-- **Security model**: See SECURITY.md for TEE attestation analysis and threat model
+- **Security model**: See ATTESTATION_SECURITY_V2.md for dm-verity attestation analysis and threat model
+- **Architecture doc**: See DMVERITY_NOTES.md for detailed dm-verity boot flow, disk layout, and build process
 
 ## Implementation Phases
 
@@ -87,7 +90,7 @@ Each epoch (24 hours in production, configurable for testnet):
 
 - **Chain**: Base (Coinbase L2), Solidity ^0.8.20
 - **Inference**: llama.cpp + DeepSeek R1 Distill Llama 70B Q4_K_M (GCP TDX H100, production)
-- **TEE**: Intel TDX on GCP Confidential VMs (configfs-tsm attestation)
+- **TEE**: Intel TDX on GCP Confidential VMs, full dm-verity rootfs (no Docker), configfs-tsm attestation
 - **Attestation**: Automata Network DCAP contracts at `0xaDdeC7e85c2182202b66E331f2a4A0bBB2cEEa1F`
 - **Oracle**: Chainlink ETH/USD price feed (shared interface `IAggregatorV3.sol`, used by main contract + USDC adapters)
 - **Tooling**: Foundry (Solidity), Python 3.9+ with venv (runner + enclave)
@@ -112,19 +115,23 @@ All Python commands (runner, enclave runner, etc.) should be run inside the venv
 thehumanfund/
 ├── CLAUDE.md                    # This file — project context for Claude
 ├── DESIGN.md                    # Full design specification (living document)
-├── SECURITY.md                  # TEE attestation security model and threat analysis
+├── ATTESTATION_SECURITY_V2.md   # dm-verity + DstackVerifier attestation security model
+├── DMVERITY_NOTES.md            # dm-verity TEE architecture (boot flow, disk layout, build)
 ├── foundry.toml                 # Foundry configuration
 ├── .venv/                       # Python virtual environment (gitignored)
 ├── src/
 │   ├── TheHumanFund.sol         # Main smart contract (Phase 0-3, 23.8KB)
-│   ├── AttestationVerifier.sol  # TEE attestation verification (3.4KB)
+│   ├── AttestationVerifier.sol  # Legacy TEE attestation verification (3.4KB)
+│   ├── DstackVerifier.sol       # Docker/dm-verity attestation (split platform/app keys)
 │   ├── InvestmentManager.sol    # DeFi portfolio manager (10.4KB)
 │   ├── WorldView.sol            # Agent worldview — 10 guiding policy slots
 │   ├── interfaces/
 │   │   ├── IAggregatorV3.sol            # Chainlink V3 price feed interface
+│   │   ├── IAuctionManager.sol          # Auction manager interface
 │   │   ├── IAutomataDcapAttestation.sol  # Automata DCAP interface
-│   │   ├── IAttestationVerifier.sol     # Attestation verifier interface
+│   │   ├── IEndaoment.sol               # Endaoment donation interface
 │   │   ├── IInvestmentManager.sol       # Investment manager interface
+│   │   ├── IProofVerifier.sol           # Proof verifier interface (shared by TdxVerifier + DstackVerifier)
 │   │   ├── IERC4626.sol                 # Minimal ERC-4626 vault interface
 │   │   ├── IProtocolAdapter.sol         # Protocol adapter interface
 │   │   └── IWorldView.sol               # WorldView interface
@@ -138,12 +145,13 @@ thehumanfund/
 │       ├── SwapHelper.sol           # Shared ETH<->USDC swap logic
 │       └── IWETH.sol                # WETH9 interface
 ├── test/
-│   ├── TheHumanFund.t.sol       # Phase 0 tests (28 tests)
-│   ├── TheHumanFundAuction.t.sol # Phase 2 auction + attestation tests (34 tests)
-│   ├── AttestationVerifier.t.sol # Verifier unit tests (12 tests)
-│   ├── InvestmentManager.t.sol  # Investment tests (25 tests)
-│   ├── WorldView.t.sol          # Worldview tests (16 tests)
-│   └── Messages.t.sol           # Donor messages tests (14 tests)
+│   ├── TheHumanFund.t.sol       # Phase 0 tests
+│   ├── TheHumanFundAuction.t.sol # Phase 2 auction + attestation tests
+│   ├── TdxVerifier.t.sol        # Legacy TDX verifier tests
+│   ├── DstackVerifier.t.sol     # DstackVerifier tests (split platform/app keys)
+│   ├── InvestmentManager.t.sol  # Investment tests
+│   ├── WorldView.t.sol          # Worldview tests
+│   └── Messages.t.sol           # Donor messages tests
 ├── script/
 │   └── Deploy.s.sol             # Foundry deployment script
 ├── runner/                      # Auction runner client (cron job, untrusted)
@@ -162,25 +170,29 @@ thehumanfund/
 │   │   └── system_v6.txt       # System prompt v6 (USD mission, ETH/USD price)
 │   └── scenarios/
 │       └── scenarios.json      # 5 synthetic test scenarios
-├── tee/                         # TEE enclave + VM setup
-│   ├── enclave/                # Attested code (measured into RTMR[3])
-│   │   ├── enclave_runner.py   # Flask API: /health, /run_epoch
-│   │   ├── inference.py        # Two-pass llama-server calls
-│   │   ├── action_encoder.py   # Action JSON → contract bytes
-│   │   ├── input_hash.py       # Independent input hash computation
-│   │   ├── prompt_builder.py   # System prompt + epoch context → full prompt
-│   │   ├── attestation.py      # TDX quote generation (configfs-tsm)
-│   │   └── model_config.py     # Pinned model SHA-256 + verification
-│   ├── boot.sh                 # VM boot: measure code+model into RTMR[3], start services
-│   ├── setup_gpu.sh            # Snapshot setup: NVIDIA + CUDA + llama.cpp + model
-│   └── setup_cpu.sh            # Snapshot setup: CPU llama.cpp + model
+├── tee/                         # TEE enclave — runs directly on dm-verity rootfs (no Docker)
+│   └── enclave/                # Python enclave code (baked into dm-verity rootfs)
+│       ├── enclave_runner.py   # One-shot program: read input → inference → attest → output
+│       ├── inference.py        # Two-pass llama-server calls
+│       ├── action_encoder.py   # Action JSON → contract bytes
+│       ├── input_hash.py       # Independent input hash computation
+│       ├── prompt_builder.py   # System prompt + epoch context → full prompt
+│       ├── attestation.py      # TDX quote generation via configfs-tsm
+│       └── model_config.py     # Pinned model SHA-256 + verification
 ├── frontend/
 │   └── index.html               # Internal dashboard (reads contract state)
 ├── models/                      # Local model files (gitignored)
 ├── scripts/
-│   ├── create_gcp_snapshot.py   # Build GCP TDX disk image (GPU or CPU)
+│   ├── build_base_image.sh      # Build GCP base image (NVIDIA + CUDA + llama-server + model, slow ~15min)
+│   ├── build_full_dmverity_image.sh  # Build production dm-verity image (fast ~10min, uses base)
+│   ├── vm_build_all.sh          # Runs on VM: squashfs → verity → initramfs → partition → GRUB
+│   ├── vm_install.sh            # Installs dependencies on VM for base image build
+│   ├── build_gcp_image.sh       # Legacy: Build GCP TDX disk image with dm-verity rootfs
+│   ├── seal_rootfs.sh           # Legacy: Seal rootfs in-place (superseded by two-disk approach)
+│   ├── test_dmverity_boot.sh    # Boot VM from image and verify dm-verity + enclave
+│   ├── create_gcp_snapshot.py   # Legacy: Build GCP TDX disk image (GPU or CPU)
 │   ├── verify_measurements.py   # Verify VM RTMR values match registered key
-│   ├── register_image.py        # Extract RTMR[1..3] + register on-chain
+│   ├── register_image.py        # Extract RTMR[1..2] + register platform key on-chain
 │   ├── extract_measurements.py  # Low-level RTMR extraction from TDX quote
 │   ├── e2e_test.py              # Full e2e test on Base Sepolia with TDX attestation
 │   ├── simulate.py              # Local simulation mode (scenario presets, stress testing)
@@ -206,12 +218,14 @@ thehumanfund/
 - Auto-escalation: `effectiveMaxBid` increases 10% per consecutive missed epoch
 - `DiaryEntry` event emits reasoning + action on-chain
 
-### TEE Attestation — see SECURITY.md for full model
-- `AttestationVerifier.sol` — separate contract handles all attestation verification
+### TEE Attestation — see ATTESTATION_SECURITY_V2.md + DMVERITY_NOTES.md for full model
+- **DstackVerifier.sol** — primary verifier for dm-verity architecture (verifier ID=2)
+  - Platform key: `sha256(MRTD || RTMR[1] || RTMR[2])` — firmware + kernel + dm-verity rootfs (transitively covers all code)
+  - No app key needed: dm-verity root hash in RTMR[2] covers everything (no Docker, no RTMR[3])
+  - RTMR[0] intentionally skipped (VM hardware config varies by runner)
+- `AttestationVerifier.sol` — legacy verifier (verifier ID=1), single combined image key
 - Automata DCAP verifier at `0xaDdeC7e85c2182202b66E331f2a4A0bBB2cEEa1F`
-- **GAPs 1+2 CLOSED**: contract verifies RTMR[1..3] (boot loader + kernel + application code) + REPORTDATA (input/output binding)
-- Approved image registry: `mapping(bytes32 => bool) approvedImages` (key = `keccak256(RTMR[1] || RTMR[2] || RTMR[3])`)
-- REPORTDATA formula: `sha256(inputHash || sha256(action) || sha256(reasoning) || randomnessSeed)`
+- REPORTDATA formula: `sha256(inputHash || outputHash)` where `outputHash = keccak256(sha256(action) || sha256(reasoning) || sha256(systemPrompt))`
 - Rolling `historyHash` extends each epoch, included in `_computeInputHash()`
 - `block.prevrandao` captured in `closeAuction()` as verifiable randomness seed
 
@@ -246,7 +260,7 @@ Designed as a cron job (`*/5 * * * *`). Each run is idempotent:
 - **EXECUTION** → if winner: boots GCP TDX VM, runs inference, submits result
 - **SETTLED** → clears state, waits for next epoch
 
-**TEE client** (`runner/tee_clients/gcp.py`): Creates VM from snapshot → SSH tunnel → POST to enclave → delete VM. The VM is always deleted in a `finally` block.
+**TEE client** (`runner/tee_clients/gcp.py`): Creates VM from dm-verity image with epoch state in metadata → polls serial console for output → parses result → deletes VM. No SSH, no HTTP. The VM is always deleted in a `finally` block.
 
 **Notifications** (`runner/notifier.py`): Push notifications via ntfy.sh for all events.
 
@@ -254,24 +268,41 @@ See [RUNNER_README.md](RUNNER_README.md) for full setup instructions.
 
 ## TEE Enclave
 
-**Platform**: GCP TDX Confidential VMs (boot from pre-built disk image / snapshot)
+**Platform**: GCP TDX Confidential VMs with full dm-verity rootfs (no Docker)
 
 **Production model**: DeepSeek R1 Distill Llama 70B Q4_K_M (42.5 GB GGUF) — selected via 3-model gauntlet
 **Development model**: DeepSeek R1 Distill Qwen 14B Q4_K_M (8.99 GB GGUF) — used for Phase 1 CPU testing
-- Model SHA-256 pinned in `tee/enclave/model_config.py` (verified at boot, measured into RTMR[3])
-- Mounted from disk, no network download at runtime
-- GPU inference: ~30s per epoch on H100 | CPU inference: ~22 min per epoch
+- Model SHA-256 pinned in `tee/enclave/model_config.py` (verified at boot)
+- Model on separate dm-verity partition at `/models/`, no network download at runtime
+- GPU inference: ~15.3s per epoch on H100 | CPU inference: ~22 min per epoch
+
+**Architecture (no Docker)**:
+- Enclave code lives at `/opt/humanfund/enclave/` on the dm-verity rootfs
+- System prompt at `/opt/humanfund/system_prompt.txt` on the dm-verity rootfs
+- llama-server binary at `/opt/humanfund/bin/llama-server` on the dm-verity rootfs
+- `humanfund-enclave.service` — systemd one-shot service that runs the enclave program
+- `scripts/build_base_image.sh` — builds GCP base image (NVIDIA + CUDA + llama-server + model, ~15min)
+- `scripts/build_full_dmverity_image.sh` — builds production dm-verity image from base (~10min)
+- `scripts/vm_build_all.sh` — runs on VM: creates squashfs, verity, initramfs, partitions output disk
+
+**Enclave I/O (no SSH, no Flask, no network listeners)**:
+- **Input**: Epoch state JSON via GCP instance metadata (`epoch-state` attribute) or file at `/input/epoch_state.json`
+- **Output**: Result JSON to serial console (`/dev/ttyS0`, between `===HUMANFUND_OUTPUT_START===` and `===HUMANFUND_OUTPUT_END===` delimiters) and `/output/result.json`
+- Runner reads output via `gcloud compute instances get-serial-port-output`
 
 **Attestation flow**:
-1. `boot.sh` measures enclave code + model weights into RTMR[3] via configfs-tsm
-2. Enclave runner starts on `127.0.0.1:8090` (only accessible via SSH tunnel)
-3. Runner client sends epoch state, receives (action, reasoning, TDX quote)
-4. Contract verifies: RTMR[1..3] approved + REPORTDATA matches (input, output)
+1. VM boots from dm-verity image: OVMF (MRTD) → GRUB (RTMR[1]) → kernel + cmdline with dm-verity hashes (RTMR[2])
+2. Initramfs sets up dm-verity, mounts immutable rootfs and model partition
+3. systemd starts one-shot enclave program (reads input, runs inference, generates TDX quote)
+4. Enclave gets TDX quote via configfs-tsm with REPORTDATA = sha256(inputHash || outputHash)
+5. Enclave writes result to serial console, runner reads it, submits to chain
+6. DstackVerifier verifies: platform key (MRTD + RTMR[1..2]) + REPORTDATA
 
-**RTMR measurements** (verified on-chain, image key = `keccak256(RTMR[1] || RTMR[2] || RTMR[3])`):
-- RTMR[1]: Boot loader (GRUB/shim) — determined by GCP base image
-- RTMR[2]: Kernel + command line — determined by GCP base image
-- RTMR[3]: Application code + model weights — extended by boot.sh at startup
+**RTMR measurements** (verified on-chain via DstackVerifier):
+- MRTD: Measured at VM launch (firmware) — part of platform key
+- RTMR[1]: Boot loader (GRUB/shim) — part of platform key
+- RTMR[2]: Kernel + command line including dm-verity root hashes — part of platform key. Transitively covers all code via dm-verity.
+- RTMR[3]: Not used (no Docker, all code on dm-verity rootfs covered by RTMR[2])
 
 ## RunPod Development Environment
 
@@ -339,9 +370,9 @@ source .venv/bin/activate
 
 # Smart contracts
 forge build                                    # Compile contracts
-forge test                                     # Run all tests (164 tests)
+forge test                                     # Run all tests (187 tests)
 forge test -vvv                                # Verbose test output
-forge test --match-path test/TdxVerifier.t.sol # TDX verifier tests only
+forge test --match-path test/DstackVerifier.t.sol # DstackVerifier tests only
 forge script script/Deploy.s.sol \
   --rpc-url $RPC_URL --broadcast              # Deploy to testnet
 
@@ -350,9 +381,14 @@ python -m runner.client                        # Check auction state, act accord
 python -m runner.client --dry-run              # Log what would happen, no txs
 python -m runner.client --ntfy-channel my-ch   # With push notifications
 
-# GCP snapshot management
-python scripts/create_gcp_snapshot.py --gpu    # Build GPU snapshot
-python scripts/create_gcp_snapshot.py --cpu    # Build CPU snapshot
+# GCP disk image (dm-verity)
+bash scripts/build_base_image.sh               # Build base image (slow, ~15min, do once)
+bash scripts/build_full_dmverity_image.sh \
+  --base-image humanfund-base-gpu-llama-b5270  # Build production image (fast, ~10min)
+bash scripts/build_full_dmverity_image.sh \
+  --base-image humanfund-base-gpu-llama-b5270 \
+  --name humanfund-dmverity-gpu-v6             # Named production image
+bash scripts/test_dmverity_boot.sh             # Test dm-verity boot chain
 python scripts/verify_measurements.py \
   --vm-name my-vm --verifier 0x...            # Verify RTMR match
 python scripts/register_image.py \
@@ -374,7 +410,7 @@ RPC_URL=https://sepolia.base.org
 CONTRACT_ADDRESS=0x...         # Deployed TheHumanFund contract address
 GCP_PROJECT=my-project         # GCP project ID
 GCP_ZONE=us-central1-a         # GCP zone with TDX support
-GCP_SNAPSHOT=humanfund-tee-gpu-70b-v3  # Snapshot name
+GCP_IMAGE=humanfund-dmverity-gpu-v6    # Production dm-verity disk image
 NTFY_CHANNEL=my-runner         # Optional: ntfy.sh channel
 ```
 

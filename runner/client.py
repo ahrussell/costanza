@@ -46,6 +46,7 @@ def get_tee_client(config):
             zone=config["gcp_zone"],
             snapshot=config["gcp_snapshot"],
             machine_type="a3-highgpu-1g",
+            enclave_timeout=config.get("enclave_timeout", 600),
         )
     elif config["tee_client"] == "gcp-cpu":
         from .tee_clients.gcp import GCPTEEClient
@@ -54,6 +55,7 @@ def get_tee_client(config):
             zone=config["gcp_zone"],
             snapshot=config.get("gcp_snapshot_cpu", "humanfund-tee-cpu-70b"),
             machine_type="c3-standard-4",
+            enclave_timeout=config.get("enclave_timeout", 600),
         )
     else:
         raise ValueError(f"Unknown TEE client: {config['tee_client']}")
@@ -139,16 +141,17 @@ def run(config):
             # This would normally call chain.read_contract_state()
             # and build epoch context. For now, raise NotImplementedError
             # to show the intended flow.
+            verifier_id = config.get("verifier_id", 1)  # 1 = TDX, 2 = dstack/Docker
             print("  NOTE: Full state reading not yet implemented")
             print("  The flow would be:")
             print("    1. chain.read_contract_state()")
             print("    2. Build epoch context")
             print("    3. tee_client.run_epoch(state, context, prompt, seed)")
-            print("    4. submit_result()")
+            print(f"    4. submit_result(verifier_id={verifier_id})  # from config: 1=TDX, 2=dstack")
             print("    5. Compute profit/loss and notify")
 
             # After submit_result(), the flow would be:
-            # receipt = submit_result(chain, action_bytes, reasoning, proof, ...)
+            # receipt = submit_result(chain, action_bytes, reasoning, proof, verifier_id=verifier_id, ...)
             # eth_usd_raw = chain.get_eth_usd_price()
             # eth_usd = eth_usd_raw / 1e8 if eth_usd_raw > 1e6 else 2000.0
             # cost = estimate_cost(

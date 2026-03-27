@@ -66,6 +66,7 @@ GCP_MACHINE_TYPE_GPU = "a3-highgpu-1g"   # 1x H100 80GB — GPU inference (~30 s
 # Set at runtime based on --cpu flag
 GCP_MACHINE_TYPE = GCP_MACHINE_TYPE_GPU
 USE_GPU = True
+USE_DOCKER = True  # Set at runtime based on --docker/--no-docker flag
 
 # Timing constants (adjusted at runtime based on CPU vs GPU)
 # GPU: inference takes ~30s, so keep windows tight
@@ -201,6 +202,31 @@ def deploy_contracts(w3, account):
     print(f"  TdxVerifier: {verifier_addr} (gas: {receipt.gasUsed})")
     nonce += 1
 
+    # Deploy DstackVerifier (ID=2, for Docker-based architecture)
+    dstack_verifier_addr = None
+    if USE_DOCKER:
+        print(f"Deploying DstackVerifier...")
+        dstack_artifact = json.loads((ABI_DIR / "DstackVerifier.sol" / "DstackVerifier.json").read_text())
+        dstack_contract = w3.eth.contract(
+            abi=dstack_artifact["abi"],
+            bytecode=dstack_artifact["bytecode"]["object"]
+        )
+        tx = dstack_contract.constructor(fund_addr).build_transaction({
+            "from": deployer,
+            "nonce": nonce,
+            "gas": 1_000_000,
+            "maxFeePerGas": w3.eth.gas_price * 2,
+            "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
+        })
+        signed = account.sign_transaction(tx)
+        tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+        if receipt.status != 1:
+            raise RuntimeError(f"DstackVerifier deployment failed! Status: {receipt.status}, gas: {receipt.gasUsed}")
+        dstack_verifier_addr = receipt.contractAddress
+        print(f"  DstackVerifier: {dstack_verifier_addr} (gas: {receipt.gasUsed})")
+        nonce += 1
+
     # Deploy AuctionManager
     print(f"Deploying AuctionManager...")
     am_artifact = json.loads((ABI_DIR / "AuctionManager.sol" / "AuctionManager.json").read_text())
@@ -241,6 +267,20 @@ def deploy_contracts(w3, account):
     tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
     w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
     nonce += 1
+
+    # Approve DstackVerifier (verifierId=2 for dstack/Docker)
+    if USE_DOCKER and dstack_verifier_addr:
+        print("Approving DstackVerifier (verifierId=2)...")
+        tx = fund.functions.approveVerifier(2, dstack_verifier_addr).build_transaction({
+            "from": deployer, "nonce": nonce,
+            "gas": 100_000,
+            "maxFeePerGas": w3.eth.gas_price * 2,
+            "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
+        })
+        signed = account.sign_transaction(tx)
+        tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+        w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+        nonce += 1
 
     # Configure auction timing (cross-contract call to AuctionManager.setTiming)
     print(f"Setting auction timing (epoch={EPOCH_DURATION}s, commit={COMMIT_WINDOW}s, reveal={REVEAL_WINDOW}s, exec={EXECUTION_WINDOW}s)...")
@@ -378,17 +418,19 @@ def deploy_contracts(w3, account):
         print(f"  Protocol #{i+1}: {pname} -> {adapter_addr}")
 
     print(f"  Contracts deployed and configured!")
-    return fund_addr, verifier_addr, am_addr, nonce
+    return fund_addr, verifier_addr, am_addr, nonce, dstack_verifier_addr
 
 
 # ─── Step 2: Spin up GCP TDX VM ─────────────────────────────────────────
 
 def snapshot_image_name():
     """Return the expected snapshot image name for current mode."""
+    if USE_DOCKER:
+        return f"humanfund-dmverity-{'gpu' if USE_GPU else 'cpu'}-v3"
     return f"humanfund-tee-{'gpu' if USE_GPU else 'cpu'}-70b-v3"
 
 # Note: Boot disk size must accommodate the 70B model (42.5GB) + OS + llama.cpp
-BOOT_DISK_SIZE_GB = 200
+BOOT_DISK_SIZE_GB = 300
 
 
 def snapshot_image_exists():
@@ -404,10 +446,40 @@ def snapshot_image_exists():
 def get_snapshot_startup_script():
     """Minimal startup script for booting from snapshot (everything pre-installed).
 
-    The fresh build installs llama-server to /usr/local/bin/ and shared libs to
-    /usr/local/lib/ with ldconfig, so they persist across stop/start. We just
-    need to run ldconfig (in case) and start the server.
+    For Docker mode (dm-verity image): systemd handles all startup via
+    humanfund-docker-load and humanfund-tee services. The startup script
+    just needs to activate the GPU CC state.
+
+    For legacy mode: starts llama-server directly.
     """
+    if USE_DOCKER:
+        return """#!/bin/bash
+exec > /tmp/startup.log 2>&1
+echo "=== Docker snapshot boot at $(date) ==="
+
+# Activate CC GPU Ready State (must happen before Docker starts the container)
+if command -v nvidia-smi &>/dev/null; then
+    echo "Activating CC GPU Ready State..."
+    nvidia-smi conf-compute -srs 1 2>/dev/null || true
+    sleep 3
+    nvidia-smi conf-compute -srs 1 2>/dev/null || true
+    sleep 2
+    echo "CC state: $(nvidia-smi conf-compute -grs 2>&1 | grep -o 'ready|not-ready' || echo unknown)"
+fi
+
+# Ensure configfs-tsm is available (kernel should auto-mount on TDX VMs)
+if [ -d /sys/kernel/config/tsm/report ]; then
+    echo "configfs-tsm report interface available"
+else
+    echo "WARNING: configfs-tsm report interface not found"
+fi
+
+# systemd services (humanfund-gpu-cc + humanfund-docker-load + humanfund-tee) handle the rest
+echo "Waiting for systemd to start enclave..."
+systemctl start humanfund-gpu-cc 2>&1 || true
+systemctl start humanfund-tee 2>&1 || true
+echo "=== Startup script done at $(date) ==="
+"""
     if USE_GPU:
         return """#!/bin/bash
 exec > /tmp/startup.log 2>&1
@@ -774,7 +846,7 @@ def create_gcp_vm(force_fresh=False):
         f"--instance-termination-action=STOP "
         f'--min-cpu-platform="Intel Sapphire Rapids" '
         f"{image_flags} "
-        f"--boot-disk-size=200GB "
+        f"--boot-disk-size={BOOT_DISK_SIZE_GB}GB "
         f"--metadata-from-file=startup-script={startup_path}",
         timeout=120
     )
@@ -790,17 +862,21 @@ def create_gcp_vm(force_fresh=False):
 def wait_for_vm_ready(vm_ip):
     """Wait for the VM to have llama-server running and SSH accessible."""
     print("\n═══ STEP 2b: Wait for VM Setup ═══")
-    print("  (This takes ~10-15 min: apt install + llama.cpp build + model download)")
+
+    # In Docker mode, check the enclave API (port 8090) — llama-server (8080) is internal to Docker
+    health_port = 8090 if USE_DOCKER else 8080
+    health_label = "enclave" if USE_DOCKER else "llama-server"
+    print(f"  Checking {health_label} on port {health_port}...")
 
     for i in range(90):  # 45 min max
         try:
             result = gcloud(
                 f"compute ssh {GCP_VM_NAME} --zone={GCP_ZONE} "
-                f"--command='curl -s http://127.0.0.1:8080/health 2>/dev/null || echo NOT_READY'",
+                f"--command='curl -s http://127.0.0.1:{health_port}/health 2>/dev/null || echo NOT_READY'",
                 check=False, timeout=30
             )
             if '"status":"ok"' in result or '"status": "ok"' in result:
-                print(f"  llama-server ready after {i * 30}s")
+                print(f"  {health_label} ready after {i * 30}s")
                 # In GPU mode, verify model is actually on GPU (not silent CPU fallback)
                 if USE_GPU:
                     try:
@@ -848,16 +924,69 @@ def wait_for_vm_ready(vm_ip):
 
 
 def upload_enclave_files(vm_ip):
-    """Upload modular enclave package and system prompt to the VM."""
+    """Upload modular enclave package and system prompt to the VM.
+
+    In Docker mode (dm-verity image), the enclave code is already in the Docker
+    image. We only need to upload the system prompt (which is verified by hash).
+    """
+    if USE_DOCKER:
+        print("\n═══ STEP 2c: Docker Mode — Enclave in Image ═══")
+        # Upload system prompt (verified by on-chain hash, not in Docker image)
+        gcloud(
+            f"compute scp {PROJECT_ROOT}/agent/prompts/system_v6.txt "
+            f"{GCP_VM_NAME}:/tmp/system_prompt.txt --zone={GCP_ZONE}",
+            timeout=30
+        )
+        print("  Uploaded system_prompt.txt")
+        print("  Enclave code is pre-installed in Docker image (dm-verity protected)")
+
+        # Wait for enclave to be healthy (started by systemd)
+        print("  Waiting for Docker enclave to be healthy...")
+        for i in range(60):  # 5 min max
+            try:
+                result = gcloud(
+                    f"compute ssh {GCP_VM_NAME} --zone={GCP_ZONE} "
+                    f"--command='curl -s http://127.0.0.1:8090/health 2>/dev/null || echo NOT_READY'",
+                    check=False, timeout=15
+                )
+                if '"status": "ok"' in result or '"status":"ok"' in result:
+                    print(f"  Docker enclave ready after {i * 5}s!")
+                    return True
+            except Exception:
+                pass
+            time.sleep(5)
+        # Show Docker logs for debugging
+        print("  WARNING: Docker enclave not ready after 5 min, checking logs...")
+        try:
+            gcloud(
+                f"compute ssh {GCP_VM_NAME} --zone={GCP_ZONE} "
+                f"--command='sudo docker logs humanfund-enclave 2>&1 | tail -30; echo ---; sudo journalctl -u humanfund-tee --no-pager -n 30'",
+                check=False, timeout=30
+            )
+        except Exception:
+            pass
+        return False
+
     print("\n═══ STEP 2c: Upload Enclave Files ═══")
 
     # Upload the modular tee/enclave/ package
+    # Note: scp --recurse src/ dst creates dst/src/ — so we SCP to /tmp/ and
+    # the enclave dir ends up at /tmp/enclave/ with the right module structure.
+    # Use sudo rm because __pycache__ may be owned by root from previous runs.
+    gcloud(
+        f"compute ssh {GCP_VM_NAME} --zone={GCP_ZONE} "
+        f"--command='sudo rm -rf /tmp/enclave /tmp/__pycache__'",
+        check=False, timeout=15
+    )
+    # Clean local __pycache__ before uploading
+    run_cmd(f"find {PROJECT_ROOT}/tee/enclave -name '__pycache__' -type d -exec rm -rf {{}} + 2>/dev/null || true",
+            check=False)
     gcloud(
         f"compute scp --recurse {PROJECT_ROOT}/tee/enclave "
-        f"{GCP_VM_NAME}:/tmp/enclave --zone={GCP_ZONE}",
+        f"{GCP_VM_NAME}:/tmp/ --zone={GCP_ZONE}",
         timeout=60
     )
-    print("  Uploaded tee/enclave/ package")
+    print("  Uploaded tee/enclave/ package to /tmp/enclave/")
 
     # Upload system prompt
     gcloud(
@@ -867,35 +996,39 @@ def upload_enclave_files(vm_ip):
     )
     print("  Uploaded system_prompt.txt")
 
-    # Install dependencies on the VM (flask for API, pycryptodome for keccak256, eth_abi for input hash)
+    # Install dependencies as root (enclave needs root for configfs-tsm TDX quotes)
     gcloud(
         f"compute ssh {GCP_VM_NAME} --zone={GCP_ZONE} "
-        f"--command='pip3 install --break-system-packages flask pycryptodome eth_abi 2>/dev/null || "
-        f"source /opt/humanfund-venv/bin/activate && pip install flask pycryptodome eth_abi 2>/dev/null || true'",
+        f"--command='sudo pip3 install --break-system-packages --ignore-installed "
+        f"flask pycryptodome eth_abi typing_extensions 2>/dev/null; echo DEPS_OK'",
         check=False, timeout=120
     )
 
-    # Start the modular enclave runner as root (needs root for configfs-tsm TDX quote generation)
-    startup = (
+    # Start the modular enclave runner as root (needs root for configfs-tsm TDX quote generation).
+    # Write a script file to avoid SSH session being killed by pkill/pgrep matching.
+    startup_script = (
         "#!/bin/bash\n"
-        "pkill -f enclave_runner 2>/dev/null; pkill -f 'python3 -u -m enclave' 2>/dev/null; sleep 1\n"
-        "rm -rf /tmp/__pycache__ /tmp/enclave/__pycache__ 2>/dev/null\n"
-        "source /opt/humanfund-venv/bin/activate 2>/dev/null || true\n"
-        "export PYTHONUNBUFFERED=1\n"
+        "# Kill any existing enclave runner (match python3 process specifically)\n"
+        "for pid in $(pgrep -f 'python3.*enclave.enclave_runner' 2>/dev/null); do\n"
+        "    kill $pid 2>/dev/null\n"
+        "done\n"
+        "sleep 2\n"
+        "rm -rf /tmp/__pycache__ /tmp/enclave/__pycache__\n"
         "cd /tmp\n"
-        "ENCLAVE_HOST=0.0.0.0 ENCLAVE_PORT=8090 SYSTEM_PROMPT_PATH=/tmp/system_prompt.txt "
+        "ENCLAVE_HOST=0.0.0.0 ENCLAVE_PORT=8090 SYSTEM_PROMPT_PATH=/tmp/system_prompt.txt PYTHONUNBUFFERED=1 "
         "nohup python3 -u -m enclave.enclave_runner > /tmp/enclave.log 2>&1 &\n"
+        "echo \"Started enclave PID=$!\"\n"
     )
     with open("/tmp/start_enclave.sh", "w") as f:
-        f.write(startup)
+        f.write(startup_script)
     gcloud(
         f"compute scp /tmp/start_enclave.sh {GCP_VM_NAME}:/tmp/start_enclave.sh --zone={GCP_ZONE}",
-        timeout=30
+        timeout=15
     )
     gcloud(
         f"compute ssh {GCP_VM_NAME} --zone={GCP_ZONE} "
-        f"--command='sudo rm -f /tmp/enclave.log && sudo bash /tmp/start_enclave.sh'",
-        timeout=30
+        f"--command='sudo bash /tmp/start_enclave.sh'",
+        check=False, timeout=30
     )
     print("  Started modular enclave runner on port 8090 (as root for configfs-tsm)")
 
@@ -971,8 +1104,8 @@ def get_vm_measurements():
 
 
 def register_image_key(w3, account, verifier_addr, image_key, nonce):
-    """Register the VM's image key in the TdxVerifier."""
-    print("\n═══ STEP 3b: Register Image Key ═══")
+    """Register the VM's image key in the TdxVerifier (legacy flow)."""
+    print("\n═══ STEP 3b: Register Image Key (TdxVerifier) ═══")
 
     verifier_abi = json.loads(
         (ABI_DIR / "TdxVerifier.sol" / "TdxVerifier.json").read_text()
@@ -995,6 +1128,73 @@ def register_image_key(w3, account, verifier_addr, image_key, nonce):
     receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
     print(f"  Image approved! (gas: {receipt.gasUsed}, tx: {tx_hash.hex()[:16]}...)")
     return nonce + 1
+
+
+def register_dstack_image(w3, account, dstack_verifier_addr, measurements, nonce):
+    """Register platform_key + app_key in the DstackVerifier (Docker flow).
+
+    DstackVerifier splits measurements into:
+      - platform_key = sha256(MRTD || RTMR[1] || RTMR[2])  — OS + boot chain
+      - app_key = RTMR[3][:32]  — application code (Docker image)
+    """
+    print("\n═══ STEP 3b: Register Image Keys (DstackVerifier) ═══")
+
+    dstack_abi = json.loads(
+        (ABI_DIR / "DstackVerifier.sol" / "DstackVerifier.json").read_text()
+    )["abi"]
+    verifier = w3.eth.contract(address=dstack_verifier_addr, abi=dstack_abi)
+
+    # Compute platform_key = sha256(MRTD || RTMR[1] || RTMR[2])
+    mrtd = measurements.get("mrtd", b'\x00' * 48)
+    rtmr1 = measurements["rtmr1"]
+    rtmr2 = measurements["rtmr2"]
+    platform_key = hashlib.sha256(mrtd + rtmr1 + rtmr2).digest()
+
+    # app_key = RTMR[3][:32] (first 32 bytes of 48-byte RTMR[3])
+    app_key = measurements["rtmr3"][:32]
+
+    print(f"  Platform key: 0x{platform_key.hex()}")
+    print(f"  App key:      0x{app_key.hex()}")
+
+    # Register platform key
+    try:
+        if verifier.functions.approvedPlatforms(platform_key).call():
+            print(f"  Platform key already approved!")
+        else:
+            tx = verifier.functions.approvePlatform(platform_key).build_transaction({
+                "from": account.address, "nonce": nonce,
+                "gas": 100_000,
+                "maxFeePerGas": w3.eth.gas_price * 2,
+                "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
+            })
+            signed = account.sign_transaction(tx)
+            tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+            receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+            print(f"  Platform key approved! (gas: {receipt.gasUsed})")
+            nonce += 1
+    except Exception as e:
+        print(f"  Platform key registration: {e}")
+
+    # Register app key
+    try:
+        if verifier.functions.approvedApps(app_key).call():
+            print(f"  App key already approved!")
+        else:
+            tx = verifier.functions.approveApp(app_key).build_transaction({
+                "from": account.address, "nonce": nonce,
+                "gas": 100_000,
+                "maxFeePerGas": w3.eth.gas_price * 2,
+                "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
+            })
+            signed = account.sign_transaction(tx)
+            tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+            receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+            print(f"  App key approved! (gas: {receipt.gasUsed})")
+            nonce += 1
+    except Exception as e:
+        print(f"  App key registration: {e}")
+
+    return nonce
 
 
 # ─── Step 4: Run Full Auction Flow ───────────────────────────────────────
@@ -1325,9 +1525,11 @@ def run_auction_e2e(w3, account, fund_addr, am_addr, vm_ip, nonce):
         raise RuntimeError("Failed to fetch RPC params after 5 attempts")
 
     # Build tx manually — no RPC calls needed after this point
-    print(f"      Building tx (nonce={nonce}, chain_id={chain_id})...")
+    # verifier_id: 1 = TdxVerifier (legacy), 2 = DstackVerifier (Docker)
+    verifier_id = 2 if USE_DOCKER else 1
+    print(f"      Building tx (nonce={nonce}, chain_id={chain_id}, verifier_id={verifier_id})...")
     calldata = fund.functions.submitAuctionResult(
-        action_bytes, reasoning_bytes, attestation_bytes, 1,
+        action_bytes, reasoning_bytes, attestation_bytes, verifier_id,
         policy_slot, policy_text
     )._encode_transaction_data()
     tx = {
@@ -1452,7 +1654,22 @@ def main():
     parser.add_argument("--epochs", type=int, default=1, help="Number of epochs to run (default: 1)")
     parser.add_argument("--no-snapshot", action="store_true", help="Don't auto-create snapshot on fresh boot")
     parser.add_argument("--fresh", action="store_true", help="Force fresh VM boot even if snapshot exists")
+    parser.add_argument("--docker", action="store_true", default=True,
+                        help="Use Docker-based dstack architecture (default: True)")
+    parser.add_argument("--no-docker", action="store_true",
+                        help="Use legacy direct-Python TDX architecture")
     args = parser.parse_args()
+
+    # Resolve --docker vs --no-docker
+    args.docker = not args.no_docker
+
+    # Configure Docker mode
+    global USE_DOCKER
+    USE_DOCKER = args.docker
+    if USE_DOCKER:
+        print("Architecture: Docker-based (dstack, DstackVerifier ID=2)")
+    else:
+        print("Architecture: Legacy direct-Python (TdxVerifier ID=1)")
 
     # Configure GPU vs CPU (GPU is default)
     global GCP_MACHINE_TYPE, USE_GPU, EPOCH_DURATION, COMMIT_WINDOW, REVEAL_WINDOW, EXECUTION_WINDOW
@@ -1509,9 +1726,13 @@ def main():
 
     try:
         # Step 1: Deploy contracts (or reuse)
+        dstack_verifier_addr = None
         if args.fund_address and args.verifier_address:
             fund_addr = Web3.to_checksum_address(args.fund_address)
             verifier_addr = Web3.to_checksum_address(args.verifier_address)
+            # In Docker mode, --verifier-address is the DstackVerifier
+            if USE_DOCKER:
+                dstack_verifier_addr = verifier_addr
             nonce = w3.eth.get_transaction_count(account.address)
             # Read AM address from fund contract
             fund_abi = json.loads((ABI_DIR / "TheHumanFund.sol" / "TheHumanFund.json").read_text())["abi"]
@@ -1519,7 +1740,7 @@ def main():
             am_addr = fund_tmp.functions.auctionManager().call()
             print(f"\nReusing contracts: fund={fund_addr}, verifier={verifier_addr}, am={am_addr}")
         else:
-            fund_addr, verifier_addr, am_addr, nonce = deploy_contracts(w3, account)
+            fund_addr, verifier_addr, am_addr, nonce, dstack_verifier_addr = deploy_contracts(w3, account)
 
         # Step 2: Create GCP TDX VM (or reuse)
         if args.vm_ip:
@@ -1554,7 +1775,10 @@ def main():
             w3 = Web3(Web3.HTTPProvider(RPC_URL, request_kwargs={"timeout": 120}))
             nonce = w3.eth.get_transaction_count(account.address)
             measurements = get_vm_measurements()
-            nonce = register_image_key(w3, account, verifier_addr, measurements["image_key"], nonce)
+            if USE_DOCKER and dstack_verifier_addr:
+                nonce = register_dstack_image(w3, account, dstack_verifier_addr, measurements, nonce)
+            else:
+                nonce = register_image_key(w3, account, verifier_addr, measurements["image_key"], nonce)
 
         # Step 4: Run the full auction (multiple epochs if requested)
         if vm_ip:

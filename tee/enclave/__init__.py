@@ -1,4 +1,4 @@
-# The Human Fund — TEE Enclave Code
-# This package runs inside a TDX Confidential VM and is measured into RTMR[3].
-# Any changes to files in this directory will change the RTMR[3] measurement
-# and require re-registration of the image key on-chain.
+# The Human Fund — TEE Enclave
+# One-shot program on a dm-verity rootfs. No servers, no Docker.
+# All code is immutable at runtime (kernel-enforced via dm-verity).
+# Changes require rebuilding the rootfs image (changes RTMR[2]).

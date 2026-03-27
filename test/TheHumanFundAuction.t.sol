@@ -37,6 +37,7 @@ contract TheHumanFundAuctionTest is Test {
     uint256 constant EXEC_WIN = 120;      // 2 minutes execution
 
     // Test measurement values (48 bytes each, SHA-384)
+    bytes constant TEST_MRTD  = hex"aabbccdd0000000000000000000000000000000000000000000000000000000000000000000000000000000000000011";
     bytes constant TEST_RTMR1 = hex"222222220000000000000000000000000000000000000000000000000000000000000000000000000000000000000033";
     bytes constant TEST_RTMR2 = hex"333333330000000000000000000000000000000000000000000000000000000000000000000000000000000000000044";
     bytes constant TEST_RTMR3 = hex"444444440000000000000000000000000000000000000000000000000000000000000000000000000000000000000055";
@@ -60,7 +61,7 @@ contract TheHumanFundAuctionTest is Test {
         verifier = new TdxVerifier(address(fund));
         vm.etch(address(0xaDdeC7e85c2182202b66E331f2a4A0bBB2cEEa1F), address(mockDcap).code);
 
-        bytes32 imageKey = keccak256(abi.encodePacked(TEST_RTMR1, TEST_RTMR2, TEST_RTMR3));
+        bytes32 imageKey = sha256(abi.encodePacked(TEST_MRTD, TEST_RTMR1, TEST_RTMR2));
         verifier.approveImage(imageKey);
         fund.approveVerifier(1, address(verifier));
 
@@ -105,14 +106,14 @@ contract TheHumanFundAuctionTest is Test {
 
     /// @dev Build mock DCAP output with fields at correct offsets
     function _buildDcapOutput(bytes32 reportData) internal pure returns (bytes memory) {
-        // Only need MRTD placeholder (48 bytes at 147) and RTMR fields
         bytes memory output = new bytes(595);
         output[0] = 0x00; output[1] = 0x04; // quoteVersion = 4
         output[2] = 0x00; output[3] = 0x02; // quoteBodyType = 2 (TDX)
         for (uint256 i = 0; i < 48; i++) {
+            output[147 + i] = TEST_MRTD[i];   // MRTD — now verified
             output[387 + i] = TEST_RTMR1[i];
             output[435 + i] = TEST_RTMR2[i];
-            output[483 + i] = TEST_RTMR3[i];
+            output[483 + i] = TEST_RTMR3[i];  // Not verified but included for completeness
         }
         for (uint256 i = 0; i < 32; i++) {
             output[531 + i] = reportData[i];

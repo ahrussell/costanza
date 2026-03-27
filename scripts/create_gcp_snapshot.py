@@ -1,13 +1,21 @@
 #!/usr/bin/env python3
 """Create a GCP TDX Confidential VM disk image (snapshot) for TEE inference.
 
-Boots a fresh VM, installs dependencies (NVIDIA/CUDA for GPU, llama.cpp, model,
-enclave code), then creates a disk image from the boot disk. Runners boot from
-this image for fast startup (~2 min vs ~15 min fresh install).
+Boots a fresh VM, installs dependencies, then creates a disk image from the
+boot disk. Runners boot from this image for fast startup (~2 min vs ~15 min
+fresh install).
+
+Two modes:
+  --docker (default): Docker + dstack-guest-agent flow. Uploads entire tee/
+      directory, builds Docker image on VM, installs dstack-guest-agent for
+      RTMR[3] measurement. This is the new standard.
+  --legacy: Old direct-Python flow. Uploads only enclave/ + boot.sh, builds
+      llama.cpp natively, runs enclave_runner directly.
 
 Usage:
-    python scripts/create_gcp_snapshot.py               # GPU (default)
-    python scripts/create_gcp_snapshot.py --cpu          # CPU only
+    python scripts/create_gcp_snapshot.py               # Docker mode (default)
+    python scripts/create_gcp_snapshot.py --legacy       # Legacy direct-Python
+    python scripts/create_gcp_snapshot.py --cpu          # CPU only (legacy)
     python scripts/create_gcp_snapshot.py --force        # Overwrite existing
     python scripts/create_gcp_snapshot.py --keep-vm      # Don't delete VM after
 """
@@ -86,14 +94,13 @@ def create_vm(vm_name, zone, machine_type, use_gpu):
     raise RuntimeError("SSH not ready after 5 minutes")
 
 
-def upload_and_run_setup(vm_name, zone, use_gpu):
-    """Upload enclave code and setup script, then run setup."""
-    # Upload enclave code
+def upload_and_run_setup_legacy(vm_name, zone, use_gpu):
+    """Upload enclave code and setup script, then run setup (legacy flow)."""
     enclave_dir = PROJECT_ROOT / "tee" / "enclave"
     boot_script = PROJECT_ROOT / "tee" / "boot.sh"
     setup_script = PROJECT_ROOT / "tee" / ("setup_gpu.sh" if use_gpu else "setup_cpu.sh")
 
-    print("\n  Uploading enclave code...")
+    print("\n  Uploading enclave code (legacy mode)...")
     gcloud(f"compute scp --recurse {enclave_dir} {vm_name}:/tmp/enclave --zone={zone}", timeout=60)
     gcloud(f"compute scp {boot_script} {vm_name}:/tmp/boot.sh --zone={zone}", timeout=30)
     gcloud(f"compute scp {setup_script} {vm_name}:/tmp/setup.sh --zone={zone}", timeout=30)
@@ -105,6 +112,32 @@ def upload_and_run_setup(vm_name, zone, use_gpu):
         timeout=3600,  # 1 hour max
     )
     print("  Setup complete!")
+
+
+def upload_and_run_setup_docker(vm_name, zone):
+    """Upload entire tee/ directory and run Docker-based setup."""
+    tee_dir = PROJECT_ROOT / "tee"
+
+    print("\n  Uploading tee/ directory (Docker mode)...")
+    gcloud(f"compute scp --recurse {tee_dir} {vm_name}:/tmp/tee --zone={zone}", timeout=120)
+
+    print("  Running setup_dmverity.sh (this takes 15-45 minutes)...")
+    gcloud(
+        f"compute ssh {vm_name} --zone={zone} "
+        f"--command='sudo bash /tmp/tee/setup_dmverity.sh'",
+        timeout=5400,  # 90 min max (model download + docker build)
+    )
+    print("  Setup complete!")
+
+    # Extract and print Docker image digest
+    print("\n  Extracting Docker image digest...")
+    digest = gcloud(
+        f"compute ssh {vm_name} --zone={zone} "
+        f"--command='cat /opt/humanfund/docker_image_digest'",
+        timeout=30,
+    )
+    print(f"  Docker image digest: {digest}")
+    return digest
 
 
 def create_disk_image(vm_name, image_name, zone):
@@ -136,20 +169,41 @@ def delete_vm(vm_name, zone):
 
 def main():
     parser = argparse.ArgumentParser(description="Create GCP TDX disk image for TEE inference")
-    parser.add_argument("--cpu", action="store_true", help="CPU-only setup (no GPU)")
-    parser.add_argument("--name", help="Custom image name (default: humanfund-tee-{gpu|cpu}-70b)")
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        "--docker", action="store_true", default=True,
+        help="Docker + dstack-guest-agent flow (default)",
+    )
+    mode_group.add_argument(
+        "--legacy", action="store_true",
+        help="Legacy direct-Python flow (setup_gpu.sh / setup_cpu.sh)",
+    )
+    parser.add_argument("--cpu", action="store_true", help="CPU-only setup (legacy mode only)")
+    parser.add_argument("--name", help="Custom image name")
     parser.add_argument("--zone", default=DEFAULT_ZONE, help=f"GCP zone (default: {DEFAULT_ZONE})")
     parser.add_argument("--force", action="store_true", help="Overwrite existing image")
     parser.add_argument("--keep-vm", action="store_true", help="Don't delete VM after creating image")
     args = parser.parse_args()
 
+    use_legacy = args.legacy
     use_gpu = not args.cpu
     machine_type = CPU_MACHINE_TYPE if args.cpu else GPU_MACHINE_TYPE
-    image_name = args.name or f"humanfund-tee-{'cpu' if args.cpu else 'gpu'}-70b"
+
+    if use_legacy:
+        mode_label = "legacy-cpu" if args.cpu else "legacy-gpu"
+        default_name = f"humanfund-tee-{'cpu' if args.cpu else 'gpu'}-70b"
+    else:
+        if args.cpu:
+            print("WARNING: --cpu is only for legacy mode. Docker mode always uses GPU.", file=sys.stderr)
+        mode_label = "docker"
+        machine_type = GPU_MACHINE_TYPE
+        default_name = "humanfund-tee-docker-70b"
+
+    image_name = args.name or default_name
     vm_name = f"humanfund-snapshot-builder-{int(time.time()) % 10000}"
 
     print(f"═══ Creating GCP TDX Snapshot ═══")
-    print(f"  Mode: {'CPU' if args.cpu else 'GPU'}")
+    print(f"  Mode: {mode_label}")
     print(f"  Image name: {image_name}")
     print(f"  Machine type: {machine_type}")
 
@@ -163,7 +217,12 @@ def main():
 
     try:
         create_vm(vm_name, args.zone, machine_type, use_gpu)
-        upload_and_run_setup(vm_name, args.zone, use_gpu)
+
+        if use_legacy:
+            upload_and_run_setup_legacy(vm_name, args.zone, use_gpu)
+        else:
+            upload_and_run_setup_docker(vm_name, args.zone)
+
         create_disk_image(vm_name, image_name, args.zone)
         print(f"\n═══ Snapshot created: {image_name} ═══")
         print(f"\nNext steps:")

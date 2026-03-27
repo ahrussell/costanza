@@ -6,27 +6,29 @@ import "./interfaces/IProofVerifier.sol";
 
 /// @title TdxVerifier
 /// @notice Verifies Intel TDX DCAP attestation quotes for TheHumanFund.
-///         Checks RTMR[1] (boot loader), RTMR[2] (kernel), and RTMR[3] (application code)
-///         for platform portability — skips MRTD and RTMR[0] which vary by cloud provider firmware.
 ///
-/// @dev Automata DCAP output layout (abi.encodePacked, TDX V4 quote):
-///        Bytes 0-1:     quoteVersion (uint16, always 4)
-///        Bytes 2-3:     quoteBodyType (uint16, 2 = TDX TD10)
-///        Bytes 4:       tcbStatus (uint8)
-///        Bytes 5-10:    fmspcBytes (bytes6)
-///        Bytes 11-594:  quoteBody (584 bytes, raw TD10ReportBody)
-///        Bytes 595+:    advisoryIDs (abi.encode(string[]), if non-empty)
+///         Image key = sha256(MRTD || RTMR[1] || RTMR[2])
 ///
-///      Within quoteBody (offsets relative to output start):
-///        147-194:  MRTD        (48 bytes, SHA-384) — NOT verified (firmware-specific)
-///        339-386:  RTMR[0]     (48 bytes) — NOT verified (firmware config)
-///        387-434:  RTMR[1]     (48 bytes) — verified (boot loader / GRUB+shim)
-///        435-482:  RTMR[2]     (48 bytes) — verified (kernel + command line)
-///        483-530:  RTMR[3]     (48 bytes) — verified (application code, user-defined)
-///        531-594:  REPORTDATA  (64 bytes) — verified
+///         This covers:
+///           - MRTD:    VM firmware (OVMF) — prevents bare-metal runners from using
+///                      malicious firmware that could lie about kernel measurements
+///           - RTMR[1]: Bootloader (GRUB/shim) — measured by firmware
+///           - RTMR[2]: Kernel + command line — includes dm-verity root hash, which
+///                      transitively covers the entire rootfs (all code, model weights)
 ///
-///      REPORTDATA formula: sha256(inputHash || outputHash), zero-padded to 64 bytes.
-///      The inputHash includes the randomness seed. The outputHash covers action + reasoning.
+///         RTMR[0] (virtual hardware config) is skipped — runners can use different VM
+///         sizes without re-registration.
+///
+///         RTMR[3] is skipped — with full dm-verity rootfs, RTMR[2] already covers all
+///         code via the root hash in the kernel command line. See DMVERITY_NOTES.md.
+///
+/// @dev Automata DCAP output layout (offsets relative to output start):
+///          147-194:  MRTD        (48 bytes) — verified
+///          339-386:  RTMR[0]     (48 bytes) — NOT verified
+///          387-434:  RTMR[1]     (48 bytes) — verified
+///          435-482:  RTMR[2]     (48 bytes) — verified
+///          483-530:  RTMR[3]     (48 bytes) — NOT verified
+///          531-594:  REPORTDATA  (64 bytes) — verified
 contract TdxVerifier is IProofVerifier {
     // ─── Errors ──────────────────────────────────────────────────────────
 
@@ -41,9 +43,9 @@ contract TdxVerifier is IProofVerifier {
         IAutomataDcapAttestation(0xaDdeC7e85c2182202b66E331f2a4A0bBB2cEEa1F);
 
     /// @dev Byte offsets in the Automata DCAP output for TD10ReportBody fields
+    uint256 private constant MRTD_OFFSET = 147;
     uint256 private constant RTMR1_OFFSET = 387;
     uint256 private constant RTMR2_OFFSET = 435;
-    uint256 private constant RTMR3_OFFSET = 483;
     uint256 private constant REPORTDATA_OFFSET = 531;
     uint256 private constant MEASUREMENT_LEN = 48; // SHA-384 output
     uint256 private constant MIN_OUTPUT_LEN = 595;  // Must have at least through REPORTDATA
@@ -53,8 +55,8 @@ contract TdxVerifier is IProofVerifier {
     address public owner;
     address public fund; // The fund contract, authorized to call freeze()
 
-    /// @notice Registry of approved boot loader + kernel + application measurements.
-    ///         Key = keccak256(RTMR[1] || RTMR[2] || RTMR[3])
+    /// @notice Registry of approved firmware + kernel + rootfs measurements.
+    ///         Key = sha256(MRTD || RTMR[1] || RTMR[2])
     ///         where each field is 48 bytes (SHA-384), total 144 bytes hashed.
     mapping(bytes32 => bool) public approvedImages;
 
@@ -82,7 +84,7 @@ contract TdxVerifier is IProofVerifier {
 
     // ─── Image Registry ──────────────────────────────────────────────────
 
-    /// @notice Approve a kernel + application image by its measurement key.
+    /// @notice Approve an image by its firmware + kernel measurement key.
     function approveImage(bytes32 imageKey) external onlyOwner {
         if (frozenImages) revert Frozen();
         approvedImages[imageKey] = true;
@@ -123,7 +125,7 @@ contract TdxVerifier is IProofVerifier {
         if (!dcapSuccess) return false;
         if (output.length < MIN_OUTPUT_LEN) return false;
 
-        // Step 2: Extract RTMR[1] + RTMR[2] and verify against approved registry
+        // Step 2: Check image key — sha256(MRTD || RTMR[1] || RTMR[2])
         bytes32 imageKey = _computeImageKey(output);
         if (!approvedImages[imageKey]) return false;
 
@@ -148,46 +150,46 @@ contract TdxVerifier is IProofVerifier {
 
     // ─── Views ───────────────────────────────────────────────────────────
 
-    /// @notice Compute the image key from raw RTMR[1], RTMR[2], and RTMR[3] measurement bytes.
-    /// @dev For off-chain computation: hash the concatenation of RTMR[1] + RTMR[2] + RTMR[3].
+    /// @notice Compute the image key from raw measurement bytes.
+    /// @dev imageKey = sha256(MRTD || RTMR[1] || RTMR[2])
     function computeImageKey(
+        bytes calldata mrtd,
         bytes calldata rtmr1,
-        bytes calldata rtmr2,
-        bytes calldata rtmr3
+        bytes calldata rtmr2
     ) external pure returns (bytes32) {
+        if (mrtd.length != MEASUREMENT_LEN) revert InvalidParams();
         if (rtmr1.length != MEASUREMENT_LEN) revert InvalidParams();
         if (rtmr2.length != MEASUREMENT_LEN) revert InvalidParams();
-        if (rtmr3.length != MEASUREMENT_LEN) revert InvalidParams();
-        return keccak256(abi.encodePacked(rtmr1, rtmr2, rtmr3));
+        return sha256(abi.encodePacked(mrtd, rtmr1, rtmr2));
     }
 
     // ─── Internal ────────────────────────────────────────────────────────
 
-    /// @dev Extract RTMR[1] + RTMR[2] + RTMR[3] from DCAP output and compute image key.
+    /// @dev Extract MRTD + RTMR[1] + RTMR[2] from DCAP output and compute image key.
+    ///      imageKey = sha256(MRTD(48) || RTMR[1](48) || RTMR[2](48))
     function _computeImageKey(bytes memory output) internal pure returns (bytes32) {
-        // Extract 144 bytes: RTMR[1](48) || RTMR[2](48) || RTMR[3](48)
         bytes memory measurements = new bytes(144);
 
         assembly {
             let src := add(output, 32) // skip bytes length prefix
             let dst := add(measurements, 32)
 
+            // Copy MRTD (48 bytes at offset 147)
+            let mrtdSrc := add(src, MRTD_OFFSET)
+            mstore(dst, mload(mrtdSrc))                     // bytes 0-31
+            mstore(add(dst, 32), mload(add(mrtdSrc, 32)))   // bytes 32-47 (+ 16 overflow, ok)
+
             // Copy RTMR[1] (48 bytes at offset 387)
             let rtmr1Src := add(src, RTMR1_OFFSET)
-            mstore(dst, mload(rtmr1Src))                     // bytes 0-31
-            mstore(add(dst, 32), mload(add(rtmr1Src, 32)))   // bytes 32-47 (+ 16 overflow, ok)
+            mstore(add(dst, 48), mload(rtmr1Src))            // bytes 48-79
+            mstore(add(dst, 80), mload(add(rtmr1Src, 32)))   // bytes 80-95 (+ 16 overflow, ok)
 
             // Copy RTMR[2] (48 bytes at offset 435)
             let rtmr2Src := add(src, RTMR2_OFFSET)
-            mstore(add(dst, 48), mload(rtmr2Src))            // bytes 48-79
-            mstore(add(dst, 80), mload(add(rtmr2Src, 32)))   // bytes 80-95 (+ 16 overflow, ok)
-
-            // Copy RTMR[3] (48 bytes at offset 483)
-            let rtmr3Src := add(src, RTMR3_OFFSET)
-            mstore(add(dst, 96), mload(rtmr3Src))            // bytes 96-127
-            mstore(add(dst, 128), mload(add(rtmr3Src, 32)))  // bytes 128-143 (+ 16 overflow, ok)
+            mstore(add(dst, 96), mload(rtmr2Src))            // bytes 96-127
+            mstore(add(dst, 128), mload(add(rtmr2Src, 32)))  // bytes 128-143 (+ 16 overflow, ok)
         }
 
-        return keccak256(measurements);
+        return sha256(measurements);
     }
 }

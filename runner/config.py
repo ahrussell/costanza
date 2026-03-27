@@ -51,9 +51,11 @@ Examples:
         "contract_address": os.environ.get("CONTRACT_ADDRESS"),
         "gcp_project": os.environ.get("GCP_PROJECT"),
         "gcp_zone": os.environ.get("GCP_ZONE", "us-central1-a"),
-        "gcp_snapshot": os.environ.get("GCP_SNAPSHOT", "humanfund-tee-gpu-70b"),
+        "gcp_snapshot": os.environ.get("GCP_SNAPSHOT", "humanfund-dmverity-gpu-v3"),
         "gcp_machine_type": os.environ.get("GCP_MACHINE_TYPE", "a3-highgpu-1g"),
         "system_prompt_path": os.environ.get("SYSTEM_PROMPT_PATH", "agent/prompts/system_v6.txt"),
+        # Enclave readiness timeout (Docker startup may be slower on first boot)
+        "enclave_timeout": int(os.environ.get("ENCLAVE_TIMEOUT", "600")),
         # From CLI
         "ntfy_channel": parsed.ntfy_channel,
         "tee_client": parsed.tee_client,
@@ -62,6 +64,9 @@ Examples:
         "dry_run": parsed.dry_run,
         "verbose": parsed.verbose,
     }
+
+    # Verifier ID: 1 = TdxVerifier (legacy), 2 = DstackVerifier (Docker/dm-verity)
+    config["verifier_id"] = int(os.environ.get("VERIFIER_ID", "2"))
 
     # Validate required fields
     missing = []

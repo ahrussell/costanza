@@ -1,211 +1,346 @@
 #!/usr/bin/env python3
-"""The Human Fund — TEE Enclave Runner
+"""The Human Fund — TEE Enclave (one-shot)
 
-Runs inside a TDX Confidential VM. Provides an HTTP API that:
-  1. Accepts epoch state (contract state + system prompt) as input
-  2. Verifies input hash independently
-  3. Builds the full prompt
-  4. Runs two-pass inference via the local llama-server
-  5. Returns the action, reasoning, and TDX attestation quote
+Runs inside a TDX Confidential VM on a dm-verity protected rootfs.
+This is a ONE-SHOT program, not a server. It:
+  1. Reads epoch state from the platform-specific input channel
+  2. Reads the system prompt from the dm-verity rootfs
+  3. Starts llama-server and runs two-pass inference
+  4. Generates a TDX attestation quote
+  5. Writes the result to the platform-specific output channel
+  6. Exits
 
-The attestation quote binds the (input_hash, action, reasoning) to
-the TEE's identity (RTMR values), proving this exact code + model produced
-the output on genuine TDX hardware.
+There is no Flask, no HTTP server, no Docker. The only runner-controlled
+input is the epoch state JSON. Everything else (code, model, system prompt)
+is on the dm-verity rootfs and immutable.
 
-Usage:
-    python3 -m tee.enclave.enclave_runner
+Input channels (tried in order):
+  1. /input/epoch_state.json  (file — most portable)
+  2. GCP instance metadata    (cloud-specific fallback)
+  3. stdin                    (development/testing)
 
-    # External caller (via SSH tunnel):
-    curl -X POST http://localhost:8090/run_epoch \
-      -H "Content-Type: application/json" \
-      -d '{"contract_state": {...}, "system_prompt": "...", "seed": 12345}'
+Output channels (all written):
+  1. /output/result.json      (file — most portable)
+  2. Serial console           (GCP-readable without SSH)
+  3. stdout                   (development/testing)
 """
 
 import hashlib
 import json
 import os
+import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
-from urllib.request import urlopen
-
-from flask import Flask, jsonify, request
 
 from .inference import run_two_pass_inference, truncate_reasoning
 from .action_encoder import parse_action, encode_action_bytes
 from .input_hash import compute_input_hash
-from .attestation import get_tdx_quote, compute_report_data, CONFIGFS_TSM_BASE
+from .attestation import get_tdx_quote, compute_report_data
 from .prompt_builder import build_full_prompt
 
-app = Flask(__name__)
+# ─── Configuration ──────────────────────────────────────────────────────
 
-LLAMA_SERVER_URL = f"http://127.0.0.1:{os.environ.get('LLAMA_SERVER_PORT', '8080')}"
+MODEL_PATH = os.environ.get("MODEL_PATH", "/models/model.gguf")
+SYSTEM_PROMPT_PATH = os.environ.get("SYSTEM_PROMPT_PATH", "/opt/humanfund/system_prompt.txt")
+LLAMA_SERVER_PORT = int(os.environ.get("LLAMA_SERVER_PORT", "8080"))
+LLAMA_SERVER_URL = f"http://127.0.0.1:{LLAMA_SERVER_PORT}"
+LLAMA_SERVER_BIN = os.environ.get("LLAMA_SERVER_BIN", "/opt/humanfund/bin/llama-server")
 
+INPUT_FILE = "/input/epoch_state.json"
+OUTPUT_DIR = "/output"
+SERIAL_DEVICE = "/dev/ttyS0"
 
-@app.route("/health", methods=["GET"])
-def health():
-    """Health check — verifies llama-server is ready and TDX is available."""
-    try:
-        resp = urlopen(f"{LLAMA_SERVER_URL}/health", timeout=5)
-        llama_status = json.loads(resp.read())
-    except Exception as e:
-        return jsonify({"status": "unhealthy", "llama": str(e)}), 503
-
-    has_tee = os.path.isdir(CONFIGFS_TSM_BASE) or os.path.exists("/dev/tdx_guest")
-    return jsonify({
-        "status": "ok",
-        "llama": llama_status,
-        "tee": "available" if has_tee else "not_available",
-    })
+# Delimiters for serial console output (runner parses between these)
+OUTPUT_START_MARKER = "===HUMANFUND_OUTPUT_START==="
+OUTPUT_END_MARKER = "===HUMANFUND_OUTPUT_END==="
 
 
-@app.route("/run_epoch", methods=["POST"])
-def run_epoch():
-    """Execute inference for one epoch.
+def log(msg):
+    print(f"[enclave] {msg}", flush=True)
 
-    Request body:
-        {
-            "contract_state": { ... structured state for input hash + prompt building ... },
-            "epoch_context": "=== EPOCH N STATE ===\\n..."  (pre-built, if not building in TEE),
-            "system_prompt": "You are The Human Fund...",
-            "seed": 12345,
-            "input_hash": "0x..."  (fallback if no contract_state)
-        }
 
-    Response:
-        {
-            "reasoning": "...",
-            "action": {"action": "...", "params": {...}},
-            "action_bytes": "0x...",
-            "attestation_quote": "0x...",
-            "report_data": "0x...",
-            "input_hash": "0x...",
-            "seed": 12345,
-            "inference_seconds": 42.1,
-            "tokens": {...}
-        }
+# ─── Input reading ──────────────────────────────────────────────────────
+
+def read_input() -> dict:
+    """Read epoch state from the platform-specific input channel.
+
+    Tries in order:
+      1. File at /input/epoch_state.json (most portable)
+      2. GCP instance metadata (cloud-specific)
+      3. stdin (development/testing)
     """
-    data = request.get_json()
-    if not data:
-        return jsonify({"error": "Missing request body"}), 400
+    # 1. File input (portable)
+    if os.path.exists(INPUT_FILE):
+        log(f"Reading input from {INPUT_FILE}")
+        with open(INPUT_FILE) as f:
+            return json.load(f)
 
-    seed = int(data.get("seed", 0))
-    llama_seed = seed & 0xFFFFFFFF if seed > 0 else -1
-
-    # Get system prompt (verified via approvedPromptHash on-chain)
-    system_prompt = data.get("system_prompt", "").strip()
-    if not system_prompt:
-        # Fallback to local file
-        prompt_path = Path(os.environ.get("SYSTEM_PROMPT_PATH", "/opt/humanfund/system_prompt.txt"))
-        if prompt_path.exists():
-            system_prompt = prompt_path.read_text().strip()
-        else:
-            return jsonify({"error": "No system prompt provided and no local file found"}), 400
-
-    # Compute input hash from structured contract state
-    contract_state = data.get("contract_state")
-    if contract_state:
-        input_hash = compute_input_hash(contract_state)
-        print(f"  Input hash (computed): 0x{input_hash.hex()[:16]}...")
-    else:
-        input_hash_hex = data.get("input_hash", "0x" + "00" * 32)
-        input_hash = bytes.fromhex(input_hash_hex.replace("0x", ""))
-        print(f"  Input hash (provided, unverified): 0x{input_hash.hex()[:16]}...")
-
-    # Get epoch context (pre-built by runner or built from state)
-    epoch_context = data.get("epoch_context", "").strip()
-    if not epoch_context:
-        return jsonify({"error": "Missing epoch_context"}), 400
-
-    # Build full prompt
-    full_prompt = build_full_prompt(system_prompt, epoch_context)
-
-    # Run inference with retry
-    max_retries = 3
-    action_json = None
-    inference = None
-
-    for attempt in range(1, max_retries + 1):
-        print(f"Inference attempt {attempt}/{max_retries} (seed={llama_seed})...")
-        try:
-            inference = run_two_pass_inference(full_prompt, seed=llama_seed, llama_url=LLAMA_SERVER_URL)
-        except Exception as e:
-            print(f"Inference error: {e}")
-            if attempt == max_retries:
-                return jsonify({"error": f"Inference failed: {e}"}), 500
-            continue
-
-        action_json = parse_action(inference["text"])
-        if action_json:
-            break
-        print(f"Attempt {attempt}: could not parse action")
-
-    if not action_json:
-        return jsonify({
-            "error": "Could not parse action after retries",
-            "raw_output": inference["text"][:2000] if inference else None,
-        }), 500
-
-    # Truncate reasoning BEFORE hashing
-    reasoning = truncate_reasoning(inference["reasoning"])
-
-    # Encode action
+    # 2. GCP metadata
     try:
-        action_bytes = encode_action_bytes(action_json)
-    except Exception as e:
-        return jsonify({
-            "error": f"Failed to encode action: {e}",
-            "action": action_json,
-        }), 500
+        from urllib.request import urlopen, Request
+        req = Request(
+            "http://169.254.169.254/computeMetadata/v1/instance/attributes/epoch-state",
+            headers={"Metadata-Flavor": "Google"}
+        )
+        resp = urlopen(req, timeout=2)
+        data = json.loads(resp.read())
+        log("Reading input from GCP instance metadata")
+        return data
+    except Exception:
+        pass
 
-    # Debug: log exact bytes going into hash computation
-    print(f"  HASH DEBUG: action_bytes={action_bytes.hex()[:32]}... ({len(action_bytes)} bytes)", flush=True)
-    print(f"  HASH DEBUG: reasoning={len(reasoning.encode('utf-8'))} bytes, sha256={hashlib.sha256(reasoning.encode('utf-8')).hexdigest()[:16]}", flush=True)
-    print(f"  HASH DEBUG: prompt sha256={hashlib.sha256(system_prompt.encode('utf-8')).hexdigest()[:16]}", flush=True)
-    print(f"  HASH DEBUG: input_hash={input_hash.hex()[:16]}", flush=True)
+    # 3. stdin (development)
+    if not sys.stdin.isatty():
+        log("Reading input from stdin")
+        return json.load(sys.stdin)
+
+    raise RuntimeError(
+        "No input found. Provide epoch state via:\n"
+        f"  - File: {INPUT_FILE}\n"
+        "  - GCP metadata: epoch-state attribute\n"
+        "  - stdin: echo '{{...}}' | python3 -m tee.enclave.enclave_runner"
+    )
+
+
+# ─── Output writing ────────────────────────────────────────────────────
+
+def write_output(result: dict):
+    """Write result to all available output channels."""
+    output_json = json.dumps(result, indent=2)
+
+    # 1. File output (portable)
+    try:
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
+        output_path = os.path.join(OUTPUT_DIR, "result.json")
+        with open(output_path, "w") as f:
+            f.write(output_json)
+        log(f"Result written to {output_path}")
+    except OSError as e:
+        log(f"Could not write to {OUTPUT_DIR}: {e}")
+
+    # 2. Serial console (GCP-readable without SSH)
+    try:
+        with open(SERIAL_DEVICE, "w") as serial:
+            serial.write(f"\n{OUTPUT_START_MARKER}\n")
+            serial.write(output_json)
+            serial.write(f"\n{OUTPUT_END_MARKER}\n")
+            serial.flush()
+        log("Result written to serial console")
+    except OSError:
+        pass  # No serial device (not on GCP, or development mode)
+
+    # 3. stdout (always)
+    print(f"\n{OUTPUT_START_MARKER}")
+    print(output_json)
+    print(OUTPUT_END_MARKER)
     sys.stdout.flush()
 
-    # Get TDX attestation quote
-    report_data = compute_report_data(input_hash, action_bytes, reasoning, system_prompt)
-    quote = get_tdx_quote(report_data)
 
-    return jsonify({
-        "reasoning": reasoning,
-        "action": action_json,
-        "action_bytes": "0x" + action_bytes.hex(),
-        "attestation_quote": "0x" + quote.hex(),
-        "report_data": "0x" + report_data.hex(),
-        "input_hash": "0x" + input_hash.hex(),
-        "seed": seed,
-        "inference_seconds": inference["elapsed_seconds"],
-        "tokens": inference["tokens"],
-    })
+def write_error(error: str):
+    """Write an error result."""
+    write_output({"status": "error", "error": error})
 
 
-def main():
-    port = int(os.environ.get("ENCLAVE_PORT", "8090"))
-    host = os.environ.get("ENCLAVE_HOST", "127.0.0.1")
-    print(f"Starting enclave runner on {host}:{port}...")
-    print(f"  Llama server: {LLAMA_SERVER_URL}")
-    has_tee = os.path.isdir(CONFIGFS_TSM_BASE) or os.path.exists("/dev/tdx_guest")
-    print(f"  TDX attestation: {'available' if has_tee else 'not available (mock mode)'}")
+# ─── llama-server management ───────────────────────────────────────────
 
-    # Wait for llama-server to be ready
-    print("Waiting for llama-server...")
-    for i in range(60):
+def start_llama_server() -> subprocess.Popen:
+    """Start the local llama-server process."""
+    if not os.path.exists(LLAMA_SERVER_BIN):
+        raise RuntimeError(f"llama-server not found at {LLAMA_SERVER_BIN}")
+    if not os.path.exists(MODEL_PATH):
+        raise RuntimeError(f"Model not found at {MODEL_PATH}")
+
+    log(f"Starting llama-server (model: {MODEL_PATH})...")
+
+    # Detect GPU
+    gpu_layers = ""
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            gpu_layers = "-ngl 99"
+            log(f"  GPU detected: {result.stdout.strip()}")
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    if not gpu_layers:
+        log("  No GPU detected, using CPU inference")
+
+    cmd = [
+        LLAMA_SERVER_BIN,
+        "-m", MODEL_PATH,
+        "-c", "16384",
+        "--host", "127.0.0.1",
+        "--port", str(LLAMA_SERVER_PORT),
+    ]
+    if gpu_layers:
+        cmd.extend(gpu_layers.split())
+
+    proc = subprocess.Popen(
+        cmd,
+        stdout=open("/tmp/llama-server.log", "w"),
+        stderr=subprocess.STDOUT,
+    )
+    log(f"  llama-server PID={proc.pid}")
+    return proc
+
+
+def wait_for_llama_server(timeout=600):
+    """Wait for llama-server to be ready (model loaded)."""
+    from urllib.request import urlopen
+
+    log("Waiting for llama-server to load model...")
+    start = time.time()
+    for i in range(timeout // 5):
         try:
             resp = urlopen(f"{LLAMA_SERVER_URL}/health", timeout=5)
             status = json.loads(resp.read())
             if status.get("status") == "ok":
-                print(f"  llama-server ready after {i * 5}s")
-                break
+                elapsed = time.time() - start
+                log(f"  Model loaded in {elapsed:.0f}s")
+                return
         except Exception:
             pass
         time.sleep(5)
-    else:
-        print("WARNING: llama-server not ready after 5 minutes, starting anyway")
 
-    app.run(host=host, port=port, threaded=True)
+    raise RuntimeError(f"llama-server not ready after {timeout}s")
+
+
+# ─── Main ──────────────────────────────────────────────────────────────
+
+def main():
+    log("The Human Fund — TEE Enclave (one-shot)")
+    log(f"  Model: {MODEL_PATH}")
+    log(f"  System prompt: {SYSTEM_PROMPT_PATH}")
+    log(f"  dm-verity rootfs: all code is immutable")
+
+    llama_proc = None
+
+    try:
+        # Step 1: Read input
+        log("")
+        log("Step 1: Reading epoch state...")
+        epoch_data = read_input()
+
+        seed = int(epoch_data.get("seed", 0))
+        llama_seed = seed & 0xFFFFFFFF if seed > 0 else -1
+        log(f"  Seed: {seed} (llama: {llama_seed})")
+
+        # Step 2: Read system prompt from dm-verity rootfs
+        log("")
+        log("Step 2: Reading system prompt...")
+        prompt_path = Path(SYSTEM_PROMPT_PATH)
+        if not prompt_path.exists():
+            raise RuntimeError(f"System prompt not found at {SYSTEM_PROMPT_PATH}")
+        system_prompt = prompt_path.read_text().strip()
+        log(f"  Prompt: {len(system_prompt)} chars, sha256={hashlib.sha256(system_prompt.encode()).hexdigest()[:16]}...")
+
+        # Step 3: Compute input hash
+        log("")
+        log("Step 3: Computing input hash...")
+        contract_state = epoch_data.get("contract_state")
+        if contract_state:
+            input_hash = compute_input_hash(contract_state)
+            log(f"  Input hash (computed): 0x{input_hash.hex()[:16]}...")
+        else:
+            input_hash_hex = epoch_data.get("input_hash", "0x" + "00" * 32)
+            input_hash = bytes.fromhex(input_hash_hex.replace("0x", ""))
+            log(f"  Input hash (provided): 0x{input_hash.hex()[:16]}...")
+
+        # Step 4: Build prompt
+        log("")
+        log("Step 4: Building prompt...")
+        epoch_context = epoch_data.get("epoch_context", "").strip()
+        if not epoch_context:
+            raise RuntimeError("Missing epoch_context in input")
+        full_prompt = build_full_prompt(system_prompt, epoch_context)
+        log(f"  Full prompt: {len(full_prompt)} chars")
+
+        # Step 5: Start llama-server and run inference
+        log("")
+        log("Step 5: Running inference...")
+        llama_proc = start_llama_server()
+        wait_for_llama_server()
+
+        max_retries = 3
+        action_json = None
+        inference = None
+
+        for attempt in range(1, max_retries + 1):
+            log(f"  Attempt {attempt}/{max_retries}...")
+            try:
+                inference = run_two_pass_inference(
+                    full_prompt, seed=llama_seed, llama_url=LLAMA_SERVER_URL
+                )
+            except Exception as e:
+                log(f"  Inference error: {e}")
+                if attempt == max_retries:
+                    raise RuntimeError(f"Inference failed after {max_retries} attempts: {e}")
+                continue
+
+            action_json = parse_action(inference["text"])
+            if action_json:
+                log(f"  Action: {action_json['action']}")
+                break
+            log(f"  Could not parse action from output")
+
+        if not action_json:
+            raise RuntimeError("Could not parse action after retries")
+
+        # Step 6: Encode action and compute hashes
+        log("")
+        log("Step 6: Encoding action...")
+        reasoning = truncate_reasoning(inference["reasoning"])
+        action_bytes = encode_action_bytes(action_json)
+        log(f"  Action bytes: {len(action_bytes)} bytes")
+        log(f"  Reasoning: {len(reasoning)} chars")
+
+        # Step 7: Get TDX attestation quote
+        log("")
+        log("Step 7: Generating TDX attestation quote...")
+        report_data = compute_report_data(input_hash, action_bytes, reasoning, system_prompt)
+        quote = get_tdx_quote(report_data)
+        log(f"  Quote: {len(quote)} bytes")
+        log(f"  Report data: 0x{report_data.hex()[:32]}...")
+
+        # Step 8: Write output
+        log("")
+        log("Step 8: Writing output...")
+        result = {
+            "status": "success",
+            "reasoning": reasoning,
+            "action": action_json,
+            "action_bytes": "0x" + action_bytes.hex(),
+            "attestation_quote": "0x" + quote.hex(),
+            "report_data": "0x" + report_data.hex(),
+            "input_hash": "0x" + input_hash.hex(),
+            "seed": seed,
+            "inference_seconds": inference["elapsed_seconds"],
+            "tokens": inference["tokens"],
+        }
+        write_output(result)
+
+        log("")
+        log("Epoch complete.")
+
+    except Exception as e:
+        log(f"FATAL: {e}")
+        write_error(str(e))
+        sys.exit(1)
+
+    finally:
+        # Kill llama-server
+        if llama_proc and llama_proc.poll() is None:
+            log("Stopping llama-server...")
+            llama_proc.terminate()
+            try:
+                llama_proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                llama_proc.kill()
 
 
 if __name__ == "__main__":
