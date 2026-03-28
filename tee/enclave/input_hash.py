@@ -144,3 +144,56 @@ def compute_input_hash(state: dict) -> bytes:
         ("bytes32", msg_hash),
         ("bytes32", hist_hash),
     ))
+
+
+def derive_contract_state(epoch_state: dict) -> dict:
+    """Derive the structured contract_state (for input hash) from a flat epoch state.
+
+    The runner sends the full flat state (same format as read_contract_state()).
+    The TEE derives the hash-input structure from it, computes the input hash,
+    and verifies it matches on-chain. This ensures ALL data shown to the model
+    is transitively verified.
+
+    The flat state also includes pre-computed on-chain hashes (invest_hash,
+    worldview_hash, message_hashes, epoch_content_hashes) that the TEE cannot
+    derive independently since it has no chain access.
+    """
+    cs = {}
+
+    # 1. State hash inputs — maps flat field names to _hashState() field names
+    cs["state_hash_inputs"] = {
+        "epoch": epoch_state["epoch"],
+        "balance": epoch_state["treasury_balance"],
+        "commission_rate_bps": epoch_state["commission_rate_bps"],
+        "max_bid": epoch_state["max_bid"],
+        "consecutive_missed_epochs": epoch_state.get("consecutive_missed", 0),
+        "last_donation_epoch": epoch_state["last_donation_epoch"],
+        "last_commission_change_epoch": epoch_state["last_commission_change_epoch"],
+        "total_inflows": epoch_state.get("total_inflows", 0),
+        "total_donated_to_nonprofits": epoch_state.get("total_donated", 0),
+        "total_commissions_paid": epoch_state.get("total_commissions", 0),
+        "total_bounties_paid": epoch_state.get("total_bounties", 0),
+        "current_epoch_inflow": epoch_state.get("epoch_inflow", 0),
+        "current_epoch_donation_count": epoch_state.get("epoch_donation_count", 0),
+        "epoch_eth_usd_price": epoch_state.get("epoch_eth_usd_price", 0),
+    }
+
+    # 2. Nonprofits — matches _hashNonprofits()
+    cs["nonprofits"] = []
+    for np in epoch_state.get("nonprofits", []):
+        cs["nonprofits"].append({
+            "name": np["name"],
+            "description": np.get("description", ""),
+            "ein": np.get("ein", "0x" + "00" * 32),
+            "total_donated": np["total_donated"],
+            "total_donated_usd": np.get("total_donated_usd", 0),
+            "donation_count": np["donation_count"],
+        })
+
+    # 3-6. Pre-computed hashes (passed through from runner, verified via inputHash)
+    cs["invest_hash"] = epoch_state.get("invest_hash", "0x" + "00" * 32)
+    cs["worldview_hash"] = epoch_state.get("worldview_hash", "0x" + "00" * 32)
+    cs["message_hashes"] = epoch_state.get("message_hashes", [])
+    cs["epoch_content_hashes"] = epoch_state.get("epoch_content_hashes", [])
+
+    return cs

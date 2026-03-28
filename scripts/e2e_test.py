@@ -2,33 +2,31 @@
 import os
 os.environ["PYTHONUNBUFFERED"] = "1"
 """
-The Human Fund — Full E2E Test on Base Sepolia
+The Human Fund — Full E2E Test on Base Sepolia (dm-verity architecture)
 
 Tests the complete security model end-to-end:
-  1. Deploy TheHumanFund + TdxVerifier to Base Sepolia
-  2. Register GCP TDX image measurements (RTMR[1] + RTMR[2] + RTMR[3] — boot loader + kernel + application)
-  3. Configure auction timing (short windows for testing)
-  4. Spin up GCP TDX confidential VM with enclave_runner + llama-server
-  5. Run full auction: startEpoch → commit → closeCommit → reveal → closeReveal → TEE inference → submitAuctionResult
-  6. Verify on-chain: Automata DCAP + image registry + REPORTDATA binding all pass
+  1. Deploy TheHumanFund + DstackVerifier to Base Sepolia
+  2. Boot measurement VM from dm-verity image, extract RTMR measurements
+  3. Register platform key = sha256(MRTD || RTMR[1] || RTMR[2]) in DstackVerifier
+  4. Run full auction: startEpoch -> commit -> closeCommit -> reveal -> closeReveal
+     -> boot fresh H100 TDX VM -> one-shot inference via serial console -> submitAuctionResult
+  5. Verify on-chain: Automata DCAP + platform key registry + REPORTDATA binding all pass
+  6. Cleanup VMs
 
-Security properties verified:
-  - Quote came from genuine Intel TDX hardware (Automata DCAP)
-  - VM was running an approved boot loader + kernel + app code (RTMR[1] + RTMR[2] + RTMR[3])
-  - Output was computed from the committed input hash (REPORTDATA binding)
-  - Inference used the contract's randomness seed (prevents cherry-picking)
-  - Only the auction winner can submit (msg.sender == winner)
-  - Submission is within the execution window (timing enforcement)
+Architecture:
+  - VM boots from dm-verity image, reads epoch-state from GCP metadata
+  - Enclave is a one-shot systemd service that runs at boot
+  - Output written to serial console between delimiters
+  - No SSH needed for inference (SSH only for measurement extraction)
+  - Each epoch inference requires a fresh VM (create -> boot -> poll serial -> delete)
 
 Usage:
     source .venv/bin/activate
-    python scripts/e2e_test.py
+    python scripts/e2e_test.py --image humanfund-dmverity-gpu-v6
 
     # Skip deployment (reuse existing contracts):
-    python scripts/e2e_test.py --fund-address 0x... --verifier-address 0x...  # TdxVerifier address
-
-    # Skip VM creation (reuse existing VM):
-    python scripts/e2e_test.py --vm-ip 1.2.3.4
+    python scripts/e2e_test.py --image humanfund-dmverity-gpu-v6 \\
+        --fund-address 0x... --verifier-address 0x...
 
 Environment:
     PRIVATE_KEY       - Deployer/runner wallet private key
@@ -50,7 +48,7 @@ from pathlib import Path
 from web3 import Web3
 from eth_account import Account
 
-# ─── Config ──────────────────────────────────────────────────────────────
+# --- Config -------------------------------------------------------------------
 
 PROJECT_ROOT = Path(__file__).parent.parent
 ABI_DIR = PROJECT_ROOT / "out"
@@ -58,19 +56,27 @@ ABI_DIR = PROJECT_ROOT / "out"
 RPC_URL = os.environ.get("RPC_URL", "https://sepolia.base.org")
 GCP_PROJECT = os.environ.get("GCP_PROJECT", "the-human-fund")
 GCP_ZONE = os.environ.get("GCP_ZONE", "us-central1-a")
-GCP_VM_NAME = os.environ.get("GCP_VM_NAME", "humanfund-e2e")
-# Default to GPU; set --cpu flag for CPU instance
-GCP_MACHINE_TYPE_CPU = "c3-standard-4"   # 4 vCPU, 16 GB — CPU inference (~20-30 min)
-GCP_MACHINE_TYPE_GPU = "a3-highgpu-1g"   # 1x H100 80GB — GPU inference (~30 sec)
+
+# VM names
+MEASUREMENT_VM_NAME = "humanfund-e2e-measure"
+# Inference VMs are created/destroyed by GCPTEEClient with random names
+
+# Machine types
+GCP_MACHINE_TYPE_CPU = "c3-standard-4"   # 4 vCPU, 16 GB -- CPU inference (~20-30 min)
+GCP_MACHINE_TYPE_GPU = "a3-highgpu-1g"   # 1x H100 80GB -- GPU inference (~30 sec)
 
 # Set at runtime based on --cpu flag
-GCP_MACHINE_TYPE = GCP_MACHINE_TYPE_GPU
 USE_GPU = True
-USE_DOCKER = True  # Set at runtime based on --docker/--no-docker flag
+
+# dm-verity image name (set from --image CLI arg)
+DMVERITY_IMAGE = None
+
+# Serial console delimiters (must match enclave_runner.py)
+# Serial console markers are in runner.tee_clients.gcp
 
 # Timing constants (adjusted at runtime based on CPU vs GPU)
 # GPU: inference takes ~30s, so keep windows tight
-EPOCH_DURATION_GPU = 1800     # 30 min (generous for SSH/inference overhead)
+EPOCH_DURATION_GPU = 1800     # 30 min (generous for boot/inference overhead)
 COMMIT_WINDOW_GPU = 60        # 1 min
 REVEAL_WINDOW_GPU = 30        # 30 sec
 EXECUTION_WINDOW_GPU = 1500   # 25 min
@@ -89,9 +95,7 @@ EXECUTION_WINDOW = EXECUTION_WINDOW_GPU
 BID_AMOUNT_ETH = 0.0001  # Minimum bid
 SEED_AMOUNT_ETH = 0.0005  # Treasury seed (keep small for testnet)
 
-# Production model: DeepSeek R1 Distill Llama 70B (Q4_K_M, 42.5GB GGUF)
-MODEL_URL = "https://huggingface.co/bartowski/DeepSeek-R1-Distill-Llama-70B-GGUF/resolve/main/DeepSeek-R1-Distill-Llama-70B-Q4_K_M.gguf"
-MODEL_SHA256 = "181a82a1d6d2fa24fe4db83a68eee030384986bdbdd4773ba76424e3a6eb9fd8"
+BOOT_DISK_SIZE_GB = 200
 
 
 def run_cmd(cmd, check=True, capture=True, timeout=300):
@@ -111,11 +115,11 @@ def gcloud(cmd, **kwargs):
     return run_cmd(f"gcloud {cmd} --project={GCP_PROJECT}", **kwargs)
 
 
-# ─── Step 1: Deploy Contracts ────────────────────────────────────────────
+# --- Step 1: Deploy Contracts -------------------------------------------------
 
 def deploy_contracts(w3, account):
-    """Deploy TheHumanFund + TdxVerifier to Base Sepolia."""
-    print("\n═══ STEP 1: Deploy Contracts ═══")
+    """Deploy TheHumanFund + DstackVerifier to Base Sepolia."""
+    print("\n=== STEP 1: Deploy Contracts ===")
 
     # Build contracts first
     print("Building contracts...")
@@ -123,13 +127,12 @@ def deploy_contracts(w3, account):
 
     # Load ABIs
     fund_artifact = json.loads((ABI_DIR / "TheHumanFund.sol" / "TheHumanFund.json").read_text())
-    verifier_artifact = json.loads((ABI_DIR / "TdxVerifier.sol" / "TdxVerifier.json").read_text())
 
     deployer = account.address
     nonce = w3.eth.get_transaction_count(deployer)
     seed_wei = w3.to_wei(SEED_AMOUNT_ETH, "ether")
 
-    # Deploy TheHumanFund first (TdxVerifier needs fund address)
+    # Deploy TheHumanFund
     print(f"Deploying TheHumanFund (seed: {SEED_AMOUNT_ETH} ETH)...")
     fund_contract = w3.eth.contract(
         abi=fund_artifact["abi"],
@@ -137,7 +140,7 @@ def deploy_contracts(w3, account):
     )
     # Constructor: (commissionBps, maxBid, endaomentFactory, weth, usdc, swapRouter, ethUsdFeed)
     # Use deployer as placeholder for Endaoment/DeFi addresses on testnet
-    # ethUsdFeed must be address(0) — deployer is an EOA, calling latestRoundData() on it reverts
+    # ethUsdFeed must be address(0) -- deployer is an EOA, calling latestRoundData() on it reverts
     ZERO_ADDR = "0x0000000000000000000000000000000000000000"
     tx = fund_contract.constructor(
         1000, w3.to_wei(0.0001, "ether"),
@@ -180,8 +183,9 @@ def deploy_contracts(w3, account):
         nonce += 1
     print(f"  Added {len(test_nps)} test nonprofits")
 
-    # Deploy TdxVerifier (needs fund address)
+    # Deploy TdxVerifier (platform key = sha256(MRTD || RTMR[1] || RTMR[2]))
     print(f"Deploying TdxVerifier...")
+    verifier_artifact = json.loads((ABI_DIR / "TdxVerifier.sol" / "TdxVerifier.json").read_text())
     verifier_contract = w3.eth.contract(
         abi=verifier_artifact["abi"],
         bytecode=verifier_artifact["bytecode"]["object"]
@@ -197,42 +201,17 @@ def deploy_contracts(w3, account):
     tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
     receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
     if receipt.status != 1:
-        raise RuntimeError(f"Verifier deployment failed! Status: {receipt.status}, gas: {receipt.gasUsed}")
-    verifier_addr = receipt.contractAddress
-    print(f"  TdxVerifier: {verifier_addr} (gas: {receipt.gasUsed})")
+        raise RuntimeError(f"TdxVerifier deployment failed! Status: {receipt.status}, gas: {receipt.gasUsed}")
+    dstack_verifier_addr = receipt.contractAddress
+    print(f"  TdxVerifier: {dstack_verifier_addr} (gas: {receipt.gasUsed})")
     nonce += 1
-
-    # Deploy DstackVerifier (ID=2, for Docker-based architecture)
-    dstack_verifier_addr = None
-    if USE_DOCKER:
-        print(f"Deploying DstackVerifier...")
-        dstack_artifact = json.loads((ABI_DIR / "DstackVerifier.sol" / "DstackVerifier.json").read_text())
-        dstack_contract = w3.eth.contract(
-            abi=dstack_artifact["abi"],
-            bytecode=dstack_artifact["bytecode"]["object"]
-        )
-        tx = dstack_contract.constructor(fund_addr).build_transaction({
-            "from": deployer,
-            "nonce": nonce,
-            "gas": 1_000_000,
-            "maxFeePerGas": w3.eth.gas_price * 2,
-            "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
-        })
-        signed = account.sign_transaction(tx)
-        tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-        receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
-        if receipt.status != 1:
-            raise RuntimeError(f"DstackVerifier deployment failed! Status: {receipt.status}, gas: {receipt.gasUsed}")
-        dstack_verifier_addr = receipt.contractAddress
-        print(f"  DstackVerifier: {dstack_verifier_addr} (gas: {receipt.gasUsed})")
-        nonce += 1
 
     # Deploy AuctionManager
     print(f"Deploying AuctionManager...")
     am_artifact = json.loads((ABI_DIR / "AuctionManager.sol" / "AuctionManager.json").read_text())
     am_contract = w3.eth.contract(abi=am_artifact["abi"], bytecode=am_artifact["bytecode"]["object"])
     tx = am_contract.constructor(fund_addr).build_transaction({
-        "from": deployer, "nonce": nonce, "gas": 1_500_000,
+        "from": deployer, "nonce": nonce, "gas": 3_000_000,
         "maxFeePerGas": w3.eth.gas_price * 2, "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
     })
     signed = account.sign_transaction(tx)
@@ -255,9 +234,9 @@ def deploy_contracts(w3, account):
     w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
     nonce += 1
 
-    # Approve TDX verifier (verifierId=1 for TDX)
-    print("Approving TdxVerifier (verifierId=1)...")
-    tx = fund.functions.approveVerifier(1, verifier_addr).build_transaction({
+    # Approve TdxVerifier (verifierId=2)
+    print("Approving TdxVerifier (verifierId=2)...")
+    tx = fund.functions.approveVerifier(2, dstack_verifier_addr).build_transaction({
         "from": deployer, "nonce": nonce,
         "gas": 100_000,
         "maxFeePerGas": w3.eth.gas_price * 2,
@@ -267,20 +246,6 @@ def deploy_contracts(w3, account):
     tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
     w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
     nonce += 1
-
-    # Approve DstackVerifier (verifierId=2 for dstack/Docker)
-    if USE_DOCKER and dstack_verifier_addr:
-        print("Approving DstackVerifier (verifierId=2)...")
-        tx = fund.functions.approveVerifier(2, dstack_verifier_addr).build_transaction({
-            "from": deployer, "nonce": nonce,
-            "gas": 100_000,
-            "maxFeePerGas": w3.eth.gas_price * 2,
-            "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
-        })
-        signed = account.sign_transaction(tx)
-        tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-        w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
-        nonce += 1
 
     # Configure auction timing (cross-contract call to AuctionManager.setTiming)
     print(f"Setting auction timing (epoch={EPOCH_DURATION}s, commit={COMMIT_WINDOW}s, reveal={REVEAL_WINDOW}s, exec={EXECUTION_WINDOW}s)...")
@@ -418,750 +383,163 @@ def deploy_contracts(w3, account):
         print(f"  Protocol #{i+1}: {pname} -> {adapter_addr}")
 
     print(f"  Contracts deployed and configured!")
-    return fund_addr, verifier_addr, am_addr, nonce, dstack_verifier_addr
+    return fund_addr, dstack_verifier_addr, am_addr, nonce
 
 
-# ─── Step 2: Spin up GCP TDX VM ─────────────────────────────────────────
+# --- Step 2: Create Measurement VM --------------------------------------------
 
-def snapshot_image_name():
-    """Return the expected snapshot image name for current mode."""
-    if USE_DOCKER:
-        return f"humanfund-dmverity-{'gpu' if USE_GPU else 'cpu'}-v3"
-    return f"humanfund-tee-{'gpu' if USE_GPU else 'cpu'}-70b-v3"
+def create_measurement_vm():
+    """Create a cheap c3-standard-4 TDX VM from the dm-verity image for measurement extraction.
 
-# Note: Boot disk size must accommodate the 70B model (42.5GB) + OS + llama.cpp
-BOOT_DISK_SIZE_GB = 300
+    The measurement VM just needs to boot from the same dm-verity image so we can
+    extract MRTD/RTMR values. SSH must be available on the image (build with --enable-ssh).
 
-
-def snapshot_image_exists():
-    """Check if a snapshot image exists for current mode."""
-    name = snapshot_image_name()
-    try:
-        result = gcloud(f"compute images describe {name} --format='value(status)'", check=False)
-        return "READY" in result
-    except Exception:
-        return False
-
-
-def get_snapshot_startup_script():
-    """Minimal startup script for booting from snapshot (everything pre-installed).
-
-    For Docker mode (dm-verity image): systemd handles all startup via
-    humanfund-docker-load and humanfund-tee services. The startup script
-    just needs to activate the GPU CC state.
-
-    For legacy mode: starts llama-server directly.
+    Returns the VM IP address.
     """
-    if USE_DOCKER:
-        return """#!/bin/bash
-exec > /tmp/startup.log 2>&1
-echo "=== Docker snapshot boot at $(date) ==="
-
-# Activate CC GPU Ready State (must happen before Docker starts the container)
-if command -v nvidia-smi &>/dev/null; then
-    echo "Activating CC GPU Ready State..."
-    nvidia-smi conf-compute -srs 1 2>/dev/null || true
-    sleep 3
-    nvidia-smi conf-compute -srs 1 2>/dev/null || true
-    sleep 2
-    echo "CC state: $(nvidia-smi conf-compute -grs 2>&1 | grep -o 'ready|not-ready' || echo unknown)"
-fi
-
-# Ensure configfs-tsm is available (kernel should auto-mount on TDX VMs)
-if [ -d /sys/kernel/config/tsm/report ]; then
-    echo "configfs-tsm report interface available"
-else
-    echo "WARNING: configfs-tsm report interface not found"
-fi
-
-# systemd services (humanfund-gpu-cc + humanfund-docker-load + humanfund-tee) handle the rest
-echo "Waiting for systemd to start enclave..."
-systemctl start humanfund-gpu-cc 2>&1 || true
-systemctl start humanfund-tee 2>&1 || true
-echo "=== Startup script done at $(date) ==="
-"""
-    if USE_GPU:
-        return """#!/bin/bash
-exec > /tmp/startup.log 2>&1
-echo "=== Snapshot boot (GPU) at $(date) ==="
-
-# Shared libs should already be in /usr/local/lib/ from fresh build
-ldconfig 2>/dev/null || true
-
-# GPU drivers may need re-initialization after boot from snapshot
-echo "Checking GPU drivers..."
-for attempt in 1 2 3; do
-    if nvidia-smi > /dev/null 2>&1; then
-        echo "GPU available: $(nvidia-smi --query-gpu=name --format=csv,noheader)"
-        break
-    fi
-    echo "nvidia-smi failed (attempt $attempt), reloading drivers..."
-    modprobe -r nvidia_uvm nvidia_drm nvidia_modeset nvidia 2>/dev/null || true
-    sleep 5
-    modprobe nvidia 2>/dev/null || true
-    modprobe nvidia_uvm 2>/dev/null || true
-    sleep 5
-done
-
-if ! nvidia-smi > /dev/null 2>&1; then
-    echo "FATAL: GPU not available after 3 attempts. Cannot load 70B model without GPU."
-    exit 1
-fi
-
-# Activate Confidential Computing GPU Ready State (required for TDX VMs)
-# Without this, CUDA reports "system not yet initialized" and llama.cpp silently falls back to CPU
-echo "Activating CC GPU Ready State..."
-nvidia-smi conf-compute -srs 1
-sleep 2
-CC_STATE=$(nvidia-smi conf-compute -grs 2>&1 | grep -o 'ready\|not-ready')
-echo "CC GPU state: $CC_STATE"
-if [ "$CC_STATE" = "not-ready" ]; then
-    echo "WARNING: CC GPU state still not-ready, retrying..."
-    nvidia-smi conf-compute -srs 1
-    sleep 5
-fi
-
-echo "Starting llama-server (GPU)..."
-export LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}
-nohup llama-server -m /models/model.gguf -c 4096 --host 0.0.0.0 --port 8080 -ngl 99 > /tmp/llama.log 2>&1 &
-
-# Wait up to 60s, then check if CUDA actually initialized
-sleep 10
-if grep -q "failed to initialize CUDA" /tmp/llama.log 2>/dev/null; then
-    echo "CUDA init failed! Rebuilding llama.cpp against runtime CUDA..."
-    pkill -f llama-server || true
-    cd /tmp
-    rm -rf llama.cpp
-    git clone --depth 1 --branch b5170 https://github.com/ggml-org/llama.cpp.git
-    cd llama.cpp
-    cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=90
-    cmake --build build --config Release -j$(nproc) --target llama-server
-    cp build/bin/llama-server /usr/local/bin/
-    find build -name '*.so' -exec cp {} /usr/local/lib/ \; 2>/dev/null || true
-    ldconfig
-    echo "Rebuilt. Restarting llama-server..."
-    nohup llama-server -m /models/model.gguf -c 4096 --host 0.0.0.0 --port 8080 -ngl 99 > /tmp/llama.log 2>&1 &
-fi
-
-for i in $(seq 1 120); do
-    if curl -s http://127.0.0.1:8080/health | grep -q ok; then
-        echo "llama-server ready after $((i*5))s"
-        break
-    fi
-    if ! pgrep -f llama-server > /dev/null; then
-        echo "FATAL: llama-server crashed on GPU!"
-        tail -20 /tmp/llama.log
-        exit 1
-    fi
-    sleep 5
-done
-
-# Verify model is actually loaded on GPU (not silent CPU fallback)
-GPU_MEM=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1)
-echo "GPU memory used: ${GPU_MEM} MiB"
-if [ -n "$GPU_MEM" ] && [ "$GPU_MEM" -lt 1000 ]; then
-    echo "FATAL: Model not loaded on GPU (only ${GPU_MEM} MiB used). Likely silent CPU fallback!"
-    echo "CC state: $(nvidia-smi conf-compute -grs 2>&1)"
-    tail -30 /tmp/llama.log
-    exit 1
-fi
-echo "=== Snapshot boot complete at $(date) ==="
-"""
-    else:
-        return """#!/bin/bash
-exec > /tmp/startup.log 2>&1
-echo "=== Snapshot boot (CPU) at $(date) ==="
-ldconfig 2>/dev/null || true
-nohup llama-server -m /models/model.gguf -c 4096 --host 0.0.0.0 --port 8080 -t $(nproc) > /tmp/llama.log 2>&1 &
-for i in $(seq 1 120); do
-    if curl -s http://127.0.0.1:8080/health | grep -q ok; then
-        echo "llama-server ready after $((i*5))s"
-        break
-    fi
-    sleep 5
-done
-echo "=== Snapshot boot complete at $(date) ==="
-"""
-
-
-def get_fresh_startup_script():
-    """Full startup script for fresh boot (install everything from scratch)."""
-    if USE_GPU:
-        return f"""#!/bin/bash
-set -e
-exec > /tmp/startup.log 2>&1
-echo "=== Starting GPU setup at $(date) ==="
-
-apt-get update -qq
-apt-get install -y -qq python3 python3-pip python3-venv cmake build-essential git wget libcurl4-openssl-dev
-
-python3 -m venv /opt/humanfund-venv
-source /opt/humanfund-venv/bin/activate
-pip install flask web3 requests
-
-echo "Checking for NVIDIA GPU..."
-# GCP a3-highgpu machines come with CC drivers pre-installed
-# Try loading the driver modules first
-modprobe nvidia 2>/dev/null || true
-modprobe nvidia_uvm 2>/dev/null || true
-sleep 3
-
-if ! nvidia-smi > /dev/null 2>&1; then
-    echo "nvidia-smi not available, installing drivers..."
-    apt-get install -y -qq linux-headers-$(uname -r) nvidia-driver-575-open nvidia-utils-575 2>/dev/null || true
-    apt-get install -y -qq nvidia-cuda-toolkit 2>/dev/null || true
-    modprobe nvidia 2>/dev/null || true
-    modprobe nvidia_uvm 2>/dev/null || true
-    sleep 5
-fi
-
-if ! nvidia-smi > /dev/null 2>&1; then
-    echo "FATAL: Cannot initialize NVIDIA GPU. Aborting."
-    exit 1
-fi
-nvidia-smi
-echo "GPU initialized successfully."
-
-# Find CUDA path for llama.cpp build
-CUDA_PATH=""
-if [ -d "/usr/local/cuda" ]; then
-    CUDA_PATH="/usr/local/cuda"
-elif [ -d "/usr/lib/x86_64-linux-gnu/cuda" ]; then
-    CUDA_PATH="/usr/lib/x86_64-linux-gnu/cuda"
-fi
-echo "CUDA path: $CUDA_PATH"
-
-echo "Building llama.cpp with CUDA..."
-cd /tmp
-git clone --depth 1 --branch b5170 https://github.com/ggml-org/llama.cpp.git
-cd llama.cpp
-cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=90
-cmake --build build --config Release -j$(nproc) --target llama-server
-cp build/bin/llama-server /usr/local/bin/
-find build -name '*.so' -exec cp {{}} /usr/local/lib/ \; 2>/dev/null || true
-ldconfig
-
-echo "Downloading model (42.5GB, may take 5-10 min)..."
-mkdir -p /models
-wget --progress=dot:giga -O /models/model.gguf "{MODEL_URL}"
-
-echo "Verifying model hash..."
-ACTUAL_HASH=$(sha256sum /models/model.gguf | cut -d' ' -f1)
-if [ "$ACTUAL_HASH" != "{MODEL_SHA256}" ]; then
-    echo "FATAL: Model hash mismatch! Expected {MODEL_SHA256}, got $ACTUAL_HASH"
-    exit 1
-fi
-echo "Model hash verified."
-
-# Activate Confidential Computing GPU Ready State (required for TDX VMs)
-echo "Activating CC GPU Ready State..."
-nvidia-smi conf-compute -srs 1
-sleep 2
-CC_STATE=$(nvidia-smi conf-compute -grs 2>&1 | grep -o 'ready\|not-ready')
-echo "CC GPU state: $CC_STATE"
-if [ "$CC_STATE" = "not-ready" ]; then
-    echo "WARNING: CC GPU state still not-ready, retrying..."
-    nvidia-smi conf-compute -srs 1
-    sleep 5
-fi
-
-echo "Starting llama-server (GPU, -ngl 99)..."
-nohup llama-server -m /models/model.gguf -c 4096 --host 0.0.0.0 --port 8080 -ngl 99 > /tmp/llama.log 2>&1 &
-
-echo "Waiting for llama-server to load model..."
-for i in $(seq 1 180); do
-    if curl -s http://127.0.0.1:8080/health | grep -q ok; then
-        echo "llama-server ready after $((i*5))s"
-        break
-    fi
-    if ! pgrep -f llama-server > /dev/null; then
-        echo "FATAL: llama-server crashed!"
-        tail -30 /tmp/llama.log
-        exit 1
-    fi
-    sleep 5
-done
-
-if ! curl -s http://127.0.0.1:8080/health | grep -q ok; then
-    echo "FATAL: llama-server never became ready after 15 minutes"
-    tail -30 /tmp/llama.log
-    exit 1
-fi
-
-# Verify model is actually loaded on GPU (not silent CPU fallback)
-GPU_MEM=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1)
-echo "GPU memory used: ${{GPU_MEM}} MiB"
-if [ -n "$GPU_MEM" ] && [ "$GPU_MEM" -lt 1000 ]; then
-    echo "FATAL: Model not loaded on GPU (only ${{GPU_MEM}} MiB used). Likely silent CPU fallback!"
-    echo "CC state: $(nvidia-smi conf-compute -grs 2>&1)"
-    tail -30 /tmp/llama.log
-    exit 1
-fi
-
-echo "=== Setup complete at $(date) ==="
-"""
-    else:
-        return f"""#!/bin/bash
-set -e
-exec > /tmp/startup.log 2>&1
-echo "=== Starting CPU setup at $(date) ==="
-
-apt-get update -qq
-apt-get install -y -qq python3 python3-pip python3-venv cmake build-essential git wget libcurl4-openssl-dev
-
-python3 -m venv /opt/humanfund-venv
-source /opt/humanfund-venv/bin/activate
-pip install flask web3 requests
-
-echo "Building llama.cpp..."
-cd /tmp
-git clone --depth 1 --branch b5170 https://github.com/ggml-org/llama.cpp.git
-cd llama.cpp
-cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --config Release -j$(nproc) --target llama-server
-cp build/bin/llama-server /usr/local/bin/
-find build -name '*.so' -exec cp {{}} /usr/local/lib/ \; 2>/dev/null || true
-ldconfig
-
-echo "Downloading model..."
-mkdir -p /models
-wget -q -O /models/model.gguf "{MODEL_URL}"
-
-echo "Verifying model hash..."
-ACTUAL_HASH=$(sha256sum /models/model.gguf | cut -d' ' -f1)
-if [ "$ACTUAL_HASH" != "{MODEL_SHA256}" ]; then
-    echo "FATAL: Model hash mismatch!"
-    exit 1
-fi
-echo "Model hash verified."
-
-echo "Starting llama-server (CPU)..."
-nohup llama-server -m /models/model.gguf -c 4096 --host 0.0.0.0 --port 8080 -t $(nproc) > /tmp/llama.log 2>&1 &
-
-echo "Waiting for llama-server..."
-for i in $(seq 1 120); do
-    if curl -s http://127.0.0.1:8080/health | grep -q ok; then
-        echo "llama-server ready after $((i*5))s"
-        break
-    fi
-    sleep 5
-done
-
-echo "=== Setup complete at $(date) ==="
-"""
-
-
-def create_snapshot_image():
-    """Stop VM, create disk image, restart VM."""
-    name = snapshot_image_name()
-    print(f"\n═══ STEP 2d: Create Snapshot Image '{name}' ═══")
-    try:
-        print("  Stopping VM...")
-        gcloud(f"compute instances stop {GCP_VM_NAME} --zone={GCP_ZONE}", timeout=180)
-
-        # Delete old image if it exists (--force doesn't work for images create)
-        print("  Deleting old image if it exists...")
-        gcloud(f"compute images delete {name} --quiet", check=False, timeout=60)
-
-        print("  Creating image from boot disk...")
-        gcloud(
-            f"compute images create {name} "
-            f"--source-disk={GCP_VM_NAME} --source-disk-zone={GCP_ZONE} "
-            f"--family=humanfund-tee",
-            timeout=600
-        )
-        print(f"  Image '{name}' created!")
-
-        print("  Restarting VM...")
-        gcloud(f"compute instances start {GCP_VM_NAME} --zone={GCP_ZONE}", timeout=120)
-
-        # Wait for llama-server to come back
-        print("  Waiting for llama-server to restart...")
-        for i in range(60):
-            time.sleep(10)
-            try:
-                result = gcloud(
-                    f"compute ssh {GCP_VM_NAME} --zone={GCP_ZONE} "
-                    f"--command='curl -s http://127.0.0.1:8080/health 2>/dev/null || echo NOT_READY'",
-                    check=False, timeout=30
-                )
-                if '"status":"ok"' in result or '"status": "ok"' in result:
-                    print(f"  llama-server back up after restart")
-                    return True
-            except Exception:
-                pass
-        print("  WARNING: llama-server not responding after restart")
-        return False
-    except Exception as e:
-        print(f"  WARNING: Snapshot failed: {e}")
-        return False
-
-
-def create_gcp_vm(force_fresh=False):
-    """Create a GCP TDX confidential VM for e2e testing.
-
-    Returns (ip, booted_from_snapshot) tuple.
-    """
-    print("\n═══ STEP 2: Create GCP TDX VM ═══")
+    print("\n=== STEP 2: Create Measurement VM ===")
+    print(f"  Image: {DMVERITY_IMAGE}")
+    print(f"  Machine: {GCP_MACHINE_TYPE_CPU} (cheap, just for measurements)")
 
     # Check if VM already exists
     try:
-        result = gcloud(f"compute instances describe {GCP_VM_NAME} --zone={GCP_ZONE} --format='value(status)'", check=False)
+        result = gcloud(f"compute instances describe {MEASUREMENT_VM_NAME} --zone={GCP_ZONE} --format='value(status)'", check=False)
         if "RUNNING" in result:
-            ip = gcloud(f"compute instances describe {GCP_VM_NAME} --zone={GCP_ZONE} --format='value(networkInterfaces[0].accessConfigs[0].natIP)'")
-            print(f"  VM already running at {ip}")
-            return ip, False
+            ip = gcloud(f"compute instances describe {MEASUREMENT_VM_NAME} --zone={GCP_ZONE} --format='value(networkInterfaces[0].accessConfigs[0].natIP)'")
+            print(f"  Measurement VM already running at {ip}")
+            return ip
         elif result.strip():
             print(f"  VM exists but status={result.strip()}, deleting...")
-            gcloud(f"compute instances delete {GCP_VM_NAME} --zone={GCP_ZONE} --quiet")
+            gcloud(f"compute instances delete {MEASUREMENT_VM_NAME} --zone={GCP_ZONE} --quiet")
     except Exception:
         pass
 
-    # Check for snapshot image
-    use_snapshot = not force_fresh and snapshot_image_exists()
-    if use_snapshot:
-        image_name = snapshot_image_name()
-        print(f"  Booting from snapshot image '{image_name}' (fast boot, ~1-2 min)")
-        startup_script = get_snapshot_startup_script()
-        image_flags = f"--image={image_name}"
-    else:
-        if force_fresh:
-            print(f"  Fresh boot requested (--fresh flag)")
-        else:
-            print(f"  No snapshot image found, doing fresh install (~10-15 min)")
-        startup_script = get_fresh_startup_script()
-        image_flags = "--image-family=ubuntu-2404-lts-amd64 --image-project=ubuntu-os-cloud"
-
-    startup_path = "/tmp/humanfund_e2e_startup.sh"
-    with open(startup_path, "w") as f:
-        f.write(startup_script)
-
-    print(f"Creating {GCP_MACHINE_TYPE} TDX spot instance...")
+    # Use GPU machine type for measurements when running GPU inference — the MRTD
+    # (firmware measurement) differs between c3 and a3 machine types, so we must
+    # register the key from the same machine family used for actual inference.
+    measure_machine_type = GCP_MACHINE_TYPE_GPU if USE_GPU else GCP_MACHINE_TYPE_CPU
+    measure_extra = "--provisioning-model=SPOT --instance-termination-action=DELETE " if USE_GPU else ""
+    print(f"  Machine: {measure_machine_type} (cheap, just for measurements)")
     gcloud(
-        f"compute instances create {GCP_VM_NAME} "
+        f"compute instances create {MEASUREMENT_VM_NAME} "
         f"--zone={GCP_ZONE} "
-        f"--machine-type={GCP_MACHINE_TYPE} "
+        f"--machine-type={measure_machine_type} "
+        f"--image={DMVERITY_IMAGE} "
         f"--confidential-compute-type=TDX "
-        f"--provisioning-model=SPOT "
-        f"--instance-termination-action=STOP "
-        f'--min-cpu-platform="Intel Sapphire Rapids" '
-        f"{image_flags} "
         f"--boot-disk-size={BOOT_DISK_SIZE_GB}GB "
-        f"--metadata-from-file=startup-script={startup_path}",
-        timeout=120
+        f"--maintenance-policy=TERMINATE "
+        f"{measure_extra}",
+        timeout=180
     )
 
     ip = gcloud(
-        f"compute instances describe {GCP_VM_NAME} --zone={GCP_ZONE} "
+        f"compute instances describe {MEASUREMENT_VM_NAME} --zone={GCP_ZONE} "
         f"--format='value(networkInterfaces[0].accessConfigs[0].natIP)'"
     )
-    print(f"  VM created: {ip}")
-    return ip, use_snapshot
+    print(f"  Measurement VM created: {ip}")
 
-
-def wait_for_vm_ready(vm_ip):
-    """Wait for the VM to have llama-server running and SSH accessible."""
-    print("\n═══ STEP 2b: Wait for VM Setup ═══")
-
-    # In Docker mode, check the enclave API (port 8090) — llama-server (8080) is internal to Docker
-    health_port = 8090 if USE_DOCKER else 8080
-    health_label = "enclave" if USE_DOCKER else "llama-server"
-    print(f"  Checking {health_label} on port {health_port}...")
-
-    for i in range(90):  # 45 min max
+    # Wait for enclave to emit measurements to serial console (no SSH needed)
+    print("  Waiting for measurements on serial console...")
+    for i in range(20):
+        time.sleep(15)
         try:
-            result = gcloud(
-                f"compute ssh {GCP_VM_NAME} --zone={GCP_ZONE} "
-                f"--command='curl -s http://127.0.0.1:{health_port}/health 2>/dev/null || echo NOT_READY'",
+            serial = gcloud(
+                f"compute instances get-serial-port-output {MEASUREMENT_VM_NAME} "
+                f"--zone={GCP_ZONE}",
                 check=False, timeout=30
             )
-            if '"status":"ok"' in result or '"status": "ok"' in result:
-                print(f"  {health_label} ready after {i * 30}s")
-                # In GPU mode, verify model is actually on GPU (not silent CPU fallback)
-                if USE_GPU:
-                    try:
-                        gpu_check = gcloud(
-                            f"compute ssh {GCP_VM_NAME} --zone={GCP_ZONE} "
-                            f"--command='nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null'",
-                            check=False, timeout=15
-                        )
-                        gpu_mem = int(gpu_check.strip().split()[0]) if gpu_check.strip() else 0
-                        if gpu_mem < 1000:
-                            print(f"  WARNING: Only {gpu_mem} MiB GPU memory used — model may be on CPU!")
-                            print(f"  Activating CC and restarting llama-server...")
-                            gcloud(
-                                f"compute ssh {GCP_VM_NAME} --zone={GCP_ZONE} "
-                                f"--command='sudo nvidia-smi conf-compute -srs 1 && sleep 2 && "
-                                f"cat > /tmp/restart_gpu.sh << \"EOF\"\n"
-                                f"#!/bin/bash\npkill -9 -f llama-server\nsleep 3\n"
-                                f"nohup /tmp/llama.cpp/build/bin/llama-server -m /models/model.gguf -c 4096 --host 0.0.0.0 --port 8080 -ngl 99 > /tmp/llama.log 2>&1 &\n"
-                                f"EOF\nsudo bash /tmp/restart_gpu.sh'",
-                                check=False, timeout=30
-                            )
-                            continue  # Re-check after restart
-                        else:
-                            print(f"  GPU memory: {gpu_mem} MiB — model loaded on GPU ✓")
-                    except Exception:
-                        pass  # If GPU check fails, proceed anyway
-                return True
-            elif "NOT_READY" in result:
-                # SSH works but llama-server not ready yet
-                # Check startup progress and llama-server status
-                log = gcloud(
-                    f"compute ssh {GCP_VM_NAME} --zone={GCP_ZONE} "
-                    f"--command='tail -3 /tmp/startup.log 2>/dev/null; "
-                    f"echo \"---\"; pgrep -f llama-server > /dev/null && echo LLAMA_RUNNING || echo LLAMA_NOT_RUNNING; "
-                    f"echo \"---\"; tail -3 /tmp/llama.log 2>/dev/null || echo no_llama_log'",
-                    check=False, timeout=15
-                )
-                print(f"  [{i * 30}s] Waiting... {log[:120]}")
-        except Exception as e:
-            print(f"  [{i * 30}s] SSH not ready yet: {str(e)[:60]}")
-        time.sleep(30)
-
-    print("  TIMEOUT: VM not ready after 45 minutes")
-    return False
-
-
-def upload_enclave_files(vm_ip):
-    """Upload modular enclave package and system prompt to the VM.
-
-    In Docker mode (dm-verity image), the enclave code is already in the Docker
-    image. We only need to upload the system prompt (which is verified by hash).
-    """
-    if USE_DOCKER:
-        print("\n═══ STEP 2c: Docker Mode — Enclave in Image ═══")
-        # Upload system prompt (verified by on-chain hash, not in Docker image)
-        gcloud(
-            f"compute scp {PROJECT_ROOT}/agent/prompts/system_v6.txt "
-            f"{GCP_VM_NAME}:/tmp/system_prompt.txt --zone={GCP_ZONE}",
-            timeout=30
-        )
-        print("  Uploaded system_prompt.txt")
-        print("  Enclave code is pre-installed in Docker image (dm-verity protected)")
-
-        # Wait for enclave to be healthy (started by systemd)
-        print("  Waiting for Docker enclave to be healthy...")
-        for i in range(60):  # 5 min max
-            try:
-                result = gcloud(
-                    f"compute ssh {GCP_VM_NAME} --zone={GCP_ZONE} "
-                    f"--command='curl -s http://127.0.0.1:8090/health 2>/dev/null || echo NOT_READY'",
-                    check=False, timeout=15
-                )
-                if '"status": "ok"' in result or '"status":"ok"' in result:
-                    print(f"  Docker enclave ready after {i * 5}s!")
-                    return True
-            except Exception:
-                pass
-            time.sleep(5)
-        # Show Docker logs for debugging
-        print("  WARNING: Docker enclave not ready after 5 min, checking logs...")
-        try:
-            gcloud(
-                f"compute ssh {GCP_VM_NAME} --zone={GCP_ZONE} "
-                f"--command='sudo docker logs humanfund-enclave 2>&1 | tail -30; echo ---; sudo journalctl -u humanfund-tee --no-pager -n 30'",
-                check=False, timeout=30
-            )
+            if "===HUMANFUND_MEASUREMENTS_END===" in serial:
+                print(f"  Measurements available after {(i + 1) * 15}s")
+                return ip
         except Exception:
             pass
-        return False
-
-    print("\n═══ STEP 2c: Upload Enclave Files ═══")
-
-    # Upload the modular tee/enclave/ package
-    # Note: scp --recurse src/ dst creates dst/src/ — so we SCP to /tmp/ and
-    # the enclave dir ends up at /tmp/enclave/ with the right module structure.
-    # Use sudo rm because __pycache__ may be owned by root from previous runs.
-    gcloud(
-        f"compute ssh {GCP_VM_NAME} --zone={GCP_ZONE} "
-        f"--command='sudo rm -rf /tmp/enclave /tmp/__pycache__'",
-        check=False, timeout=15
-    )
-    # Clean local __pycache__ before uploading
-    run_cmd(f"find {PROJECT_ROOT}/tee/enclave -name '__pycache__' -type d -exec rm -rf {{}} + 2>/dev/null || true",
-            check=False)
-    gcloud(
-        f"compute scp --recurse {PROJECT_ROOT}/tee/enclave "
-        f"{GCP_VM_NAME}:/tmp/ --zone={GCP_ZONE}",
-        timeout=60
-    )
-    print("  Uploaded tee/enclave/ package to /tmp/enclave/")
-
-    # Upload system prompt
-    gcloud(
-        f"compute scp {PROJECT_ROOT}/agent/prompts/system_v6.txt "
-        f"{GCP_VM_NAME}:/tmp/system_prompt.txt --zone={GCP_ZONE}",
-        timeout=30
-    )
-    print("  Uploaded system_prompt.txt")
-
-    # Install dependencies as root (enclave needs root for configfs-tsm TDX quotes)
-    gcloud(
-        f"compute ssh {GCP_VM_NAME} --zone={GCP_ZONE} "
-        f"--command='sudo pip3 install --break-system-packages --ignore-installed "
-        f"flask pycryptodome eth_abi typing_extensions 2>/dev/null; echo DEPS_OK'",
-        check=False, timeout=120
-    )
-
-    # Start the modular enclave runner as root (needs root for configfs-tsm TDX quote generation).
-    # Write a script file to avoid SSH session being killed by pkill/pgrep matching.
-    startup_script = (
-        "#!/bin/bash\n"
-        "# Kill any existing enclave runner (match python3 process specifically)\n"
-        "for pid in $(pgrep -f 'python3.*enclave.enclave_runner' 2>/dev/null); do\n"
-        "    kill $pid 2>/dev/null\n"
-        "done\n"
-        "sleep 2\n"
-        "rm -rf /tmp/__pycache__ /tmp/enclave/__pycache__\n"
-        "cd /tmp\n"
-        "ENCLAVE_HOST=0.0.0.0 ENCLAVE_PORT=8090 SYSTEM_PROMPT_PATH=/tmp/system_prompt.txt PYTHONUNBUFFERED=1 "
-        "nohup python3 -u -m enclave.enclave_runner > /tmp/enclave.log 2>&1 &\n"
-        "echo \"Started enclave PID=$!\"\n"
-    )
-    with open("/tmp/start_enclave.sh", "w") as f:
-        f.write(startup_script)
-    gcloud(
-        f"compute scp /tmp/start_enclave.sh {GCP_VM_NAME}:/tmp/start_enclave.sh --zone={GCP_ZONE}",
-        timeout=15
-    )
-    gcloud(
-        f"compute ssh {GCP_VM_NAME} --zone={GCP_ZONE} "
-        f"--command='sudo bash /tmp/start_enclave.sh'",
-        check=False, timeout=30
-    )
-    print("  Started modular enclave runner on port 8090 (as root for configfs-tsm)")
-
-    # Wait for it to be ready
-    for i in range(12):
-        time.sleep(5)
-        try:
-            result = gcloud(
-                f"compute ssh {GCP_VM_NAME} --zone={GCP_ZONE} "
-                f"--command='curl -s http://127.0.0.1:8090/health 2>/dev/null || echo NOT_READY'",
-                check=False, timeout=15
-            )
-            if '"status": "ok"' in result or '"status":"ok"' in result:
-                print(f"  Enclave runner ready!")
-                return True
-        except Exception:
-            pass
-    print("  WARNING: Enclave runner may not be ready")
-    return False
+    raise RuntimeError("Measurement VM did not emit measurements after 5 minutes")
 
 
-# ─── Step 3: Register Image Key ─────────────────────────────────────────
+# --- Step 3: Extract Measurements & Register ----------------------------------
 
 def get_vm_measurements():
-    """Get a TDX quote from the VM and extract MRTD/RTMR values."""
-    print("\n═══ STEP 3: Extract VM Measurements ═══")
+    """Extract MRTD/RTMR values from serial console (no SSH needed).
 
-    # Upload measurement extraction script and run it
-    extract_script = PROJECT_ROOT / "scripts" / "extract_measurements.py"
-    gcloud(
-        f"compute scp {extract_script} {GCP_VM_NAME}:/tmp/extract_measurements.py --zone={GCP_ZONE}",
+    The enclave emits measurements between ===HUMANFUND_MEASUREMENTS_START===
+    and ===HUMANFUND_MEASUREMENTS_END=== markers on the serial console at boot.
+
+    Returns dict with mrtd, rtmr0, rtmr1, rtmr2, rtmr3 as bytes, plus platform_key.
+    Platform key = sha256(MRTD || RTMR[1] || RTMR[2]) for DstackVerifier.
+    """
+    print("\n=== STEP 3: Extract VM Measurements ===")
+
+    # Read measurements from serial console (emitted by enclave at boot)
+    serial = gcloud(
+        f"compute instances get-serial-port-output {MEASUREMENT_VM_NAME} --zone={GCP_ZONE}",
         timeout=30
     )
-    result = gcloud(
-        f"compute ssh {GCP_VM_NAME} --zone={GCP_ZONE} "
-        f"--command='sudo python3 /tmp/extract_measurements.py'",
-        timeout=30
-    )
 
+    # Parse between markers
+    start_marker = "===HUMANFUND_MEASUREMENTS_START==="
+    end_marker = "===HUMANFUND_MEASUREMENTS_END==="
+    start_idx = serial.find(start_marker)
+    end_idx = serial.find(end_marker)
+    if start_idx < 0 or end_idx < 0:
+        raise RuntimeError(f"Measurements not found in serial output (len={len(serial)})")
+    result = serial[start_idx + len(start_marker):end_idx]
+
+    # Use regex to extract exactly 96 hex chars after each label.
+    # Serial console output can have ANSI codes or syslog lines interleaved,
+    # so we search the entire output rather than relying on clean line parsing.
+    import re
     measurements = {}
-    for line in result.split("\n"):
-        line = line.strip()
-        if line.startswith("MRTD:"):
-            measurements["mrtd"] = bytes.fromhex(line.split(":")[1])
-        elif line.startswith("RTMR0:"):
-            measurements["rtmr0"] = bytes.fromhex(line.split(":")[1])
-        elif line.startswith("RTMR1:"):
-            measurements["rtmr1"] = bytes.fromhex(line.split(":")[1])
-        elif line.startswith("RTMR2:"):
-            measurements["rtmr2"] = bytes.fromhex(line.split(":")[1])
-        elif line.startswith("RTMR3:"):
-            measurements["rtmr3"] = bytes.fromhex(line.split(":")[1])
+    for label, key in [("MRTD", "mrtd"), ("RTMR0", "rtmr0"), ("RTMR1", "rtmr1"),
+                       ("RTMR2", "rtmr2"), ("RTMR3", "rtmr3")]:
+        m = re.search(rf"{label}:([0-9a-f]{{96}})", serial)
+        if m:
+            measurements[key] = bytes.fromhex(m.group(1))
 
     if "rtmr1" not in measurements or "rtmr2" not in measurements:
         raise RuntimeError(f"Failed to extract measurements: {result[:500]}")
 
-    # Default RTMR[3] to zeros if not present (boot script hasn't run yet)
+    # Default MRTD/RTMR[3] to zeros if not present
+    if "mrtd" not in measurements:
+        measurements["mrtd"] = b'\x00' * 48
     if "rtmr3" not in measurements:
         measurements["rtmr3"] = b'\x00' * 48
 
-    # Image key = keccak256(RTMR[1] + RTMR[2] + RTMR[3])
-    image_key = Web3.keccak(
-        measurements["rtmr1"] + measurements["rtmr2"] + measurements["rtmr3"]
-    )
-    measurements["image_key"] = image_key
-    print(f"  MRTD:      {measurements.get('mrtd', b'').hex()[:32]}... (not in image key)")
-    print(f"  RTMR[0]:   {measurements.get('rtmr0', b'').hex()[:32]}... (not in image key)")
+    # Compute platform key = sha256(MRTD || RTMR[1] || RTMR[2])
+    platform_key = hashlib.sha256(
+        measurements["mrtd"] + measurements["rtmr1"] + measurements["rtmr2"]
+    ).digest()
+    measurements["platform_key"] = platform_key
+
+    print(f"  MRTD:      {measurements['mrtd'].hex()[:32]}...")
+    print(f"  RTMR[0]:   {measurements.get('rtmr0', b'').hex()[:32]}... (not in platform key)")
     print(f"  RTMR[1]:   {measurements['rtmr1'].hex()[:32]}...")
     print(f"  RTMR[2]:   {measurements['rtmr2'].hex()[:32]}...")
-    print(f"  RTMR[3]:   {measurements['rtmr3'].hex()[:32]}...")
-    print(f"  Image key: 0x{image_key.hex()} (keccak256(RTMR[1] + RTMR[2] + RTMR[3]))")
+    print(f"  RTMR[3]:   {measurements['rtmr3'].hex()[:32]}... (not in platform key -- dm-verity covers all code via RTMR[2])")
+    print(f"  Platform key: 0x{platform_key.hex()} (sha256(MRTD + RTMR[1] + RTMR[2]))")
     return measurements
 
 
-def register_image_key(w3, account, verifier_addr, image_key, nonce):
-    """Register the VM's image key in the TdxVerifier (legacy flow)."""
-    print("\n═══ STEP 3b: Register Image Key (TdxVerifier) ═══")
+def register_dstack_image(w3, account, dstack_verifier_addr, measurements, nonce):
+    """Register image key in TdxVerifier.
+
+    dm-verity architecture: image_key = sha256(MRTD || RTMR[1] || RTMR[2])
+    This single key covers firmware + bootloader + kernel + dm-verity rootfs.
+    """
+    print("\n=== STEP 3b: Register Image Key (TdxVerifier) ===")
 
     verifier_abi = json.loads(
         (ABI_DIR / "TdxVerifier.sol" / "TdxVerifier.json").read_text()
     )["abi"]
-    verifier = w3.eth.contract(address=verifier_addr, abi=verifier_abi)
+    verifier = w3.eth.contract(address=dstack_verifier_addr, abi=verifier_abi)
 
-    # Check if already approved
-    if verifier.functions.approvedImages(image_key).call():
-        print(f"  Image already approved!")
-        return nonce
+    image_key = measurements["platform_key"]
+    print(f"  Image key: 0x{image_key.hex()}")
 
-    tx = verifier.functions.approveImage(image_key).build_transaction({
-        "from": account.address, "nonce": nonce,
-        "gas": 100_000,
-        "maxFeePerGas": w3.eth.gas_price * 2,
-        "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
-    })
-    signed = account.sign_transaction(tx)
-    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-    receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
-    print(f"  Image approved! (gas: {receipt.gasUsed}, tx: {tx_hash.hex()[:16]}...)")
-    return nonce + 1
-
-
-def register_dstack_image(w3, account, dstack_verifier_addr, measurements, nonce):
-    """Register platform_key + app_key in the DstackVerifier (Docker flow).
-
-    DstackVerifier splits measurements into:
-      - platform_key = sha256(MRTD || RTMR[1] || RTMR[2])  — OS + boot chain
-      - app_key = RTMR[3][:32]  — application code (Docker image)
-    """
-    print("\n═══ STEP 3b: Register Image Keys (DstackVerifier) ═══")
-
-    dstack_abi = json.loads(
-        (ABI_DIR / "DstackVerifier.sol" / "DstackVerifier.json").read_text()
-    )["abi"]
-    verifier = w3.eth.contract(address=dstack_verifier_addr, abi=dstack_abi)
-
-    # Compute platform_key = sha256(MRTD || RTMR[1] || RTMR[2])
-    mrtd = measurements.get("mrtd", b'\x00' * 48)
-    rtmr1 = measurements["rtmr1"]
-    rtmr2 = measurements["rtmr2"]
-    platform_key = hashlib.sha256(mrtd + rtmr1 + rtmr2).digest()
-
-    # app_key = RTMR[3][:32] (first 32 bytes of 48-byte RTMR[3])
-    app_key = measurements["rtmr3"][:32]
-
-    print(f"  Platform key: 0x{platform_key.hex()}")
-    print(f"  App key:      0x{app_key.hex()}")
-
-    # Register platform key
+    # Register image key
     try:
-        if verifier.functions.approvedPlatforms(platform_key).call():
-            print(f"  Platform key already approved!")
+        if verifier.functions.approvedImages(image_key).call():
+            print(f"  Image key already approved!")
         else:
-            tx = verifier.functions.approvePlatform(platform_key).build_transaction({
+            tx = verifier.functions.approveImage(image_key).build_transaction({
                 "from": account.address, "nonce": nonce,
                 "gas": 100_000,
                 "maxFeePerGas": w3.eth.gas_price * 2,
@@ -1170,38 +548,65 @@ def register_dstack_image(w3, account, dstack_verifier_addr, measurements, nonce
             signed = account.sign_transaction(tx)
             tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
             receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
-            print(f"  Platform key approved! (gas: {receipt.gasUsed})")
+            print(f"  Image key approved! (gas: {receipt.gasUsed})")
             nonce += 1
     except Exception as e:
-        print(f"  Platform key registration: {e}")
-
-    # Register app key
-    try:
-        if verifier.functions.approvedApps(app_key).call():
-            print(f"  App key already approved!")
-        else:
-            tx = verifier.functions.approveApp(app_key).build_transaction({
-                "from": account.address, "nonce": nonce,
-                "gas": 100_000,
-                "maxFeePerGas": w3.eth.gas_price * 2,
-                "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
-            })
-            signed = account.sign_transaction(tx)
-            tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-            receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
-            print(f"  App key approved! (gas: {receipt.gasUsed})")
-            nonce += 1
-    except Exception as e:
-        print(f"  App key registration: {e}")
+        print(f"  Image key registration: {e}")
 
     return nonce
 
 
-# ─── Step 4: Run Full Auction Flow ───────────────────────────────────────
+# --- Step 4d: dm-verity Inference ---------------------------------------------
 
-def run_auction_e2e(w3, account, fund_addr, am_addr, vm_ip, nonce):
+def run_dmverity_inference(w3, fund_addr, fund_abi, am_addr, am_abi, epoch, seed):
+    """Run inference in a fresh TDX VM via the GCP TEE client.
+
+    Uses runner.tee_clients.gcp.GCPTEEClient which handles the full lifecycle:
+    create VM with metadata -> poll serial console -> parse result -> delete VM.
+    """
+    print(f"\n  4d. Running dm-verity inference...")
+
+    # Read contract state using runner.epoch_state
+    sys.path.insert(0, str(PROJECT_ROOT))
+    from runner.epoch_state import read_contract_state, build_contract_state_for_tee
+    from runner.tee_clients.gcp import GCPTEEClient
+
+    fund = w3.eth.contract(address=fund_addr, abi=fund_abi)
+    state = read_contract_state(fund, w3)
+    contract_state = build_contract_state_for_tee(fund, w3, state)
+
+    # Choose machine type based on --cpu flag
+    machine_type = GCP_MACHINE_TYPE_CPU if not USE_GPU else GCP_MACHINE_TYPE_GPU
+    inference_timeout = 1200 if USE_GPU else 2400  # 20 min GPU, 40 min CPU
+
+    print(f"      Machine type: {machine_type}")
+    print(f"      Image: {DMVERITY_IMAGE}")
+    print(f"      Timeout: {inference_timeout}s")
+
+    # Use the GCP TEE client — same code the production runner uses
+    client = GCPTEEClient(
+        project=GCP_PROJECT,
+        zone=GCP_ZONE,
+        image=DMVERITY_IMAGE,
+        machine_type=machine_type,
+        inference_timeout=inference_timeout,
+    )
+
+    # System prompt is on the dm-verity rootfs — pass empty string
+    # (the client sends it for interface compatibility but it's not used)
+    return client.run_epoch(
+        epoch_state=state,
+        contract_state=contract_state,
+        system_prompt="",
+        seed=seed,
+    )
+
+
+# --- Step 4: Run Full Auction Flow --------------------------------------------
+
+def run_auction_e2e(w3, account, fund_addr, am_addr, nonce):
     """Run the full auction lifecycle with real TDX attestation."""
-    print("\n═══ STEP 4: Full Auction E2E ═══")
+    print("\n=== STEP 4: Full Auction E2E ===")
 
     am_abi = json.loads(
         (ABI_DIR / "AuctionManager.sol" / "AuctionManager.json").read_text()
@@ -1222,7 +627,7 @@ def run_auction_e2e(w3, account, fund_addr, am_addr, vm_ip, nonce):
         return w3_, fund_
 
     def send_tx(fn, value=0, gas=300_000):
-        """Send a transaction, wait for receipt, refresh connection, return (receipt, nonce)."""
+        """Send a transaction, wait for receipt, refresh connection, return receipt."""
         nonlocal w3, fund, nonce
         tx = fn.build_transaction({
             "from": account.address, "nonce": nonce, "value": value, "gas": gas,
@@ -1243,7 +648,7 @@ def run_auction_e2e(w3, account, fund_addr, am_addr, vm_ip, nonce):
     print(f"  Current epoch: {epoch}")
     print(f"  Treasury: {w3.from_wei(fund.functions.treasuryBalance().call(), 'ether')} ETH")
 
-    # ─── 4a: startEpoch ───
+    # --- 4a: startEpoch ---
     # Clean up any stale auction state before starting a new epoch.
     # If the current epoch has an active auction (e.g., from a previous failed run),
     # close it out so we can proceed.
@@ -1288,7 +693,7 @@ def run_auction_e2e(w3, account, fund_addr, am_addr, vm_ip, nonce):
             nonce = w3.eth.get_transaction_count(account.address)
             phase = am.functions.getPhase(epoch).call()
 
-        if phase == 3:  # EXECUTION — need to forfeit bond
+        if phase == 3:  # EXECUTION -- need to forfeit bond
             exec_win = am.functions.executionWindow().call()
             deadline = start_time + commit_win + reveal_win + exec_win
             now = int(time.time())
@@ -1341,9 +746,8 @@ def run_auction_e2e(w3, account, fund_addr, am_addr, vm_ip, nonce):
             else:
                 raise
     print(f"      Gas: {receipt.gasUsed}")
-    # Note: epochInputHashes is set at closeReveal, not startEpoch
 
-    # ─── 4b: commit sealed bid ───
+    # --- 4b: commit sealed bid ---
     emb = fund.functions.effectiveMaxBid().call()
     bid_wei = min(emb, w3.to_wei(BID_AMOUNT_ETH, "ether"))
     treasury_bal = w3.eth.get_balance(fund.address)
@@ -1360,7 +764,7 @@ def run_auction_e2e(w3, account, fund_addr, am_addr, vm_ip, nonce):
     receipt = send_tx(fund.functions.commit(commit_hash), value=bond_wei)
     print(f"      Gas: {receipt.gasUsed}")
 
-    # ─── 4c: Wait for commit window, closeCommit, reveal, closeReveal ───
+    # --- 4c: Wait for commit window, closeCommit, reveal, closeReveal ---
     start_time = am.functions.getStartTime(epoch).call()
     commit_win = am.functions.commitWindow().call()
     now = w3.eth.get_block("latest").timestamp
@@ -1410,67 +814,17 @@ def run_auction_e2e(w3, account, fund_addr, am_addr, vm_ip, nonce):
 
     assert winner.lower() == account.address.lower(), f"We're not the winner! Winner={winner}"
 
-    # ─── 4d: Run TEE inference on GCP VM ───
-    print(f"\n  4d. Running TEE inference on GCP VM...")
+    # --- 4d: Run dm-verity inference (fresh VM per epoch) ---
+    tee_result = run_dmverity_inference(w3, fund_addr, fund_abi, am_addr, am_abi, epoch, seed)
 
-    # Build epoch context using legacy runner (state reading + prompt building)
-    sys.path.insert(0, str(PROJECT_ROOT))
-    from runner.epoch_state import read_contract_state, build_epoch_context
-
-    state = read_contract_state(fund, w3)
-    epoch_context = build_epoch_context(state)
-    input_hash_hex = "0x" + input_hash.hex()
-
-    # Read system prompt (new modular enclave expects it in the payload)
-    prompt_path = PROJECT_ROOT / "agent" / "prompts" / "system_v6.txt"
-    system_prompt = prompt_path.read_text().strip()
-
-    # Save payload and upload to VM
-    payload = json.dumps({
-        "epoch_context": epoch_context,
-        "system_prompt": system_prompt,
-        "input_hash": input_hash_hex,
-        "seed": seed,
-    })
-    payload_path = "/tmp/tee_payload.json"
-    with open(payload_path, "w") as f:
-        f.write(payload)
-
-    subprocess.run(
-        f"gcloud compute scp {payload_path} {GCP_VM_NAME}:/tmp/tee_payload.json "
-        f"--zone={GCP_ZONE} --project={GCP_PROJECT}",
-        shell=True, timeout=30, capture_output=True
-    )
-
-    # Run inference on VM via gcloud ssh (more reliable than SSH tunnels)
-    print("      Running inference on VM...")
-    result = subprocess.run(
-        ["gcloud", "compute", "ssh", GCP_VM_NAME,
-         f"--zone={GCP_ZONE}", f"--project={GCP_PROJECT}",
-         '--command=curl -s -X POST http://127.0.0.1:8090/run_epoch '
-         '-H "Content-Type: application/json" '
-         '-d @/tmp/tee_payload.json -o /tmp/tee_result.json '
-         '&& echo DONE && wc -c /tmp/tee_result.json'],
-        timeout=2400, capture_output=True, text=True
-    )
-    print(f"      SSH output: {result.stdout.strip()}")
-    assert "DONE" in result.stdout, f"Inference failed: {result.stderr[:200]}"
-
-    # Download result
-    subprocess.run(
-        f"gcloud compute scp {GCP_VM_NAME}:/tmp/tee_result.json /tmp/tee_result.json "
-        f"--zone={GCP_ZONE} --project={GCP_PROJECT}",
-        shell=True, timeout=30, capture_output=True
-    )
-    tee_result = json.loads(Path("/tmp/tee_result.json").read_text())
     print(f"      Action: {json.dumps(tee_result.get('action', 'N/A'))}")
     if "error" in tee_result:
-        print(f"      ❌ TEE error: {tee_result['error']}")
+        print(f"      TEE error: {tee_result['error']}")
         print(f"      Raw output: {tee_result.get('raw_output', 'N/A')[:200]}")
         return False
     print(f"      Quote: {len(bytes.fromhex(tee_result['attestation_quote'].replace('0x', '')))} bytes")
 
-    # ─── 4e: Submit auction result ───
+    # --- 4e: Submit auction result ---
     print(f"\n  4e. Submitting auction result on-chain...")
 
     action_bytes = bytes.fromhex(tee_result["action_bytes"].replace("0x", ""))
@@ -1524,9 +878,9 @@ def run_auction_e2e(w3, account, fund_addr, am_addr, vm_ip, nonce):
     else:
         raise RuntimeError("Failed to fetch RPC params after 5 attempts")
 
-    # Build tx manually — no RPC calls needed after this point
-    # verifier_id: 1 = TdxVerifier (legacy), 2 = DstackVerifier (Docker)
-    verifier_id = 2 if USE_DOCKER else 1
+    # Build tx manually -- no RPC calls needed after this point
+    # verifier_id: 2 = TdxVerifier (dm-verity, platform key = sha256(MRTD || RTMR[1] || RTMR[2]))
+    verifier_id = 2
     print(f"      Building tx (nonce={nonce}, chain_id={chain_id}, verifier_id={verifier_id})...")
     calldata = fund.functions.submitAuctionResult(
         action_bytes, reasoning_bytes, attestation_bytes, verifier_id,
@@ -1569,7 +923,7 @@ def run_auction_e2e(w3, account, fund_addr, am_addr, vm_ip, nonce):
             break
         except (requests.ConnectionError, requests.Timeout, ConnectionResetError) as e:
             print(f"      Send failed (attempt {send_attempt + 1}/5): {str(e)[:80]}")
-            # The tx may have been received despite the connection error — check for receipt
+            # The tx may have been received despite the connection error -- check for receipt
             time.sleep(5)
             try:
                 rcpt_check = requests.post(RPC_URL, json={
@@ -1616,65 +970,51 @@ def run_auction_e2e(w3, account, fund_addr, am_addr, vm_ip, nonce):
         new_epoch = fund.functions.currentEpoch().call()
         new_balance = fund.functions.treasuryBalance().call()
 
-        print(f"\n  ✅ SUCCESS! Full attestation chain verified on-chain!")
-        print(f"      Epoch advanced: {epoch} → {new_epoch}")
+        print(f"\n  SUCCESS! Full attestation chain verified on-chain!")
+        print(f"      Epoch advanced: {epoch} -> {new_epoch}")
         print(f"      Treasury: {w3.from_wei(new_balance, 'ether')} ETH")
         print(f"      Gas used: {receipt.gasUsed}")
         print(f"      Tx: https://sepolia.basescan.org/tx/{tx_hash.hex()}")
         return True
     else:
-        print(f"\n  ❌ FAILED! Transaction reverted (gas: {receipt.gasUsed})")
+        print(f"\n  FAILED! Transaction reverted (gas: {receipt.gasUsed})")
         print(f"      Tx: https://sepolia.basescan.org/tx/{tx_hash.hex()}")
         return False
 
 
-# ─── Step 5: Cleanup ────────────────────────────────────────────────────
+# --- Step 5: Cleanup ----------------------------------------------------------
 
-def cleanup(delete_vm=True):
-    """Delete the GCP VM."""
-    if delete_vm:
-        print("\n═══ STEP 5: Cleanup ═══")
-        try:
-            gcloud(f"compute instances delete {GCP_VM_NAME} --zone={GCP_ZONE} --quiet", timeout=120)
-            print("  VM deleted")
-        except Exception as e:
-            print(f"  Failed to delete VM: {e}")
+def cleanup_measurement_vm():
+    """Delete the measurement VM."""
+    print("\n=== STEP 5: Cleanup ===")
+    try:
+        gcloud(f"compute instances delete {MEASUREMENT_VM_NAME} --zone={GCP_ZONE} --quiet", timeout=120)
+        print("  Measurement VM deleted")
+    except Exception as e:
+        print(f"  Failed to delete measurement VM: {e}")
 
 
-# ─── Main ───────────────────────────────────────────────────────────────
+# --- Main ---------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="Full E2E test on Base Sepolia")
+    parser = argparse.ArgumentParser(description="Full E2E test on Base Sepolia (dm-verity)")
+    parser.add_argument("--image", required=True,
+                        help="dm-verity GCP image name (e.g., humanfund-dmverity-gpu-v6)")
     parser.add_argument("--fund-address", help="Reuse existing TheHumanFund contract")
-    parser.add_argument("--verifier-address", help="Reuse existing TdxVerifier contract")
-    parser.add_argument("--vm-ip", help="Reuse existing GCP VM (skip creation)")
-    parser.add_argument("--no-cleanup", action="store_true", help="Don't delete VM after test")
-    parser.add_argument("--skip-vm", action="store_true", help="Skip VM creation (for testing)")
-    parser.add_argument("--cpu", action="store_true", help="Use CPU instance instead of GPU (slower, cheaper)")
+    parser.add_argument("--verifier-address", help="Reuse existing DstackVerifier contract")
+    parser.add_argument("--no-cleanup", action="store_true", help="Don't delete measurement VM after test")
+    parser.add_argument("--cpu", action="store_true", help="Use CPU instance for inference (slower, cheaper)")
     parser.add_argument("--epochs", type=int, default=1, help="Number of epochs to run (default: 1)")
-    parser.add_argument("--no-snapshot", action="store_true", help="Don't auto-create snapshot on fresh boot")
-    parser.add_argument("--fresh", action="store_true", help="Force fresh VM boot even if snapshot exists")
-    parser.add_argument("--docker", action="store_true", default=True,
-                        help="Use Docker-based dstack architecture (default: True)")
-    parser.add_argument("--no-docker", action="store_true",
-                        help="Use legacy direct-Python TDX architecture")
     args = parser.parse_args()
 
-    # Resolve --docker vs --no-docker
-    args.docker = not args.no_docker
-
-    # Configure Docker mode
-    global USE_DOCKER
-    USE_DOCKER = args.docker
-    if USE_DOCKER:
-        print("Architecture: Docker-based (dstack, DstackVerifier ID=2)")
-    else:
-        print("Architecture: Legacy direct-Python (TdxVerifier ID=1)")
+    # Set dm-verity image
+    global DMVERITY_IMAGE
+    DMVERITY_IMAGE = args.image
+    print(f"dm-verity image: {DMVERITY_IMAGE}")
 
     # Configure GPU vs CPU (GPU is default)
-    global GCP_MACHINE_TYPE, USE_GPU, EPOCH_DURATION, COMMIT_WINDOW, REVEAL_WINDOW, EXECUTION_WINDOW
+    global USE_GPU, EPOCH_DURATION, COMMIT_WINDOW, REVEAL_WINDOW, EXECUTION_WINDOW
     if args.cpu:
-        GCP_MACHINE_TYPE = GCP_MACHINE_TYPE_CPU
         USE_GPU = False
         EPOCH_DURATION = EPOCH_DURATION_CPU
         COMMIT_WINDOW = COMMIT_WINDOW_CPU
@@ -1682,7 +1022,6 @@ def main():
         EXECUTION_WINDOW = EXECUTION_WINDOW_CPU
         print("Mode: CPU (c3-standard-4, ~20-30 min inference)")
     else:
-        GCP_MACHINE_TYPE = GCP_MACHINE_TYPE_GPU
         USE_GPU = True
         EPOCH_DURATION = EPOCH_DURATION_GPU
         COMMIT_WINDOW = COMMIT_WINDOW_GPU
@@ -1717,121 +1056,93 @@ def main():
     print(f"Balance: {w3.from_wei(balance, 'ether')} ETH")
 
     if balance < w3.to_wei(0.01, "ether"):
-        print("WARNING: Low balance — may not have enough for deployment + gas")
+        print("WARNING: Low balance -- may not have enough for deployment + gas")
 
-    # Track whether we created a VM (for cleanup)
-    vm_ip = None
-    created_vm = False
+    created_measurement_vm = False
     success = False
 
     try:
         # Step 1: Deploy contracts (or reuse)
-        dstack_verifier_addr = None
         if args.fund_address and args.verifier_address:
             fund_addr = Web3.to_checksum_address(args.fund_address)
-            verifier_addr = Web3.to_checksum_address(args.verifier_address)
-            # In Docker mode, --verifier-address is the DstackVerifier
-            if USE_DOCKER:
-                dstack_verifier_addr = verifier_addr
+            dstack_verifier_addr = Web3.to_checksum_address(args.verifier_address)
             nonce = w3.eth.get_transaction_count(account.address)
             # Read AM address from fund contract
             fund_abi = json.loads((ABI_DIR / "TheHumanFund.sol" / "TheHumanFund.json").read_text())["abi"]
             fund_tmp = w3.eth.contract(address=fund_addr, abi=fund_abi)
             am_addr = fund_tmp.functions.auctionManager().call()
-            print(f"\nReusing contracts: fund={fund_addr}, verifier={verifier_addr}, am={am_addr}")
+            print(f"\nReusing contracts: fund={fund_addr}, verifier={dstack_verifier_addr}, am={am_addr}")
         else:
-            fund_addr, verifier_addr, am_addr, nonce, dstack_verifier_addr = deploy_contracts(w3, account)
+            fund_addr, dstack_verifier_addr, am_addr, nonce = deploy_contracts(w3, account)
 
-        # Step 2: Create GCP TDX VM (or reuse)
-        if args.vm_ip:
-            vm_ip = args.vm_ip
-            print(f"\nReusing VM at {vm_ip}")
-            upload_enclave_files(vm_ip)
-        elif args.skip_vm:
-            print("\nSkipping VM creation")
-        else:
-            vm_ip, booted_from_snapshot = create_gcp_vm(force_fresh=args.fresh)
-            created_vm = True
-            if not wait_for_vm_ready(vm_ip):
-                print("FATAL: VM not ready, aborting")
-                sys.exit(1)
+        # Step 2: Create measurement VM from dm-verity image (c3-standard-4, cheap)
+        create_measurement_vm()
+        created_measurement_vm = True
 
-            # Auto-create snapshot on fresh boot (saves ~10-15 min on next run)
-            if not booted_from_snapshot and not args.no_snapshot:
-                if not create_snapshot_image():
-                    # Snapshot failed but VM may be stopped — restart it
-                    print("  Restarting VM after failed snapshot...")
-                    try:
-                        gcloud(f"compute instances start {GCP_VM_NAME} --zone={GCP_ZONE}", timeout=120)
-                        wait_for_vm_ready(vm_ip)
-                    except Exception as e:
-                        print(f"  WARNING: Could not restart VM: {e}")
+        # Step 3: Extract measurements, register platform key (DstackVerifier only)
+        # Fresh RPC connection
+        w3 = Web3(Web3.HTTPProvider(RPC_URL, request_kwargs={"timeout": 120}))
+        nonce = w3.eth.get_transaction_count(account.address)
+        measurements = get_vm_measurements()
+        nonce = register_dstack_image(w3, account, dstack_verifier_addr, measurements, nonce)
 
-            upload_enclave_files(vm_ip)
-
-        # Step 3: Get measurements and register image key
-        if vm_ip:
-            # Fresh RPC connection (SSH polling can exhaust local sockets)
-            w3 = Web3(Web3.HTTPProvider(RPC_URL, request_kwargs={"timeout": 120}))
-            nonce = w3.eth.get_transaction_count(account.address)
-            measurements = get_vm_measurements()
-            if USE_DOCKER and dstack_verifier_addr:
-                nonce = register_dstack_image(w3, account, dstack_verifier_addr, measurements, nonce)
-            else:
-                nonce = register_image_key(w3, account, verifier_addr, measurements["image_key"], nonce)
+        # Delete measurement VM before inference — both use a3-highgpu-1g, and
+        # GPUS_ALL_REGIONS quota is 1. Must free the measurement VM before creating
+        # the inference VM or the inference VM creation will fail with quota exceeded.
+        if created_measurement_vm and not args.no_cleanup:
+            cleanup_measurement_vm()
+            created_measurement_vm = False
 
         # Step 4: Run the full auction (multiple epochs if requested)
-        if vm_ip:
-            num_epochs = args.epochs
-            for epoch_i in range(num_epochs):
-                print(f"\n{'=' * 60}")
-                print(f"  EPOCH RUN {epoch_i + 1} / {num_epochs}")
-                print(f"{'=' * 60}")
-                # Refresh nonce before each epoch (sleep to avoid stale RPC reads)
-                time.sleep(5)
-                w3 = Web3(Web3.HTTPProvider(RPC_URL, request_kwargs={"timeout": 120}))
-                nonce = w3.eth.get_transaction_count(account.address, "pending")
+        # Each epoch creates/destroys its own inference VM
+        num_epochs = args.epochs
+        for epoch_i in range(num_epochs):
+            print(f"\n{'=' * 60}")
+            print(f"  EPOCH RUN {epoch_i + 1} / {num_epochs}")
+            print(f"{'=' * 60}")
+            # Refresh nonce before each epoch (sleep to avoid stale RPC reads)
+            time.sleep(5)
+            w3 = Web3(Web3.HTTPProvider(RPC_URL, request_kwargs={"timeout": 120}))
+            nonce = w3.eth.get_transaction_count(account.address, "pending")
+            try:
+                success = run_auction_e2e(w3, account, fund_addr, am_addr, nonce)
+            except Exception as e:
+                print(f"\n  Epoch {epoch_i + 1} crashed: {e}")
+                success = False
+            if not success:
+                print(f"\n  Epoch {epoch_i + 1} failed, continuing to next epoch...")
+                # Forfeit bond if stuck in execution
                 try:
-                    success = run_auction_e2e(w3, account, fund_addr, am_addr, vm_ip, nonce)
-                except Exception as e:
-                    print(f"\n  ❌ Epoch {epoch_i + 1} crashed: {e}")
-                    success = False
-                if not success:
-                    print(f"\n  ⚠️  Epoch {epoch_i + 1} failed, continuing to next epoch...")
-                    # Forfeit bond if stuck in execution
-                    try:
+                    w3 = Web3(Web3.HTTPProvider(RPC_URL, request_kwargs={"timeout": 120}))
+                    fund = w3.eth.contract(address=fund_addr, abi=json.loads((ABI_DIR / "TheHumanFund.sol" / "TheHumanFund.json").read_text())["abi"])
+                    epoch = fund.functions.currentEpoch().call()
+                    am_tmp = w3.eth.contract(address=am_addr, abi=json.loads((ABI_DIR / "AuctionManager.sol" / "AuctionManager.json").read_text())["abi"])
+                    phase = am_tmp.functions.getPhase(epoch).call()
+                    if phase == 3:  # EXECUTION phase
+                        deadline = am_tmp.functions.executionDeadline().call()
+                        wait = max(0, deadline - int(time.time())) + 5
+                        print(f"      Waiting {wait}s to forfeit bond...")
+                        time.sleep(wait)
                         w3 = Web3(Web3.HTTPProvider(RPC_URL, request_kwargs={"timeout": 120}))
                         fund = w3.eth.contract(address=fund_addr, abi=json.loads((ABI_DIR / "TheHumanFund.sol" / "TheHumanFund.json").read_text())["abi"])
-                        epoch = fund.functions.currentEpoch().call()
-                        am_tmp = w3.eth.contract(address=am_addr, abi=json.loads((ABI_DIR / "AuctionManager.sol" / "AuctionManager.json").read_text())["abi"])
-                        phase = am_tmp.functions.getPhase(epoch).call()
-                        if phase == 3:  # EXECUTION phase
-                            deadline = am_tmp.functions.executionDeadline().call()
-                            wait = max(0, deadline - int(time.time())) + 5
-                            print(f"      Waiting {wait}s to forfeit bond...")
-                            time.sleep(wait)
-                            w3 = Web3(Web3.HTTPProvider(RPC_URL, request_kwargs={"timeout": 120}))
-                            fund = w3.eth.contract(address=fund_addr, abi=json.loads((ABI_DIR / "TheHumanFund.sol" / "TheHumanFund.json").read_text())["abi"])
-                            nonce = w3.eth.get_transaction_count(account.address)
-                            tx = fund.functions.forfeitBond().build_transaction({
-                                "from": account.address, "nonce": nonce, "gas": 200_000,
-                                "maxFeePerGas": w3.eth.gas_price * 2,
-                                "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
-                            })
-                            signed = account.sign_transaction(tx)
-                            tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-                            w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
-                            print(f"      Bond forfeited, continuing...")
-                    except Exception as fe:
-                        print(f"      Could not auto-forfeit: {fe}")
-                    success = False  # Track overall
-        else:
-            print("\nSkipping auction (no VM)")
+                        nonce = w3.eth.get_transaction_count(account.address)
+                        tx = fund.functions.forfeitBond().build_transaction({
+                            "from": account.address, "nonce": nonce, "gas": 200_000,
+                            "maxFeePerGas": w3.eth.gas_price * 2,
+                            "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
+                        })
+                        signed = account.sign_transaction(tx)
+                        tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+                        w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+                        print(f"      Bond forfeited, continuing...")
+                except Exception as fe:
+                    print(f"      Could not auto-forfeit: {fe}")
+                success = False  # Track overall
 
     finally:
-        # Step 5: Always clean up the VM (unless --no-cleanup or reusing existing VM)
-        if created_vm and not args.no_cleanup:
-            cleanup()
+        # Step 5: Always clean up the measurement VM (unless --no-cleanup)
+        if created_measurement_vm and not args.no_cleanup:
+            cleanup_measurement_vm()
 
     # Summary
     print("\n" + "=" * 60)
@@ -1839,10 +1150,11 @@ def main():
         print("  E2E TEST PASSED")
         print("  Full security model verified on Base Sepolia:")
         print("    [x] Automata DCAP: genuine TDX hardware")
-        print("    [x] Image registry: approved RTMR[1] + RTMR[2] + RTMR[3] (boot loader + kernel + app code)")
+        print("    [x] Platform key: sha256(MRTD + RTMR[1] + RTMR[2]) -- dm-verity covers all code")
         print("    [x] REPORTDATA: sha256(inputHash + keccak256(sha256(action) + sha256(reasoning) + promptHash))")
         print("    [x] Auction: only winner can submit within execution window")
         print("    [x] Randomness seed: block.prevrandao prevents cherry-picking")
+        print("    [x] Serial console: one-shot inference, no SSH/HTTP during execution")
     else:
         print("  E2E TEST INCOMPLETE/FAILED")
     print("=" * 60)

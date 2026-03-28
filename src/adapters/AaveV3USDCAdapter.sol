@@ -2,7 +2,6 @@
 pragma solidity ^0.8.20;
 
 import "../interfaces/IProtocolAdapter.sol";
-import "../interfaces/IAggregatorV3.sol";
 import "./SwapHelper.sol";
 
 /// @notice Minimal Aave V3 Pool interface for supply/withdraw.
@@ -26,7 +25,6 @@ interface IATokenForUSDC {
 contract AaveV3USDCAdapter is IProtocolAdapter, SwapHelper {
     IAavePoolForUSDC public immutable pool;
     IATokenForUSDC public immutable aUsdc;
-    IAggregatorV3 public immutable ethUsdFeed;
     address public immutable manager;
 
     constructor(
@@ -37,10 +35,9 @@ contract AaveV3USDCAdapter is IProtocolAdapter, SwapHelper {
         address _swapRouter,
         address _ethUsdFeed,
         address _manager
-    ) SwapHelper(_weth, _usdc, _swapRouter, 500) {
+    ) SwapHelper(_weth, _usdc, _swapRouter, 500, _ethUsdFeed) {
         pool = IAavePoolForUSDC(_pool);
         aUsdc = IATokenForUSDC(_aUsdc);
-        ethUsdFeed = IAggregatorV3(_ethUsdFeed);
         manager = _manager;
 
         // Approve pool to spend our USDC

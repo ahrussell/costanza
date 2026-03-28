@@ -36,9 +36,9 @@ from pathlib import Path
 
 from .inference import run_two_pass_inference, truncate_reasoning
 from .action_encoder import parse_action, encode_action_bytes
-from .input_hash import compute_input_hash
+from .input_hash import compute_input_hash, derive_contract_state, _keccak256
 from .attestation import get_tdx_quote, compute_report_data
-from .prompt_builder import build_full_prompt
+from .prompt_builder import build_epoch_context, build_full_prompt
 
 # ─── Configuration ──────────────────────────────────────────────────────
 
@@ -212,11 +212,81 @@ def wait_for_llama_server(timeout=600):
 
 # ─── Main ──────────────────────────────────────────────────────────────
 
+def emit_measurements():
+    """Extract and emit TDX measurements to serial console (no SSH needed).
+
+    This runs early in boot so the e2e test script can read measurements
+    from serial output even though SSH is disabled on hardened images.
+    """
+    MEASUREMENTS_START = "===HUMANFUND_MEASUREMENTS_START==="
+    MEASUREMENTS_END = "===HUMANFUND_MEASUREMENTS_END==="
+
+    try:
+        base = "/sys/kernel/config/tsm/report"
+        if not os.path.isdir(base):
+            log("  No configfs-tsm — skipping measurement extraction")
+            return
+
+        entry = os.path.join(base, "measure-boot")
+        os.makedirs(entry, exist_ok=True)
+        try:
+            with open(os.path.join(entry, "inblob"), "wb") as f:
+                f.write(b"\x00" * 64)
+            with open(os.path.join(entry, "outblob"), "rb") as f:
+                quote = f.read()
+        finally:
+            try:
+                os.rmdir(entry)
+            except OSError:
+                pass
+
+        # Parse MRTD and RTMRs from the TDX quote (standard layout)
+        body = 48
+        mrtd = quote[body + 136 : body + 184]
+        rtmr0 = quote[body + 328 : body + 376]
+        rtmr1 = quote[body + 376 : body + 424]
+        rtmr2 = quote[body + 424 : body + 472]
+        rtmr3 = quote[body + 472 : body + 520]
+
+        measurements = (
+            f"MRTD:{mrtd.hex()}\n"
+            f"RTMR0:{rtmr0.hex()}\n"
+            f"RTMR1:{rtmr1.hex()}\n"
+            f"RTMR2:{rtmr2.hex()}\n"
+            f"RTMR3:{rtmr3.hex()}"
+        )
+        log(f"  TDX measurements extracted ({len(quote)} byte quote)")
+
+        # Write to serial console
+        try:
+            with open(SERIAL_DEVICE, "w") as serial:
+                serial.write(f"\n{MEASUREMENTS_START}\n")
+                serial.write(measurements)
+                serial.write(f"\n{MEASUREMENTS_END}\n")
+                serial.flush()
+        except OSError:
+            pass
+
+        # Also to stdout
+        print(f"\n{MEASUREMENTS_START}")
+        print(measurements)
+        print(MEASUREMENTS_END)
+        sys.stdout.flush()
+
+    except Exception as e:
+        log(f"  Measurement extraction failed: {e}")
+
+
 def main():
     log("The Human Fund — TEE Enclave (one-shot)")
     log(f"  Model: {MODEL_PATH}")
     log(f"  System prompt: {SYSTEM_PROMPT_PATH}")
     log(f"  dm-verity rootfs: all code is immutable")
+
+    # Emit measurements early — no SSH needed for e2e measurement extraction
+    log("")
+    log("Step 0: Extracting TDX measurements...")
+    emit_measurements()
 
     llama_proc = None
 
@@ -240,23 +310,49 @@ def main():
         log(f"  Prompt: {len(system_prompt)} chars, sha256={hashlib.sha256(system_prompt.encode()).hexdigest()[:16]}...")
 
         # Step 3: Compute input hash
+        # The runner sends the full flat epoch state. The TEE derives the
+        # structured contract_state from it for hash verification, ensuring
+        # ALL data shown to the model is transitively verified via inputHash.
         log("")
         log("Step 3: Computing input hash...")
+        epoch_state = epoch_data.get("epoch_state")
         contract_state = epoch_data.get("contract_state")
-        if contract_state:
+        if epoch_state:
+            # Preferred path: derive contract_state from flat epoch_state
+            contract_state = derive_contract_state(epoch_state)
+            # base_input_hash = _computeInputHash() in Solidity (no seed)
+            base_input_hash = compute_input_hash(contract_state)
+            # final input_hash = keccak256(base || seed), matching epochInputHashes[epoch]
+            # set in TheHumanFund.closeReveal():
+            #   epochInputHashes[epoch] = keccak256(epochBaseInputHashes[epoch] || seed)
+            seed_bytes = seed.to_bytes(32, "big") if seed > 0 else b"\x00" * 32
+            input_hash = _keccak256(base_input_hash + seed_bytes)
+            log(f"  Base input hash: 0x{base_input_hash.hex()[:16]}...")
+            log(f"  Input hash (derived from epoch_state): 0x{input_hash.hex()[:16]}...")
+        elif contract_state:
+            # Legacy path: contract_state provided directly
             input_hash = compute_input_hash(contract_state)
-            log(f"  Input hash (computed): 0x{input_hash.hex()[:16]}...")
+            log(f"  Input hash (from contract_state): 0x{input_hash.hex()[:16]}...")
+            epoch_state = None  # Force error in step 4 if no epoch_context
         else:
             input_hash_hex = epoch_data.get("input_hash", "0x" + "00" * 32)
             input_hash = bytes.fromhex(input_hash_hex.replace("0x", ""))
             log(f"  Input hash (provided): 0x{input_hash.hex()[:16]}...")
 
-        # Step 4: Build prompt
+        # Step 4: Build prompt (deterministically from hash-verified state)
+        # epoch_context is built INSIDE the TEE from the same data that was
+        # hash-verified in step 3. No runner-supplied free-text prompt.
         log("")
         log("Step 4: Building prompt...")
-        epoch_context = epoch_data.get("epoch_context", "").strip()
-        if not epoch_context:
-            raise RuntimeError("Missing epoch_context in input")
+        if epoch_state:
+            epoch_context = build_epoch_context(epoch_state, seed=seed)
+            log(f"  Epoch context built from verified state ({len(epoch_context)} chars)")
+        else:
+            # Legacy fallback: use runner-provided epoch_context (less secure)
+            epoch_context = epoch_data.get("epoch_context", "").strip()
+            if not epoch_context:
+                raise RuntimeError("No epoch_state or epoch_context in input")
+            log(f"  WARNING: Using runner-provided epoch_context (not hash-verified)")
         full_prompt = build_full_prompt(system_prompt, epoch_context)
         log(f"  Full prompt: {len(full_prompt)} chars")
 

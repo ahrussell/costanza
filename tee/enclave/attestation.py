@@ -38,11 +38,17 @@ def get_tdx_quote(report_data: bytes) -> bytes:
     if os.path.isdir(CONFIGFS_TSM_BASE):
         return _get_quote_configfs_tsm(report_data)
 
-    # Mock mode (local development only — NOT for production)
-    print("WARNING: No TDX attestation backend (configfs-tsm not found)")
-    print("  Running outside TEE — returning report_data as mock quote")
-    print("  This will NOT pass on-chain DCAP verification!")
-    return report_data
+    # Mock mode — only allowed when explicitly opted in via environment variable
+    if os.environ.get("MOCK_ATTESTATION") == "1":
+        print("WARNING: MOCK_ATTESTATION=1 — returning report_data as mock quote")
+        print("  This will NOT pass on-chain DCAP verification!")
+        return report_data
+
+    raise RuntimeError(
+        "No TDX attestation backend (configfs-tsm not found). "
+        "Cannot produce a valid quote outside TEE hardware. "
+        "Set MOCK_ATTESTATION=1 for local development only."
+    )
 
 
 def _get_quote_configfs_tsm(report_data: bytes) -> bytes:

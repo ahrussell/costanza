@@ -71,8 +71,10 @@ class GCPTEEClient(TEEClient):
                 f"--machine-type={self.machine_type} "
                 f"--image={self.image} "
                 f"--confidential-compute-type=TDX "
-                f"--boot-disk-size=300GB "
+                f"--boot-disk-size=200GB "
                 f"--maintenance-policy=TERMINATE "
+                f"--provisioning-model=SPOT "
+                f"--instance-termination-action=DELETE "
                 f"--metadata-from-file=epoch-state={metadata_file}",
                 timeout=180,
             )
@@ -110,15 +112,27 @@ class GCPTEEClient(TEEClient):
                             print(f"    {line.strip()}")
                     last_line_count = len(lines)
 
-                # Look for the output markers
+                # Look for the output markers.
+                # The enclave writes to /dev/ttyS0 (no timestamp) AND to stdout
+                # (which journald timestamped). Both appear in the serial output.
+                # The ttyS0 write comes first: START marker, then delayed syslog
+                # messages, then the JSON, then END marker. The JSON is the last
+                # `{...}` block before the END marker in the first marker pair.
                 start_idx = output.find(OUTPUT_START_MARKER)
                 end_idx = output.find(OUTPUT_END_MARKER)
 
                 if start_idx >= 0 and end_idx > start_idx:
-                    result_json = output[start_idx + len(OUTPUT_START_MARKER):end_idx].strip()
-                    elapsed = time.time() - start
-                    print(f"  Result received after {elapsed:.0f}s")
-                    return json.loads(result_json)
+                    block = output[start_idx + len(OUTPUT_START_MARKER):end_idx]
+                    # The raw JSON from the direct ttyS0 write is the last { in the block.
+                    # Syslog messages (with timestamps) appear after the JSON, so use
+                    # raw_decode to parse just the JSON object and ignore trailing text.
+                    last_brace = block.rfind("\n{")
+                    if last_brace >= 0:
+                        result_json = block[last_brace:].strip()
+                        elapsed = time.time() - start
+                        print(f"  Result received after {elapsed:.0f}s")
+                        obj, _ = json.JSONDecoder().raw_decode(result_json)
+                        return obj
 
             except (subprocess.TimeoutExpired, json.JSONDecodeError) as e:
                 print(f"    Poll error: {e}")
@@ -142,20 +156,42 @@ class GCPTEEClient(TEEClient):
                 print(f"  WARNING: Failed to delete VM: {e}")
             self.vm_name = None
 
-    def run_epoch(self, contract_state, epoch_context, system_prompt, seed):
+    def run_epoch(self, epoch_state, contract_state, system_prompt, seed):
         """Run inference inside a fresh GCP TDX VM.
 
         Input is passed via GCP instance metadata.
         Output is read from the serial console.
 
+        The enclave builds epoch_context deterministically from epoch_state
+        inside the TEE. It derives contract_state from epoch_state for hash
+        verification, ensuring all data shown to the model is transitively
+        verified via inputHash.
+
         Returns the enclave result dict with an added `vm_minutes` field.
         """
-        # Build the epoch state that the enclave will read
+        # Build the epoch data that the enclave will read.
+        # epoch_state: full flat state — TEE derives hash inputs + builds prompt.
+        # Merge epoch_content_hashes and message_hashes from contract_state into the
+        # flat epoch_state so derive_contract_state() can include them in the input hash.
+        # These fields are computed by build_contract_state_for_tee() but not returned
+        # by read_contract_state(), so we merge them here rather than duplicating the logic.
+        epoch_state_with_hashes = {
+            **epoch_state,
+            # These four fields are computed by build_contract_state_for_tee() from
+            # on-chain contract calls but are not included in the flat epoch_state
+            # returned by read_contract_state(). Merging them here so derive_contract_state()
+            # can include them in the input hash computation inside the TEE.
+            "invest_hash": contract_state.get("invest_hash", "0x" + "00" * 32),
+            "worldview_hash": contract_state.get("worldview_hash", "0x" + "00" * 32),
+            "epoch_content_hashes": contract_state.get("epoch_content_hashes", []),
+            "message_hashes": contract_state.get("message_hashes", []),
+        }
         epoch_data = {
+            "epoch_state": epoch_state_with_hashes,
             "contract_state": contract_state,
-            "epoch_context": epoch_context,
             "seed": seed,
             # system_prompt is on the dm-verity rootfs, not passed via metadata
+            # epoch_context is built inside the TEE from epoch_state
         }
         epoch_state_json = json.dumps(epoch_data)
 

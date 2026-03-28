@@ -11,6 +11,7 @@ GCP_PROJECT="${GCP_PROJECT:-the-human-fund}"
 GCP_ZONE="${GCP_ZONE:-us-central1-a}"
 USE_GPU=true
 SKIP_MODEL=false
+ENABLE_SSH=false
 IMAGE_NAME=""
 BASE_IMAGE=""
 VM_NAME="humanfund-builder-$(date +%s)"
@@ -26,6 +27,7 @@ while [[ $# -gt 0 ]]; do
         --base-image) BASE_IMAGE="$2"; shift 2 ;;
         --project) GCP_PROJECT="$2"; shift 2 ;;
         --skip-model) SKIP_MODEL=true; shift ;;
+        --debug) ENABLE_SSH=true; shift ;;
         *) echo "Unknown arg: $1"; exit 1 ;;
     esac
 done
@@ -36,6 +38,7 @@ echo "═══ The Human Fund — GCP Image Builder ═══"
 echo "  Base: ${BASE_IMAGE:-scratch}"
 echo "  Image: $IMAGE_NAME"
 echo "  VM: $VM_NAME"
+echo "  SSH: $($ENABLE_SSH && echo "ENABLED (debug)" || echo "DISABLED (production)")"
 echo ""
 
 OUTPUT_DISK="${VM_NAME}-output"
@@ -165,7 +168,9 @@ fi
 
 echo "─── Step 3: Running build via nohup ───"
 vm_scp "$SCRIPT_DIR/vm_build_all.sh" "/tmp/vm_build_all.sh"
-vm_run "sudo bash -c 'nohup bash /tmp/vm_build_all.sh > /mnt/staging/build.log 2>&1 &'"
+SSH_ENV=""
+$ENABLE_SSH && SSH_ENV="ENABLE_SSH=1 " && echo "  ⚠ DEBUG BUILD: SSH enabled (different dm-verity hash → won't pass production attestation)"
+vm_run "sudo bash -c '${SSH_ENV}nohup bash /tmp/vm_build_all.sh > /mnt/staging/build.log 2>&1 &'"
 
 # ─── Step 4: Poll for completion ────────────────────────────────────
 

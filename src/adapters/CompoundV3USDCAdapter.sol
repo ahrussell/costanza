@@ -2,7 +2,6 @@
 pragma solidity ^0.8.20;
 
 import "../interfaces/IProtocolAdapter.sol";
-import "../interfaces/IAggregatorV3.sol";
 import "./SwapHelper.sol";
 
 /// @notice Minimal Compound V3 (Comet) interface.
@@ -19,7 +18,6 @@ interface IComet {
 ///      Similar USD exposure risk as AaveV3USDCAdapter.
 contract CompoundV3USDCAdapter is IProtocolAdapter, SwapHelper {
     IComet public immutable comet;
-    IAggregatorV3 public immutable ethUsdFeed;
     address public immutable manager;
 
     constructor(
@@ -29,9 +27,8 @@ contract CompoundV3USDCAdapter is IProtocolAdapter, SwapHelper {
         address _swapRouter,
         address _ethUsdFeed,
         address _manager
-    ) SwapHelper(_weth, _usdc, _swapRouter, 500) {
+    ) SwapHelper(_weth, _usdc, _swapRouter, 500, _ethUsdFeed) {
         comet = IComet(_comet);
-        ethUsdFeed = IAggregatorV3(_ethUsdFeed);
         manager = _manager;
 
         // Approve comet to spend our USDC

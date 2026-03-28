@@ -11,6 +11,7 @@ interface IWstETH {
     function getStETHByWstETH(uint256 _wstETHAmount) external view returns (uint256);
     function stEthPerToken() external view returns (uint256);
     function transfer(address to, uint256 amount) external returns (bool);
+    function approve(address spender, uint256 amount) external returns (bool);
 }
 
 /// @notice Minimal stETH interface.
@@ -79,12 +80,11 @@ contract WstETHAdapter is IProtocolAdapter {
         if (shares > wstETHBal) shares = wstETHBal;
 
         // Approve router to spend wstETH
-        wstETH.transfer(address(this), 0); // noop to warm storage
-        // Use Uniswap V3 to swap wstETH -> ETH
-        // TODO: implement exact swap logic with slippage protection
+        wstETH.approve(swapRouter, shares);
 
         uint256 ethBefore = address(this).balance;
 
+        // Swap wstETH -> WETH via Uniswap V3
         bytes memory swapData = abi.encodeWithSignature(
             "exactInputSingle((address,address,uint24,address,uint256,uint256,uint160))",
             address(wstETH),
@@ -95,8 +95,6 @@ contract WstETHAdapter is IProtocolAdapter {
             0,
             uint160(0)
         );
-        // Need to approve first
-        // wstETH.approve(swapRouter, shares); // TODO
         (bool success, ) = swapRouter.call(swapData);
         require(success, "swap failed");
 

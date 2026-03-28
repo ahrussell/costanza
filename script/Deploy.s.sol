@@ -170,7 +170,7 @@ contract Deploy is Script {
             "Stake ETH via Lido for validator rewards. Risk: stETH depeg, slashing.", 1, 350);
 
         // Protocol 4: Coinbase cbETH (risk 1, ~3% APY)
-        address a4 = address(new CbETHAdapter(d.cbETH, d.swapRouter, mgr));
+        address a4 = address(new CbETHAdapter(d.cbETH, d.weth, d.swapRouter, mgr));
         im.addProtocol(a4, "Coinbase cbETH",
             "Coinbase staked ETH. Institutional backing. Deep liquidity on Base.", 1, 300);
 

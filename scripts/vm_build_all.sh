@@ -18,6 +18,11 @@
 
 set -euo pipefail
 
+# ENABLE_SSH: set by build_full_dmverity_image.sh --debug flag.
+# When set, SSH service + key injection + /etc overlay are included.
+# When unset (production), SSH is disabled and /etc stays immutable.
+ENABLE_SSH="${ENABLE_SSH:-}"
+
 echo "═══ VM Build — $(date) ═══"
 
 STATUS_FILE="/mnt/staging/build_status"
@@ -67,9 +72,13 @@ systemctl mask cloud-init.service cloud-init-local.service cloud-config.service 
 # We handle SSH key injection ourselves via a simple metadata-based service.
 systemctl mask google-guest-agent.service google-osconfig-agent.service 2>/dev/null || true
 
-# Create a simple SSH key injection service that fetches keys from GCP metadata.
-# This replaces google-guest-agent's SSH key management without the network rollback.
-cat > /etc/systemd/system/humanfund-ssh-keys.service << 'SSHEOF'
+# SSH is disabled by default in production images. Debug builds (--debug flag)
+# set ENABLE_SSH=1 which enables these services + /etc overlay + .ssh tmpfs mounts.
+# Production images have a different dm-verity hash → different platform key →
+# won't pass production attestation.
+if [ "${ENABLE_SSH}" = "1" ]; then
+    echo "  SSH ENABLED (debug build)"
+    cat > /etc/systemd/system/humanfund-ssh-keys.service << 'SSHEOF'
 [Unit]
 Description=Fetch SSH keys from GCP metadata
 After=humanfund-dhcp.service network-online.target
@@ -97,10 +106,15 @@ ExecStart=/bin/bash -c '\
 [Install]
 WantedBy=multi-user.target
 SSHEOF
-systemctl enable humanfund-ssh-keys.service 2>/dev/null || true
-# Enable basic networking
+    systemctl enable humanfund-ssh-keys.service 2>/dev/null || true
+    systemctl enable ssh.service 2>/dev/null || true
+else
+    echo "  SSH DISABLED (production build)"
+    systemctl disable ssh.service 2>/dev/null || true
+    systemctl mask ssh.service 2>/dev/null || true
+fi
+# Enable basic networking (needed in all builds for metadata service access)
 systemctl enable systemd-networkd.service 2>/dev/null || true
-systemctl enable ssh.service 2>/dev/null || true
 
 # Networking: Use dhclient directly via a simple systemd service.
 # systemd-networkd's built-in DHCP client fails with "Package not installed"
@@ -273,25 +287,31 @@ mount --bind "${rootmnt}/run/humanfund-etc/machine-id" "${rootmnt}/etc/machine-i
 mkdir -p "${rootmnt}/input" "${rootmnt}/output"
 mount -t tmpfs tmpfs "${rootmnt}/input" -o size=1M
 mount -t tmpfs tmpfs "${rootmnt}/output" -o size=10M
-# Make each user's .ssh dir writable for SSH key injection by guest-agent
-for homedir in "${rootmnt}"/home/*/; do
-    user=$(basename "$homedir")
-    mkdir -p "${rootmnt}/home/${user}/.ssh"
-    mount -t tmpfs tmpfs "${rootmnt}/home/${user}/.ssh" -o mode=700,size=1M
-    chown $(stat -c '%u:%g' "${rootmnt}/home/${user}") "${rootmnt}/home/${user}/.ssh" 2>/dev/null || true
-done
+# /etc/resolv.conf — bind-mount from tmpfs for DNS resolution.
+# The rest of /etc stays on the immutable dm-verity rootfs (no overlay).
+echo "nameserver 169.254.169.254" > "${rootmnt}/run/humanfund-etc/resolv.conf"
+mount --bind "${rootmnt}/run/humanfund-etc/resolv.conf" "${rootmnt}/etc/resolv.conf"
 
-# /etc needs to be writable for GCP guest-agent (SSH keys, user management,
-# lock files). Use overlayfs: lower=dm-verity /etc (immutable), upper=tmpfs.
-# This means /etc files can be "modified" at runtime, but the underlying
-# dm-verity data is unchanged. On reboot, all changes are lost.
-# This is acceptable because /etc writable state is not security-critical —
-# it's just for guest-agent and SSH during testing. In production (serial
-# console), /etc modifications have no security impact.
-mkdir -p "${rootmnt}/run/humanfund-etc-upper" "${rootmnt}/run/humanfund-etc-work"
-mount -t overlay overlay \
-    -o "lowerdir=${rootmnt}/etc,upperdir=${rootmnt}/run/humanfund-etc-upper,workdir=${rootmnt}/run/humanfund-etc-work" \
-    "${rootmnt}/etc"
+# SSH key injection — only in debug builds (ENABLE_SSH=1 baked into kernel cmdline).
+# Production images have no writable .ssh dirs and no /etc overlay, so SSH
+# cannot authenticate anyone even if sshd is running.
+ENABLE_SSH=""
+for arg in $(cat /proc/cmdline); do
+    case "$arg" in humanfund.enable_ssh=1) ENABLE_SSH=1 ;; esac
+done
+if [ "$ENABLE_SSH" = "1" ]; then
+    for homedir in "${rootmnt}"/home/*/; do
+        user=$(basename "$homedir")
+        mkdir -p "${rootmnt}/home/${user}/.ssh"
+        mount -t tmpfs tmpfs "${rootmnt}/home/${user}/.ssh" -o mode=700,size=1M
+        chown $(stat -c '%u:%g' "${rootmnt}/home/${user}") "${rootmnt}/home/${user}/.ssh" 2>/dev/null || true
+    done
+    # Debug: overlay /etc so SSH keys service can write authorized_keys
+    mkdir -p "${rootmnt}/run/humanfund-etc-upper" "${rootmnt}/run/humanfund-etc-work"
+    mount -t overlay overlay \
+        -o "lowerdir=${rootmnt}/etc,upperdir=${rootmnt}/run/humanfund-etc-upper,workdir=${rootmnt}/run/humanfund-etc-work" \
+        "${rootmnt}/etc"
+fi
 SCRIPTEOF
 chmod +x /etc/initramfs-tools/scripts/local-bottom/humanfund-mounts
 
@@ -379,6 +399,7 @@ BOOT_UUID=$(blkid -s UUID -o value "${OUTPUT}p16")
 
 GRUB_EXTRA="humanfund.rootfs_hash=$ROOTFS_HASH ro"
 [ -n "$MODELS_HASH" ] && GRUB_EXTRA="$GRUB_EXTRA humanfund.models_hash=$MODELS_HASH"
+[ "$ENABLE_SSH" = "1" ] && GRUB_EXTRA="$GRUB_EXTRA humanfund.enable_ssh=1"
 
 cat > /mnt/output-boot/grub/grub.cfg << GRUBEOF
 set default=0

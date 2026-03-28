@@ -2,13 +2,14 @@
 pragma solidity ^0.8.20;
 
 import "./interfaces/IAuctionManager.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /// @title AuctionManager
 /// @notice Auction state machine for commit-reveal sealed-bid auctions.
 ///         Operates on one auction at a time. Stores historical BidRecords
 ///         per-epoch for querying past auctions.
 ///         Only the fund contract can call state-transition functions.
-contract AuctionManager is IAuctionManager {
+contract AuctionManager is IAuctionManager, ReentrancyGuard {
     // ─── Errors ──────────────────────────────────────────────────────────
 
     error Unauthorized();
@@ -17,10 +18,18 @@ contract AuctionManager is IAuctionManager {
     error AlreadyDone();
     error InvalidParams();
     error TransferFailed();
+    error TooManyCommitters();
+
+    // ─── Constants ──────────────────────────────────────────────────────
+
+    uint256 public constant MAX_COMMITTERS = 50;
 
     // ─── Current Auction State ───────────────────────────────────────────
 
     address public immutable fund;
+
+    /// @notice Claimable bond balances (pull-based refunds to prevent griefing).
+    mapping(address => uint256) public claimableBonds;
 
     uint256 public override commitWindow;
     uint256 public override revealWindow;
@@ -96,6 +105,7 @@ contract AuctionManager is IAuctionManager {
         if (hasCommitted[runner]) revert AlreadyDone();
         if (commitHash == bytes32(0)) revert InvalidParams();
         if (msg.value < currentBondAmount) revert InvalidParams();
+        if (committers.length >= MAX_COMMITTERS) revert TooManyCommitters();
 
         hasCommitted[runner] = true;
         bidCommits[runner] = commitHash;
@@ -163,13 +173,13 @@ contract AuctionManager is IAuctionManager {
         winner = currentWinner;
         winningBid = currentWinningBid;
 
-        // Refund bonds to non-winners who revealed. Non-revealers lose bond.
+        // Credit bonds to non-winners who revealed (pull-based to prevent griefing).
+        // Non-revealers lose their bond.
         uint256 bond = currentBondAmount;
         for (uint256 i = 0; i < committers.length; i++) {
             address r = committers[i];
             if (r != winner && hasRevealed[r]) {
-                (bool refunded, ) = payable(r).call{value: bond}("");
-                if (!refunded) revert TransferFailed();
+                claimableBonds[r] += bond;
             }
         }
     }
@@ -186,9 +196,8 @@ contract AuctionManager is IAuctionManager {
         currentPhase = AuctionPhase.SETTLED;
         _storeHistory(false);
 
-        // Refund bond to the winner
-        (bool sent, ) = payable(winner).call{value: bondRefund}("");
-        if (!sent) revert TransferFailed();
+        // Credit bond to the winner (pull-based)
+        claimableBonds[winner] += bondRefund;
     }
 
     /// @inheritdoc IAuctionManager
@@ -206,6 +215,17 @@ contract AuctionManager is IAuctionManager {
         commitWindow = _commitWindow;
         revealWindow = _revealWindow;
         executionWindow = _executionWindow;
+    }
+
+    // ─── Pull-based Bond Claims ─────────────────────────────────────────
+
+    /// @notice Claim accumulated bond refunds. Anyone can call for their own balance.
+    function claimBond() external nonReentrant {
+        uint256 amount = claimableBonds[msg.sender];
+        if (amount == 0) revert InvalidParams();
+        claimableBonds[msg.sender] = 0;
+        (bool sent, ) = payable(msg.sender).call{value: amount}("");
+        if (!sent) revert TransferFailed();
     }
 
     // ─── Internal ────────────────────────────────────────────────────────

@@ -9,12 +9,13 @@ import "./interfaces/IEndaoment.sol";
 import "./interfaces/IAggregatorV3.sol";
 import "./adapters/IWETH.sol";
 import "./adapters/SwapHelper.sol"; // for ISwapRouter, IERC20
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /// @title The Human Fund
 /// @notice An autonomous AI agent that manages a charitable treasury on Base.
 /// @dev Each epoch (~24 hours), the runner submits an action chosen by the AI model.
 ///      The contract validates bounds, executes the action, and emits a DiaryEntry event.
-contract TheHumanFund {
+contract TheHumanFund is ReentrancyGuard {
     // ─── Errors ──────────────────────────────────────────────────────────
 
     error Unauthorized();
@@ -167,6 +168,8 @@ contract TheHumanFund {
     // Referral system
     uint256 public nextReferralCodeId;
     mapping(uint256 => ReferralCode) public referralCodes;
+    /// @notice Claimable commission balances (pull-based fallback when referrer reverts).
+    mapping(address => uint256) public claimableCommissions;
 
     // Per-epoch inflow tracking (reset each epoch)
     uint256 public currentEpochInflow;
@@ -291,7 +294,7 @@ contract TheHumanFund {
 
     /// @notice Donate ETH to the fund, optionally with a referral code.
     /// @param referralCodeId The referral code ID (0 for no referral).
-    function donate(uint256 referralCodeId) external payable {
+    function donate(uint256 referralCodeId) external payable nonReentrant {
         if (msg.value < MIN_DONATION_AMOUNT) revert InvalidParams();
 
         uint256 commission = 0;
@@ -310,7 +313,7 @@ contract TheHumanFund {
     /// @notice Donate ETH to the fund with a message for the AI agent.
     /// @param referralCodeId The referral code ID (0 for no referral).
     /// @param message A message for the agent (max 280 characters, requires >= 0.01 ETH).
-    function donateWithMessage(uint256 referralCodeId, string calldata message) external payable {
+    function donateWithMessage(uint256 referralCodeId, string calldata message) external payable nonReentrant {
         if (msg.value < MIN_MESSAGE_DONATION) revert InvalidParams();
 
         // Process donation (same logic as donate)
@@ -361,7 +364,7 @@ contract TheHumanFund {
         return codeId;
     }
 
-    /// @dev Pay commission to the referrer immediately.
+    /// @dev Pay commission to the referrer. Falls back to pull-based if referrer reverts.
     function _payCommission(uint256 referralCodeId) internal returns (uint256 commission) {
         commission = (msg.value * commissionRateBps) / 10000;
         address payable referrer = payable(referralCodes[referralCodeId].owner);
@@ -369,8 +372,20 @@ contract TheHumanFund {
         referralCodes[referralCodeId].referralCount += 1;
         totalCommissionsPaid += commission;
         (bool sent, ) = referrer.call{value: commission}("");
-        if (!sent) revert TransferFailed();
+        if (!sent) {
+            // Referrer contract reverted — credit commission for pull-based claim
+            claimableCommissions[referrer] += commission;
+        }
         emit CommissionPaid(referrer, commission, referralCodeId);
+    }
+
+    /// @notice Claim accumulated commission balances (for referrers whose contracts revert on receive).
+    function claimCommission() external nonReentrant {
+        uint256 amount = claimableCommissions[msg.sender];
+        if (amount == 0) revert InvalidParams();
+        claimableCommissions[msg.sender] = 0;
+        (bool sent, ) = payable(msg.sender).call{value: amount}("");
+        if (!sent) revert TransferFailed();
     }
 
     // ─── Owner: Direct Epoch Submission ───────────────────────────────────
@@ -635,7 +650,7 @@ contract TheHumanFund {
         uint8 verifierId,
         int8 policySlot,
         string calldata policyText
-    ) external payable {
+    ) external payable nonReentrant {
         if (!auctionEnabled) revert WrongPhase();
         uint256 epoch = currentEpoch;
 
@@ -668,7 +683,7 @@ contract TheHumanFund {
     }
 
     /// @notice Forfeit the winner's bond after the execution window expires.
-    function forfeitBond() external {
+    function forfeitBond() external nonReentrant {
         if (!auctionEnabled) revert WrongPhase();
         uint256 epoch = currentEpoch;
         IAuctionManager am = auctionManager;

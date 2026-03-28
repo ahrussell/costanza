@@ -59,6 +59,9 @@ interface IAuctionManager {
     /// @notice Update auction timing parameters.
     function setTiming(uint256 _commitWindow, uint256 _revealWindow, uint256 _executionWindow) external;
 
+    /// @notice Claim accumulated bond refunds (pull-based).
+    function claimBond() external;
+
     // ─── Views ──────────────────────────────────────────────────────────
 
     function currentAuctionEpoch() external view returns (uint256);

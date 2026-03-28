@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import "../interfaces/IProtocolAdapter.sol";
+import "./IWETH.sol";
 
 /// @notice Minimal cbETH interface (Coinbase Wrapped Staked ETH).
 interface ICbETH {
@@ -18,11 +19,13 @@ interface ICbETH {
 ///      Exchange rate monotonically increases as staking rewards accrue.
 contract CbETHAdapter is IProtocolAdapter {
     ICbETH public immutable cbETH;
+    IWETH public immutable weth;
     address public immutable swapRouter;
     address public immutable manager;
 
-    constructor(address _cbETH, address _swapRouter, address _manager) {
+    constructor(address _cbETH, address _weth, address _swapRouter, address _manager) {
         cbETH = ICbETH(_cbETH);
+        weth = IWETH(_weth);
         swapRouter = _swapRouter;
         manager = _manager;
     }
@@ -80,9 +83,11 @@ contract CbETHAdapter is IProtocolAdapter {
         (bool success, ) = swapRouter.call(swapData);
         require(success, "swap failed");
 
-        // Unwrap WETH received from swap
-        // The router returns WETH, not ETH. Need to unwrap.
-        // TODO: use exactInputSingle with unwrapWETH9 or add WETH unwrap step
+        // Unwrap WETH received from swap (router returns WETH, not ETH)
+        uint256 wethBal = weth.balanceOf(address(this));
+        if (wethBal > 0) {
+            weth.withdraw(wethBal);
+        }
 
         ethAmount = address(this).balance - ethBefore;
         (bool sent, ) = msg.sender.call{value: ethAmount}("");

@@ -411,8 +411,15 @@ contract TheHumanFundAuctionTest is Test {
         vm.warp(block.timestamp + REVEAL_WIN);
         fund.closeReveal();
 
-        // Runner1 (non-winner who revealed) gets bond back
+        // Runner1 (non-winner who revealed) has bond credited (pull-based)
+        assertEq(runner1.balance, runner1BalBefore); // No immediate refund
+        assertEq(am.claimableBonds(runner1), 0.001 ether);
+
+        // Runner1 claims their bond
+        vm.prank(runner1);
+        am.claimBond();
         assertEq(runner1.balance, runner1BalBefore + 0.001 ether);
+        assertEq(am.claimableBonds(runner1), 0);
     }
 
     function test_close_reveal_non_revealer_loses_bond() public {
