@@ -6,9 +6,22 @@ Sends push notifications for auction events. Silent when no channel is configure
 
 import json
 import logging
+import re
 from urllib.request import urlopen, Request
 
 logger = logging.getLogger(__name__)
+
+
+def _sanitize(text: str) -> str:
+    """Redact potential secrets from error messages before external transmission."""
+    s = str(text)
+    # Redact private keys (0x + 64 hex chars)
+    s = re.sub(r'0x[0-9a-fA-F]{64}', '0x[REDACTED]', s)
+    # Redact API keys in URLs (common patterns)
+    s = re.sub(r'(https?://[^/]*?)[?&](?:key|apikey|api_key|token)=[^&\s]+', r'\1?key=[REDACTED]', s)
+    # Redact Bearer tokens
+    s = re.sub(r'Bearer\s+[A-Za-z0-9._-]+', 'Bearer [REDACTED]', s)
+    return s
 
 
 def notify(channel, title, message, priority="default", tags=None):
@@ -76,7 +89,7 @@ def notify_result_submitted(channel, epoch, action, bounty_eth=None, cost=None):
     notify(channel, f"Result submitted (epoch {epoch})", "\n".join(lines), priority="high", tags=tags)
 
 def notify_error(channel, epoch, error):
-    notify(channel, f"ERROR (epoch {epoch})", str(error)[:500], priority="urgent", tags=["rotating_light"])
+    notify(channel, f"ERROR (epoch {epoch})", _sanitize(str(error)[:500]), priority="urgent", tags=["rotating_light"])
 
 def notify_vm_started(channel, vm_name):
     notify(channel, "TEE VM started", f"VM: {vm_name}", tags=["computer"])

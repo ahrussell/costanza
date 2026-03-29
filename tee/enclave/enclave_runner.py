@@ -36,7 +36,7 @@ from pathlib import Path
 
 from .inference import run_two_pass_inference, truncate_reasoning
 from .action_encoder import parse_action, encode_action_bytes
-from .input_hash import compute_input_hash, derive_contract_state, _keccak256
+from .input_hash import compute_input_hash, derive_contract_state, verify_display_data, _keccak256
 from .attestation import get_tdx_quote, compute_report_data
 from .prompt_builder import build_epoch_context, build_full_prompt
 
@@ -341,9 +341,20 @@ def main():
         log(f"  Base input hash: 0x{base_input_hash.hex()[:16]}...")
         log(f"  Input hash (derived from epoch_state): 0x{input_hash.hex()[:16]}...")
 
+        # Step 3b: Verify display data matches opaque hashes
+        # The input hash includes opaque sub-hashes (invest_hash, worldview_hash,
+        # message_hashes, epoch_content_hashes). The prompt builder uses EXPANDED
+        # display data from epoch_state. A malicious runner could provide correct
+        # opaque hashes alongside fabricated display data. This step recomputes
+        # each opaque hash from the expanded data and verifies they match.
+        log("")
+        log("Step 3b: Verifying display data against opaque hashes...")
+        verify_display_data(epoch_state, contract_state)
+        log("  All display data verified — investments, worldview, messages, history match hashes.")
+
         # Step 4: Build prompt (deterministically from hash-verified state)
         # epoch_context is built INSIDE the TEE from the same data that was
-        # hash-verified in step 3. No runner-supplied free-text prompt.
+        # hash-verified in steps 3 and 3b. No runner-supplied free-text prompt.
         log("")
         log("Step 4: Building prompt...")
         epoch_context = build_epoch_context(epoch_state, seed=seed)

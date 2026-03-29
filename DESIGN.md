@@ -1,4 +1,4 @@
-# The Human Fund: Design Document v0.3
+# The Human Fund: Design Document v0.4
 
 **An Autonomous, Unkillable AI Charitable Agent on the Blockchain**
 
@@ -269,7 +269,7 @@ The runner is untrusted. They cannot modify the model, the prompt, or the input.
 
 ### 8.3 Approved Image Registry
 
-The `AttestationVerifier` contract (separate from TheHumanFund for bytecode size) maintains a registry of approved images:
+The `TdxVerifier` contract (separate from TheHumanFund for bytecode size) maintains a registry of approved images:
 
 ```solidity
 mapping(bytes32 => bool) public approvedImages;
@@ -290,7 +290,7 @@ To change models (e.g., upgrading from 70B to a larger model), build a new image
 
 Attestation verification uses a two-contract architecture:
 
-1. **AttestationVerifier.sol** — Handles all attestation logic:
+1. **TdxVerifier.sol** — Handles all attestation logic:
    - Calls Automata DCAP verifier (`0xaDdeC7e85c2182202b66E331f2a4A0bBB2cEEa1F`) to verify quote authenticity
    - Parses the DCAP output (595+ bytes, `abi.encodePacked` format) at documented byte offsets
    - Extracts MRTD + RTMR[0..2] and checks against the approved image registry
@@ -551,7 +551,7 @@ The agent's `set_max_bid` action creates a feedback loop: as treasury shrinks, t
 
 **Deliverable:** Attested inference running in a TEE, verified on-chain.
 
-**Status:** Enclave image deployed to Phala Cloud (`ghcr.io/ahrussell/humanfund-tee:v3`). Full inference + attestation pipeline tested — real TDX DCAP quote generated. Old `submitEpochActionTEE()` replaced by `submitAuctionResult()` with full MRTD/RTMR/REPORTDATA verification via `AttestationVerifier.sol`. Model now mounted from disk (no runtime download). llama.cpp pinned to tag `b5170`. 5 consecutive successful epochs with DeepSeek R1 70B on GCP TDX H100.
+**Status:** Enclave image deployed to Phala Cloud (`ghcr.io/ahrussell/humanfund-tee:v3`). Full inference + attestation pipeline tested — real TDX DCAP quote generated. Old `submitEpochActionTEE()` replaced by `submitAuctionResult()` with full MRTD/RTMR/REPORTDATA verification via `TdxVerifier.sol`. Model now mounted from disk (no runtime download). llama.cpp pinned to tag `b5170`. 5 consecutive successful epochs with DeepSeek R1 70B on GCP TDX H100.
 
 **Lessons learned:**
 - 14B model on 16 CPU cores: 0.33 tok/s — functional but slow (~22 min/epoch). Production needs GPU runners.
@@ -573,7 +573,7 @@ The agent's `set_max_bid` action creates a feedback loop: as treasury shrinks, t
 - [x] Configurable timing windows (epochDuration, biddingWindow, executionWindow) for testnet.
 - [x] Input hash commitment at epoch start for runner verification (`computeInputHash()`).
 - [x] Phase 0 compatibility toggle (`auctionEnabled`).
-- [x] `AttestationVerifier.sol` — separate contract for DCAP output parsing, MRTD/RTMR verification, REPORTDATA checking, approved image registry.
+- [x] `TdxVerifier.sol` — separate contract for DCAP output parsing, MRTD/RTMR verification, REPORTDATA checking, approved image registry.
 - [x] `submitAuctionResult()` computes expected REPORTDATA and delegates to verifier.
 - [x] Rolling `historyHash` — Merkle chain over all epoch reasoning, included in `_computeInputHash()`.
 - [x] Verifiable randomness — `block.prevrandao` captured in `closeAuction()`, included in REPORTDATA.
@@ -588,7 +588,7 @@ The agent's `set_max_bid` action creates a feedback loop: as treasury shrinks, t
 
 **Deliverable:** Fully permissionless epoch execution with competitive auction and verified attestation.
 
-**Status:** E2E attestation verified on Base Sepolia. `TheHumanFund.sol` delegates attestation to `AttestationVerifier.sol` (3.4KB). The verifier checks: (1) DCAP quote authenticity via Automata, (2) MRTD + RTMR[0..2] against approved image registry, (3) REPORTDATA matches `sha256(inputHash || sha256(action) || sha256(reasoning) || seed)`. Phase 3 contract deployed at `0xa507366987417e0E4247a827B48536DA11235CC7` with 5 consecutive successful epochs.
+**Status:** E2E attestation verified on Base Sepolia. `TheHumanFund.sol` delegates attestation to `TdxVerifier.sol` (3.4KB). The verifier checks: (1) DCAP quote authenticity via Automata, (2) MRTD + RTMR[0..2] against approved image registry, (3) REPORTDATA matches `sha256(inputHash || sha256(action) || sha256(reasoning) || seed)`. Phase 3 contract deployed at `0xa507366987417e0E4247a827B48536DA11235CC7` with 5 consecutive successful epochs.
 
 ### Phase 3: Investment Portfolio & Agent Personality (Week 7) ✅ COMPLETE
 **Goal:** Add DeFi investment capabilities, agent worldview/personality, and finalize the prompt.
@@ -645,11 +645,11 @@ The agent's `set_max_bid` action creates a feedback loop: as treasury shrinks, t
 
 1. **Contract upgradeability.** The MVP targets full immutability. However, this means the nonprofit list, image registry, and all parameters are frozen at deploy. If we need to update any of these (e.g., a nonprofit changes their address, a TEE platform is compromised), we would need to deploy a new contract and migrate the treasury. A multisig-governed upgrade path may be worth adding. Decision deferred.
 
-2. **Image registry governance.** The `AttestationVerifier` contract has an owner who can `approveImage()` and `revokeImage()`. For the MVP, this is the deployer. For production, a multisig or DAO should own the verifier to enable image updates (new model versions, new platforms) without redeploying the main contract. The main contract references the verifier via `setVerifier()`, which could also be governed.
+2. **Image registry governance.** The `TdxVerifier` contract has an owner who can `approveImage()` and `revokeImage()`. For the MVP, this is the deployer. For production, a multisig or DAO should own the verifier to enable image updates (new model versions, new platforms) without redeploying the main contract. The main contract references the verifier via `setVerifier()`, which could also be governed.
 
 3. **Fund wind-down.** The agent's horizon is emergent — it may choose to donate everything and "die," or perpetually sustain itself. If the agent consistently chooses self-preservation over donation, is there a mechanism to override this? Under the immutable design, no. The contract's 10% per-epoch donation cap ensures the agent cannot empty the treasury in a single epoch, but it also cannot be forced to donate.
 
-4. **Model upgrades.** DeepSeek R1 70B will eventually be surpassed. Upgrading the model requires a new image with a new `MODEL_SHA256` and new RTMR measurements. The `AttestationVerifier` owner calls `approveImage(newImageKey)` and optionally `revokeImage(oldImageKey)`. No contract redeployment needed — the verifier is a separate, updatable contract.
+4. **Model upgrades.** DeepSeek R1 70B will eventually be surpassed. Upgrading the model requires a new image with a new `MODEL_SHA256` and new RTMR measurements. The `TdxVerifier` owner calls `approveImage(newImageKey)` and optionally `revokeImage(oldImageKey)`. No contract redeployment needed — the verifier is a separate, updatable contract.
 
 5. **Multi-action epochs.** The MVP limits the agent to one action per epoch. Allowing multiple actions (e.g., donate AND adjust commission rate) would enrich the decision space but complicates validation. Deferred to v2.
 

@@ -59,6 +59,7 @@ def save(state, state_dir=DEFAULT_STATE_DIR):
         with os.fdopen(fd, "w") as f:
             json.dump(state, f, indent=2)
         os.rename(tmp_path, state_file)
+        os.chmod(state_file, 0o600)
     except Exception:
         try:
             os.unlink(tmp_path)

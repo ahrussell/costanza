@@ -232,31 +232,43 @@ Code paths are NOT writable:
 - `/models/` -- on separate dm-verity squashfs
 - `/boot/` -- not mounted at runtime (no tmpfs overlay)
 
-## Threat Model: What a Root Attacker Cannot Do
+## Threat Model
+
+### Trust Assumptions
+
+| What we trust | Why |
+|---------------|-----|
+| Intel TDX CPU | Hardware root of trust -- generates unforgeable attestation quotes |
+| Google's OVMF firmware | Measured into MRTD -- verified via platform key on-chain |
+| The Linux kernel | Measured into RTMR[1]+[2] -- verified via platform key |
+| dm-verity implementation | Battle-tested (ChromeOS, Android) -- verifies every block read |
+| Automata DCAP verifier | Audited on-chain signature verification for TDX quotes |
+
+### What a Root Attacker Cannot Do
 
 An attacker with root access inside the guest VM cannot:
 
 1. **Modify any code or binary** -- dm-verity rejects tampered blocks at the kernel level (I/O error, not permission denied)
-2. **Shadow files via overlay** -- no overlayfs on code paths. Only `/etc` has an overlay, and code does not live in `/etc`
+2. **Shadow files via overlay** -- no overlayfs on code paths. Only `/etc` has an overlay, and code does not live in `/etc`. There is no overlay layer on the root -- the squashfs is mounted directly. Only specific directories (`/tmp`, `/run`, `/var/lib`, `/home`, `/input`, `/output`) have tmpfs mounts.
 3. **Replace model weights** -- separate dm-verity partition, plus SHA-256 check in immutable enclave code
-4. **Modify kernel or initramfs** -- measured by GRUB into RTMR[1]+[2], changes detected on-chain
+4. **Modify kernel or initramfs** -- measured by GRUB into RTMR[1]+[2], changes detected on-chain. `/boot` is not writable at runtime.
 5. **Fake RTMR measurements** -- RTMRs are append-only (extend), never clearable. MRTD is set by TDX CPU before firmware executes
 6. **Use custom firmware** -- MRTD is part of the platform key, checked on-chain
 7. **Produce valid attestation for fabricated output** -- REPORTDATA = sha256(inputHash || outputHash), bound into TDX quote
+8. **Replace Docker images or modify the Docker daemon** -- there is no Docker
 
-## What a Root Attacker CAN Do (and Why It Is OK)
+### What a Root Attacker CAN Do (and Why It Is OK)
 
-1. **Write to tmpfs dirs** -- the enclave reads input from `/input` (which is the runner's job to provide) and the output is verified by REPORTDATA
-2. **Kill the enclave** -- no result submitted, runner forfeits bond on-chain
+1. **Write to tmpfs dirs** -- the enclave reads input from `/input` (which is the runner's job to provide) and the output is verified by REPORTDATA. An attacker writing to `/input` is equivalent to providing different epoch state (which is the runner's job -- they provide the input).
+2. **Kill the enclave** -- no result submitted, runner forfeits bond on-chain. No economic benefit to the attacker.
 3. **Read model weights** -- the model is public (GGUF download from HuggingFace)
-4. **Read enclave memory via `/proc`** -- epoch state is not secret (committed on-chain), reasoning is published on-chain after submission
+4. **Read enclave memory via `/proc`** -- TDX protects guest memory from the host, but processes inside the guest can read each other's memory. This is acceptable because the epoch state is not secret (committed on-chain), model weights are public, and reasoning is published on-chain after submission.
 
-## Tested Performance
+### Remaining Attack Surfaces
 
-- **15.3s** inference on H100 (a3-highgpu-1g) with DeepSeek R1 70B Q4_K_M
-- Full e2e verified: VM boot, inference, TDX quote generation, DCAP verification on-chain, REPORTDATA match
-- Production image: `humanfund-dmverity-gpu-v6`
-- Base image: `humanfund-base-gpu-llama-b5270` (family: `humanfund-base`)
+1. **Kernel exploits** -- If the attacker finds a kernel vulnerability, they could disable dm-verity at runtime. This is the same trust boundary as all of TDX -- the kernel IS the TCB.
+2. **TOCTOU on `/var/lib`** -- Services write state to `/var/lib` (tmpfs). An attacker could race a write between systemd loading a service config and the service reading it. Mitigation: critical services (humanfund-enclave) don't read config from `/var/lib`.
+3. **Network-based attacks** -- sshd runs on the image (for debugging). In production, masking sshd would reduce attack surface. The enclave doesn't use the network (it reads from metadata at boot and writes to serial console).
 
 ## Comparison with Previous Docker Architecture
 
@@ -272,3 +284,49 @@ An attacker with root access inside the guest VM cannot:
 | Build complexity | Dockerfile + compose + startup.py | squashfs + veritysetup + initramfs hooks |
 | Portability | Same Docker image across platforms | Platform-specific rootfs (different base images) |
 | Attestation keys | Platform key + app key (separate) | Platform key only (app key not needed) |
+
+## Tested Performance
+
+- **15.3s** inference on H100 (a3-highgpu-1g) with DeepSeek R1 70B Q4_K_M
+- Full e2e verified: VM boot, inference, TDX quote generation, DCAP verification on-chain, REPORTDATA match
+- Production image: `humanfund-dmverity-gpu-v6`
+- Base image: `humanfund-base-gpu-llama-b5270` (family: `humanfund-base`)
+
+## On-Chain Verification
+
+The TdxVerifier contract (`src/TdxVerifier.sol`) handles attestation verification on-chain:
+
+- **Platform key**: `sha256(MRTD || RTMR[1] || RTMR[2])` -- registered per-image, covers firmware + bootloader + dm-verity rootfs
+- **REPORTDATA**: `sha256(inputHash || outputHash)` -- binds the specific input and output to the TDX quote
+- **No app key needed**: dm-verity root hash in RTMR[2] transitively covers all code, so no separate RTMR[3]-based app key is required
+- **RTMR[0] intentionally skipped**: VM hardware config varies by runner (different VM sizes get different RTMR[0])
+
+See `SECURITY_MODEL.md` for the full attestation security model and threat analysis.
+
+## Implementation Status
+
+### What Has Been Verified
+
+- Full dm-verity rootfs boots on GCP TDX Confidential VMs
+- dm-verity correctly rejects tampered blocks at the kernel level
+- Boot chain measurements (MRTD, RTMR[1], RTMR[2]) match expected values
+- Two-disk build approach produces consistent, verifiable images
+- 5 consecutive successful epochs with real TDX DCAP attestation on Base Sepolia
+- H100 GPU inference at 15.3s per epoch
+
+### Known Issues and Remaining Work
+
+1. **SSH access to the booted VM** -- The google-guest-agent (which injects SSH keys) was interfering with `systemd-networkd` DHCP config. Last fix: masked the guest agent. Need to verify this fixes the network issue. Alternatively, SSH is not needed in production (serial console is the I/O channel).
+
+2. **google-guest-agent network interference** -- The last build masks the guest agent. This should fix networking but has not been fully tested.
+
+3. **`/etc/resolv.conf`** -- May need a tmpfs bind mount for DNS resolution.
+
+4. **`systemd-resolved`** -- Needs `/var/lib/systemd` which is provided via tmpfs, should work.
+
+### Next Steps
+
+1. Fix networking -- Verify the masked google-guest-agent fixes the DHCP issue
+2. Test enclave execution -- Boot with model weights and verify inference runs to completion on the dm-verity image
+3. Full e2e test -- Deploy contract, register image, run auction with real attestation
+4. Write RUNNER_README.md -- Instructions for 3rd parties to build and run their own TEE
