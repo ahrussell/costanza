@@ -43,11 +43,12 @@ class GCPTEEClient(TEEClient):
 
     def _gcloud(self, args, check=True, timeout=120):
         """Run a gcloud command."""
-        cmd = f"gcloud {args}"
+        import shlex
+        cmd = ["gcloud"] + shlex.split(args)
         if self.project:
-            cmd += f" --project={self.project}"
+            cmd.extend(["--project", self.project])
         result = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=timeout
+            cmd, capture_output=True, text=True, timeout=timeout
         )
         if check and result.returncode != 0:
             raise RuntimeError(f"gcloud failed: {result.stderr[:500]}")

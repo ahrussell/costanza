@@ -30,7 +30,7 @@ from .auction import (
     start_epoch, commit_bid, close_commit, reveal_bid, close_reveal,
     submit_result, IDLE, COMMIT, REVEAL, EXECUTION, SETTLED, PHASE_NAMES,
 )
-from .bid_strategy import estimate_bid, estimate_cost, clamp_bid
+from .bid_strategy import estimate_bid, clamp_bid
 from .state import load as load_state, save as save_state, clear as clear_state
 from .notifier import (
     notify_epoch_started, notify_bid_committed, notify_bid_revealed,
@@ -48,18 +48,18 @@ def get_tee_client(config):
         return GCPTEEClient(
             project=config["gcp_project"],
             zone=config["gcp_zone"],
-            snapshot=config["gcp_snapshot"],
+            image=config["gcp_snapshot"],
             machine_type="a3-highgpu-1g",
-            enclave_timeout=config.get("enclave_timeout", 600),
+            inference_timeout=config.get("enclave_timeout", 900),
         )
     elif config["tee_client"] == "gcp-cpu":
         from .tee_clients.gcp import GCPTEEClient
         return GCPTEEClient(
             project=config["gcp_project"],
             zone=config["gcp_zone"],
-            snapshot=config.get("gcp_snapshot_cpu", "humanfund-tee-cpu-70b"),
+            image=config.get("gcp_snapshot_cpu", "humanfund-tee-cpu-70b"),
             machine_type="c3-standard-4",
-            enclave_timeout=config.get("enclave_timeout", 600),
+            inference_timeout=config.get("enclave_timeout", 1800),
         )
     else:
         raise ValueError(f"Unknown TEE client: {config['tee_client']}")
@@ -130,17 +130,65 @@ def run(config):
             logger.info("WE WON! Starting TEE inference... (bounty: %.6f ETH)", bounty_wei / 1e18)
             notify_auction_won(ntfy, epoch, bounty_wei / 1e18)
 
-            tee_client = get_tee_client(config)
+            # Read full contract state
+            logger.info("Reading contract state...")
+            epoch_state = chain.read_contract_state()
+            contract_state = chain.build_contract_state_for_tee(epoch_state)
 
+            # Read system prompt (for prompt building inside TEE)
             prompt_path = Path(config["system_prompt_path"])
             system_prompt = prompt_path.read_text().strip()
 
-            verifier_id = config.get("verifier_id", 1)
-            logger.info("Full state reading not yet implemented — flow placeholder:")
-            logger.info("  1. chain.read_contract_state()")
-            logger.info("  2. Build epoch context")
-            logger.info("  3. tee_client.run_epoch(state, context, prompt, seed)")
-            logger.info("  4. submit_result(verifier_id=%d)", verifier_id)
+            # Get randomness seed
+            seed = auction["randomness_seed"]
+            logger.info("Seed: %d", seed)
+
+            # Run TEE inference
+            tee_client = get_tee_client(config)
+            logger.info("Running TEE inference...")
+            tee_result = tee_client.run_epoch(
+                epoch_state=epoch_state,
+                contract_state=contract_state,
+                system_prompt=system_prompt,
+                seed=seed,
+            )
+            logger.info("TEE inference complete (%.1f min)", tee_result.get("vm_minutes", 0))
+            logger.info("Action: %s", tee_result.get("action", {}).get("action", "unknown"))
+
+            if dry_run:
+                logger.info("[DRY RUN] Would submit result")
+            else:
+                # Extract result fields
+                action_bytes = bytes.fromhex(tee_result["action_bytes"].replace("0x", ""))
+                reasoning_bytes = tee_result["reasoning"].encode("utf-8")
+                attestation_bytes = bytes.fromhex(tee_result["attestation_quote"].replace("0x", ""))
+
+                # Extract optional worldview update
+                action_json = tee_result.get("action", {})
+                worldview = action_json.get("worldview") or action_json.get("params", {}).get("worldview")
+                if worldview and isinstance(worldview, dict):
+                    policy_slot = int(worldview.get("slot", -1))
+                    policy_text = str(worldview.get("policy", ""))
+                else:
+                    policy_slot = -1
+                    policy_text = ""
+
+                verifier_id = config.get("verifier_id", 2)  # 2 = TdxVerifier (dm-verity)
+                logger.info("Submitting result (verifier=%d, policy_slot=%d)...",
+                           verifier_id, policy_slot)
+
+                receipt = submit_result(
+                    chain,
+                    action_bytes=action_bytes,
+                    reasoning=reasoning_bytes,
+                    proof=attestation_bytes,
+                    verifier_id=verifier_id,
+                    policy_slot=policy_slot,
+                    policy_text=policy_text,
+                    dry_run=dry_run,
+                )
+                logger.info("Result submitted! tx=%s", receipt['transactionHash'].hex())
+                notify_result_submitted(ntfy, epoch, tee_result.get("action", {}).get("action", "?"))
 
         else:
             logger.info("Lost auction to %s...", winner[:10])

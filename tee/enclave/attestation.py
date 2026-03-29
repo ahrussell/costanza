@@ -23,11 +23,14 @@ from .input_hash import _keccak256
 CONFIGFS_TSM_BASE = "/sys/kernel/config/tsm/report"
 
 
-def get_tdx_quote(report_data: bytes) -> bytes:
+def get_tdx_quote(report_data: bytes, allow_mock: bool = False) -> bytes:
     """Get a TDX DCAP attestation quote via configfs-tsm.
 
     Args:
         report_data: 64 bytes of custom data to bind into the quote.
+        allow_mock: If True, return report_data as mock quote when no TDX
+                    hardware is available. Must be explicitly opted in via
+                    CLI flag (--mock), not environment variable.
 
     Returns:
         Raw DCAP quote bytes for on-chain verification.
@@ -38,16 +41,16 @@ def get_tdx_quote(report_data: bytes) -> bytes:
     if os.path.isdir(CONFIGFS_TSM_BASE):
         return _get_quote_configfs_tsm(report_data)
 
-    # Mock mode — only allowed when explicitly opted in via environment variable
-    if os.environ.get("MOCK_ATTESTATION") == "1":
-        print("WARNING: MOCK_ATTESTATION=1 — returning report_data as mock quote")
+    # Mock mode — only allowed when explicitly passed via CLI flag
+    if allow_mock:
+        print("WARNING: Mock attestation enabled — returning report_data as mock quote")
         print("  This will NOT pass on-chain DCAP verification!")
         return report_data
 
     raise RuntimeError(
         "No TDX attestation backend (configfs-tsm not found). "
         "Cannot produce a valid quote outside TEE hardware. "
-        "Set MOCK_ATTESTATION=1 for local development only."
+        "Pass --mock to enclave_runner for local development only."
     )
 
 
@@ -83,28 +86,27 @@ def _get_quote_configfs_tsm(report_data: bytes) -> bytes:
             pass
 
 
-def compute_report_data(input_hash: bytes, action_bytes: bytes, reasoning: str,
-                        system_prompt: str) -> bytes:
+def compute_report_data(input_hash: bytes, action_bytes: bytes, reasoning: str) -> bytes:
     """Compute the 64-byte report data bound into the TDX quote.
 
     Creates a cryptographic binding between:
     - The input (epoch state, randomness seed)
-    - The output (action + reasoning + prompt)
+    - The output (action + reasoning)
     - The TEE identity (RTMR values in the quote)
+
+    The system prompt is verified via dm-verity image key (RTMR[2]) and no
+    longer needs a separate hash in REPORTDATA.
 
     The contract verifies:
         REPORTDATA == sha256(inputHash || outputHash)
     where:
-        promptHash  = sha256(systemPrompt)
-        outputHash  = keccak256(abi.encodePacked(
-                          sha256(action), sha256(reasoning), promptHash))
+        outputHash = keccak256(abi.encodePacked(sha256(action), sha256(reasoning)))
     """
     action_hash = hashlib.sha256(action_bytes).digest()
     reasoning_hash = hashlib.sha256(reasoning.encode("utf-8")).digest()
-    prompt_hash = hashlib.sha256(system_prompt.encode("utf-8")).digest()
 
-    # outputHash = keccak256(sha256(action) || sha256(reasoning) || sha256(prompt))
-    output_hash = _keccak256(action_hash + reasoning_hash + prompt_hash)
+    # outputHash = keccak256(sha256(action) || sha256(reasoning))
+    output_hash = _keccak256(action_hash + reasoning_hash)
 
     # REPORTDATA = sha256(inputHash || outputHash), zero-padded to 64 bytes
     report_data = hashlib.sha256(input_hash + output_hash).digest()

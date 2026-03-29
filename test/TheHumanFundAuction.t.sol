@@ -447,8 +447,8 @@ contract TheHumanFundAuctionTest is Test {
 
         // Runner1 (non-revealer) does NOT get bond back
         assertEq(runner1.balance, runner1BalBefore);
-        // Non-revealer's bond stays in AM (winner's bond also still in AM until settlement)
-        assertEq(address(am).balance, 0.002 ether);
+        // Non-revealer's bond sent to fund treasury; winner's bond still in AM until settlement
+        assertEq(address(am).balance, 0.001 ether);
     }
 
     function test_close_reveal_enters_execution() public {
@@ -621,9 +621,12 @@ contract TheHumanFundAuctionTest is Test {
     }
 
     function test_randomness_seed_captured() public {
-        _runAuctionTo(runner1, 0.005 ether, bytes32("s1"));
+        bytes32 salt = bytes32("s1");
+        _runAuctionTo(runner1, 0.005 ether, salt);
 
-        assertEq(am.getRandomnessSeed(1), block.prevrandao);
+        // Seed mixes prevrandao with XOR of revealed salts
+        uint256 expectedSeed = uint256(keccak256(abi.encodePacked(block.prevrandao, salt)));
+        assertEq(am.getRandomnessSeed(1), expectedSeed);
     }
 
     // ─── Attestation Integration ────────────────────────────────────────────
@@ -638,8 +641,7 @@ contract TheHumanFundAuctionTest is Test {
         bytes memory action = _noopAction();
         bytes memory reasoning = bytes("The fund is conserving resources.");
 
-        bytes32 promptHash = fund.approvedPromptHash();
-        bytes32 outputHash = keccak256(abi.encodePacked(sha256(action), sha256(reasoning), promptHash));
+        bytes32 outputHash = keccak256(abi.encodePacked(sha256(action), sha256(reasoning)));
         bytes32 expectedReportData = sha256(abi.encodePacked(inputHash, outputHash));
 
         AuctionMockDcapVerifier etchedMock = AuctionMockDcapVerifier(0xaDdeC7e85c2182202b66E331f2a4A0bBB2cEEa1F);

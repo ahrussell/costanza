@@ -278,10 +278,18 @@ def emit_measurements():
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="TEE Enclave (one-shot)")
+    parser.add_argument("--mock", action="store_true",
+                        help="Allow mock attestation (dev only, will NOT pass on-chain verification)")
+    args = parser.parse_args()
+
     log("The Human Fund — TEE Enclave (one-shot)")
     log(f"  Model: {MODEL_PATH}")
     log(f"  System prompt: {SYSTEM_PROMPT_PATH}")
     log(f"  dm-verity rootfs: all code is immutable")
+    if args.mock:
+        log("  WARNING: Mock attestation enabled (--mock flag)")
 
     # Emit measurements early — no SSH needed for e2e measurement extraction
     log("")
@@ -354,10 +362,12 @@ def main():
         inference = None
 
         for attempt in range(1, max_retries + 1):
-            log(f"  Attempt {attempt}/{max_retries}...")
+            # Vary seed on retry to avoid repeating the same unparseable output
+            attempt_seed = (llama_seed + attempt - 1) if llama_seed >= 0 else -1
+            log(f"  Attempt {attempt}/{max_retries} (seed={attempt_seed})...")
             try:
                 inference = run_two_pass_inference(
-                    full_prompt, seed=llama_seed, llama_url=LLAMA_SERVER_URL
+                    full_prompt, seed=attempt_seed, llama_url=LLAMA_SERVER_URL
                 )
             except Exception as e:
                 log(f"  Inference error: {e}")
@@ -385,8 +395,8 @@ def main():
         # Step 7: Get TDX attestation quote
         log("")
         log("Step 7: Generating TDX attestation quote...")
-        report_data = compute_report_data(input_hash, action_bytes, reasoning, system_prompt)
-        quote = get_tdx_quote(report_data)
+        report_data = compute_report_data(input_hash, action_bytes, reasoning)
+        quote = get_tdx_quote(report_data, allow_mock=args.mock)
         log(f"  Quote: {len(quote)} bytes")
         log(f"  Report data: 0x{report_data.hex()[:32]}...")
 

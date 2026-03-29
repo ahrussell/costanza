@@ -264,22 +264,7 @@ def deploy_contracts(w3, account):
         raise RuntimeError(f"setAuctionTiming failed! Gas: {receipt.gasUsed}")
     nonce += 1
 
-    # Set approved system prompt hash
-    import hashlib
-    prompt_path = Path(__file__).parent.parent / "agent" / "prompts" / "system_v6.txt"
-    # Strip to match enclave behavior (enclave does .strip() on the prompt text)
-    prompt_hash = hashlib.sha256(prompt_path.read_text().strip().encode("utf-8")).digest()
-    print(f"Setting approved prompt hash: 0x{prompt_hash.hex()[:16]}...")
-    tx = fund.functions.setApprovedPromptHash(prompt_hash).build_transaction({
-        "from": deployer, "nonce": nonce,
-        "gas": 100_000,
-        "maxFeePerGas": w3.eth.gas_price * 2,
-        "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
-    })
-    signed = account.sign_transaction(tx)
-    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-    w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
-    nonce += 1
+    # approvedPromptHash removed — prompt verified via dm-verity image key
 
     # Enable auction mode
     print("Enabling auction mode...")
@@ -843,15 +828,12 @@ def run_auction_e2e(w3, account, fund_addr, am_addr, nonce):
         print(f"      Worldview update: slot {policy_slot} = {policy_text!r}")
 
     # Verify REPORTDATA matches before submitting
-    # Formula: outputHash = keccak256(sha256(action) + sha256(reasoning) + promptHash)
+    # Formula: outputHash = keccak256(sha256(action) + sha256(reasoning))
     #          REPORTDATA = sha256(inputHash + outputHash)
-    # Compute prompt hash locally (avoids stale RPC connection after long inference)
-    prompt_path = Path(__file__).parent.parent / "agent" / "prompts" / "system_v6.txt"
-    prompt_hash = hashlib.sha256(prompt_path.read_text().strip().encode("utf-8")).digest()
+    # Prompt is verified via dm-verity image key, no longer in outputHash
     output_hash = Web3.keccak(
         hashlib.sha256(action_bytes).digest() +
-        hashlib.sha256(reasoning_bytes).digest() +
-        prompt_hash
+        hashlib.sha256(reasoning_bytes).digest()
     )
     expected_rd = hashlib.sha256(
         input_hash + output_hash
@@ -1151,7 +1133,7 @@ def main():
         print("  Full security model verified on Base Sepolia:")
         print("    [x] Automata DCAP: genuine TDX hardware")
         print("    [x] Platform key: sha256(MRTD + RTMR[1] + RTMR[2]) -- dm-verity covers all code")
-        print("    [x] REPORTDATA: sha256(inputHash + keccak256(sha256(action) + sha256(reasoning) + promptHash))")
+        print("    [x] REPORTDATA: sha256(inputHash + keccak256(sha256(action) + sha256(reasoning)))")
         print("    [x] Auction: only winner can submit within execution window")
         print("    [x] Randomness seed: block.prevrandao prevents cherry-picking")
         print("    [x] Serial console: one-shot inference, no SSH/HTTP during execution")
