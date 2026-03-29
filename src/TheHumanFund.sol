@@ -892,7 +892,7 @@ contract TheHumanFund is ReentrancyGuard {
         uint256 minUsdc = _minUsdcForDonation(amount);
         if (minUsdc == 0) return false; // Oracle unavailable — reject donation rather than swap unprotected
 
-        // Swap ETH → USDC via Uniswap V3 (low-level call to avoid struct bytecode overhead)
+        // Swap ETH → USDC via Uniswap V3 (low-level call to include deadline without struct bloat)
         weth.deposit{value: amount}();
         weth.approve(swapRouter, amount);
         (bool swapOk, bytes memory swapRet) = swapRouter.call(abi.encodeWithSignature(
