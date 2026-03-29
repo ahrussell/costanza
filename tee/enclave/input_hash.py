@@ -312,20 +312,40 @@ def _verify_history_hashes(epoch_state: dict, contract_state: dict):
     if not expected_hashes and not history:
         return
 
-    # History may have more entries than the 10 used in the hash
-    # The contract uses min(epoch, MAX_HISTORY_ENTRIES=10), most recent first
-    max_history = len(expected_hashes)
+    # Filter out zero hashes: epochs that were never executed/settled have
+    # epochContentHashes[ep] == bytes32(0). The runner's history list only
+    # contains executed epochs (getEpochRecord returns executed=True).
+    # Zero-hash entries have nothing to verify against — skip them.
+    zero_hash = b'\x00' * 32
+    non_zero_hashes = [
+        h for h in expected_hashes
+        if bytes.fromhex(h.replace("0x", "")) != zero_hash
+    ]
 
-    if len(history) < max_history:
+    if not non_zero_hashes and not history:
+        return
+
+    if len(history) < len(non_zero_hashes):
         raise DisplayDataMismatch(
             f"History count mismatch: {len(history)} entries "
-            f"but {max_history} content hashes expected."
+            f"but {len(non_zero_hashes)} non-zero content hashes expected."
         )
 
-    import hashlib
+    # Pair non-zero expected hashes with the corresponding history entries.
+    # Both lists are most-recent-first. Entries with zero hashes (unexecuted
+    # epochs) are gaps in the sequence that the history list skips over.
+    history_idx = 0
+    for expected_hex in expected_hashes:
+        expected_hash = bytes.fromhex(expected_hex.replace("0x", ""))
+        if expected_hash == zero_hash:
+            continue  # Unexecuted epoch — no history entry exists for it
 
-    for i in range(max_history):
-        entry = history[i]
+        if history_idx >= len(history):
+            raise DisplayDataMismatch(
+                "History entry missing: fewer history entries than non-zero content hashes."
+            )
+        entry = history[history_idx]
+        history_idx += 1
 
         # Get action and reasoning as bytes
         action_data = entry["action"]
@@ -351,7 +371,6 @@ def _verify_history_hashes(epoch_state: dict, contract_state: dict):
             ("uint256", entry["treasury_after"]),
         ))
 
-        expected_hash = bytes.fromhex(expected_hashes[i].replace("0x", ""))
         if computed_content_hash != expected_hash:
             raise DisplayDataMismatch(
                 f"History epoch {entry.get('epoch', '?')} hash mismatch: "
