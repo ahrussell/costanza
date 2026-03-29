@@ -5,6 +5,7 @@ libs = ["lib"]
 optimizer = true
 optimizer_runs = 200
 via_ir = false
+ffi = true
 remappings = [
     "@automata-network/dcap-attestation/=lib/automata-dcap-attestation/evm/contracts/",
     "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",

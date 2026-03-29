@@ -8,8 +8,11 @@ Wraps web3.py calls to TheHumanFund contract for:
 """
 
 import json
+import logging
 from pathlib import Path
 from web3 import Web3
+
+logger = logging.getLogger(__name__)
 
 
 ABI_DIR = Path(__file__).parent.parent / "out"
@@ -63,6 +66,7 @@ class ChainClient:
         try:
             return self.contract.functions.epochEthUsdPrice(epoch).call()
         except Exception:
+            logger.warning("ETH/USD price fetch failed for epoch %d, using $2000 fallback", epoch, exc_info=True)
             return 2000 * 10**8  # fallback: $2000 in 8-decimal format
 
     def read_contract_state(self):

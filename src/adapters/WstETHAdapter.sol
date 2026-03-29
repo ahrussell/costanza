@@ -28,6 +28,14 @@ interface IStETH {
 ///      On Base, wstETH is bridged — submit/wrap must happen on L1 or via a DEX.
 ///      This adapter buys wstETH on a DEX (Uniswap) rather than minting directly.
 contract WstETHAdapter is IProtocolAdapter {
+    error Unauthorized();
+    error ZeroAmount();
+    error SwapFailed();
+    error NoTokensReceived();
+    error TransferFailed();
+
+    /// @notice Minimum output as fraction of input (95%) to defend against sandwich attacks.
+    uint256 private constant MIN_OUTPUT_BPS = 9500;
     IWstETH public immutable wstETH;
     address public immutable manager;
 
@@ -42,13 +50,13 @@ contract WstETHAdapter is IProtocolAdapter {
     }
 
     modifier onlyManager() {
-        require(msg.sender == manager, "only manager");
+        if (msg.sender != manager) revert Unauthorized();
         _;
     }
 
     /// @notice Deposit ETH: swap to wstETH via DEX.
     function deposit() external payable override onlyManager returns (uint256 shares) {
-        require(msg.value > 0, "zero deposit");
+        if (msg.value == 0) revert ZeroAmount();
 
         // Swap ETH -> wstETH via Uniswap V3 exactInputSingle
         uint256 balBefore = wstETH.balanceOf(address(this));
@@ -62,19 +70,19 @@ contract WstETHAdapter is IProtocolAdapter {
             uint24(100),    // 0.01% fee tier
             address(this),
             msg.value,
-            0,              // amountOutMinimum (TODO: add slippage protection in production)
+            (msg.value * MIN_OUTPUT_BPS) / 10000, // slippage floor: expect ≥95% back
             uint160(0)      // sqrtPriceLimitX96 (no limit)
         );
         (bool success, ) = swapRouter.call{value: msg.value}(swapData);
-        require(success, "swap failed");
+        if (!success) revert SwapFailed();
 
         shares = wstETH.balanceOf(address(this)) - balBefore;
-        require(shares > 0, "no wstETH received");
+        if (shares == 0) revert NoTokensReceived();
     }
 
     /// @notice Withdraw: swap wstETH back to ETH via DEX.
     function withdraw(uint256 shares) external override onlyManager returns (uint256 ethAmount) {
-        require(shares > 0, "zero withdraw");
+        if (shares == 0) revert ZeroAmount();
 
         uint256 wstETHBal = wstETH.balanceOf(address(this));
         if (shares > wstETHBal) shares = wstETHBal;
@@ -92,15 +100,15 @@ contract WstETHAdapter is IProtocolAdapter {
             uint24(100),
             address(this),
             shares,
-            0,
+            (shares * MIN_OUTPUT_BPS) / 10000, // slippage floor: expect ≥95% back
             uint160(0)
         );
         (bool success, ) = swapRouter.call(swapData);
-        require(success, "swap failed");
+        if (!success) revert SwapFailed();
 
         ethAmount = address(this).balance - ethBefore;
         (bool sent, ) = msg.sender.call{value: ethAmount}("");
-        require(sent, "ETH transfer failed");
+        if (!sent) revert TransferFailed();
     }
 
     /// @notice Current value in ETH terms using wstETH exchange rate.

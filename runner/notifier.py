@@ -5,7 +5,10 @@ Sends push notifications for auction events. Silent when no channel is configure
 """
 
 import json
+import logging
 from urllib.request import urlopen, Request
+
+logger = logging.getLogger(__name__)
 
 
 def notify(channel, title, message, priority="default", tags=None):
@@ -37,7 +40,7 @@ def notify(channel, title, message, priority="default", tags=None):
         )
         urlopen(req, timeout=10)
     except Exception as e:
-        print(f"WARNING: Failed to send notification: {e}")
+        logger.warning("Failed to send notification: %s", e)
 
 
 def notify_epoch_started(channel, epoch):

@@ -87,18 +87,16 @@ def compute_input_hash(state: dict) -> bytes:
         ("uint256", s.get("epoch_eth_usd_price", 0)),
     ))
 
-    # 2. Nonprofit hash
+    # 2. Nonprofit hash — rolling hash: keccak256(abi.encode(rolling, itemHash))
     nps = state["nonprofits"]
     if len(nps) == 0:
         nonprofit_hash = b'\x00' * 32
     else:
-        # Match contract: keccak256(abi.encodePacked(hash1, hash2, ...))
-        # where each hash = keccak256(abi.encode(name, description, ein, totalDonated, totalDonatedUsd, donationCount))
-        packed = b""
+        rolling = b'\x00' * 32
         for np in nps:
             ein_bytes = bytes.fromhex(np["ein"].replace("0x", "")) if isinstance(np["ein"], str) else np["ein"]
             ein_bytes32 = ein_bytes.ljust(32, b'\x00')[:32]
-            per_np_hash = _keccak256(_abi_encode(
+            item_hash = _keccak256(_abi_encode(
                 ("string", np["name"]),
                 ("string", np["description"]),
                 ("bytes32", ein_bytes32),
@@ -106,8 +104,8 @@ def compute_input_hash(state: dict) -> bytes:
                 ("uint256", np.get("total_donated_usd", 0)),
                 ("uint256", np["donation_count"]),
             ))
-            packed += per_np_hash
-        nonprofit_hash = _keccak256(packed)
+            rolling = _keccak256(_abi_encode(("bytes32", rolling), ("bytes32", item_hash)))
+        nonprofit_hash = rolling
 
     # 3. Investment hash (pre-computed by InvestmentManager.stateHash())
     invest_hash = bytes.fromhex(state.get("invest_hash", "0" * 64).replace("0x", ""))
@@ -115,23 +113,25 @@ def compute_input_hash(state: dict) -> bytes:
     # 4. Worldview hash (pre-computed by WorldView.stateHash())
     worldview_hash = bytes.fromhex(state.get("worldview_hash", "0" * 64).replace("0x", ""))
 
-    # 5. Message hash — keccak256 of packed per-message hashes
+    # 5. Message hash — rolling hash: keccak256(abi.encode(rolling, msgHash))
     msg_hashes = state.get("message_hashes", [])
     if msg_hashes:
-        packed = b""
+        rolling = b'\x00' * 32
         for h in msg_hashes:
-            packed += bytes.fromhex(h.replace("0x", ""))
-        msg_hash = _keccak256(packed)
+            h_bytes = bytes.fromhex(h.replace("0x", ""))
+            rolling = _keccak256(_abi_encode(("bytes32", rolling), ("bytes32", h_bytes)))
+        msg_hash = rolling
     else:
         msg_hash = b'\x00' * 32
 
-    # 6. History hash — keccak256 of packed epoch content hashes (most recent first)
+    # 6. History hash — rolling hash: keccak256(abi.encode(rolling, contentHash))
     epoch_hashes = state.get("epoch_content_hashes", [])
     if epoch_hashes:
-        packed = b""
+        rolling = b'\x00' * 32
         for h in epoch_hashes:
-            packed += bytes.fromhex(h.replace("0x", ""))
-        hist_hash = _keccak256(packed)
+            h_bytes = bytes.fromhex(h.replace("0x", ""))
+            rolling = _keccak256(_abi_encode(("bytes32", rolling), ("bytes32", h_bytes)))
+        hist_hash = rolling
     else:
         hist_hash = b'\x00' * 32
 

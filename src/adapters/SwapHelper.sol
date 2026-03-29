@@ -33,6 +33,7 @@ interface ISwapRouter {
 /// @dev Uses Uniswap V3 on Base for swaps. Inheriting adapters set addresses.
 ///      Chainlink ETH/USD oracle provides slippage protection.
 abstract contract SwapHelper {
+    error OracleUnavailable();
     IWETH public immutable weth;
     IERC20 public immutable usdc;
     ISwapRouter public immutable swapRouter;
@@ -102,31 +103,31 @@ abstract contract SwapHelper {
     }
 
     /// @dev Minimum USDC expected for `ethAmount` wei, with SLIPPAGE_BPS tolerance.
-    ///      Returns 0 if oracle is unavailable (graceful degradation).
+    ///      Reverts if oracle is unavailable — swaps must not proceed without slippage protection.
     function _minUsdcForEth(uint256 ethAmount) internal view returns (uint256) {
-        if (address(ethUsdFeed) == address(0)) return 0;
+        if (address(ethUsdFeed) == address(0)) revert OracleUnavailable();
         try ethUsdFeed.latestRoundData() returns (uint80, int256 answer, uint256, uint256, uint80) {
-            if (answer <= 0) return 0;
+            if (answer <= 0) revert OracleUnavailable();
             // Chainlink ETH/USD has 8 decimals, USDC has 6 decimals
             // expectedUsdc = ethAmount * price / 1e18 * 1e6 / 1e8 = ethAmount * price / 1e20
             uint256 expected = (ethAmount * uint256(answer)) / 1e20;
             return (expected * (10000 - SLIPPAGE_BPS)) / 10000;
         } catch {
-            return 0;
+            revert OracleUnavailable();
         }
     }
 
     /// @dev Minimum ETH expected for `usdcAmount` USDC, with SLIPPAGE_BPS tolerance.
-    ///      Returns 0 if oracle is unavailable (graceful degradation).
+    ///      Reverts if oracle is unavailable — swaps must not proceed without slippage protection.
     function _minEthForUsdc(uint256 usdcAmount) internal view returns (uint256) {
-        if (address(ethUsdFeed) == address(0)) return 0;
+        if (address(ethUsdFeed) == address(0)) revert OracleUnavailable();
         try ethUsdFeed.latestRoundData() returns (uint80, int256 answer, uint256, uint256, uint80) {
-            if (answer <= 0) return 0;
+            if (answer <= 0) revert OracleUnavailable();
             // expectedEth = usdcAmount * 1e20 / price (inverse of above)
             uint256 expected = (usdcAmount * 1e20) / uint256(answer);
             return (expected * (10000 - SLIPPAGE_BPS)) / 10000;
         } catch {
-            return 0;
+            revert OracleUnavailable();
         }
     }
 }

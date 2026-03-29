@@ -15,11 +15,14 @@ No SSH, no Docker, no network listeners. The only I/O channels are:
 """
 
 import json
+import logging
 import os
 import subprocess
 import time
 
 from .base import TEEClient
+
+logger = logging.getLogger(__name__)
 
 # Delimiters matching enclave_runner.py
 OUTPUT_START_MARKER = "===HUMANFUND_OUTPUT_START==="
@@ -55,9 +58,7 @@ class GCPTEEClient(TEEClient):
         import tempfile
         import uuid
         self.vm_name = f"humanfund-runner-{uuid.uuid4().hex[:8]}"
-        print(f"  Creating VM: {self.vm_name}")
-        print(f"  Image: {self.image}")
-        print(f"  Machine: {self.machine_type}")
+        logger.info("Creating VM: %s (image=%s, machine=%s)", self.vm_name, self.image, self.machine_type)
 
         # Write epoch state to a temp file to avoid gcloud's special char parsing
         with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
@@ -81,7 +82,7 @@ class GCPTEEClient(TEEClient):
         finally:
             os.unlink(metadata_file)
 
-        print(f"  VM created: {self.vm_name}")
+        logger.info("VM created: %s", self.vm_name)
 
     def _poll_serial_output(self, timeout=None):
         """Poll the serial console for the enclave's output.
@@ -92,7 +93,7 @@ class GCPTEEClient(TEEClient):
         if timeout is None:
             timeout = self.inference_timeout
 
-        print(f"  Polling serial console (timeout: {timeout}s)...")
+        logger.info("Polling serial console (timeout: %ds)...", timeout)
         start = time.time()
         last_line_count = 0
 
@@ -109,7 +110,7 @@ class GCPTEEClient(TEEClient):
                 if len(lines) > last_line_count:
                     for line in lines[last_line_count:]:
                         if '[enclave]' in line:
-                            print(f"    {line.strip()}")
+                            logger.info("[enclave] %s", line.strip())
                     last_line_count = len(lines)
 
                 # Look for the output markers.
@@ -130,12 +131,14 @@ class GCPTEEClient(TEEClient):
                     if last_brace >= 0:
                         result_json = block[last_brace:].strip()
                         elapsed = time.time() - start
-                        print(f"  Result received after {elapsed:.0f}s")
+                        logger.info("Result received after %.0fs", elapsed)
                         obj, _ = json.JSONDecoder().raw_decode(result_json)
                         return obj
 
-            except (subprocess.TimeoutExpired, json.JSONDecodeError) as e:
-                print(f"    Poll error: {e}")
+            except subprocess.TimeoutExpired:
+                logger.warning("Serial console poll timed out, retrying...")
+            except json.JSONDecodeError as e:
+                logger.warning("JSON parse error in serial output: %s", e)
 
             time.sleep(30)
 
@@ -144,16 +147,16 @@ class GCPTEEClient(TEEClient):
     def _cleanup(self):
         """Delete the VM."""
         if self.vm_name:
-            print(f"  Deleting VM: {self.vm_name}")
+            logger.info("Deleting VM: %s", self.vm_name)
             try:
                 self._gcloud(
                     f"compute instances delete {self.vm_name} "
                     f"--zone={self.zone} --quiet",
                     check=False, timeout=120,
                 )
-                print("  VM deleted")
+                logger.info("VM deleted")
             except Exception as e:
-                print(f"  WARNING: Failed to delete VM: {e}")
+                logger.warning("Failed to delete VM: %s", e)
             self.vm_name = None
 
     def run_epoch(self, epoch_state, contract_state, system_prompt, seed):
@@ -173,14 +176,8 @@ class GCPTEEClient(TEEClient):
         # epoch_state: full flat state — TEE derives hash inputs + builds prompt.
         # Merge epoch_content_hashes and message_hashes from contract_state into the
         # flat epoch_state so derive_contract_state() can include them in the input hash.
-        # These fields are computed by build_contract_state_for_tee() but not returned
-        # by read_contract_state(), so we merge them here rather than duplicating the logic.
         epoch_state_with_hashes = {
             **epoch_state,
-            # These four fields are computed by build_contract_state_for_tee() from
-            # on-chain contract calls but are not included in the flat epoch_state
-            # returned by read_contract_state(). Merging them here so derive_contract_state()
-            # can include them in the input hash computation inside the TEE.
             "invest_hash": contract_state.get("invest_hash", "0x" + "00" * 32),
             "worldview_hash": contract_state.get("worldview_hash", "0x" + "00" * 32),
             "epoch_content_hashes": contract_state.get("epoch_content_hashes", []),
@@ -190,8 +187,6 @@ class GCPTEEClient(TEEClient):
             "epoch_state": epoch_state_with_hashes,
             "contract_state": contract_state,
             "seed": seed,
-            # system_prompt is on the dm-verity rootfs, not passed via metadata
-            # epoch_context is built inside the TEE from epoch_state
         }
         epoch_state_json = json.dumps(epoch_data)
 

@@ -54,7 +54,6 @@ contract InvestmentManager is IInvestmentManager {
     struct Position {
         uint256 depositedEth;    // Cumulative ETH deposited
         uint256 shares;          // Current protocol receipt token balance
-        uint256 lastUpdateEpoch; // Last epoch this position was modified
     }
 
     // ─── State ───────────────────────────────────────────────────────────

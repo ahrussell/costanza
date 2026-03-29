@@ -65,8 +65,8 @@ Examples:
         "verbose": parsed.verbose,
     }
 
-    # Verifier ID: 1 = TdxVerifier (legacy), 2 = DstackVerifier (Docker/dm-verity)
-    config["verifier_id"] = int(os.environ.get("VERIFIER_ID", "2"))
+    # Verifier ID: 1 = TdxVerifier (Intel TDX attestation)
+    config["verifier_id"] = int(os.environ.get("VERIFIER_ID", "1"))
 
     # Validate required fields
     missing = []

@@ -18,6 +18,14 @@ interface ICbETH {
 ///      cbETH is native to Base (Coinbase's own chain), so deep liquidity.
 ///      Exchange rate monotonically increases as staking rewards accrue.
 contract CbETHAdapter is IProtocolAdapter {
+    error Unauthorized();
+    error ZeroAmount();
+    error SwapFailed();
+    error NoTokensReceived();
+    error TransferFailed();
+
+    /// @notice Minimum output as fraction of input (95%) to defend against sandwich attacks.
+    uint256 private constant MIN_OUTPUT_BPS = 9500;
     ICbETH public immutable cbETH;
     IWETH public immutable weth;
     address public immutable swapRouter;
@@ -31,13 +39,13 @@ contract CbETHAdapter is IProtocolAdapter {
     }
 
     modifier onlyManager() {
-        require(msg.sender == manager, "only manager");
+        if (msg.sender != manager) revert Unauthorized();
         _;
     }
 
     /// @notice Deposit ETH: swap to cbETH via DEX.
     function deposit() external payable override onlyManager returns (uint256 shares) {
-        require(msg.value > 0, "zero deposit");
+        if (msg.value == 0) revert ZeroAmount();
 
         uint256 balBefore = cbETH.balanceOf(address(this));
 
@@ -49,19 +57,19 @@ contract CbETHAdapter is IProtocolAdapter {
             uint24(500),    // 0.05% fee tier (ETH/cbETH pair)
             address(this),
             msg.value,
-            0,              // amountOutMinimum
+            (msg.value * MIN_OUTPUT_BPS) / 10000, // slippage floor: expect ≥95% back
             uint160(0)
         );
         (bool success, ) = swapRouter.call{value: msg.value}(swapData);
-        require(success, "swap failed");
+        if (!success) revert SwapFailed();
 
         shares = cbETH.balanceOf(address(this)) - balBefore;
-        require(shares > 0, "no cbETH received");
+        if (shares == 0) revert NoTokensReceived();
     }
 
     /// @notice Withdraw: swap cbETH back to ETH via DEX.
     function withdraw(uint256 shares) external override onlyManager returns (uint256 ethAmount) {
-        require(shares > 0, "zero withdraw");
+        if (shares == 0) revert ZeroAmount();
 
         uint256 cbBal = cbETH.balanceOf(address(this));
         if (shares > cbBal) shares = cbBal;
@@ -77,11 +85,11 @@ contract CbETHAdapter is IProtocolAdapter {
             uint24(500),
             address(this),
             shares,
-            0,
+            (shares * MIN_OUTPUT_BPS) / 10000, // slippage floor: expect ≥95% back
             uint160(0)
         );
         (bool success, ) = swapRouter.call(swapData);
-        require(success, "swap failed");
+        if (!success) revert SwapFailed();
 
         // Unwrap WETH received from swap (router returns WETH, not ETH)
         uint256 wethBal = weth.balanceOf(address(this));
@@ -91,7 +99,7 @@ contract CbETHAdapter is IProtocolAdapter {
 
         ethAmount = address(this).balance - ethBefore;
         (bool sent, ) = msg.sender.call{value: ethAmount}("");
-        require(sent, "ETH transfer failed");
+        if (!sent) revert TransferFailed();
     }
 
     /// @notice Current value in ETH terms using cbETH exchange rate.

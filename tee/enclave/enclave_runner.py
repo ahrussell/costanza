@@ -316,43 +316,30 @@ def main():
         log("")
         log("Step 3: Computing input hash...")
         epoch_state = epoch_data.get("epoch_state")
-        contract_state = epoch_data.get("contract_state")
-        if epoch_state:
-            # Preferred path: derive contract_state from flat epoch_state
-            contract_state = derive_contract_state(epoch_state)
-            # base_input_hash = _computeInputHash() in Solidity (no seed)
-            base_input_hash = compute_input_hash(contract_state)
-            # final input_hash = keccak256(base || seed), matching epochInputHashes[epoch]
-            # set in TheHumanFund.closeReveal():
-            #   epochInputHashes[epoch] = keccak256(epochBaseInputHashes[epoch] || seed)
-            seed_bytes = seed.to_bytes(32, "big") if seed > 0 else b"\x00" * 32
-            input_hash = _keccak256(base_input_hash + seed_bytes)
-            log(f"  Base input hash: 0x{base_input_hash.hex()[:16]}...")
-            log(f"  Input hash (derived from epoch_state): 0x{input_hash.hex()[:16]}...")
-        elif contract_state:
-            # Legacy path: contract_state provided directly
-            input_hash = compute_input_hash(contract_state)
-            log(f"  Input hash (from contract_state): 0x{input_hash.hex()[:16]}...")
-            epoch_state = None  # Force error in step 4 if no epoch_context
-        else:
-            input_hash_hex = epoch_data.get("input_hash", "0x" + "00" * 32)
-            input_hash = bytes.fromhex(input_hash_hex.replace("0x", ""))
-            log(f"  Input hash (provided): 0x{input_hash.hex()[:16]}...")
+        if not epoch_state:
+            raise RuntimeError(
+                "epoch_state is required. The TEE must derive all data "
+                "deterministically from the hash-verified epoch state."
+            )
+        # Derive contract_state from flat epoch_state
+        contract_state = derive_contract_state(epoch_state)
+        # base_input_hash = _computeInputHash() in Solidity (no seed)
+        base_input_hash = compute_input_hash(contract_state)
+        # final input_hash = keccak256(base || seed), matching epochInputHashes[epoch]
+        # set in TheHumanFund.closeReveal():
+        #   epochInputHashes[epoch] = keccak256(epochBaseInputHashes[epoch] || seed)
+        seed_bytes = seed.to_bytes(32, "big") if seed > 0 else b"\x00" * 32
+        input_hash = _keccak256(base_input_hash + seed_bytes)
+        log(f"  Base input hash: 0x{base_input_hash.hex()[:16]}...")
+        log(f"  Input hash (derived from epoch_state): 0x{input_hash.hex()[:16]}...")
 
         # Step 4: Build prompt (deterministically from hash-verified state)
         # epoch_context is built INSIDE the TEE from the same data that was
         # hash-verified in step 3. No runner-supplied free-text prompt.
         log("")
         log("Step 4: Building prompt...")
-        if epoch_state:
-            epoch_context = build_epoch_context(epoch_state, seed=seed)
-            log(f"  Epoch context built from verified state ({len(epoch_context)} chars)")
-        else:
-            # Legacy fallback: use runner-provided epoch_context (less secure)
-            epoch_context = epoch_data.get("epoch_context", "").strip()
-            if not epoch_context:
-                raise RuntimeError("No epoch_state or epoch_context in input")
-            log(f"  WARNING: Using runner-provided epoch_context (not hash-verified)")
+        epoch_context = build_epoch_context(epoch_state, seed=seed)
+        log(f"  Epoch context built from verified state ({len(epoch_context)} chars)")
         full_prompt = build_full_prompt(system_prompt, epoch_context)
         log(f"  Full prompt: {len(full_prompt)} chars")
 

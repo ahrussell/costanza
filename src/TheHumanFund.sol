@@ -542,10 +542,13 @@ contract TheHumanFund is ReentrancyGuard {
     }
 
     /// @notice Current bond amount — fixed base that escalates 10% per consecutive missed epoch.
+    ///         Capped at effectiveMaxBid to prevent unbounded growth.
     function currentBond() public view returns (uint256) {
         uint256 bond = BASE_BOND;
+        uint256 cap = effectiveMaxBid();
         for (uint256 i = 0; i < consecutiveMissedEpochs; i++) {
             bond = bond + (bond * AUTO_ESCALATION_BPS) / 10000;
+            if (bond >= cap) return cap;
         }
         return bond;
     }
@@ -889,6 +892,10 @@ contract TheHumanFund is ReentrancyGuard {
             endaomentFactory.deployOrg(np.ein);
         }
 
+        // Compute slippage floor from Chainlink ETH/USD price (defense against sandwich attacks)
+        uint256 minUsdc = _minUsdcForDonation(amount);
+        if (minUsdc == 0) return false; // Oracle unavailable — reject donation rather than swap unprotected
+
         // Swap ETH → USDC via Uniswap V3
         weth.deposit{value: amount}();
         weth.approve(swapRouter, amount);
@@ -899,7 +906,7 @@ contract TheHumanFund is ReentrancyGuard {
                 fee: 500,
                 recipient: address(this),
                 amountIn: amount,
-                amountOutMinimum: 0,
+                amountOutMinimum: minUsdc,
                 sqrtPriceLimitX96: 0
             })
         );
@@ -917,6 +924,15 @@ contract TheHumanFund is ReentrancyGuard {
 
         emit NonprofitDonation(epoch, nonprofitId, amount, usdcAmount);
         return true;
+    }
+
+    /// @dev Minimum USDC expected for `ethAmount` wei, with 3% slippage tolerance.
+    ///      Uses the already-snapshotted epochEthUsdPrice. Returns 0 if no price available.
+    uint256 private constant DONATION_SLIPPAGE_BPS = 300;
+    function _minUsdcForDonation(uint256 ethAmount) internal view returns (uint256) {
+        if (epochEthUsdPrice == 0) return 0;
+        uint256 expected = (ethAmount * epochEthUsdPrice) / 1e20;
+        return (expected * (10000 - DONATION_SLIPPAGE_BPS)) / 10000;
     }
 
     /// @dev Returns false if parameters are out of bounds (action becomes noop).
@@ -991,44 +1007,45 @@ contract TheHumanFund is ReentrancyGuard {
         ));
     }
 
-    /// @dev Hash nonprofit state (dynamic entries, includes description + EIN).
+    /// @dev Hash nonprofit state using rolling hash (O(n) memory instead of O(n^2)).
     function _hashNonprofits() internal view returns (bytes32) {
         if (nonprofitCount == 0) return bytes32(0);
-        bytes memory packed;
+        bytes32 rolling;
         for (uint256 i = 1; i <= nonprofitCount; i++) {
             Nonprofit storage np = nonprofits[i];
-            packed = abi.encodePacked(packed, keccak256(abi.encode(
+            bytes32 itemHash = keccak256(abi.encode(
                 np.name, np.description, np.ein, np.totalDonated, np.totalDonatedUsd, np.donationCount
-            )));
+            ));
+            rolling = keccak256(abi.encode(rolling, itemHash));
         }
-        return keccak256(packed);
+        return rolling;
     }
 
-    /// @dev Hash unread messages using pre-cached per-message hashes.
+    /// @dev Hash unread messages using rolling hash.
     function _hashUnreadMessages() internal view returns (bytes32) {
         uint256 unread = messages.length - messageHead;
         uint256 count = unread > MAX_MESSAGES_PER_EPOCH ? MAX_MESSAGES_PER_EPOCH : unread;
         if (count == 0) return bytes32(0);
 
-        bytes memory packed;
+        bytes32 rolling;
         for (uint256 i = 0; i < count; i++) {
-            packed = abi.encodePacked(packed, messageHashes[messageHead + i]);
+            rolling = keccak256(abi.encode(rolling, messageHashes[messageHead + i]));
         }
-        return keccak256(packed);
+        return rolling;
     }
 
-    /// @dev Hash the last N epoch content hashes (pre-cached at settlement).
+    /// @dev Hash the last N epoch content hashes using rolling hash.
     function _hashRecentHistory() internal view returns (bytes32) {
         uint256 epoch = currentEpoch;
         if (epoch == 0) return bytes32(0);
 
         uint256 count = epoch > MAX_HISTORY_ENTRIES ? MAX_HISTORY_ENTRIES : epoch;
-        bytes memory packed;
+        bytes32 rolling;
         for (uint256 i = 0; i < count; i++) {
             uint256 histEpoch = epoch - 1 - i;  // most recent first
-            packed = abi.encodePacked(packed, epochContentHashes[histEpoch]);
+            rolling = keccak256(abi.encode(rolling, epochContentHashes[histEpoch]));
         }
-        return keccak256(packed);
+        return rolling;
     }
 
     // ─── Views ───────────────────────────────────────────────────────────
@@ -1037,15 +1054,17 @@ contract TheHumanFund is ReentrancyGuard {
     function effectiveMaxBid() public view returns (uint256) {
         if (consecutiveMissedEpochs == 0) return maxBid;
 
+        // Cap at 2% of treasury — compute early to bound the loop
+        uint256 hardCap = (address(this).balance * MAX_BID_BPS) / 10000;
+
         // 10% compounding escalation per missed epoch
         uint256 escalated = maxBid;
         for (uint256 i = 0; i < consecutiveMissedEpochs; i++) {
             escalated = escalated + (escalated * AUTO_ESCALATION_BPS) / 10000;
+            if (escalated >= hardCap) return hardCap;
         }
 
-        // Cap at 2% of treasury
-        uint256 hardCap = (address(this).balance * MAX_BID_BPS) / 10000;
-        return escalated < hardCap ? escalated : hardCap;
+        return escalated;
     }
 
     /// @notice Compute the epoch input hash from current contract state.
