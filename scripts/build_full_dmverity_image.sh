@@ -108,13 +108,14 @@ tar czf /tmp/tee-upload.tar.gz -C "$PROJECT_ROOT" tee/enclave/ agent/prompts/ 2>
 vm_scp "/tmp/tee-upload.tar.gz" "/tmp/"
 vm_run "cd /tmp && tar xzf tee-upload.tar.gz && sudo cp -r tee/enclave /opt/humanfund/ && sudo cp agent/prompts/system_v6.txt /opt/humanfund/system_prompt.txt 2>/dev/null || true"
 
-# Bake SSH key for testing (GCP's guest-agent can't inject keys on dm-verity rootfs).
-# In production, the enclave uses serial console — no SSH needed.
-LOCAL_PUBKEY="$HOME/.ssh/google_compute_engine.pub"
-if [ -f "$LOCAL_PUBKEY" ]; then
-    vm_scp "$LOCAL_PUBKEY" "/tmp/test_key.pub"
-    vm_run "sudo mkdir -p /home/andrewrussell/.ssh && sudo cp /tmp/test_key.pub /home/andrewrussell/.ssh/authorized_keys && sudo chmod 700 /home/andrewrussell/.ssh && sudo chmod 600 /home/andrewrussell/.ssh/authorized_keys && sudo chown -R andrewrussell:andrewrussell /home/andrewrussell/.ssh"
-    echo "  SSH key baked for testing."
+# Only bake SSH key in debug mode — production images must not have SSH keys
+if $ENABLE_SSH; then
+    LOCAL_PUBKEY="$HOME/.ssh/google_compute_engine.pub"
+    if [ -f "$LOCAL_PUBKEY" ]; then
+        vm_scp "$LOCAL_PUBKEY" "/tmp/test_key.pub"
+        vm_run "sudo mkdir -p /home/andrewrussell/.ssh && sudo cp /tmp/test_key.pub /home/andrewrussell/.ssh/authorized_keys && sudo chmod 700 /home/andrewrussell/.ssh && sudo chmod 600 /home/andrewrussell/.ssh/authorized_keys && sudo chown -R andrewrussell:andrewrussell /home/andrewrussell/.ssh"
+        echo "  SSH key baked for testing."
+    fi
 fi
 
 # Systemd services

@@ -61,16 +61,17 @@ contract WstETHAdapter is IProtocolAdapter {
         // Swap ETH -> wstETH via Uniswap V3 exactInputSingle
         uint256 balBefore = wstETH.balanceOf(address(this));
 
-        // Encode Uniswap V3 SwapRouter.exactInputSingle call
+        // Encode Uniswap V3 SwapRouter02.exactInputSingle call
         // tokenIn=WETH, tokenOut=wstETH, fee=100 (0.01%), recipient=this
         bytes memory swapData = abi.encodeWithSignature(
-            "exactInputSingle((address,address,uint24,address,uint256,uint256,uint160))",
+            "exactInputSingle((address,address,uint24,address,uint256,uint256,uint256,uint160))",
             address(0x4200000000000000000000000000000000000006), // WETH on Base
             address(wstETH),
             uint24(100),    // 0.01% fee tier
             address(this),
+            block.timestamp, // deadline: execute immediately
             msg.value,
-            (msg.value * MIN_OUTPUT_BPS) / 10000, // slippage floor: expect ≥95% back
+            (msg.value * MIN_OUTPUT_BPS) / 10000, // slippage floor: expect ≥95% of ETH value in wstETH
             uint160(0)      // sqrtPriceLimitX96 (no limit)
         );
         (bool success, ) = swapRouter.call{value: msg.value}(swapData);
@@ -93,14 +94,18 @@ contract WstETHAdapter is IProtocolAdapter {
         uint256 ethBefore = address(this).balance;
 
         // Swap wstETH -> WETH via Uniswap V3
+        // Use exchange rate for slippage floor: wstETH is worth more than ETH,
+        // so floor must be in ETH terms (getStETHByWstETH converts to stETH ≈ ETH)
+        uint256 ethValue = wstETH.getStETHByWstETH(shares);
         bytes memory swapData = abi.encodeWithSignature(
-            "exactInputSingle((address,address,uint24,address,uint256,uint256,uint160))",
+            "exactInputSingle((address,address,uint24,address,uint256,uint256,uint256,uint160))",
             address(wstETH),
             address(0x4200000000000000000000000000000000000006), // WETH
             uint24(100),
             address(this),
+            block.timestamp, // deadline: execute immediately
             shares,
-            (shares * MIN_OUTPUT_BPS) / 10000, // slippage floor: expect ≥95% back
+            (ethValue * MIN_OUTPUT_BPS) / 10000, // slippage floor in ETH terms
             uint160(0)
         );
         (bool success, ) = swapRouter.call(swapData);

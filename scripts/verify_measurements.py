@@ -16,6 +16,7 @@ Usage:
 """
 
 import argparse
+import hashlib
 import json
 import subprocess
 import sys
@@ -59,7 +60,7 @@ def get_measurements(vm_name, zone):
         elif line.startswith("RTMR3:"):
             measurements["rtmr3"] = bytes.fromhex(line.split(":")[1])
 
-    required = ["rtmr1", "rtmr2", "rtmr3"]
+    required = ["mrtd", "rtmr1", "rtmr2"]
     missing = [k for k in required if k not in measurements]
     if missing:
         raise RuntimeError(f"Failed to extract measurements: missing {missing}\nOutput: {result[:500]}")
@@ -68,11 +69,10 @@ def get_measurements(vm_name, zone):
 
 
 def compute_image_key(measurements):
-    """Compute image key from RTMR[1]+[2]+[3]."""
-    from web3 import Web3
-    return Web3.keccak(
-        measurements["rtmr1"] + measurements["rtmr2"] + measurements["rtmr3"]
-    )
+    """Compute image key = sha256(MRTD || RTMR[1] || RTMR[2]) — matches DstackVerifier.sol."""
+    return hashlib.sha256(
+        measurements["mrtd"] + measurements["rtmr1"] + measurements["rtmr2"]
+    ).digest()
 
 
 def get_onchain_image_key(contract_address, verifier_address, rpc_url):
@@ -106,11 +106,11 @@ def main():
     image_key = compute_image_key(measurements)
 
     print(f"\n  Measurements:")
-    print(f"    MRTD:    {measurements.get('mrtd', b'').hex()[:32]}... (not verified)")
+    print(f"    MRTD:    {measurements['mrtd'].hex()[:32]}...")
     print(f"    RTMR[0]: {measurements.get('rtmr0', b'').hex()[:32]}... (not verified)")
     print(f"    RTMR[1]: {measurements['rtmr1'].hex()[:32]}...")
     print(f"    RTMR[2]: {measurements['rtmr2'].hex()[:32]}...")
-    print(f"    RTMR[3]: {measurements['rtmr3'].hex()[:32]}...")
+    print(f"    RTMR[3]: {measurements.get('rtmr3', b'').hex()[:32]}... (not verified)")
     print(f"    Image key: 0x{image_key.hex()}")
 
     # Compare

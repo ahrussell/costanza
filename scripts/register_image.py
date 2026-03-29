@@ -6,6 +6,7 @@ Usage:
 """
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -42,12 +43,9 @@ def extract_measurements(vm_name, zone):
                 key = prefix.rstrip(":").lower()
                 measurements[key] = bytes.fromhex(line.split(":")[1])
 
-    if "rtmr1" not in measurements or "rtmr2" not in measurements:
-        raise RuntimeError(f"Failed to extract measurements: {result[:500]}")
-
-    # Default RTMR[3] to zeros if not present (no boot script ran yet)
-    if "rtmr3" not in measurements:
-        measurements["rtmr3"] = b'\x00' * 48
+    for key in ["mrtd", "rtmr1", "rtmr2"]:
+        if key not in measurements:
+            raise RuntimeError(f"Failed to extract {key}: {result[:500]}")
 
     return measurements
 
@@ -99,24 +97,22 @@ def main():
     if not args.private_key:
         parser.error("--private-key or PRIVATE_KEY env var required")
 
-    from web3 import Web3
-
     print(f"=== Register Image Key ===")
     print(f"  VM: {args.vm_name}")
 
     measurements = extract_measurements(args.vm_name, args.zone)
 
     print(f"\n  Measurements:")
-    print(f"    MRTD:    {measurements.get('mrtd', b'').hex()[:32]}...")
+    print(f"    MRTD:    {measurements['mrtd'].hex()[:32]}...")
     print(f"    RTMR[0]: {measurements.get('rtmr0', b'').hex()[:32]}...")
     print(f"    RTMR[1]: {measurements['rtmr1'].hex()[:32]}...")
     print(f"    RTMR[2]: {measurements['rtmr2'].hex()[:32]}...")
-    print(f"    RTMR[3]: {measurements['rtmr3'].hex()[:32]}...")
+    print(f"    RTMR[3]: {measurements.get('rtmr3', b'').hex()[:32]}...")
 
-    # Image key = keccak256(RTMR[1] || RTMR[2] || RTMR[3])
-    image_key = Web3.keccak(
-        measurements["rtmr1"] + measurements["rtmr2"] + measurements["rtmr3"]
-    )
+    # Image key = sha256(MRTD || RTMR[1] || RTMR[2]) — matches DstackVerifier.sol
+    image_key = hashlib.sha256(
+        measurements["mrtd"] + measurements["rtmr1"] + measurements["rtmr2"]
+    ).digest()
     print(f"    Image key: 0x{image_key.hex()}")
     print(f"  Verifier: {args.verifier}")
     register_tdx(args.verifier, image_key, args.rpc_url, args.private_key)

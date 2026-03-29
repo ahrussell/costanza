@@ -29,6 +29,9 @@ GCP_PROJECT="${GCP_PROJECT:-the-human-fund}"
 GCP_ZONE="${GCP_ZONE:-us-central1-a}"
 USE_GPU=true
 LLAMA_CPP_TAG="b5270"
+# Pin to exact commit hash for supply chain integrity (git tags can be force-pushed)
+# Pin to known-good commit for tag b5270 — supply chain defense against tag force-push
+LLAMA_CPP_COMMIT="${LLAMA_CPP_COMMIT:-a1d711f0e47873a42cdd1e78fcc2e4d0df002534}"
 VM_NAME="humanfund-base-builder-$(date +%s)"
 BUILDER_MACHINE="c3-standard-22"  # Biggest within 32-CPU quota
 
@@ -144,6 +147,15 @@ vm_run "
     cd /tmp
     git clone --depth 1 --branch $LLAMA_CPP_TAG https://github.com/ggml-org/llama.cpp.git
     cd llama.cpp
+    ACTUAL_COMMIT=\$(git rev-parse HEAD)
+    if [ -n \"$LLAMA_CPP_COMMIT\" ] && [ \"\$ACTUAL_COMMIT\" != \"$LLAMA_CPP_COMMIT\" ]; then
+        echo \"SECURITY ERROR: llama.cpp commit mismatch!\"
+        echo \"  Expected: $LLAMA_CPP_COMMIT\"
+        echo \"  Got:      \$ACTUAL_COMMIT\"
+        echo \"  Tag $LLAMA_CPP_TAG may have been force-pushed.\"
+        exit 1
+    fi
+    echo \"llama.cpp commit: \$ACTUAL_COMMIT\"
 
     if [ -f /usr/local/cuda/lib64/stubs/libcuda.so ]; then
         ln -sf /usr/local/cuda/lib64/stubs/libcuda.so /usr/local/cuda/lib64/stubs/libcuda.so.1
@@ -168,11 +180,13 @@ echo "  llama-server at /opt/humanfund/bin/"
 echo ""
 echo "─── Step 5: Python venv ───"
 
+# Upload requirements file and install with hash-pinned versions (supply chain defense)
+gcloud compute scp "tee/enclave/requirements.txt" "$VM_NAME:/tmp/requirements.txt" \
+    --project="$GCP_PROJECT" --zone="$GCP_ZONE" 2>&1
 vm_run "
     sudo python3 -m venv /opt/humanfund/venv
-    sudo /opt/humanfund/venv/bin/pip install --no-cache-dir \
-        pycryptodome==3.21.0 \
-        eth_abi==5.1.0
+    sudo /opt/humanfund/venv/bin/pip install --no-cache-dir --require-hashes \
+        -r /tmp/requirements.txt
 "
 echo "  Done."
 

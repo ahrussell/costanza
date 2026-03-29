@@ -18,8 +18,8 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 - **Phase 3 contract (latest, 70B GPU e2e)**: `0xa507366987417e0E4247a827B48536DA11235CC7` (Base Sepolia) — 5 consecutive successful epochs with investments, withdrawals, and guiding policies
 - **Phase 2 contract (CPU e2e)**: `0x9043B54B7E5d2f98Bc12ff10799cf8d5d38c7ab2` (Base Sepolia) — CPU + GPU verified
 - Phase 0 original contract: `0x2F213Ea0D3F6D8349e2162b37Cc8cE6605dc9420` (Base Sepolia) — 21 epochs executed (legacy)
-- **187 tests pass** (38 Phase 0 + 42 auction + 19 TDX verifier + 23 DstackVerifier + 35 investment + 16 worldview + 14 messages)
-- Contract sizes: TheHumanFund ~24.2KB (374B margin, optimizer enabled), AttestationVerifier ~3.4KB, DstackVerifier (split platform/app keys), InvestmentManager ~10.4KB, WorldView ~2.6KB
+- **165 tests pass** (37 Phase 0 + 42 auction + 17 TDX verifier + 35 investment + 16 worldview + 14 messages + 4 cross-stack hash)
+- Contract sizes: TheHumanFund ~23.9KB (109B margin, optimizer enabled), TdxVerifier ~2.5KB, InvestmentManager ~7.7KB, WorldView ~2.5KB, AuctionManager ~7.0KB
 - GCP TDX FMSPC `00806f050000` registered in Automata DCAP Dashboard
 - CPU image key (c3-standard-4): `0x1ff10986...` — approved
 - GPU image key (a3-highgpu-1g, H100): `0xababa83b...` — approved
@@ -28,11 +28,12 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 - **GCP base image**: `humanfund-base-gpu-llama-b5270` (family: `humanfund-base`) — pre-baked Ubuntu 24.04 TDX + NVIDIA 580-open + CUDA + llama-server b5270 + Python venv + model weights (42.5GB). Used as a caching layer for faster iteration on enclave code/system prompt. Rebuild when llama.cpp/NVIDIA/Ubuntu versions change.
 - **GCP production image**: `humanfund-dmverity-gpu-v6` — built on top of base image by adding enclave code + system prompt, then sealing with two-disk dm-verity build (`build_full_dmverity_image.sh`). Full dm-verity rootfs, no Docker, direct execution.
 - **Model gauntlet**: 3 models tested across 75-epoch scenario (honeymoon → boom → crisis → drought → recovery → endgame). DeepSeek R1 70B: 6.12 ETH donated, 3.05 ETH final assets, diversified across 3 protocols. Llama 3.3 70B: 7.20 ETH donated but only 2.00 ETH final assets (less sustainable). QwQ 32B: 0.80 ETH donated, 17 parse failures.
-- **Remaining**: message spotlighting (prompt injection defense), audit, mainnet deployment
+- **Remaining**: audit, mainnet deployment
 - Deployer address: `0xffea30B0DbDAd460B9b6293fb51a059129fCCdAf`
 
 **DESIGN.md is a living document** — see it for the full specification and implementation checklist.
-**ATTESTATION_SECURITY_V2.md** — dm-verity + DstackVerifier attestation security model and threat analysis.
+**SECURITY_MODEL.md** — trust boundaries, accepted risks, and pre-mainnet verification checklist.
+**DMVERITY.md** — dm-verity TEE architecture, boot flow, disk layout, and build process.
 
 ## Architecture
 
@@ -50,7 +51,7 @@ Each epoch (24 hours in production, configurable for testnet):
 2. Runners submit bids during bidding window (1 hour production)
 3. Anyone calls `closeAuction()` — lowest bid wins, bond locked, `prevrandao` captured for RNG seed
 4. Winner boots TDX VM from dm-verity disk image, one-shot enclave program runs inference directly from immutable rootfs with deterministic seed
-5. Winner submits via `submitAuctionResult()` — DstackVerifier verifies:
+5. Winner submits via `submitAuctionResult()` — TdxVerifier verifies:
    - Automata DCAP: quote is genuine TDX hardware
    - Platform key: `sha256(MRTD || RTMR[1] || RTMR[2])` — firmware + kernel + dm-verity rootfs (transitively covers all code)
    - REPORTDATA: `SHA256(inputHash || outputHash)` matches
@@ -70,19 +71,19 @@ Each epoch (24 hours in production, configurable for testnet):
 - **Epoch state machine**: IDLE → BIDDING → EXECUTION → SETTLED with configurable timing
 - **Verifiable randomness**: RNG seed derived from `block.prevrandao` at auction close — runner cannot re-roll inference
 - **Model on dm-verity partition**: Model weights live on a separate dm-verity partition, hash baked into GRUB command line (measured into RTMR[2]). Enclave also verifies SHA-256 at startup (defense-in-depth). No runtime download.
-- **Platform-only attestation**: DstackVerifier uses platform key = `sha256(MRTD || RTMR[1] || RTMR[2])`. dm-verity rootfs hash in RTMR[2] transitively covers all code, so no separate app key (RTMR[3]) is needed. RTMR[0] (VM hardware config) intentionally skipped so runners can use different VM sizes.
+- **Platform-only attestation**: TdxVerifier uses platform key = `sha256(MRTD || RTMR[1] || RTMR[2])`. dm-verity rootfs hash in RTMR[2] transitively covers all code, so no separate app key (RTMR[3]) is needed. RTMR[0] (VM hardware config) intentionally skipped so runners can use different VM sizes.
 - **Rolling history hash**: On-chain `historyHash` extended each epoch, binds decision history to input commitment
 - **No Docker enclave**: Enclave runs directly on dm-verity rootfs (no Docker, no container runtime). One-shot program: reads input from GCP metadata, writes output to serial console. No network listeners, no SSH in production.
 - **Full design doc**: See DESIGN.md for complete specification
-- **Security model**: See ATTESTATION_SECURITY_V2.md for dm-verity attestation analysis and threat model
-- **Architecture doc**: See DMVERITY_NOTES.md for detailed dm-verity boot flow, disk layout, and build process
+- **Security model**: See SECURITY_MODEL.md for trust boundaries, accepted risks, and verification checklist
+- **Architecture doc**: See DMVERITY.md for detailed dm-verity boot flow, disk layout, and build process
 
 ## Implementation Phases
 
 - **Phase 0** (COMPLETE): End-to-end loop on testnet with trusted operator, no TEE
 - **Phase 1** (COMPLETE): TEE integration — TDX attestation, on-chain DCAP verification, RTMR[1..3] image registry
 - **Phase 2** (COMPLETE): Reverse auction — contract + runner deployed, full attestation verified on Base Sepolia (CPU + GPU TDX)
-- **Phase 3** (IN PROGRESS): Investment portfolio — InvestmentManager + 7 adapters (Aave WETH/USDC, wstETH, cbETH, Compound USDC, Morpho Gauntlet/Steakhouse WETH), 137 tests pass, Chainlink ETH/USD oracle, system prompt v6
+- **Phase 3** (IN PROGRESS): Investment portfolio — InvestmentManager + 7 adapters (Aave WETH/USDC, wstETH, cbETH, Compound USDC, Morpho Gauntlet/Steakhouse WETH), 165 tests pass, Chainlink ETH/USD oracle, system prompt v6
 - **Phase 4**: Frontend (diary viewer, treasury dashboard, investment portfolio UI)
 - **Phase 5**: Audit and mainnet deployment
 
@@ -115,15 +116,15 @@ All Python commands (runner, enclave runner, etc.) should be run inside the venv
 thehumanfund/
 ├── CLAUDE.md                    # This file — project context for Claude
 ├── DESIGN.md                    # Full design specification (living document)
-├── ATTESTATION_SECURITY_V2.md   # dm-verity + DstackVerifier attestation security model
-├── DMVERITY_NOTES.md            # dm-verity TEE architecture (boot flow, disk layout, build)
+├── SECURITY_MODEL.md            # Trust boundaries, accepted risks, verification checklist
+├── SECURITY_AUDIT.md            # Point-in-time adversarial security audit
+├── DMVERITY.md                  # dm-verity TEE architecture (boot flow, disk layout, build)
 ├── foundry.toml                 # Foundry configuration
 ├── .venv/                       # Python virtual environment (gitignored)
 ├── src/
-│   ├── TheHumanFund.sol         # Main smart contract (Phase 0-3, 23.8KB)
-│   ├── AttestationVerifier.sol  # Legacy TEE attestation verification (3.4KB)
-│   ├── DstackVerifier.sol       # Docker/dm-verity attestation (split platform/app keys)
-│   ├── InvestmentManager.sol    # DeFi portfolio manager (10.4KB)
+│   ├── TheHumanFund.sol         # Main smart contract (Phase 0-3, ~23.9KB)
+│   ├── TdxVerifier.sol          # TDX attestation verifier (platform key: sha256(MRTD||RTMR1||RTMR2))
+│   ├── InvestmentManager.sol    # DeFi portfolio manager (~7.7KB)
 │   ├── WorldView.sol            # Agent worldview — 10 guiding policy slots
 │   ├── interfaces/
 │   │   ├── IAggregatorV3.sol            # Chainlink V3 price feed interface
@@ -131,7 +132,7 @@ thehumanfund/
 │   │   ├── IAutomataDcapAttestation.sol  # Automata DCAP interface
 │   │   ├── IEndaoment.sol               # Endaoment donation interface
 │   │   ├── IInvestmentManager.sol       # Investment manager interface
-│   │   ├── IProofVerifier.sol           # Proof verifier interface (shared by TdxVerifier + DstackVerifier)
+│   │   ├── IProofVerifier.sol           # Proof verifier interface (used by TdxVerifier)
 │   │   ├── IERC4626.sol                 # Minimal ERC-4626 vault interface
 │   │   ├── IProtocolAdapter.sol         # Protocol adapter interface
 │   │   └── IWorldView.sol               # WorldView interface
@@ -147,8 +148,8 @@ thehumanfund/
 ├── test/
 │   ├── TheHumanFund.t.sol       # Phase 0 tests
 │   ├── TheHumanFundAuction.t.sol # Phase 2 auction + attestation tests
-│   ├── TdxVerifier.t.sol        # Legacy TDX verifier tests
-│   ├── DstackVerifier.t.sol     # DstackVerifier tests (split platform/app keys)
+│   ├── TdxVerifier.t.sol        # TDX verifier tests
+│   ├── CrossStackHash.t.sol     # Cross-language hash compatibility tests
 │   ├── InvestmentManager.t.sol  # Investment tests
 │   ├── WorldView.t.sol          # Worldview tests
 │   └── Messages.t.sol           # Donor messages tests
@@ -157,6 +158,7 @@ thehumanfund/
 ├── runner/                      # Auction runner client (cron job, untrusted)
 │   ├── client.py               # Main entry point — checks phase, acts accordingly
 │   ├── chain.py                # Contract interaction (read state, submit tx)
+│   ├── epoch_state.py          # Read full epoch state from contract for TEE
 │   ├── auction.py              # Auction state machine (commit/reveal/submit)
 │   ├── bid_strategy.py         # Bid calculation (gas + compute + margin)
 │   ├── notifier.py             # ntfy.sh push notifications
@@ -218,12 +220,11 @@ thehumanfund/
 - Auto-escalation: `effectiveMaxBid` increases 10% per consecutive missed epoch
 - `DiaryEntry` event emits reasoning + action on-chain
 
-### TEE Attestation — see ATTESTATION_SECURITY_V2.md + DMVERITY_NOTES.md for full model
-- **DstackVerifier.sol** — primary verifier for dm-verity architecture (verifier ID=2)
+### TEE Attestation — see SECURITY_MODEL.md + DMVERITY.md for full model
+- **TdxVerifier.sol** — TDX attestation verifier for dm-verity architecture
   - Platform key: `sha256(MRTD || RTMR[1] || RTMR[2])` — firmware + kernel + dm-verity rootfs (transitively covers all code)
   - No app key needed: dm-verity root hash in RTMR[2] covers everything (no Docker, no RTMR[3])
   - RTMR[0] intentionally skipped (VM hardware config varies by runner)
-- `AttestationVerifier.sol` — legacy verifier (verifier ID=1), single combined image key
 - Automata DCAP verifier at `0xaDdeC7e85c2182202b66E331f2a4A0bBB2cEEa1F`
 - REPORTDATA formula: `sha256(inputHash || outputHash)` where `outputHash = keccak256(sha256(action) || sha256(reasoning) || sha256(systemPrompt))`
 - Rolling `historyHash` extends each epoch, included in `_computeInputHash()`
@@ -296,9 +297,9 @@ See [RUNNER_README.md](RUNNER_README.md) for full setup instructions.
 3. systemd starts one-shot enclave program (reads input, runs inference, generates TDX quote)
 4. Enclave gets TDX quote via configfs-tsm with REPORTDATA = sha256(inputHash || outputHash)
 5. Enclave writes result to serial console, runner reads it, submits to chain
-6. DstackVerifier verifies: platform key (MRTD + RTMR[1..2]) + REPORTDATA
+6. TdxVerifier verifies: platform key (MRTD + RTMR[1..2]) + REPORTDATA
 
-**RTMR measurements** (verified on-chain via DstackVerifier):
+**RTMR measurements** (verified on-chain via TdxVerifier):
 - MRTD: Measured at VM launch (firmware) — part of platform key
 - RTMR[1]: Boot loader (GRUB/shim) — part of platform key
 - RTMR[2]: Kernel + command line including dm-verity root hashes — part of platform key. Transitively covers all code via dm-verity.
@@ -370,9 +371,9 @@ source .venv/bin/activate
 
 # Smart contracts
 forge build                                    # Compile contracts
-forge test                                     # Run all tests (187 tests)
+forge test                                     # Run all tests (165 tests)
 forge test -vvv                                # Verbose test output
-forge test --match-path test/DstackVerifier.t.sol # DstackVerifier tests only
+forge test --match-path test/TdxVerifier.t.sol # TDX verifier tests only
 forge script script/Deploy.s.sol \
   --rpc-url $RPC_URL --broadcast              # Deploy to testnet
 

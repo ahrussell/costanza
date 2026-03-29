@@ -1,0 +1,9 @@
+# Supply-chain-pinned dependencies for TEE enclave.
+# Hashes ensure pip verifies package integrity (defense against PyPI compromise).
+# To update: download new version, run `pip hash <file>`, update hash here.
+# Include both sdist (.tar.gz) and wheel hashes so pip can use either.
+pycryptodome==3.21.0 \
+    --hash=sha256:f7787e0d469bdae763b876174cf2e6c0f7be79808af26b1da96f1a64bcf47297
+eth_abi==5.1.0 \
+    --hash=sha256:84cac2626a7db8b7d9ebe62b0fdca676ab1014cc7f777189e3c0cd721a4c16d8 \
+    --hash=sha256:33ddd756206e90f7ddff1330cc8cac4aa411a824fe779314a0a52abea2c8fc14

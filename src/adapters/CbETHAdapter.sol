@@ -50,14 +50,18 @@ contract CbETHAdapter is IProtocolAdapter {
         uint256 balBefore = cbETH.balanceOf(address(this));
 
         // Swap ETH -> cbETH via Uniswap V3
+        // cbETH is worth more than ETH, so fewer cbETH tokens expected per ETH.
+        // Use exchange rate to compute correct minimum: ETH / exchangeRate = cbETH
+        uint256 minCbEth = (msg.value * 1e18 / cbETH.exchangeRate()) * MIN_OUTPUT_BPS / 10000;
         bytes memory swapData = abi.encodeWithSignature(
-            "exactInputSingle((address,address,uint24,address,uint256,uint256,uint160))",
+            "exactInputSingle((address,address,uint24,address,uint256,uint256,uint256,uint160))",
             address(0x4200000000000000000000000000000000000006), // WETH on Base
             address(cbETH),
             uint24(500),    // 0.05% fee tier (ETH/cbETH pair)
             address(this),
+            block.timestamp, // deadline: execute immediately
             msg.value,
-            (msg.value * MIN_OUTPUT_BPS) / 10000, // slippage floor: expect ≥95% back
+            minCbEth,       // slippage floor in cbETH terms
             uint160(0)
         );
         (bool success, ) = swapRouter.call{value: msg.value}(swapData);
@@ -78,14 +82,17 @@ contract CbETHAdapter is IProtocolAdapter {
 
         uint256 ethBefore = address(this).balance;
 
+        // Use exchange rate for slippage floor: cbETH is worth more than ETH
+        uint256 ethValue = (shares * cbETH.exchangeRate()) / 1e18;
         bytes memory swapData = abi.encodeWithSignature(
-            "exactInputSingle((address,address,uint24,address,uint256,uint256,uint160))",
+            "exactInputSingle((address,address,uint24,address,uint256,uint256,uint256,uint160))",
             address(cbETH),
             address(0x4200000000000000000000000000000000000006),
             uint24(500),
             address(this),
+            block.timestamp, // deadline: execute immediately
             shares,
-            (shares * MIN_OUTPUT_BPS) / 10000, // slippage floor: expect ≥95% back
+            (ethValue * MIN_OUTPUT_BPS) / 10000, // slippage floor in ETH terms
             uint160(0)
         );
         (bool success, ) = swapRouter.call(swapData);

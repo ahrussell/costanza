@@ -12,13 +12,14 @@ interface IERC20 {
     function decimals() external view returns (uint8);
 }
 
-/// @notice Minimal Uniswap V3 SwapRouter interface.
+/// @notice Minimal Uniswap V3 SwapRouter02 interface.
 interface ISwapRouter {
     struct ExactInputSingleParams {
         address tokenIn;
         address tokenOut;
         uint24 fee;
         address recipient;
+        uint256 deadline;
         uint256 amountIn;
         uint256 amountOutMinimum;
         uint160 sqrtPriceLimitX96;
@@ -42,6 +43,8 @@ abstract contract SwapHelper {
 
     /// @notice Maximum slippage tolerance in basis points (3%).
     uint256 public constant SLIPPAGE_BPS = 300;
+    /// @notice Maximum oracle staleness (1 hour).
+    uint256 public constant STALENESS_THRESHOLD = 3600;
 
     constructor(address _weth, address _usdc, address _swapRouter, uint24 _swapFee, address _ethUsdFeed) {
         weth = IWETH(_weth);
@@ -71,6 +74,7 @@ abstract contract SwapHelper {
                 tokenOut: address(usdc),
                 fee: swapFee,
                 recipient: address(this),
+                deadline: block.timestamp,
                 amountIn: ethAmount,
                 amountOutMinimum: minOut,
                 sqrtPriceLimitX96: 0
@@ -91,6 +95,7 @@ abstract contract SwapHelper {
                 tokenOut: address(weth),
                 fee: swapFee,
                 recipient: address(this),
+                deadline: block.timestamp,
                 amountIn: usdcAmount,
                 amountOutMinimum: minOut,
                 sqrtPriceLimitX96: 0
@@ -106,8 +111,9 @@ abstract contract SwapHelper {
     ///      Reverts if oracle is unavailable — swaps must not proceed without slippage protection.
     function _minUsdcForEth(uint256 ethAmount) internal view returns (uint256) {
         if (address(ethUsdFeed) == address(0)) revert OracleUnavailable();
-        try ethUsdFeed.latestRoundData() returns (uint80, int256 answer, uint256, uint256, uint80) {
+        try ethUsdFeed.latestRoundData() returns (uint80, int256 answer, uint256, uint256 updatedAt, uint80) {
             if (answer <= 0) revert OracleUnavailable();
+            if (block.timestamp - updatedAt > STALENESS_THRESHOLD) revert OracleUnavailable();
             // Chainlink ETH/USD has 8 decimals, USDC has 6 decimals
             // expectedUsdc = ethAmount * price / 1e18 * 1e6 / 1e8 = ethAmount * price / 1e20
             uint256 expected = (ethAmount * uint256(answer)) / 1e20;
@@ -121,8 +127,9 @@ abstract contract SwapHelper {
     ///      Reverts if oracle is unavailable — swaps must not proceed without slippage protection.
     function _minEthForUsdc(uint256 usdcAmount) internal view returns (uint256) {
         if (address(ethUsdFeed) == address(0)) revert OracleUnavailable();
-        try ethUsdFeed.latestRoundData() returns (uint80, int256 answer, uint256, uint256, uint80) {
+        try ethUsdFeed.latestRoundData() returns (uint80, int256 answer, uint256, uint256 updatedAt, uint80) {
             if (answer <= 0) revert OracleUnavailable();
+            if (block.timestamp - updatedAt > STALENESS_THRESHOLD) revert OracleUnavailable();
             // expectedEth = usdcAmount * 1e20 / price (inverse of above)
             uint256 expected = (usdcAmount * 1e20) / uint256(answer);
             return (expected * (10000 - SLIPPAGE_BPS)) / 10000;

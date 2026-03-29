@@ -146,6 +146,294 @@ def compute_input_hash(state: dict) -> bytes:
     ))
 
 
+def _abi_encode_packed_uint256(*values) -> bytes:
+    """Replicate abi.encodePacked for uint256 values — raw 32-byte big-endian, no padding."""
+    result = b""
+    for v in values:
+        result += v.to_bytes(32, "big")
+    return result
+
+
+class DisplayDataMismatch(Exception):
+    """Raised when display data doesn't match its opaque hash."""
+    pass
+
+
+def verify_display_data(epoch_state: dict, contract_state: dict):
+    """Verify that all display data shown to the model matches the opaque hashes.
+
+    The contract's _computeInputHash() includes opaque hashes (invest_hash,
+    worldview_hash, etc.) that the TEE passes through for hash verification.
+    But the prompt builder uses EXPANDED display data from epoch_state.
+
+    A malicious runner could provide correct opaque hashes (read from chain)
+    alongside fabricated display data. This function closes that gap by
+    recomputing each opaque hash from the expanded data and verifying it matches.
+
+    Raises DisplayDataMismatch if any hash doesn't match.
+    """
+    _verify_investment_hash(epoch_state, contract_state)
+    _verify_worldview_hash(epoch_state, contract_state)
+    _verify_message_hashes(epoch_state, contract_state)
+    _verify_history_hashes(epoch_state, contract_state)
+    _verify_derived_fields(epoch_state)
+
+
+def _verify_investment_hash(epoch_state: dict, contract_state: dict):
+    """Replicate InvestmentManager.stateHash() from expanded investment data.
+
+    Solidity (InvestmentManager.sol:304-319):
+        bytes memory packed;
+        for (uint256 i = 1; i <= protocolCount; i++) {
+            packed = abi.encodePacked(packed, i, pos.depositedEth, pos.shares, currentValue);
+        }
+        return keccak256(abi.encodePacked(packed, protocolCount, totalInvestedValue()));
+    """
+    expected_hex = contract_state.get("invest_hash", "0x" + "00" * 32)
+    expected = bytes.fromhex(expected_hex.replace("0x", ""))
+
+    # Zero hash means no InvestmentManager — skip
+    if expected == b'\x00' * 32:
+        return
+
+    investments = epoch_state.get("investments", [])
+    packed = b""
+    total_value = 0
+    for inv in investments:
+        pid = inv["id"]
+        deposited = inv["deposited"]
+        shares = inv["shares"]
+        current_value = inv["current_value"]
+        total_value += current_value
+        packed += _abi_encode_packed_uint256(pid, deposited, shares, current_value)
+
+    protocol_count = len(investments)
+    packed += _abi_encode_packed_uint256(protocol_count, total_value)
+    computed = _keccak256(packed)
+
+    if computed != expected:
+        raise DisplayDataMismatch(
+            f"Investment hash mismatch: computed 0x{computed.hex()[:16]}... "
+            f"!= expected 0x{expected.hex()[:16]}... "
+            f"Runner may have provided fabricated investment data."
+        )
+
+
+def _verify_worldview_hash(epoch_state: dict, contract_state: dict):
+    """Replicate WorldView.stateHash() from expanded policy data.
+
+    Solidity (WorldView.sol:54-59):
+        return keccak256(abi.encode(
+            policies[0], policies[1], ..., policies[9]
+        ));
+    """
+    expected_hex = contract_state.get("worldview_hash", "0x" + "00" * 32)
+    expected = bytes.fromhex(expected_hex.replace("0x", ""))
+
+    # Zero hash means no WorldView — skip
+    if expected == b'\x00' * 32:
+        return
+
+    policies = epoch_state.get("guiding_policies", [""] * 10)
+    # Pad to 10 policies
+    while len(policies) < 10:
+        policies.append("")
+
+    # abi.encode with 10 strings
+    types = [("string", p) for p in policies[:10]]
+    computed = _keccak256(_abi_encode(*types))
+
+    if computed != expected:
+        raise DisplayDataMismatch(
+            f"Worldview hash mismatch: computed 0x{computed.hex()[:16]}... "
+            f"!= expected 0x{expected.hex()[:16]}... "
+            f"Runner may have provided fabricated guiding policies."
+        )
+
+
+def _verify_message_hashes(epoch_state: dict, contract_state: dict):
+    """Verify each donor message matches its on-chain hash.
+
+    Per-message hash (TheHumanFund.sol:346):
+        keccak256(abi.encode(msg.sender, msg.value, truncated, currentEpoch))
+
+    Rolling chain (_hashUnreadMessages):
+        rolling = keccak256(abi.encode(rolling, messageHashes[i]))
+    """
+    expected_hashes = contract_state.get("message_hashes", [])
+    messages = epoch_state.get("donor_messages", [])
+
+    if not expected_hashes and not messages:
+        return
+
+    if len(messages) != len(expected_hashes):
+        raise DisplayDataMismatch(
+            f"Message count mismatch: {len(messages)} messages "
+            f"but {len(expected_hashes)} hashes."
+        )
+
+    for i, msg in enumerate(messages):
+        sender = msg["sender"]
+        # Normalize address to bytes20 for abi.encode (address type)
+        amount = msg["amount"]
+        text = msg["text"]
+        epoch = msg["epoch"]
+
+        computed_hash = _keccak256(_abi_encode(
+            ("address", sender),
+            ("uint256", amount),
+            ("string", text),
+            ("uint256", epoch),
+        ))
+
+        expected_hash = bytes.fromhex(expected_hashes[i].replace("0x", ""))
+        if computed_hash != expected_hash:
+            raise DisplayDataMismatch(
+                f"Message #{i} hash mismatch: computed 0x{computed_hash.hex()[:16]}... "
+                f"!= expected 0x{expected_hash.hex()[:16]}... "
+                f"Runner may have provided fabricated donor message text."
+            )
+
+
+def _verify_history_hashes(epoch_state: dict, contract_state: dict):
+    """Verify each history entry matches its on-chain content hash.
+
+    Per-epoch content hash (TheHumanFund.sol:764-766):
+        keccak256(abi.encode(
+            keccak256(reasoning), keccak256(action), treasuryBefore, treasuryAfter
+        ))
+
+    Rolling chain (_hashRecentHistory):
+        rolling = keccak256(abi.encode(rolling, epochContentHashes[histEpoch]))
+    """
+    expected_hashes = contract_state.get("epoch_content_hashes", [])
+    history = epoch_state.get("history", [])
+
+    if not expected_hashes and not history:
+        return
+
+    # Filter out zero hashes: epochs that were never executed/settled have
+    # epochContentHashes[ep] == bytes32(0). The runner's history list only
+    # contains executed epochs (getEpochRecord returns executed=True).
+    # Zero-hash entries have nothing to verify against — skip them.
+    zero_hash = b'\x00' * 32
+    non_zero_hashes = [
+        h for h in expected_hashes
+        if bytes.fromhex(h.replace("0x", "")) != zero_hash
+    ]
+
+    if not non_zero_hashes and not history:
+        return
+
+    if len(history) < len(non_zero_hashes):
+        raise DisplayDataMismatch(
+            f"History count mismatch: {len(history)} entries "
+            f"but {len(non_zero_hashes)} non-zero content hashes expected."
+        )
+
+    # Pair non-zero expected hashes with the corresponding history entries.
+    # Both lists are most-recent-first. Entries with zero hashes (unexecuted
+    # epochs) are gaps in the sequence that the history list skips over.
+    history_idx = 0
+    for expected_hex in expected_hashes:
+        expected_hash = bytes.fromhex(expected_hex.replace("0x", ""))
+        if expected_hash == zero_hash:
+            continue  # Unexecuted epoch — no history entry exists for it
+
+        if history_idx >= len(history):
+            raise DisplayDataMismatch(
+                "History entry missing: fewer history entries than non-zero content hashes."
+            )
+        entry = history[history_idx]
+        history_idx += 1
+
+        # Get action and reasoning as bytes
+        action_data = entry["action"]
+        if isinstance(action_data, str):
+            action_data = bytes.fromhex(action_data.replace("0x", ""))
+        elif not isinstance(action_data, bytes):
+            action_data = bytes(action_data)
+
+        reasoning_data = entry["reasoning"]
+        if isinstance(reasoning_data, str):
+            reasoning_data = reasoning_data.encode("utf-8")
+        elif not isinstance(reasoning_data, bytes):
+            reasoning_data = bytes(reasoning_data)
+
+        # Solidity keccak256(reasoning), keccak256(action)
+        reasoning_hash = _keccak256(reasoning_data)
+        action_hash = _keccak256(action_data)
+
+        computed_content_hash = _keccak256(_abi_encode(
+            ("bytes32", reasoning_hash),
+            ("bytes32", action_hash),
+            ("uint256", entry["treasury_before"]),
+            ("uint256", entry["treasury_after"]),
+        ))
+
+        if computed_content_hash != expected_hash:
+            raise DisplayDataMismatch(
+                f"History epoch {entry.get('epoch', '?')} hash mismatch: "
+                f"computed 0x{computed_content_hash.hex()[:16]}... "
+                f"!= expected 0x{expected_hash.hex()[:16]}... "
+                f"Runner may have provided fabricated decision history."
+            )
+
+
+def _verify_derived_fields(epoch_state: dict):
+    """Verify display-only fields that are derived from hash-verified data.
+
+    These fields are NOT in any hash but are shown to the model. Verify
+    they are consistent with the hash-verified fields.
+    """
+    balance = epoch_state.get("treasury_balance", 0)
+    investments = epoch_state.get("investments", [])
+    total_invested = sum(inv.get("current_value", 0) for inv in investments)
+
+    # Verify total_invested
+    claimed_total_invested = epoch_state.get("total_invested", 0)
+    if investments and claimed_total_invested != total_invested:
+        raise DisplayDataMismatch(
+            f"total_invested mismatch: claimed {claimed_total_invested} "
+            f"but sum of investments is {total_invested}."
+        )
+
+    # Verify total_assets = balance + total_invested
+    claimed_total_assets = epoch_state.get("total_assets", balance)
+    expected_total_assets = balance + total_invested
+    if investments and claimed_total_assets != expected_total_assets:
+        raise DisplayDataMismatch(
+            f"total_assets mismatch: claimed {claimed_total_assets} "
+            f"but balance({balance}) + invested({total_invested}) = {expected_total_assets}."
+        )
+
+    # Verify effective_max_bid (10% compounding escalation per missed epoch)
+    max_bid = epoch_state.get("max_bid", 0)
+    consecutive_missed = epoch_state.get("consecutive_missed", 0)
+    claimed_effective = epoch_state.get("effective_max_bid", max_bid)
+
+    if consecutive_missed == 0:
+        expected_effective = max_bid
+    else:
+        # Cap at 2% of treasury (MAX_BID_BPS = 200)
+        hard_cap = (balance * 200) // 10000
+        escalated = max_bid
+        for _ in range(consecutive_missed):
+            # AUTO_ESCALATION_BPS = 1000 (10%)
+            escalated = escalated + (escalated * 1000) // 10000
+            if escalated >= hard_cap:
+                escalated = hard_cap
+                break
+        expected_effective = escalated
+
+    if claimed_effective != expected_effective:
+        raise DisplayDataMismatch(
+            f"effective_max_bid mismatch: claimed {claimed_effective} "
+            f"but computed {expected_effective} from max_bid={max_bid}, "
+            f"missed={consecutive_missed}."
+        )
+
+
 def derive_contract_state(epoch_state: dict) -> dict:
     """Derive the structured contract_state (for input hash) from a flat epoch state.
 

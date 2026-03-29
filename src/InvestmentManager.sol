@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import "./interfaces/IInvestmentManager.sol";
 import "./interfaces/IProtocolAdapter.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /// @title InvestmentManager
 /// @notice Manages a portfolio of DeFi protocol investments for TheHumanFund.
@@ -15,7 +16,7 @@ import "./interfaces/IProtocolAdapter.sol";
 /// @dev Adapters are stateful contracts that hold receipt tokens. Each adapter
 ///      is registered with a unique protocol ID. Paused protocols can still
 ///      be withdrawn from but not deposited into.
-contract InvestmentManager is IInvestmentManager {
+contract InvestmentManager is IInvestmentManager, ReentrancyGuard {
     // ─── Errors ──────────────────────────────────────────────────────────
 
     error Unauthorized();
@@ -184,7 +185,7 @@ contract InvestmentManager is IInvestmentManager {
     /// @notice Deposit ETH into a protocol. Only callable by the fund.
     /// @dev msg.value must equal amount. Bounds are checked against total assets
     ///      (fund balance + all invested value).
-    function deposit(uint256 protocolId, uint256 amount) external payable override onlyFund {
+    function deposit(uint256 protocolId, uint256 amount) external payable override onlyFund nonReentrant {
         if (amount == 0) revert ZeroAmount();
         if (msg.value != amount) revert AmountMismatch();
         if (!protocols[protocolId].exists) revert InvalidProtocol();
@@ -222,7 +223,7 @@ contract InvestmentManager is IInvestmentManager {
     /// @notice Withdraw ETH from a protocol position. Only callable by the fund.
     /// @param protocolId The protocol to withdraw from.
     /// @param amount ETH-equivalent amount to withdraw. Converted to shares proportionally.
-    function withdraw(uint256 protocolId, uint256 amount) external override onlyFund {
+    function withdraw(uint256 protocolId, uint256 amount) external override onlyFund nonReentrant {
         if (amount == 0) revert ZeroAmount();
         if (!protocols[protocolId].exists) revert InvalidProtocol();
 
@@ -265,7 +266,7 @@ contract InvestmentManager is IInvestmentManager {
 
     /// @notice Withdraw all positions across all protocols and send ETH to recipient.
     /// @dev Only callable by the fund contract. Skips protocols with no shares.
-    function withdrawAll(address recipient) external override onlyFund {
+    function withdrawAll(address recipient) external override onlyFund nonReentrant {
         for (uint256 i = 1; i <= protocolCount; i++) {
             Position storage pos = positions[i];
             if (pos.shares == 0 || !protocols[i].exists) continue;
