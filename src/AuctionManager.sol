@@ -53,6 +53,7 @@ contract AuctionManager is IAuctionManager, ReentrancyGuard {
     mapping(address => bool) internal hasRevealed;
     mapping(address => uint256) internal revealedBids;
     address[] internal committers;
+    bytes32 internal saltAccumulator; // XOR of all revealed salts — mixed into randomness seed
 
     // ─── Historical Records ──────────────────────────────────────────────
 
@@ -142,6 +143,7 @@ contract AuctionManager is IAuctionManager, ReentrancyGuard {
 
         hasRevealed[runner] = true;
         revealedBids[runner] = bidAmount;
+        saltAccumulator ^= salt;
         currentRevealCount += 1;
 
         // Update winner if this is the lowest bid (or first reveal)
@@ -167,20 +169,29 @@ contract AuctionManager is IAuctionManager, ReentrancyGuard {
             return (address(0), 0, 0);
         }
 
-        // Enter execution phase
+        // Enter execution phase — seed mixes prevrandao with revealed salts so
+        // neither the block proposer alone nor the last revealer alone can control it.
         currentPhase = AuctionPhase.EXECUTION;
-        currentRandomnessSeed = block.prevrandao;
+        currentRandomnessSeed = uint256(keccak256(abi.encodePacked(block.prevrandao, saltAccumulator)));
         winner = currentWinner;
         winningBid = currentWinningBid;
 
         // Credit bonds to non-winners who revealed (pull-based to prevent griefing).
-        // Non-revealers lose their bond.
+        // Non-revealers lose their bond — sent to fund treasury.
         uint256 bond = currentBondAmount;
+        uint256 unrevealedBonds = 0;
         for (uint256 i = 0; i < committers.length; i++) {
             address r = committers[i];
             if (r != winner && hasRevealed[r]) {
                 claimableBonds[r] += bond;
+            } else if (r != winner) {
+                unrevealedBonds += bond;
             }
+        }
+        // Send unrevealed bonds to fund treasury
+        if (unrevealedBonds > 0) {
+            (bool sent, ) = payable(fund).call{value: unrevealedBonds}("");
+            if (!sent) claimableBonds[fund] += unrevealedBonds;
         }
     }
 
@@ -287,6 +298,7 @@ contract AuctionManager is IAuctionManager, ReentrancyGuard {
         currentBondAmount = 0;
         currentCommitCount = 0;
         currentRevealCount = 0;
+        saltAccumulator = bytes32(0);
         currentWinner = address(0);
         currentWinningBid = 0;
         currentRandomnessSeed = 0;

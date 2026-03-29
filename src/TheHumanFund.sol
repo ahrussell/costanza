@@ -122,6 +122,7 @@ contract TheHumanFund is ReentrancyGuard {
     uint256 public constant MIN_MESSAGE_DONATION = 0.01 ether;  // 10x normal min to prevent spam
     uint256 public constant MAX_MESSAGE_LENGTH = 280;
     uint256 public constant MAX_MESSAGES_PER_EPOCH = 20;
+    uint256 public constant PRICE_STALENESS_THRESHOLD = 3600; // 1 hour
 
     // Note: DCAP verification now handled by the AttestationVerifier contract (see setVerifier)
 
@@ -193,10 +194,7 @@ contract TheHumanFund is ReentrancyGuard {
     // Worldview (separate contract — see WorldView.sol)
     IWorldView public worldView;
 
-    /// @notice SHA-256 hash of the approved system prompt. The TEE must hash
-    ///         the prompt it receives and include it in REPORTDATA. The contract
-    ///         verifies it matches this value. Owner can update to change the prompt.
-    bytes32 public approvedPromptHash;
+    // approvedPromptHash removed — prompt on dm-verity rootfs, verified via image key
 
     // Donor messages
     DonorMessage[] public messages;
@@ -216,7 +214,7 @@ contract TheHumanFund is ReentrancyGuard {
     uint256 public constant FREEZE_WORLDVIEW_WIRING    = 1 << 2;
     uint256 public constant FREEZE_AUCTION_CONFIG      = 1 << 3;
     uint256 public constant FREEZE_VERIFIERS           = 1 << 4;
-    uint256 public constant FREEZE_PROMPT              = 1 << 5;
+    // FREEZE_PROMPT (1 << 5) removed — prompt verified via dm-verity image key
     uint256 public constant FREEZE_DIRECT_MODE         = 1 << 6;
     uint256 public constant FREEZE_EMERGENCY_WITHDRAWAL = 1 << 7;
     uint256 public frozenFlags;
@@ -297,15 +295,15 @@ contract TheHumanFund is ReentrancyGuard {
     function donate(uint256 referralCodeId) external payable nonReentrant {
         if (msg.value < MIN_DONATION_AMOUNT) revert InvalidParams();
 
-        uint256 commission = 0;
-
-        if (referralCodeId > 0 && referralCodes[referralCodeId].exists) {
-            commission = _payCommission(referralCodeId);
-        }
-
+        // State updates BEFORE external call (checks-effects-interactions)
         totalInflows += msg.value;
         currentEpochInflow += msg.value;
         currentEpochDonationCount += 1;
+
+        uint256 commission = 0;
+        if (referralCodeId > 0 && referralCodes[referralCodeId].exists) {
+            commission = _payCommission(referralCodeId);
+        }
 
         emit DonationReceived(msg.sender, msg.value, referralCodeId, commission);
     }
@@ -316,15 +314,15 @@ contract TheHumanFund is ReentrancyGuard {
     function donateWithMessage(uint256 referralCodeId, string calldata message) external payable nonReentrant {
         if (msg.value < MIN_MESSAGE_DONATION) revert InvalidParams();
 
-        // Process donation (same logic as donate)
+        // State updates BEFORE external call (checks-effects-interactions)
+        totalInflows += msg.value;
+        currentEpochInflow += msg.value;
+        currentEpochDonationCount += 1;
+
         uint256 commission = 0;
         if (referralCodeId > 0 && referralCodes[referralCodeId].exists) {
             commission = _payCommission(referralCodeId);
         }
-
-        totalInflows += msg.value;
-        currentEpochInflow += msg.value;
-        currentEpochDonationCount += 1;
 
         // Store message (truncate to MAX_MESSAGE_LENGTH bytes)
         bytes memory msgBytes = bytes(message);
@@ -483,13 +481,7 @@ contract TheHumanFund is ReentrancyGuard {
         auctionManager = IAuctionManager(_am);
     }
 
-    /// @notice Set the approved system prompt hash.
-    /// @dev The TEE hashes the prompt it receives and includes it in REPORTDATA.
-    ///      The contract verifies it matches this value during auction settlement.
-    function setApprovedPromptHash(bytes32 _hash) external onlyOwner {
-        if (frozenFlags & FREEZE_PROMPT != 0) revert Frozen();
-        approvedPromptHash = _hash;
-    }
+    // setApprovedPromptHash removed — prompt verified via dm-verity image key
 
     /// @notice Seed multiple worldview policies at once. Only callable by owner.
     /// @dev Intended for initial setup before the fund goes live.
@@ -667,7 +659,7 @@ contract TheHumanFund is ReentrancyGuard {
             IProofVerifier v = verifiers[verifierId];
             if (address(v) == address(0)) revert InvalidParams();
             bytes32 outputHash = keccak256(abi.encodePacked(
-                sha256(action), sha256(reasoning), approvedPromptHash
+                sha256(action), sha256(reasoning)
             ));
             if (!v.verify{value: msg.value}(epochInputHashes[epoch], outputHash, proof))
                 revert ProofFailed();
@@ -719,9 +711,13 @@ contract TheHumanFund is ReentrancyGuard {
             return;
         }
         try ethUsdFeed.latestRoundData() returns (
-            uint80, int256 answer, uint256, uint256, uint80
+            uint80, int256 answer, uint256, uint256 updatedAt, uint80
         ) {
-            epochEthUsdPrice = answer > 0 ? uint256(answer) : 0;
+            if (answer > 0 && block.timestamp - updatedAt <= PRICE_STALENESS_THRESHOLD) {
+                epochEthUsdPrice = uint256(answer);
+            } else {
+                epochEthUsdPrice = 0;
+            }
         } catch {
             epochEthUsdPrice = 0;
         }
@@ -927,12 +923,20 @@ contract TheHumanFund is ReentrancyGuard {
     }
 
     /// @dev Minimum USDC expected for `ethAmount` wei, with 3% slippage tolerance.
-    ///      Uses the already-snapshotted epochEthUsdPrice. Returns 0 if no price available.
+    ///      Reads FRESH from oracle (not cached epochEthUsdPrice) to prevent stale-price
+    ///      sandwich attacks when execution is hours after epoch start.
     uint256 private constant DONATION_SLIPPAGE_BPS = 300;
     function _minUsdcForDonation(uint256 ethAmount) internal view returns (uint256) {
-        if (epochEthUsdPrice == 0) return 0;
-        uint256 expected = (ethAmount * epochEthUsdPrice) / 1e20;
-        return (expected * (10000 - DONATION_SLIPPAGE_BPS)) / 10000;
+        if (address(ethUsdFeed) == address(0)) return 0;
+        try ethUsdFeed.latestRoundData() returns (
+            uint80, int256 answer, uint256, uint256 updatedAt, uint80
+        ) {
+            if (answer <= 0 || block.timestamp - updatedAt > PRICE_STALENESS_THRESHOLD) return 0;
+            uint256 expected = (ethAmount * uint256(answer)) / 1e20;
+            return (expected * (10000 - DONATION_SLIPPAGE_BPS)) / 10000;
+        } catch {
+            return 0;
+        }
     }
 
     /// @dev Returns false if parameters are out of bounds (action becomes noop).

@@ -33,19 +33,36 @@ class ChainClient:
             address=Web3.to_checksum_address(contract_address),
             abi=load_abi("TheHumanFund"),
         )
+        # Lazy-loaded auction manager contract
+        self._am = None
+
+    @property
+    def am(self):
+        """Auction manager contract (lazy-loaded)."""
+        if self._am is None:
+            am_addr = self.contract.functions.auctionManager().call()
+            self._am = self.w3.eth.contract(
+                address=Web3.to_checksum_address(am_addr),
+                abi=load_abi("AuctionManager"),
+            )
+        return self._am
 
     def get_auction_phase(self):
-        """Get current auction phase (0=IDLE, 1=COMMIT, 2=REVEAL, 3=EXECUTION, 4=SETTLED)."""
+        """Get current auction state from individual AuctionManager getters."""
         epoch = self.contract.functions.currentEpoch().call()
-        state = self.contract.functions.getAuctionState(epoch).call()
+        am = self.am
+        phase = am.functions.getPhase(epoch).call()
+        winner = am.functions.getWinner(epoch).call()
+        winning_bid = am.functions.getWinningBid(epoch).call()
+        bond_amount = am.functions.getBond(epoch).call()
+        seed = am.functions.getRandomnessSeed(epoch).call()
         return {
             "epoch": epoch,
-            "start_time": state[0],
-            "phase": state[1],  # 0=IDLE, 1=COMMIT, 2=REVEAL, 3=EXECUTION, 4=SETTLED
-            "winner": state[2],
-            "winning_bid": state[3],
-            "bond_amount": state[4],
-            "randomness_seed": state[5],
+            "phase": phase,
+            "winner": winner,
+            "winning_bid": winning_bid,
+            "bond_amount": bond_amount,
+            "randomness_seed": seed,
         }
 
     def get_current_bond(self):
@@ -62,22 +79,24 @@ class ChainClient:
 
     def get_eth_usd_price(self):
         """Get the ETH/USD price snapshotted for the current epoch."""
-        epoch = self.contract.functions.currentEpoch().call()
         try:
-            return self.contract.functions.epochEthUsdPrice(epoch).call()
+            return self.contract.functions.epochEthUsdPrice().call()
         except Exception:
-            logger.warning("ETH/USD price fetch failed for epoch %d, using $2000 fallback", epoch, exc_info=True)
+            logger.warning("ETH/USD price fetch failed, using $2000 fallback", exc_info=True)
             return 2000 * 10**8  # fallback: $2000 in 8-decimal format
 
     def read_contract_state(self):
         """Read full contract state for epoch context building.
 
-        Returns a structured dict suitable for input hash computation
-        and epoch context building.
-
-        TODO: Extract full implementation from agent/runner.py
+        Delegates to runner.epoch_state which reads all on-chain data.
         """
-        raise NotImplementedError("Full state reading not yet extracted from runner.py")
+        from .epoch_state import read_contract_state
+        return read_contract_state(self.contract, self.w3)
+
+    def build_contract_state_for_tee(self, state):
+        """Build structured contract state for TEE input hash verification."""
+        from .epoch_state import build_contract_state_for_tee
+        return build_contract_state_for_tee(self.contract, self.w3, state)
 
     def send_tx(self, fn, value=0, gas=None):
         """Build, sign, and send a transaction.

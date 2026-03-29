@@ -470,12 +470,7 @@ contract TheHumanFundTest is Test {
         fund.setAuctionTiming(86400, 3600, 1800, 7200);
     }
 
-    function test_freezePrompt() public {
-        fund.freeze(fund.FREEZE_PROMPT());
-
-        vm.expectRevert(TheHumanFund.Frozen.selector);
-        fund.setApprovedPromptHash(bytes32("hash"));
-    }
+    // test_freezePrompt removed — approvedPromptHash eliminated (dm-verity covers prompt)
 
     function test_freezeEmergencyWithdrawal() public {
         fund.freeze(fund.FREEZE_EMERGENCY_WITHDRAWAL());

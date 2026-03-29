@@ -85,6 +85,8 @@ contract InvestmentManager is IInvestmentManager {
     /// @dev 2000 = 20%. Fund balance must stay >= this % of total assets.
     uint256 public minReserveBps = 2000;
 
+    uint256 public constant MAX_PROTOCOLS = 20;
+
     // Kill switches
     bool public frozenInvestments;
     bool public frozenAdmin;
@@ -126,6 +128,7 @@ contract InvestmentManager is IInvestmentManager {
         uint16 expectedApyBps
     ) external onlyAdmin returns (uint256 protocolId) {
         if (frozenInvestments) revert Frozen();
+        if (protocolCount >= MAX_PROTOCOLS) revert InvalidProtocol();
         protocolId = ++protocolCount;
         protocols[protocolId] = ProtocolInfo({
             adapter: IProtocolAdapter(adapter),
@@ -268,12 +271,13 @@ contract InvestmentManager is IInvestmentManager {
             if (pos.shares == 0 || !protocols[i].exists) continue;
 
             uint256 shares = pos.shares;
-            uint256 ethReturned = protocols[i].adapter.withdraw(shares);
-
-            pos.shares = 0;
-            pos.depositedEth = 0;
-
-            emit Withdrawn(i, shares, ethReturned);
+            try protocols[i].adapter.withdraw(shares) returns (uint256 ethReturned) {
+                pos.shares = 0;
+                pos.depositedEth = 0;
+                emit Withdrawn(i, shares, ethReturned);
+            } catch {
+                // Skip failed adapter — partial withdrawal better than total failure
+            }
         }
 
         // Send all recovered ETH to recipient in a single transfer

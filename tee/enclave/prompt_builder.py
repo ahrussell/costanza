@@ -25,7 +25,8 @@ import re
 RISK_LABELS = {1: "LOW", 2: "MEDIUM", 3: "MEDIUM-HIGH", 4: "HIGH"}
 
 # Characters for dynamic marker generation — avoid common text chars
-_MARKER_ALPHABET = "^~`|"
+# 8 chars with length 5 = 32,768 possible markers (vs prior 4^3 = 64)
+_MARKER_ALPHABET = "^~`|@#$%"
 
 
 # ─── Formatting Helpers ──────────────────────────────────────────────────
@@ -83,7 +84,7 @@ def format_eth_usd(wei_amount, eth_usd_price, feed_decimals=8):
 # The marker is generated dynamically per epoch to prevent attackers from
 # crafting messages that incorporate the marker.
 
-def _generate_marker(seed=None, length=3):
+def _generate_marker(seed=None, length=5):
     """Generate a pseudorandom marker token for datamarking.
 
     Uses a short k-gram from a restricted alphabet, as recommended by the
