@@ -53,7 +53,7 @@ Examples:
         "gcp_zone": os.environ.get("GCP_ZONE", "us-central1-a"),
         "gcp_image": os.environ.get("GCP_IMAGE"),
         "gcp_machine_type": os.environ.get("GCP_MACHINE_TYPE", "a3-highgpu-1g"),
-        "system_prompt_path": os.environ.get("SYSTEM_PROMPT_PATH", "agent/prompts/system_v6.txt"),
+        "system_prompt_path": os.environ.get("SYSTEM_PROMPT_PATH", "prover/prompts/system.txt"),
         "enclave_timeout": int(os.environ.get("ENCLAVE_TIMEOUT", "600")),
         # From CLI
         "ntfy_channel": parsed.ntfy_channel,

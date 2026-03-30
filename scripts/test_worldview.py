@@ -24,7 +24,7 @@ from enclave_runner import parse_action, _extract_json_object
 
 SERVER_URL = os.environ.get("LLAMA_SERVER_URL", "http://localhost:8080")
 
-PROMPT_PATH = os.path.join(os.path.dirname(__file__), "agent", "prompts", "system_v6.txt")
+PROMPT_PATH = os.path.join(os.path.dirname(__file__), "prover", "prompts", "system.txt")
 PROTOCOLS_PATH = os.path.join(os.path.dirname(__file__), "agent", "prompts", "protocols_reference.txt")
 
 def _wei(eth):

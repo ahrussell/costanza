@@ -106,7 +106,7 @@ echo "─── Uploading enclave code ───"
 find "$PROJECT_ROOT/prover/enclave" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
 tar czf /tmp/tee-upload.tar.gz -C "$PROJECT_ROOT" prover/enclave/ prover/prompts/ 2>/dev/null
 vm_scp "/tmp/tee-upload.tar.gz" "/tmp/"
-vm_run "cd /tmp && tar xzf tee-upload.tar.gz && sudo cp -r prover/enclave /opt/humanfund/ && sudo cp prover/prompts/system_v6.txt /opt/humanfund/system_prompt.txt 2>/dev/null || true"
+vm_run "cd /tmp && tar xzf tee-upload.tar.gz && sudo cp -r prover/enclave /opt/humanfund/ && sudo cp prover/prompts/system.txt /opt/humanfund/system_prompt.txt 2>/dev/null || true"
 
 # Only bake SSH key in debug mode — production images must not have SSH keys
 if $ENABLE_SSH; then

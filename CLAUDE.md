@@ -177,7 +177,7 @@ thehumanfund/
 │   │   ├── attestation.py      # TDX quote generation via configfs-tsm
 │   │   └── model_config.py     # Pinned model SHA-256 + verification
 │   ├── prompts/
-│   │   └── system_v6.txt       # System prompt v6 (USD mission, ETH/USD price)
+│   │   └── system.txt          # System prompt (USD mission, ETH/USD price)
 │   └── scripts/                # Prover-specific scripts
 │       ├── e2e_test.py         # Full e2e test on Base Sepolia with TDX attestation
 │       ├── extract_measurements.py  # Low-level RTMR extraction from TDX quote

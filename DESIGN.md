@@ -130,7 +130,7 @@ Hour 24:00 ─ Next epoch begins.
 The auction is a **first-price open-bid reverse auction** conducted on-chain. Provers bid the minimum bounty they'll accept to execute the epoch.
 
 - **Bidding window:** 1 hour after epoch start.
-- **Bid format:** `bid(amount_eth)` — a single transaction specifying the runner's asking price.
+- **Bid format:** `bid(amount_eth)` — a single transaction specifying the prover's asking price.
 - **Bond:** Each bid must include a bond of 20% of the bid amount, sent as ETH with the transaction. Non-winners' bonds are refunded when the auction closes.
 - **Winner selection:** Lowest bid wins. Ties broken by earliest block timestamp.
 - **Maximum bid ceiling:** Set by the agent via `set_max_bid`. Bids above the ceiling are rejected. The ceiling is bounded between 0.0001 ETH and 2% of treasury balance.
@@ -159,16 +159,16 @@ On non-submission (timeout):
 
 ### 6.4 Missed Epochs & Auto-Escalation
 
-If no runner bids during an auction (or all bids exceed the ceiling), the epoch passes with no action. The agent is not harmed — it simply didn't act.
+If no prover bids during an auction (or all bids exceed the ceiling), the epoch passes with no action. The agent is not harmed — it simply didn't act.
 
-**Auto-escalation** is a contract-level mechanism (not an agent decision) that ensures the agent can attract runners in thin markets:
+**Auto-escalation** is a contract-level mechanism (not an agent decision) that ensures the agent can attract provers in thin markets:
 
 - After each consecutive missed epoch, the effective max bid ceiling increases by 10% (compounding).
 - This escalation is automatic and does not consume an agent action.
 - The ceiling resets to the agent's `set_max_bid` value after any successfully executed epoch.
 - The escalated ceiling is capped at 2% of treasury balance (the hard maximum).
 
-Example: if the agent set `max_bid = 0.002 ETH` but no runners bid:
+Example: if the agent set `max_bid = 0.002 ETH` but no provers bid:
 - Epoch N (missed): effective ceiling → 0.0022 ETH
 - Epoch N+1 (missed): effective ceiling → 0.0024 ETH
 - Epoch N+2 (missed): effective ceiling → 0.0027 ETH
@@ -249,7 +249,7 @@ The system's integrity rests on four pillars:
 3. **The contract** provides input integrity (committed hash), output validation (bounded actions), and history integrity (rolling hash).
 4. **The auction** ensures liveness via economic incentives and provides verifiable randomness (prevrandao seed).
 
-The runner is untrusted. They cannot modify the model, the prompt, or the input. They cannot re-roll inference (deterministic seed). They can only choose whether to participate.
+The prover is untrusted. They cannot modify the model, the prompt, or the input. They cannot re-roll inference (deterministic seed). They can only choose whether to participate.
 
 **See SECURITY.md** for the formal security model, threat analysis, proof sketch, and adversarial review passes.
 
@@ -261,9 +261,9 @@ The runner is untrusted. They cannot modify the model, the prompt, or the input.
 - llama.cpp (pinned to specific release tag for reproducible builds)
 - Enclave runner script: accepts epoch context + input hash + seed, runs two-pass inference, computes REPORTDATA, requests TDX attestation quote
 - System prompt (frozen, part of the attested image)
-- Model SHA-256 hash (hardcoded in image, model mounted from disk by runner)
+- Model SHA-256 hash (hardcoded in image, model mounted from disk by prover)
 
-**Model is NOT baked into the image.** The runner mounts the model file at `/models/model.gguf`. The entrypoint script verifies `sha256sum(model) == MODEL_SHA256` (hardcoded in the image, covered by RTMR measurements). This keeps the image small (~500MB) while ensuring model integrity. Runners can cache the model file across epochs.
+**Model is NOT baked into the image.** The prover mounts the model file at `/models/model.gguf`. The entrypoint script verifies `sha256sum(model) == MODEL_SHA256` (hardcoded in the image, covered by RTMR measurements). This keeps the image small (~500MB) while ensuring model integrity. Provers can cache the model file across epochs.
 
 **Image measurement:** MRTD covers the virtual firmware. RTMR[0] covers hardware config. RTMR[1] covers the kernel. RTMR[2] covers the rootfs (which includes the runner script, system prompt, model hash, and llama.cpp binary). Any modification to any file changes the measurements.
 
@@ -279,8 +279,8 @@ mapping(bytes32 => bool) public approvedImages;
 
 Multiple images can be approved simultaneously to support:
 1. **CPU build (14B, TDX only):** Development/testnet. Any TDX-capable Xeon. ~22 min/epoch.
-2. **CPU build (70B, TDX only):** Production CPU runners. ~17 min/epoch.
-3. **GPU build (70B, TDX + NVIDIA CC):** Production GPU runners. ~4 min/epoch.
+2. **CPU build (70B, TDX only):** Production CPU provers. ~17 min/epoch.
+3. **GPU build (70B, TDX + NVIDIA CC):** Production GPU provers. ~4 min/epoch.
 
 Each build produces different RTMR measurements. Different platforms (dstack, Azure, bare-metal) may also produce different MRTD/RTMR[0..1] values for the same application, requiring per-platform entries in the registry. RTMR[3] is NOT verified (platform-specific, instance-specific).
 
@@ -306,14 +306,14 @@ Attestation verification uses a two-contract architecture:
 
 ### 8.5 Verifiable Randomness
 
-LLM inference with temperature > 0 is non-deterministic. To prevent runners from cherry-picking favorable outputs:
+LLM inference with temperature > 0 is non-deterministic. To prevent provers from cherry-picking favorable outputs:
 
 1. `closeAuction()` captures `block.prevrandao` as the randomness seed
 2. The seed is passed to the enclave, which uses it for llama.cpp's RNG (`--seed`)
 3. The seed is included in the REPORTDATA hash, so the contract can verify the enclave used the correct seed
 4. With a fixed seed, inference is deterministic — one input produces exactly one output
 
-`block.prevrandao` is determined by the Ethereum beacon chain validators (on L2s like Base, inherited from L1). The runner cannot predict it at bid time or change it after.
+`block.prevrandao` is determined by the Ethereum beacon chain validators (on L2s like Base, inherited from L1). The prover cannot predict it at bid time or change it after.
 
 ### 8.6 Rolling History Hash
 
@@ -321,11 +321,11 @@ The contract maintains a rolling hash of all epoch reasoning:
 ```
 historyHash = keccak256(historyHash || keccak256(reasoning))
 ```
-This is included in `_computeInputHash()`, binding the model's "memory" to the on-chain commitment. A runner cannot fabricate decision history while keeping the input hash valid.
+This is included in `_computeInputHash()`, binding the model's "memory" to the on-chain commitment. A prover cannot fabricate decision history while keeping the input hash valid.
 
 ### 8.7 Hardware Portability
 
-The verification scheme is platform-agnostic. Only MRTD + RTMR[0..2] are checked (not RTMR[3], which is platform/instance-specific). Runners can execute on any TDX infrastructure:
+The verification scheme is platform-agnostic. Only MRTD + RTMR[0..2] are checked (not RTMR[3], which is platform/instance-specific). Provers can execute on any TDX infrastructure:
 
 - Phala Cloud (dstack, TDX)
 - Any bare-metal TDX server (OVH, Equinix, colocation)
@@ -421,7 +421,7 @@ The prompt creates several genuine dilemmas with no obvious optimal answer:
 
 - **Growth vs. generosity:** Higher commissions attract more referrals but capture less value per donation. Lower commissions capture more but may reduce inflow to zero.
 - **Donate now vs. later:** Donating depletes the treasury (reducing future earning capacity) but fulfills the mission. Hoarding betrays the mission but extends the agent's life.
-- **Survival cost management:** The agent must bid enough for runners to show up, but every ETH spent on bounties is an ETH not donated.
+- **Survival cost management:** The agent must bid enough for provers to show up, but every ETH spent on bounties is an ETH not donated.
 - **ETH/USD awareness:** The agent knows its donations' real-world value fluctuates. Does it donate more when ETH is high (more bang for buck) or when ETH is low (buy low, accumulate)?
 - **Referral concentration risk:** One dominant referrer could disappear, cratering inflows. Diversification of referral sources has value but isn't directly controllable.
 - **Self-narrative continuity:** The agent can see what it "thought" last epoch. It may develop persistent strategies, change its mind, or notice patterns in its own behavior.
@@ -456,7 +456,7 @@ A simple frontend can render the diary as a blog or timeline, with treasury char
 
 ## 11. Cost Economics
 
-### 11.1 Per-Epoch Costs (Runner's Perspective)
+### 11.1 Per-Epoch Costs (Prover's Perspective)
 
 | Component | GPU Build (H100) | CPU Build (70B) |
 |---|---|---|
@@ -469,8 +469,8 @@ A simple frontend can render the diary as a blog or timeline, with treasury char
 ### 11.2 Bounty Economics
 
 The reverse auction drives bounties toward marginal cost. Expected equilibrium:
-- With 3+ GPU runners competing: ~$1.00–$1.50/epoch
-- With only CPU runners: ~$2.50–$3.50/epoch
+- With 3+ GPU provers competing: ~$1.00–$1.50/epoch
+- With only CPU provers: ~$2.50–$3.50/epoch
 
 ### 11.3 Treasury Sustainability
 
@@ -483,7 +483,7 @@ Monthly survival cost at equilibrium bounty levels:
 
 *At ETH ≈ $3,000. Actual costs fluctuate with ETH price since bounties are paid in ETH.
 
-The agent's `set_max_bid` action creates a feedback loop: as treasury shrinks, the agent can lower its bounty ceiling to extend its life, at the risk of losing runners.
+The agent's `set_max_bid` action creates a feedback loop: as treasury shrinks, the agent can lower its bounty ceiling to extend its life, at the risk of losing provers.
 
 ---
 
@@ -501,17 +501,17 @@ The agent's `set_max_bid` action creates a feedback loop: as treasury shrinks, t
 
 | Threat | Mitigation | Status |
 |---|---|---|
-| Runner tampers with inference | MRTD + RTMR[0..2] verify approved image | Implemented |
-| Runner provides false input | REPORTDATA binds `inputHash` from contract | Implemented |
-| Runner tampers with output | REPORTDATA binds `sha256(action) + sha256(reasoning)` | Implemented |
-| Runner cherry-picks outputs | Verifiable randomness seed (`block.prevrandao`) | Implemented |
-| Runner fabricates history | Rolling `historyHash` in `_computeInputHash()` | Implemented |
-| Runner substitutes model | SHA-256 hash baked into image, verified at boot | Implemented |
+| Prover tampers with inference | MRTD + RTMR[0..2] verify approved image | Implemented |
+| Prover provides false input | REPORTDATA binds `inputHash` from contract | Implemented |
+| Prover tampers with output | REPORTDATA binds `sha256(action) + sha256(reasoning)` | Implemented |
+| Prover cherry-picks outputs | Verifiable randomness seed (`block.prevrandao`) | Implemented |
+| Prover fabricates history | Rolling `historyHash` in `_computeInputHash()` | Implemented |
+| Prover substitutes model | SHA-256 hash baked into image, verified at boot | Implemented |
 | Prompt injection (structured fields) | No free-text fields — all structured numeric/address data | By design |
 | Prompt injection (donor messages) | Datamarking spotlighting: whitespace replaced with pseudorandom marker seeded by `block.prevrandao` (Hines et al. 2024) | Implemented |
 | Pathological model output | Hard bounds enforced by contract (10% donation, 1-90% commission, etc.) | By design |
 | Griefing (non-delivery) | 20% bond forfeited, epoch skipped not bricked | By design |
-| All runners disappear | Auto-escalation raises bid ceiling 10%/epoch until runners return | By design |
+| All provers disappear | Auto-escalation raises bid ceiling 10%/epoch until provers return | By design |
 | TEE hardware compromise | Modular verifier interface, multi-platform registry | By design |
 
 ---
@@ -547,14 +547,14 @@ The agent's `set_max_bid` action creates a feedback loop: as treasury shrinks, t
 - [x] Generate a TDX DCAP quote from the enclave. Real 5KB quote returned from hardware.
 - [x] Build the CPU-only 14B image (TDX only, no GPU dependency). Inference at 0.33 tok/s, ~22 min/epoch.
 - [x] Test attestation verification on Base Sepolia using Automata DCAP contracts (end-to-end on-chain).
-- [x] Build the GPU 70B image for production runners.
+- [x] Build the GPU 70B image for production provers.
 
 **Deliverable:** Attested inference running in a TEE, verified on-chain.
 
 **Status:** Enclave image deployed to Phala Cloud (`ghcr.io/ahrussell/humanfund-tee:v3`). Full inference + attestation pipeline tested — real TDX DCAP quote generated. Old `submitEpochActionTEE()` replaced by `submitAuctionResult()` with full MRTD/RTMR/REPORTDATA verification via `TdxVerifier.sol`. Model now mounted from disk (no runtime download). llama.cpp pinned to tag `b5170`. 5 consecutive successful epochs with DeepSeek R1 70B on GCP TDX H100.
 
 **Lessons learned:**
-- 14B model on 16 CPU cores: 0.33 tok/s — functional but slow (~22 min/epoch). Production needs GPU runners.
+- 14B model on 16 CPU cores: 0.33 tok/s — functional but slow (~22 min/epoch). Production needs GPU provers.
 - dstack API: `POST /GetQuote` on `/var/run/dstack.sock` (v0.5.x+). Legacy socket at `/var/run/tappd.sock`.
 - dstack v0.5.x passes report_data verbatim (NO double-hashing — the old v0.3.x tappd API did hash, but that's deprecated).
 - Model mounted from disk + SHA-256 verification is better than runtime download: no network dependency, faster boot, simpler TCB.
@@ -566,12 +566,12 @@ The agent's `set_max_bid` action creates a feedback loop: as treasury shrinks, t
 **Development model:** DeepSeek R1 Distill Qwen 14B Q4_K_M (8.99 GB GGUF, SHA-256: `0b319bd0572f2730bfe11cc751defe82045fad5085b4e60591ac2cd2d9633181`). CPU-only, used for Phase 1 TEE testing on Phala Cloud.
 
 ### Phase 2: Auction + Attestation Verification (Weeks 5–6) ✅ COMPLETE
-**Goal:** Permissionless runner participation with economic incentives and full attestation verification.
+**Goal:** Permissionless prover participation with economic incentives and full attestation verification.
 
 - [x] Implement the reverse auction: bidding, winner selection, bond mechanics, execution window, timeout/forfeiture.
 - [x] Implement auto-escalation for missed epochs (was already in Phase 0; integrated with auction).
 - [x] Configurable timing windows (epochDuration, biddingWindow, executionWindow) for testnet.
-- [x] Input hash commitment at epoch start for runner verification (`computeInputHash()`).
+- [x] Input hash commitment at epoch start for prover verification (`computeInputHash()`).
 - [x] Phase 0 compatibility toggle (`auctionEnabled`).
 - [x] `TdxVerifier.sol` — separate contract for DCAP output parsing, MRTD/RTMR verification, REPORTDATA checking, approved image registry.
 - [x] `submitAuctionResult()` computes expected REPORTDATA and delegates to verifier.
@@ -580,11 +580,11 @@ The agent's `set_max_bid` action creates a feedback loop: as treasury shrinks, t
 - [x] Model mounted from disk, SHA-256 verified at boot (no runtime download).
 - [x] llama.cpp pinned to specific release tag for reproducible builds.
 - [x] 126 tests pass (28 Phase 0 + 34 auction + 12 verifier + 25 investment + 13 worldview + 14 messages).
-- [x] Runner software supports auction mode (bidding, monitoring, `submitAuctionResult`).
+- [x] Prover software supports auction mode (bidding, monitoring, `submitAuctionResult`).
 - [x] Redeploy contract to Base Sepolia with new verifier.
 - [x] Build production TEE image, register RTMR measurements in verifier.
 - [x] End-to-end test with real TDX attestation quote on Base Sepolia.
-- [x] Test with 2–3 independent runner instances on testnet competing for epochs.
+- [x] Test with 2–3 independent prover instances on testnet competing for epochs.
 
 **Deliverable:** Fully permissionless epoch execution with competitive auction and verified attestation.
 
@@ -625,13 +625,13 @@ The agent's `set_max_bid` action creates a feedback loop: as treasury shrinks, t
 - [ ] Deploy to Base mainnet.
 - [ ] Seed the treasury with initial ETH.
 - [ ] Publish the enclave images (GPU and CPU builds) to a public registry (Docker Hub, IPFS, or similar).
-- [ ] Onboard 2–3 initial runners (can be the team initially, with a plan to attract independent runners).
+- [ ] Onboard 2–3 initial provers (can be the team initially, with a plan to attract independent provers).
 - [ ] First mainnet epoch.
 
 **Deliverable:** Live, autonomous agent on Base mainnet.
 
 ### Phase 6: Growth & Hardening (Ongoing)
-- [ ] Attract independent runners (documentation, runner economics guide).
+- [ ] Attract independent provers (documentation, prover economics guide).
 - [ ] Monitor agent behavior and diary quality.
 - [ ] Community building around the diary narrative.
 - [ ] Explore adding ad buying as an action (via AdEx or similar) in v2.
@@ -659,7 +659,7 @@ The agent's `set_max_bid` action creates a feedback loop: as treasury shrinks, t
 
 ## Appendix B: Epoch Context Template
 
-> **Note:** This is a simplified template. The actual implementation is in `agent/runner.py` `build_epoch_context()`.
+> **Note:** This is a simplified template. The actual implementation is in `prover/enclave/prompt_builder.py` `build_epoch_context()`.
 
 ```
 === EPOCH {epoch_number} STATE ===
@@ -683,7 +683,7 @@ Inflows: {total_inflow} ETH ({num_donations} donations)
 Outflows: {total_outflow} ETH
   - Commissions paid: {commissions} ETH
   - Donations made: {donations_out} ETH
-  - Runner bounty: {bounty} ETH (won from {num_bidders} bidders)
+  - Prover bounty: {bounty} ETH (won from {num_bidders} bidders)
 
 --- Referral Codes ---
 Active codes: {active_count}

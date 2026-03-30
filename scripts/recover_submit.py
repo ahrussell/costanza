@@ -90,7 +90,7 @@ def main():
     input_hash_bytes = input_hash_raw if isinstance(input_hash_raw, bytes) else input_hash_raw.to_bytes(32, "big")
     print(f"Contract input hash: 0x{input_hash_bytes.hex()[:16]}...")
 
-    prompt_path = SCRIPT_DIR / "agent" / "prompts" / "system_v6.txt"
+    prompt_path = SCRIPT_DIR / "prover" / "prompts" / "system.txt"
     prompt_hash = hashlib.sha256(prompt_path.read_text().strip().encode("utf-8")).digest()
     output_hash = Web3.keccak(
         hashlib.sha256(action_bytes).digest() +

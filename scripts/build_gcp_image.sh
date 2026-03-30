@@ -269,12 +269,12 @@ vm_run "cd /tmp && tar xzf tee-upload.tar.gz && sudo cp -r tee/enclave /opt/huma
 echo "  Enclave code installed at /opt/humanfund/enclave/"
 
 # Upload system prompt
-if [ -f "$PROJECT_ROOT/agent/prompts/system_v6.txt" ]; then
-    vm_scp "$PROJECT_ROOT/agent/prompts/system_v6.txt" "/tmp/system_prompt.txt"
+if [ -f "$PROJECT_ROOT/prover/prompts/system.txt" ]; then
+    vm_scp "$PROJECT_ROOT/prover/prompts/system.txt" "/tmp/system_prompt.txt"
     vm_run "sudo cp /tmp/system_prompt.txt /opt/humanfund/system_prompt.txt"
     echo "  System prompt installed."
 else
-    echo "  WARNING: System prompt not found at agent/prompts/system_v6.txt"
+    echo "  WARNING: System prompt not found at prover/prompts/system.txt"
 fi
 
 # ─── Step 6: Create systemd service ──────────────────────────────────

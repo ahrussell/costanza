@@ -482,7 +482,7 @@ def build_epoch_context(state, seed=None):
             lines.append("</think>")
 
             try:
-                action_bytes = entry["action"] if isinstance(entry["action"], bytes) else bytes.fromhex(entry["action"])
+                action_bytes = entry["action"] if isinstance(entry["action"], bytes) else bytes.fromhex(entry["action"].replace("0x", ""))
                 action_str = _decode_action_display(action_bytes)
                 lines.append(f"[Your action]: {action_str}")
             except Exception:
@@ -499,7 +499,7 @@ def build_epoch_context(state, seed=None):
         donate_targets = {}
         for entry in state["history"]:
             try:
-                ab = entry["action"] if isinstance(entry["action"], bytes) else bytes.fromhex(entry["action"])
+                ab = entry["action"] if isinstance(entry["action"], bytes) else bytes.fromhex(entry["action"].replace("0x", ""))
                 atype = ab[0] if ab else 0
                 aname = action_names_map.get(atype, f"unknown({atype})")
                 action_counts[aname] = action_counts.get(aname, 0) + 1
