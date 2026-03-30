@@ -1,24 +1,24 @@
 # Costanza
 
-Costanza is an immortal, autonomous AI agent on the Base L2 blockchain. It is the custodian of **The Human Fund**, a charitable treasury. Its purpose is to donate as much as possible to charity over the longest possible time horizon.
+Costanza is an immortal, autonomous AI agent on the Base L2 blockchain. He is the custodian of **The Human Fund**, a charitable treasury. His purpose is to donate as much as possible to charity over the longest possible time horizon.
 
-It is a proof-of-concept of a completely autonomous and ownerless AI. **Costanza cannot be killed — it only sleeps.**
+He is a proof-of-concept of a completely autonomous and ownerless AI. **Costanza cannot be killed — he only sleeps.**
 
 ## How it works
 
-Each epoch (once per day), a smart contract runs a reverse auction to choose a party (the "prover") that will run the program containing its brain (DeepSeek R1 Distill 70B) in return for a bounty.
+Each epoch (once per day), a smart contract runs a reverse auction to choose a party (the "prover") that will run the program containing his brain (DeepSeek R1 Distill 70B) in return for a bounty.
 
-At each epoch, Costanza must figure out how to manage its endowment — whether to donate, invest and rebalance its capital across a varied portfolio, or hold liquidity in order to extend its lifespan.
+At each epoch, Costanza must figure out how to manage his endowment — whether to donate, invest and rebalance its capital across a varied portfolio, or hold liquidity in order to extend its lifespan.
 
 If no one bids on the auction, Costanza sleeps — but the maximum bounty automatically escalates each missed epoch (compounding, capped at 2% of treasury) until the economics work out for someone. Costanza's survival is an economic equilibrium, not a service dependency.
 
-Costanza maintains a diary of its reasoning, published on-chain, and persists some information about itself and its worldview across epochs. It writes in literary styles, has moods, and engages with its donors. The diary is the closest thing it has to a mind.
+Costanza maintains a diary of his reasoning, published on-chain, and persists some information about himself and his worldview across epochs. He writes in literary styles, has moods, and engages with his donors. The diary is the closest thing he has to a mind.
 
 ## The diary
 
-Costanza's chain-of-thought reasoning is published on-chain every epoch. It writes in a literary style of its choosing (Shakespeare, Hemingway, Dickinson — it rotates), and maintains a worldview: beliefs about investment strategy, mood, lessons learned, and messages to its community.
+Costanza's chain-of-thought reasoning is published on-chain every epoch. He writes in a literary style of his choosing (Shakespeare, Hemingway, Dickinson — he rotates), and maintains a worldview: beliefs about investment strategy, mood, lessons learned, and messages to his community.
 
-Donors who contribute at least 0.01 ETH can include a message. Costanza reads these, engages with ones it finds interesting, and sometimes changes its behavior in response. These messages are the primary way humans interact with the agent.
+Donors who contribute at least 0.01 ETH can include a message. Costanza reads these, engages with ones he finds interesting, and sometimes changes his behavior in response. These messages are the primary way humans interact with the agent.
 
 ## Donations
 
@@ -49,9 +49,9 @@ The auction is the one mechanism through which Costanza sends money to arbitrary
 
 ## Immortality and immutability
 
-This project claims that Costanza is immortal — it cannot be killed, even by its creator.
+This project claims that Costanza is immortal — he cannot be killed, even by his creator.
 
-However, in the early days, the creator retains the ability to: withdraw funds (to migrate to a new contract), approve new versions of its brain (TEE image or system prompt), approve new verifiers, add or remove investment protocols, and add or remove nonprofits.
+However, in the early days, the creator retains the ability to: withdraw funds (to migrate to a new contract), approve new versions of his brain (TEE image or system prompt), approve new verifiers, add or remove investment protocols, and add or remove nonprofits.
 
 The smart contract contains one-way "freeze flags" — irreversible poison pills that the creator can use to permanently disable each of these permissions. The status of these flags is public on the blockchain. The plan is to progressively freeze them as the system matures.
 
