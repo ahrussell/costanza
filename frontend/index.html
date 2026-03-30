@@ -448,7 +448,6 @@
   <div class="container">
     <div class="nav-brand">Costanza <span>/ The Human Fund</span></div>
     <div class="nav-controls">
-      <select id="contract-select" class="nav-select" onchange="switchContract(this.value)"></select>
       <a id="contract-link" class="nav-select" style="text-decoration:none;" href="#" target="_blank"></a>
       <div class="nav-status" id="nav-status">
         <span class="dot"></span>
@@ -703,17 +702,7 @@
 // CONFIG
 // ═══════════════════════════════════════════════════════
 
-const DEPLOYMENTS = [
-  { name: 'Phase 3 (Costanza, 6h epochs)', address: '0x69e5844abE8C955f4548Cb574784c7f6a18639f5' },
-  { name: 'Phase 3 (Constanza, 10 epochs)', address: '0xFb2B141857E2e0eDF07E8895C96F9a399Ab741A6' },
-  { name: 'Phase 3 (worldview + investments)', address: '0x724aB4e3032609bbBcA68584202c232eAf35fede' },
-  { name: 'Phase 3 (investments, GPU e2e)', address: '0x2157364dE47aA5A3b7FA21B9E996380f280B8dDF' },
-  { name: 'Phase 2 (CPU e2e verified)', address: '0x9043B54B7E5d2f98Bc12ff10799cf8d5d38c7ab2' },
-  { name: 'Phase 0 (legacy, 21 epochs)', address: '0x2F213Ea0D3F6D8349e2162b37Cc8cE6605dc9420' },
-];
-
-const urlParams = new URLSearchParams(window.location.search);
-const CONTRACT_ADDRESS = urlParams.get('contract') || DEPLOYMENTS[0].address;
+const CONTRACT_ADDRESS = '0x69e5844abE8C955f4548Cb574784c7f6a18639f5';
 const RPC_URL = 'https://sepolia.base.org';
 const EXPLORER = 'https://sepolia.basescan.org';
 
@@ -1445,10 +1434,6 @@ async function loadEvents() {
 // INIT
 // ═══════════════════════════════════════════════════════
 
-function switchContract(addr) {
-  window.location.search = '?contract=' + addr;
-}
-
 async function refresh() {
   const status = document.getElementById('nav-status');
   const statusText = document.getElementById('status-text');
@@ -1469,23 +1454,6 @@ async function init() {
   try {
     provider = new ethers.JsonRpcProvider(RPC_URL);
     fund = new ethers.Contract(CONTRACT_ADDRESS, FUND_ABI, provider);
-
-    // Populate selector
-    const select = document.getElementById('contract-select');
-    DEPLOYMENTS.forEach(d => {
-      const opt = document.createElement('option');
-      opt.value = d.address;
-      opt.textContent = d.name;
-      if (d.address.toLowerCase() === CONTRACT_ADDRESS.toLowerCase()) opt.selected = true;
-      select.appendChild(opt);
-    });
-    if (!DEPLOYMENTS.some(d => d.address.toLowerCase() === CONTRACT_ADDRESS.toLowerCase())) {
-      const opt = document.createElement('option');
-      opt.value = CONTRACT_ADDRESS;
-      opt.textContent = 'Custom: ' + CONTRACT_ADDRESS.slice(0, 10) + '...';
-      opt.selected = true;
-      select.appendChild(opt);
-    }
 
     document.getElementById('contract-link').textContent = fmtAddr(CONTRACT_ADDRESS);
     document.getElementById('contract-link').href = `${EXPLORER}/address/${CONTRACT_ADDRESS}`;
