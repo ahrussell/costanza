@@ -77,7 +77,8 @@ class GCPTEEClient(TEEClient):
                 f"--maintenance-policy=TERMINATE "
                 f"--provisioning-model=SPOT "
                 f"--instance-termination-action=DELETE "
-                f"--metadata-from-file=epoch-state={metadata_file}",
+                f"--metadata-from-file=epoch-state={metadata_file} "
+                f"--scopes=https://www.googleapis.com/auth/compute.readonly",
                 timeout=180,
             )
         finally:
