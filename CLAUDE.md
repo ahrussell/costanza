@@ -22,7 +22,8 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 - Contract sizes: TheHumanFund ~24.0KB (20B margin, optimizer enabled), TdxVerifier ~2.5KB, InvestmentManager ~8.1KB, WorldView ~2.5KB, AuctionManager ~7.3KB
 - GCP TDX FMSPC `00806f050000` registered in Automata DCAP Dashboard
 - CPU image key (c3-standard-4): `0x1ff10986...` — approved
-- GPU image key (a3-highgpu-1g, H100): `0xababa83b...` — approved
+- GPU image key (a3-highgpu-1g, H100): `0xff11715b...` — approved (v7)
+- **Note**: H100 on-demand quota is 0; all GPU VMs use `--provisioning-model=SPOT`
 - **E2E gas costs**: deployment ~5.1M, DCAP verification ~10-12M (15M limit recommended)
 - **GPU inference**: ~15.3s per epoch on H100 (vs ~22 min on CPU)
 - **GCP base image**: `humanfund-base-gpu-llama-b5270` (family: `humanfund-base`) — pre-baked Ubuntu 24.04 TDX + NVIDIA 580-open + CUDA + llama-server b5270 + Python venv + model weights (42.5GB). Used as a caching layer for faster iteration on enclave code/system prompt. Rebuild when llama.cpp/NVIDIA/Ubuntu versions change.
