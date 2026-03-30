@@ -6,6 +6,7 @@ broadcast/
 # Environment / secrets
 .env
 .env.*
+!.env.example
 
 # Agent results (large, regeneratable)
 agent/results/

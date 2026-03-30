@@ -48,7 +48,7 @@ def get_tee_client(config):
         return GCPTEEClient(
             project=config["gcp_project"],
             zone=config["gcp_zone"],
-            image=config["gcp_snapshot"],
+            image=config["gcp_image"],
             machine_type="a3-highgpu-1g",
             inference_timeout=config.get("enclave_timeout", 900),
         )
@@ -57,7 +57,7 @@ def get_tee_client(config):
         return GCPTEEClient(
             project=config["gcp_project"],
             zone=config["gcp_zone"],
-            image=config.get("gcp_snapshot_cpu", "humanfund-tee-cpu-70b"),
+            image=config.get("gcp_image"),
             machine_type="c3-standard-4",
             inference_timeout=config.get("enclave_timeout", 1800),
         )

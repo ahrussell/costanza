@@ -95,7 +95,8 @@ def main():
     parser.add_argument("--expected-image-key", help="Expected image key (0x...)")
     parser.add_argument("--contract", help="TheHumanFund contract address")
     parser.add_argument("--verifier", help="TdxVerifier contract address")
-    parser.add_argument("--rpc-url", default="https://sepolia.base.org", help="RPC URL")
+    parser.add_argument("--rpc-url", default=os.environ.get("RPC_URL"),
+                        help="Base RPC URL (env: RPC_URL)")
     args = parser.parse_args()
 
     print(f"═══ Verifying RTMR Measurements ═══")

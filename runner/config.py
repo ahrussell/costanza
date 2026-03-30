@@ -47,14 +47,13 @@ Examples:
     # Load required env vars
     config = {
         "private_key": os.environ.get("PRIVATE_KEY"),
-        "rpc_url": os.environ.get("RPC_URL", "https://sepolia.base.org"),
+        "rpc_url": os.environ.get("RPC_URL"),
         "contract_address": os.environ.get("CONTRACT_ADDRESS"),
         "gcp_project": os.environ.get("GCP_PROJECT"),
         "gcp_zone": os.environ.get("GCP_ZONE", "us-central1-a"),
-        "gcp_snapshot": os.environ.get("GCP_SNAPSHOT", "humanfund-dmverity-gpu-v3"),
+        "gcp_image": os.environ.get("GCP_IMAGE"),
         "gcp_machine_type": os.environ.get("GCP_MACHINE_TYPE", "a3-highgpu-1g"),
         "system_prompt_path": os.environ.get("SYSTEM_PROMPT_PATH", "agent/prompts/system_v6.txt"),
-        # Enclave readiness timeout (Docker startup may be slower on first boot)
         "enclave_timeout": int(os.environ.get("ENCLAVE_TIMEOUT", "600")),
         # From CLI
         "ntfy_channel": parsed.ntfy_channel,
@@ -72,6 +71,8 @@ Examples:
     missing = []
     if not config["private_key"]:
         missing.append("PRIVATE_KEY")
+    if not config["rpc_url"]:
+        missing.append("RPC_URL")
     if not config["contract_address"]:
         missing.append("CONTRACT_ADDRESS")
     if missing:

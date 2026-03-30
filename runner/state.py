@@ -56,10 +56,10 @@ def save(state, state_dir=DEFAULT_STATE_DIR):
     # Atomic write: write to temp file, then rename
     fd, tmp_path = tempfile.mkstemp(dir=state_dir, suffix=".tmp")
     try:
+        os.fchmod(fd, 0o600)  # Set permissions before writing any data
         with os.fdopen(fd, "w") as f:
             json.dump(state, f, indent=2)
         os.rename(tmp_path, state_file)
-        os.chmod(state_file, 0o600)
     except Exception:
         try:
             os.unlink(tmp_path)

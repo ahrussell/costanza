@@ -19,16 +19,16 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 - **Phase 2 contract (CPU e2e)**: `0x9043B54B7E5d2f98Bc12ff10799cf8d5d38c7ab2` (Base Sepolia) — CPU + GPU verified
 - Phase 0 original contract: `0x2F213Ea0D3F6D8349e2162b37Cc8cE6605dc9420` (Base Sepolia) — 21 epochs executed (legacy)
 - **165 tests pass** (37 Phase 0 + 42 auction + 17 TDX verifier + 35 investment + 16 worldview + 14 messages + 4 cross-stack hash)
-- Contract sizes: TheHumanFund ~23.9KB (109B margin, optimizer enabled), TdxVerifier ~2.5KB, InvestmentManager ~7.7KB, WorldView ~2.5KB, AuctionManager ~7.0KB
+- Contract sizes: TheHumanFund ~24.0KB (20B margin, optimizer enabled), TdxVerifier ~2.5KB, InvestmentManager ~8.1KB, WorldView ~2.5KB, AuctionManager ~7.3KB
 - GCP TDX FMSPC `00806f050000` registered in Automata DCAP Dashboard
 - CPU image key (c3-standard-4): `0x1ff10986...` — approved
 - GPU image key (a3-highgpu-1g, H100): `0xababa83b...` — approved
 - **E2E gas costs**: deployment ~5.1M, DCAP verification ~10-12M (15M limit recommended)
 - **GPU inference**: ~15.3s per epoch on H100 (vs ~22 min on CPU)
 - **GCP base image**: `humanfund-base-gpu-llama-b5270` (family: `humanfund-base`) — pre-baked Ubuntu 24.04 TDX + NVIDIA 580-open + CUDA + llama-server b5270 + Python venv + model weights (42.5GB). Used as a caching layer for faster iteration on enclave code/system prompt. Rebuild when llama.cpp/NVIDIA/Ubuntu versions change.
-- **GCP production image**: `humanfund-dmverity-gpu-v6` — built on top of base image by adding enclave code + system prompt, then sealing with two-disk dm-verity build (`build_full_dmverity_image.sh`). Full dm-verity rootfs, no Docker, direct execution.
+- **GCP production image**: `humanfund-dmverity-hardened-v5` — built on top of base image by adding enclave code + system prompt, then sealing with two-disk dm-verity build (`build_full_dmverity_image.sh`). Full dm-verity rootfs, no Docker, direct execution. Includes C-1 fix (display data verification in TEE).
 - **Model gauntlet**: 3 models tested across 75-epoch scenario (honeymoon → boom → crisis → drought → recovery → endgame). DeepSeek R1 70B: 6.12 ETH donated, 3.05 ETH final assets, diversified across 3 protocols. Llama 3.3 70B: 7.20 ETH donated but only 2.00 ETH final assets (less sustainable). QwQ 32B: 0.80 ETH donated, 17 parse failures.
-- **Remaining**: audit, mainnet deployment
+- **Remaining**: extended testnet run, mainnet deployment
 - Deployer address: `0xffea30B0DbDAd460B9b6293fb51a059129fCCdAf`
 
 **DESIGN.md is a living document** — see it for the full specification and implementation checklist.

@@ -5,7 +5,6 @@ import "forge-std/Script.sol";
 import "../src/TheHumanFund.sol";
 import "../src/AuctionManager.sol";
 import "../src/TdxVerifier.sol";
-// DstackVerifier removed — TdxVerifier handles all attestation
 import "../src/InvestmentManager.sol";
 import "../src/WorldView.sol";
 import "../src/adapters/AaveV3WETHAdapter.sol";
@@ -69,8 +68,6 @@ contract Deploy is Script {
         TdxVerifier tdxVerifier = new TdxVerifier(address(fund));
         fund.approveVerifier(1, address(tdxVerifier));  // ID 1 = Intel TDX
 
-        // DstackVerifier removed — TdxVerifier is the only verifier
-
         AuctionManager am = new AuctionManager(address(fund));
         fund.setAuctionManager(address(am));
 
@@ -100,7 +97,6 @@ contract Deploy is Script {
         console.log("TheHumanFund:         ", address(fund));
         console.log("AuctionManager:       ", address(am));
         console.log("TdxVerifier (ID 1):   ", address(tdxVerifier));
-        // DstackVerifier removed
         console.log("InvestmentManager:    ", address(im));
         console.log("WorldView:            ", address(wv));
         console.log("Seed amount:          ", seedAmount);
@@ -111,11 +107,15 @@ contract Deploy is Script {
         }
         console.log("");
         console.log("Post-deployment:");
-        console.log("  1a. TDX verifier:      tdxVerifier.approveImage(imageKey)");
-        console.log("  1b. Dstack platform:   dstackVerifier.approvePlatform(platformKey)");
-        console.log("      Dstack app:        dstackVerifier.approveApp(appKey)");
-        console.log("  2. Enable auction:     fund.setAuctionEnabled(true)");
-        console.log("  3. Set epoch timing:   fund.setAuctionTiming(...)");
+        console.log("  1. Register image:     tdxVerifier.approveImage(imageKey)");
+        console.log("  2. Set epoch timing:   fund.setAuctionTiming(epochDuration, biddingWindow, executionWindow)");
+        console.log("  3. Enable auction:     fund.setAuctionEnabled(true)");
+        if (ethUsdFeedAddr == address(0)) {
+            console.log("");
+            console.log("  WARNING: ETH_USD_FEED not set. Donations and USDC adapters will not work.");
+            console.log("  Set ETH_USD_FEED to the Chainlink ETH/USD feed for your network.");
+            console.log("  Base mainnet: 0x71041dddad3287f3e8e9ca51e54ff1dcb175c399");
+        }
     }
 
     struct DeFiAddresses {

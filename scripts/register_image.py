@@ -89,11 +89,14 @@ def main():
     parser.add_argument("--vm-name", required=True, help="Running GCP TDX VM to extract measurements from")
     parser.add_argument("--verifier", required=True, help="TdxVerifier contract address")
     parser.add_argument("--zone", default="us-central1-a", help="GCP zone")
-    parser.add_argument("--rpc-url", default=os.environ.get("RPC_URL", "https://sepolia.base.org"))
+    parser.add_argument("--rpc-url", default=os.environ.get("RPC_URL"),
+                        help="Base RPC URL (env: RPC_URL)")
     parser.add_argument("--private-key", default=os.environ.get("PRIVATE_KEY"),
                         help="Private key for signing (env: PRIVATE_KEY)")
     args = parser.parse_args()
 
+    if not args.rpc_url:
+        parser.error("--rpc-url or RPC_URL env var required")
     if not args.private_key:
         parser.error("--private-key or PRIVATE_KEY env var required")
 
