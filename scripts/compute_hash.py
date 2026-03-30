@@ -13,7 +13,7 @@ from pathlib import Path
 # Add project root to path so we can import the enclave module
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from tee.enclave.input_hash import compute_input_hash
+from prover.enclave.input_hash import compute_input_hash
 
 
 def main():

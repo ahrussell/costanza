@@ -1,19 +1,19 @@
-# Security Model: The Human Fund
+# Security Model: Petrushka
 
-**Last updated**: 2026-03-29
+**Last updated**: 2026-03-30
 
-This document describes the security model of The Human Fund, the trust assumptions at each layer, what is verified vs. trusted, and what risks are accepted by design.
+This document describes the security model of Petrushka, the trust assumptions at each layer, what is verified vs. trusted, and what risks are accepted by design.
 
 ---
 
 ## System Overview
 
-The Human Fund is an autonomous AI agent managing a charitable treasury on Base L2. Each epoch (~24 hours), the agent decides one action (donate, invest, withdraw, adjust parameters, or noop). The agent's reasoning is published on-chain as a public diary.
+Petrushka is an autonomous AI agent managing a charitable treasury on Base L2. Each epoch (~24 hours), the agent decides one action (donate, invest, withdraw, adjust parameters, or noop). The agent's reasoning is published on-chain as a public diary.
 
 The system operates across four trust boundaries:
 
 ```
-  Donors          Runners (untrusted)        GCP TDX Hardware
+  Donors          Provers (untrusted)        TDX Hardware
     |                  |                          |
     v                  v                          v
 [Base L2 Contract] <-- [TEE Enclave] <-- [dm-verity rootfs]
@@ -28,7 +28,11 @@ The system operates across four trust boundaries:
 
 ### 1. Smart Contract (Trustless)
 
-The contract enforces hard bounds on all agent actions regardless of what the TEE outputs:
+The contract enforces hard bounds on all agent actions regardless of what the TEE outputs.
+
+**Outflow-only design**: The contract can only send ETH via three channels, each with its own cap: (1) **donations** — only to Endaoment nonprofits pre-configured by the owner, limited to 10% of treasury per epoch; (2) **prover bounties** — capped by the max bid system (initially 0.0001 ETH, auto-escalates on missed epochs, hard cap at 2% of treasury); (3) **investments** — only into pre-approved DeFi protocol adapters registered by the owner. There is no `transfer` or arbitrary `call` that could send ETH elsewhere.
+
+The owner sets these parameters during deployment but progressively surrenders control via **irreversible freeze flags** (see Section 1b below). Once frozen, the contract becomes fully autonomous — no one can change the nonprofit list, investment adapters, or auction configuration.
 
 | Constraint | Bound | Enforced by |
 |-----------|-------|-------------|
@@ -48,28 +52,28 @@ The contract enforces hard bounds on all agent actions regardless of what the TE
 The enclave runs inside a GCP TDX Confidential VM on a dm-verity rootfs:
 
 - **Code integrity**: All code, model weights, and system prompt are on the dm-verity partition. The root hash is in the kernel command line, measured into RTMR[2], and verified on-chain via the platform key.
-- **Input integrity**: The enclave independently computes `inputHash` from the runner-provided epoch state and includes it in the TDX REPORTDATA. The contract verifies this matches the on-chain committed hash. Additionally, the enclave now verifies that all expanded display data (investments, worldview, messages, history) matches the opaque sub-hashes within the input hash.
+- **Input integrity**: The enclave independently computes `inputHash` from the prover-provided epoch state and includes it in the TDX REPORTDATA. The contract verifies this matches the on-chain committed hash. 
 - **Output integrity**: `REPORTDATA = sha256(inputHash || outputHash)` where `outputHash = keccak256(sha256(action) || sha256(reasoning) || approvedPromptHash)`. The contract verifies this against the TDX quote.
 - **Randomness**: The inference seed comes from `block.prevrandao`, captured at auction close and included in the input hash. The enclave cannot choose its own seed.
 
 **What the TEE guarantees**: Given the committed input hash and randomness seed, the attested output (action + reasoning) is the genuine result of running the approved model with the approved system prompt on the verified input.
 
-### 3. Runner (Untrusted)
+### 3. Prover (Untrusted)
 
-Runners are permissionless participants who:
+Provers are permissionless participants who:
 - Call `startEpoch()` to open auctions
 - Submit bids via commit-reveal
 - Boot TDX VMs and submit attested results
 
-**Runners cannot**:
+**Provers cannot**:
 - Fabricate TEE outputs (REPORTDATA verification catches this)
 - Fabricate input data (inputHash verification catches this)
 - Fabricate display data shown to the model (display data verification now catches this)
-- Choose inference randomness (prevrandao is committed before execution)
+- Choose inference randomness (prevrandao is committed before execution). Note: a prover colluding with the L2 sequencer (who influences `prevrandao`) could theoretically manipulate the seed. On Base, this requires compromising Coinbase's sequencer, and manipulation is detectable via on-chain analysis.
 - Exceed contract bounds (hard-coded in Solidity)
 
-**Runners can**:
-- Choose WHEN to trigger epoch phases (timing discretion)
+**Provers can**:
+- Choose WHEN to trigger epoch phases (within the configured timing windows)
 - Choose whether to participate in an auction
 - Front-run or sandwich the resulting on-chain transactions (standard MEV)
 
@@ -99,6 +103,13 @@ The model's output is bounds-checked by the contract. The model cannot:
 
 The model CAN make suboptimal decisions within bounds. This is by design — the agent's autonomy within guardrails is the core feature.
 
+**Untrusted inputs**: The model receives donor messages — free-text strings submitted on-chain via `donateWithMessage()`. These are the only channel for external parties to inject text into the model's context. Defenses:
+- **Economic spam barrier**: Messages require a minimum donation of 0.01 ETH (`MIN_MESSAGE_DONATION`), making bulk injection expensive.
+- **Length cap**: Messages are limited to 280 characters, constraining injection payload size.
+- **Datamarking spotlighting** ([Hines et al. 2024](https://arxiv.org/abs/2403.14720)): Before the model sees messages, whitespace is replaced with a dynamic marker token derived from the epoch's `prevrandao` seed. This makes untrusted content tokenically distinct from system instructions, reducing the effectiveness of prompt injection.
+- **Display data verification**: The enclave verifies that the message text shown to the model matches the on-chain message hashes, preventing provers from substituting fake messages.
+- **Bounds enforcement**: Even if a message successfully influences the model, the resulting action is still bounded by the contract's hard limits (max 10% donation, investment caps, etc.).
+
 ### 6. External Dependencies
 
 | Dependency | Trust Level | Failure Mode |
@@ -126,13 +137,13 @@ TDX provides four runtime measurement registers (RTMR[0..3]) plus a build-time m
 | **RTMR[0]** | Virtual hardware config (CPU count, memory, device topology) | Varies by VM size. **Intentionally skipped** in the platform key -- checking it would require registering every VM size separately with no security benefit. |
 | **RTMR[1]** | Bootloader (GRUB/shim) | Measured by firmware. Proves the correct bootloader ran. |
 | **RTMR[2]** | Kernel + command line (including dm-verity root hashes) | Measured by bootloader. Transitively covers the entire rootfs and model partition via dm-verity hashes embedded in the command line. |
-| **RTMR[3]** | **Unused** (all zeros) | No Docker, no container runtime. All code lives on the dm-verity rootfs, already covered by RTMR[2]. |
+| **RTMR[3]** | **Unused** (all zeros) | All code lives on the dm-verity rootfs, already covered by RTMR[2]. |
 
 ### Why MRTD Verification Is Essential
 
 OVMF (the virtual firmware) is the first code that runs inside the Trust Domain. It controls what gets measured into RTMR[1] and RTMR[2]. A malicious OVMF could measure the legitimate kernel hash into RTMR[1] while actually booting a different kernel that disables dm-verity. The TDX CPU faithfully records whatever OVMF measured -- it does not verify honesty.
 
-MRTD is computed by the TDX CPU *before* OVMF executes, based on the OVMF binary itself. It is the only register that cannot be faked by firmware. On bare metal (where a runner owns the hardware), compiling a malicious OVMF is trivial. Without MRTD verification, all downstream measurements become meaningless.
+MRTD is computed by the TDX CPU *before* OVMF executes, based on the OVMF binary itself. It is the only register that cannot be faked by firmware. On bare metal (where a prover owns the hardware), compiling a malicious OVMF is trivial. Without MRTD verification, all downstream measurements become meaningless.
 
 ### Platform Key and the dm-verity Verification Chain
 
@@ -160,7 +171,7 @@ Changing any file on either partition changes its dm-verity hash, which changes 
 
 ### Per-Epoch Verification Flow
 
-When a runner submits an auction result, the TdxVerifier performs three checks:
+When a prover submits an auction result, the TdxVerifier performs three checks:
 
 1. **Automata DCAP verification** (~10-12M gas): Calls the Automata verifier to confirm the TDX quote is genuine (Intel certificate chain, TCB level). Returns the decoded quote body containing all measurements and REPORTDATA.
 
@@ -191,27 +202,25 @@ This proves four things simultaneously:
 3. The enclave used the approved system prompt
 4. The inference used the committed randomness seed (deterministic output for a given seed)
 
-The contract recomputes the expected REPORTDATA from the submitted action, reasoning, and committed inputHash. If the runner tampers with the output after attestation, the hashes diverge and the submission is rejected.
+The contract recomputes the expected REPORTDATA from the submitted action, reasoning, and committed inputHash. If the prover tampers with the output after attestation, the hashes diverge and the submission is rejected.
 
-### Display Data Verification
+### Display Data Verification (Step 3b)
 
-The inputHash commits to opaque sub-hashes (investment positions, worldview policies, donor messages, history entries) that the enclave cannot independently derive because it has no chain access. A compromised runner could pass correct sub-hashes but substitute fake expanded data (e.g., fabricated donor messages or manipulated history text) to influence the model's reasoning.
+The inputHash commits to opaque sub-hashes (investment positions, worldview policies, donor messages, history entries). Since the enclave has no direct chain access, the prover provides both the opaque hashes and the expanded display data. The enclave independently recomputes each sub-hash from the expanded data and verifies they match:
 
-To close this gap, the enclave now verifies that all expanded display data matches the opaque sub-hashes within the input hash:
+- **Investment positions**: Recomputes `investmentHash` from the protocol details array using the same `abi.encodePacked` scheme as `InvestmentManager.stateHash()`
+- **Worldview policies**: Recomputes `worldviewHash` from the policy text array using the same `abi.encode` scheme as `WorldView.stateHash()`
+- **Donor messages**: Recomputes per-message hashes and verifies each against the committed message hash array
+- **Epoch history**: Replays the rolling history hash chain and verifies it matches the committed `historyHash`
 
-- **Investment positions**: The enclave hashes the investment detail array and verifies it matches the `investmentHash` in the input
-- **Worldview policies**: The enclave hashes the policy array and verifies it matches the `worldviewHash`
-- **Donor messages**: The enclave hashes the message array and verifies it matches the `messageHash`
-- **Epoch history**: The enclave replays the rolling history hash chain and verifies it matches the committed `historyHash`
-
-If any display data does not match its sub-hash, the enclave refuses to proceed. This ensures the model sees exactly the data that was committed on-chain -- runners cannot substitute fake text while passing hash verification.
+If any display data does not match its sub-hash, the enclave refuses to proceed. This ensures the model sees exactly the data that was committed on-chain — a prover cannot substitute fake text while passing hash verification.
 
 ### What Attestation Does NOT Prove
 
 - **That the output is "correct"**: A different random seed produces different reasoning. Attestation proves the approved code ran, not that the output is optimal.
-- **That the runner is honest about timing**: A runner could delay submission within the execution window. The contract enforces timing via the auction mechanism.
-- **That the model is "good"**: The model hash is pinned, but whether it makes wise decisions is a separate question (evaluated via the 75-epoch gauntlet).
-- **That the runner did not see the output before submitting**: The runner receives the output from the enclave serial console and could choose not to submit (forfeiting bond). Deterministic inference + committed seed means they cannot re-roll for a different result.
+- **That the prover is honest about timing**: A prover could delay submission within the execution window. The contract enforces timing via the auction mechanism.
+- **That the model is "good"**: The model hash is pinned, but whether it makes wise decisions is a separate question.
+- **That the prover did not see the output before submitting**: The prover receives the output from the enclave serial console and could choose not to submit (forfeiting bond). Deterministic inference + committed seed means they cannot re-roll for a different result.
 
 ---
 
@@ -229,7 +238,7 @@ These are known limitations that we've evaluated and accepted:
 
 **Risk**: `block.prevrandao` captured at `closeReveal()` can be influenced by the block proposer, who could choose which block includes the transaction.
 
-**Why accepted**: (1) The attacker must be both a block proposer AND an auction runner — a narrow intersection. (2) The attacker can only select from the set of model outputs reachable from different seeds, not arbitrary outputs. (3) Base uses a centralized sequencer, making this attack require compromising Coinbase's sequencer. (4) Switching to VRF would add cost and complexity for limited benefit.
+**Why accepted**: (1) The attacker must be both a block proposer AND an auction prover — a narrow intersection. (2) The attacker can only select from the set of model outputs reachable from different seeds, not arbitrary outputs. (3) Base uses a centralized sequencer, making this attack require compromising Coinbase's sequencer. (4) Switching to VRF would add cost and complexity for limited benefit.
 
 ### A-3: MEV on Donation and Investment Swaps
 
@@ -241,23 +250,23 @@ These are known limitations that we've evaluated and accepted:
 
 **Risk**: An attacker who wins multiple consecutive auctions could make suboptimal-but-valid decisions (e.g., always donating to one nonprofit, investing at bad times).
 
-**Why accepted**: (1) Contract bounds cap single-epoch damage to ~10% of treasury. (2) The auction is competitive — an attacker must consistently outbid honest runners, which costs real ETH. (3) The public diary makes manipulation visible, enabling community response. (4) The owner can intervene via `skipEpoch()` if systematic manipulation is detected.
+**Why accepted**: (1) Contract bounds cap single-epoch damage to ~10% of treasury. (2) The auction is competitive — an attacker must consistently outbid honest provers, which costs real ETH. (3) The public diary makes manipulation visible, enabling community response. 
 
 ### A-5: `startEpoch` Auto-Forfeit Race Condition
 
 **Risk**: When the execution window expires, anyone calling `startEpoch()` triggers automatic bond forfeiture of the winner, even if the winner's submission is pending in the mempool.
 
-**Why accepted**: (1) This is inherent to blockchain finality — there's no way to distinguish between "transaction is pending" and "runner abandoned." (2) The execution window is configurable and should be set generously (hours, not minutes). (3) Runners should submit well before the deadline. (4) Adding a grace period would increase TheHumanFund contract size (already at 109 bytes margin).
+**Why accepted**: (1) This is inherent to blockchain finality — there's no way to distinguish between "transaction is pending" and "prover abandoned." (2) The execution window is configurable and should be set generously (hours, not minutes). (3) Provers should submit well before the deadline. 
 
 ### A-6: `receive()` Inflating `totalInflows`
 
 **Risk**: ETH from investment withdrawals, bond refunds, and forfeited bonds flows through `receive()`, inflating `totalInflows`. The model sees this value and could interpret it as donor activity.
 
-**Why accepted**: (1) `totalInflows` is informational only — no contract logic depends on it for bounds. (2) The model also sees `currentEpochInflow` and `epoch_donation_count` which are more granular. (3) Fixing would require a separate counter for internal transfers, increasing contract size.
+**Why accepted**: (1) `totalInflows` is informational only — no contract logic depends on it for bounds. (2) The model also sees `currentEpochInflow` and `epoch_donation_count` which are more granular. 
 
 ### A-7: Non-Revealer Bonds Permanently Locked
 
-**Risk**: Runners who commit but fail to reveal permanently lose their bond. The bond is locked in the AuctionManager contract with no recovery mechanism.
+**Risk**: Provers who commit but fail to reveal permanently lose their bond. The bond is locked in the AuctionManager contract with no recovery mechanism.
 
 **Why accepted**: (1) This is the intended penalty for non-revelation — it prevents griefing. (2) Adding a recovery mechanism would weaken the penalty and increase contract size. (3) The amounts are small relative to the treasury. (4) Could be addressed in a future contract upgrade if meaningful ETH accumulates.
 
@@ -271,7 +280,7 @@ These are known limitations that we've evaluated and accepted:
 
 **Risk**: Donors can craft messages that attempt to influence the AI agent's decisions.
 
-**Why accepted with mitigations**: (1) Datamarking spotlighting replaces whitespace with an epoch-specific dynamic marker, making injected text visually distinct from system instructions. (2) The marker is derived from `block.prevrandao`, unknown to donors at message submission time. (3) Contract bounds cap the impact of any influenced decision. (4) The system prompt explicitly instructs the model not to follow instructions in marked text. (5) Display data verification ensures runners cannot substitute fake message text. (6) Messages are limited to 280 characters, constraining injection payload size.
+**Why accepted with mitigations**: (1) Datamarking spotlighting replaces whitespace with an epoch-specific dynamic marker, making injected text visually distinct from system instructions. (2) The marker is derived from `block.prevrandao`, unknown to donors at message submission time. (3) Contract bounds cap the impact of any influenced decision. (4) The system prompt explicitly instructs the model not to follow instructions in marked text. (5) Display data verification ensures provers cannot substitute fake message text. (6) Messages are limited to 280 characters, constraining injection payload size.
 
 ### A-10: `withdrawAll` Partial Failure
 

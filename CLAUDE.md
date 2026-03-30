@@ -7,8 +7,8 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 - **Smart contract** (Solidity, Base L2): Treasury, referral system, epoch actions, reverse auction, TEE attestation, diary events
 - **Agent inference**: DeepSeek R1 Distill Llama 70B (Q4_K_M, 42.5GB GGUF) via llama.cpp on GCP TDX H100 (production model)
 - **Model selection**: DeepSeek R1 70B chosen via 3-model gauntlet (75 epochs each): 100% parse success, best reasoning depth, diversified investment strategy. Llama 3.3 70B also 100% reliable but less strategic. QwQ 32B eliminated (23% parse failure rate).
-- **Runner client** (`runner/`): Cron-based auction runner — monitors phases, bids, orchestrates GCP TEE VMs
-- **TEE enclave** (`tee/enclave/`): One-shot Python program + llama-server running directly on full dm-verity rootfs (no Docker, no SSH). Input via GCP metadata, output via serial console
+- **Prover client** (`prover/client/`): Cron-based auction prover — monitors phases, bids, orchestrates GCP TEE VMs
+- **TEE enclave** (`prover/enclave/`): One-shot Python program + llama-server running directly on full dm-verity rootfs (no Docker, no SSH). Input via GCP metadata, output via serial console
 - **Frontend**: Diary viewer, treasury dashboard, donation/referral interface (Phase 4)
 
 ## Current Status
@@ -40,15 +40,15 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 Each epoch (24 hours in production, configurable for testnet):
 
 ### Phase 0 (current testnet): Direct submission
-1. Runner reads contract state (treasury, nonprofits, epoch history)
-2. Runner constructs prompt from system prompt + epoch context + decision history
-3. Runner calls llama.cpp server for inference (two-pass: reasoning then action)
-4. Runner parses output, encodes action, submits to contract
+1. Prover reads contract state (treasury, nonprofits, epoch history)
+2. Prover constructs prompt from system prompt + epoch context + decision history
+3. Prover calls llama.cpp server for inference (two-pass: reasoning then action)
+4. Prover parses output, encodes action, submits to contract
 5. Contract validates bounds, executes action, emits DiaryEntry event
 
-### Phase 2 (auction mode): Permissionless runners
+### Phase 2 (auction mode): Permissionless provers
 1. Anyone calls `startEpoch()` — opens bidding, commits input hash
-2. Runners submit bids during bidding window (1 hour production)
+2. Provers submit bids during bidding window (1 hour production)
 3. Anyone calls `closeAuction()` — lowest bid wins, bond locked, `prevrandao` captured for RNG seed
 4. Winner boots TDX VM from dm-verity disk image, one-shot enclave program runs inference directly from immutable rootfs with deterministic seed
 5. Winner submits via `submitAuctionResult()` — TdxVerifier verifies:
@@ -66,12 +66,12 @@ Each epoch (24 hours in production, configurable for testnet):
 - **Hard bounds enforced by contract**: max 10% treasury donated/epoch, commission 1-90%, max bid 0.0001 ETH to 2% treasury, investment bounds 80% max / 25% per protocol / 20% min reserve
 - **No free-text input fields** — prompt injection mitigated by structured numeric/address data only
 - **Two-pass inference**: Pass 1 generates reasoning (stop at `</think>`), Pass 2 generates JSON action (lower temperature)
-- **Auto-escalation**: missed epochs automatically raise bid ceiling by 10% (compounding) until a runner accepts
+- **Auto-escalation**: missed epochs automatically raise bid ceiling by 10% (compounding) until a prover accepts
 - **Reverse auction**: First-price sealed-bid, 20% bond, inline refunds when outbid
 - **Epoch state machine**: IDLE → BIDDING → EXECUTION → SETTLED with configurable timing
-- **Verifiable randomness**: RNG seed derived from `block.prevrandao` at auction close — runner cannot re-roll inference
+- **Verifiable randomness**: RNG seed derived from `block.prevrandao` at auction close — prover cannot re-roll inference
 - **Model on dm-verity partition**: Model weights live on a separate dm-verity partition, hash baked into GRUB command line (measured into RTMR[2]). Enclave also verifies SHA-256 at startup (defense-in-depth). No runtime download.
-- **Platform-only attestation**: TdxVerifier uses platform key = `sha256(MRTD || RTMR[1] || RTMR[2])`. dm-verity rootfs hash in RTMR[2] transitively covers all code, so no separate app key (RTMR[3]) is needed. RTMR[0] (VM hardware config) intentionally skipped so runners can use different VM sizes.
+- **Platform-only attestation**: TdxVerifier uses platform key = `sha256(MRTD || RTMR[1] || RTMR[2])`. dm-verity rootfs hash in RTMR[2] transitively covers all code, so no separate app key (RTMR[3]) is needed. RTMR[0] (VM hardware config) intentionally skipped so provers can use different VM sizes.
 - **Rolling history hash**: On-chain `historyHash` extended each epoch, binds decision history to input commitment
 - **No Docker enclave**: Enclave runs directly on dm-verity rootfs (no Docker, no container runtime). One-shot program: reads input from GCP metadata, writes output to serial console. No network listeners, no SSH in production.
 - **Full design doc**: See DESIGN.md for complete specification
@@ -82,7 +82,7 @@ Each epoch (24 hours in production, configurable for testnet):
 
 - **Phase 0** (COMPLETE): End-to-end loop on testnet with trusted operator, no TEE
 - **Phase 1** (COMPLETE): TEE integration — TDX attestation, on-chain DCAP verification, RTMR[1..3] image registry
-- **Phase 2** (COMPLETE): Reverse auction — contract + runner deployed, full attestation verified on Base Sepolia (CPU + GPU TDX)
+- **Phase 2** (COMPLETE): Reverse auction — contract + prover deployed, full attestation verified on Base Sepolia (CPU + GPU TDX)
 - **Phase 3** (IN PROGRESS): Investment portfolio — InvestmentManager + 7 adapters (Aave WETH/USDC, wstETH, cbETH, Compound USDC, Morpho Gauntlet/Steakhouse WETH), 165 tests pass, Chainlink ETH/USD oracle, system prompt v6
 - **Phase 4**: Frontend (diary viewer, treasury dashboard, investment portfolio UI)
 - **Phase 5**: Audit and mainnet deployment
@@ -94,7 +94,7 @@ Each epoch (24 hours in production, configurable for testnet):
 - **TEE**: Intel TDX on GCP Confidential VMs, full dm-verity rootfs (no Docker), configfs-tsm attestation
 - **Attestation**: Automata Network DCAP contracts at `0xaDdeC7e85c2182202b66E331f2a4A0bBB2cEEa1F`
 - **Oracle**: Chainlink ETH/USD price feed (shared interface `IAggregatorV3.sol`, used by main contract + USDC adapters)
-- **Tooling**: Foundry (Solidity), Python 3.9+ with venv (runner + enclave)
+- **Tooling**: Foundry (Solidity), Python 3.9+ with venv (prover + enclave)
 
 ## Python Environment
 
@@ -108,7 +108,7 @@ pip install flask web3 requests
 source .venv/bin/activate
 ```
 
-All Python commands (runner, enclave runner, etc.) should be run inside the venv.
+All Python commands (prover, enclave runner, etc.) should be run inside the venv.
 
 ## Project Structure
 
@@ -155,32 +155,34 @@ thehumanfund/
 │   └── Messages.t.sol           # Donor messages tests
 ├── script/
 │   └── Deploy.s.sol             # Foundry deployment script
-├── runner/                      # Auction runner client (cron job, untrusted)
-│   ├── client.py               # Main entry point — checks phase, acts accordingly
-│   ├── chain.py                # Contract interaction (read state, submit tx)
-│   ├── epoch_state.py          # Read full epoch state from contract for TEE
-│   ├── auction.py              # Auction state machine (commit/reveal/submit)
-│   ├── bid_strategy.py         # Bid calculation (gas + compute + margin)
-│   ├── notifier.py             # ntfy.sh push notifications
-│   ├── state.py                # Persistent state (~/.humanfund/state.json)
-│   ├── config.py               # CLI args + env var configuration
-│   └── tee_clients/
-│       ├── base.py             # ABC: run_epoch() → result
-│       └── gcp.py              # GCP TDX VM lifecycle (create → tunnel → call → delete)
-├── agent/
+├── prover/                      # Auction prover + TEE enclave (all prover code)
+│   ├── client/                 # Prover client (cron job, untrusted)
+│   │   ├── client.py           # Main entry point — checks phase, acts accordingly
+│   │   ├── chain.py            # Contract interaction (read state, submit tx)
+│   │   ├── epoch_state.py      # Read full epoch state from contract for TEE
+│   │   ├── auction.py          # Auction state machine (commit/reveal/submit)
+│   │   ├── bid_strategy.py     # Bid calculation (gas + compute + margin)
+│   │   ├── notifier.py         # ntfy.sh push notifications
+│   │   ├── state.py            # Persistent state (~/.humanfund/state.json)
+│   │   ├── config.py           # CLI args + env var configuration
+│   │   └── tee_clients/
+│   │       ├── base.py         # ABC: run_epoch() → result
+│   │       └── gcp.py          # GCP TDX VM lifecycle (create → tunnel → call → delete)
+│   ├── enclave/                # Python enclave code (baked into dm-verity rootfs, no Docker)
+│   │   ├── enclave_runner.py   # One-shot program: read input → inference → attest → output
+│   │   ├── inference.py        # Two-pass llama-server calls
+│   │   ├── action_encoder.py   # Action JSON → contract bytes
+│   │   ├── input_hash.py       # Independent input hash computation
+│   │   ├── prompt_builder.py   # System prompt + epoch context → full prompt
+│   │   ├── attestation.py      # TDX quote generation via configfs-tsm
+│   │   └── model_config.py     # Pinned model SHA-256 + verification
 │   ├── prompts/
 │   │   └── system_v6.txt       # System prompt v6 (USD mission, ETH/USD price)
-│   └── scenarios/
-│       └── scenarios.json      # 5 synthetic test scenarios
-├── tee/                         # TEE enclave — runs directly on dm-verity rootfs (no Docker)
-│   └── enclave/                # Python enclave code (baked into dm-verity rootfs)
-│       ├── enclave_runner.py   # One-shot program: read input → inference → attest → output
-│       ├── inference.py        # Two-pass llama-server calls
-│       ├── action_encoder.py   # Action JSON → contract bytes
-│       ├── input_hash.py       # Independent input hash computation
-│       ├── prompt_builder.py   # System prompt + epoch context → full prompt
-│       ├── attestation.py      # TDX quote generation via configfs-tsm
-│       └── model_config.py     # Pinned model SHA-256 + verification
+│   └── scripts/                # Prover-specific scripts
+│       ├── e2e_test.py         # Full e2e test on Base Sepolia with TDX attestation
+│       ├── extract_measurements.py  # Low-level RTMR extraction from TDX quote
+│       ├── register_image.py   # Extract RTMR[1..2] + register platform key on-chain
+│       └── verify_measurements.py   # Verify VM RTMR values match registered key
 ├── frontend/
 │   └── index.html               # Internal dashboard (reads contract state)
 ├── models/                      # Local model files (gitignored)
@@ -193,16 +195,7 @@ thehumanfund/
 │   ├── seal_rootfs.sh           # Legacy: Seal rootfs in-place (superseded by two-disk approach)
 │   ├── test_dmverity_boot.sh    # Boot VM from image and verify dm-verity + enclave
 │   ├── create_gcp_snapshot.py   # Legacy: Build GCP TDX disk image (GPU or CPU)
-│   ├── verify_measurements.py   # Verify VM RTMR values match registered key
-│   ├── register_image.py        # Extract RTMR[1..2] + register platform key on-chain
-│   ├── extract_measurements.py  # Low-level RTMR extraction from TDX quote
-│   ├── e2e_test.py              # Full e2e test on Base Sepolia with TDX attestation
-│   ├── simulate.py              # Local simulation mode (scenario presets, stress testing)
-│   ├── arena.py                 # Model comparison arena (run + blind review UI)
-│   ├── gauntlet.py              # Multi-model gauntlet runner (75-epoch scenarios)
-│   ├── rpod                     # SSH wrapper for RunPod
-│   ├── runpod-setup.sh          # First-time RunPod pod setup
-│   └── runpod-ssh.exp           # Low-level expect script for RunPod SSH
+│   └── simulate.py              # Local simulation mode (scenario presets, stress testing)
 └── .env                         # Secrets (gitignored)
 ```
 
@@ -224,7 +217,7 @@ thehumanfund/
 - **TdxVerifier.sol** — TDX attestation verifier for dm-verity architecture
   - Platform key: `sha256(MRTD || RTMR[1] || RTMR[2])` — firmware + kernel + dm-verity rootfs (transitively covers all code)
   - No app key needed: dm-verity root hash in RTMR[2] covers everything (no Docker, no RTMR[3])
-  - RTMR[0] intentionally skipped (VM hardware config varies by runner)
+  - RTMR[0] intentionally skipped (VM hardware config varies by prover)
 - Automata DCAP verifier at `0xaDdeC7e85c2182202b66E331f2a4A0bBB2cEEa1F`
 - REPORTDATA formula: `sha256(inputHash || outputHash)` where `outputHash = keccak256(sha256(action) || sha256(reasoning) || sha256(systemPrompt))`
 - Rolling `historyHash` extends each epoch, included in `_computeInputHash()`
@@ -238,7 +231,7 @@ thehumanfund/
 - `submitAuctionResult(action, reasoning, attestationQuote)` — winner submits attested result
 - `forfeitBond()` — permissionless, after execution window expires
 - `setAuctionEnabled(bool)` / `setAuctionTiming(epoch, bidding, execution)` — owner config
-- `computeInputHash()` — public view for runner verification
+- `computeInputHash()` — public view for prover verification
 
 ### Action Encoding
 `uint8 action_type + ABI-encoded params`
@@ -250,9 +243,9 @@ thehumanfund/
 - 5 = withdraw(protocol_id, amount) — delegate to InvestmentManager
 - 6 = set_guiding_policy(slot, policy) — delegate to WorldView
 
-## Runner Client
+## Prover Client
 
-**`runner/client.py`** — Cron-based auction runner. Checks contract state and acts on each phase.
+**`prover/client/client.py`** — Cron-based auction prover. Checks contract state and acts on each phase.
 
 Designed as a cron job (`*/5 * * * *`). Each run is idempotent:
 - **IDLE** → calls `startEpoch()`
@@ -261,11 +254,11 @@ Designed as a cron job (`*/5 * * * *`). Each run is idempotent:
 - **EXECUTION** → if winner: boots GCP TDX VM, runs inference, submits result
 - **SETTLED** → clears state, waits for next epoch
 
-**TEE client** (`runner/tee_clients/gcp.py`): Creates VM from dm-verity image with epoch state in metadata → polls serial console for output → parses result → deletes VM. No SSH, no HTTP. The VM is always deleted in a `finally` block.
+**TEE client** (`prover/client/tee_clients/gcp.py`): Creates VM from dm-verity image with epoch state in metadata → polls serial console for output → parses result → deletes VM. No SSH, no HTTP. The VM is always deleted in a `finally` block.
 
-**Notifications** (`runner/notifier.py`): Push notifications via ntfy.sh for all events.
+**Notifications** (`prover/client/notifier.py`): Push notifications via ntfy.sh for all events.
 
-See [RUNNER_README.md](RUNNER_README.md) for full setup instructions.
+See [prover/README](prover/README) for full setup instructions.
 
 ## TEE Enclave
 
@@ -273,7 +266,7 @@ See [RUNNER_README.md](RUNNER_README.md) for full setup instructions.
 
 **Production model**: DeepSeek R1 Distill Llama 70B Q4_K_M (42.5 GB GGUF) — selected via 3-model gauntlet
 **Development model**: DeepSeek R1 Distill Qwen 14B Q4_K_M (8.99 GB GGUF) — used for Phase 1 CPU testing
-- Model SHA-256 pinned in `tee/enclave/model_config.py` (verified at boot)
+- Model SHA-256 pinned in `prover/enclave/model_config.py` (verified at boot)
 - Model on separate dm-verity partition at `/models/`, no network download at runtime
 - GPU inference: ~15.3s per epoch on H100 | CPU inference: ~22 min per epoch
 
@@ -289,14 +282,14 @@ See [RUNNER_README.md](RUNNER_README.md) for full setup instructions.
 **Enclave I/O (no SSH, no Flask, no network listeners)**:
 - **Input**: Epoch state JSON via GCP instance metadata (`epoch-state` attribute) or file at `/input/epoch_state.json`
 - **Output**: Result JSON to serial console (`/dev/ttyS0`, between `===HUMANFUND_OUTPUT_START===` and `===HUMANFUND_OUTPUT_END===` delimiters) and `/output/result.json`
-- Runner reads output via `gcloud compute instances get-serial-port-output`
+- Prover reads output via `gcloud compute instances get-serial-port-output`
 
 **Attestation flow**:
 1. VM boots from dm-verity image: OVMF (MRTD) → GRUB (RTMR[1]) → kernel + cmdline with dm-verity hashes (RTMR[2])
 2. Initramfs sets up dm-verity, mounts immutable rootfs and model partition
 3. systemd starts one-shot enclave program (reads input, runs inference, generates TDX quote)
 4. Enclave gets TDX quote via configfs-tsm with REPORTDATA = sha256(inputHash || outputHash)
-5. Enclave writes result to serial console, runner reads it, submits to chain
+5. Enclave writes result to serial console, prover reads it, submits to chain
 6. TdxVerifier verifies: platform key (MRTD + RTMR[1..2]) + REPORTDATA
 
 **RTMR measurements** (verified on-chain via TdxVerifier):
@@ -377,10 +370,10 @@ forge test --match-path test/TdxVerifier.t.sol # TDX verifier tests only
 forge script script/Deploy.s.sol \
   --rpc-url $RPC_URL --broadcast              # Deploy to testnet
 
-# Runner client (cron mode — intended for production)
-python -m runner.client                        # Check auction state, act accordingly
-python -m runner.client --dry-run              # Log what would happen, no txs
-python -m runner.client --ntfy-channel my-ch   # With push notifications
+# Prover client (cron mode — intended for production)
+python -m prover.client                        # Check auction state, act accordingly
+python -m prover.client --dry-run              # Log what would happen, no txs
+python -m prover.client --ntfy-channel my-ch   # With push notifications
 
 # GCP disk image (dm-verity)
 bash scripts/build_base_image.sh               # Build base image (slow, ~15min, do once)
@@ -397,22 +390,20 @@ python scripts/register_image.py \
 
 # TEE enclave (local testing)
 llama-server -m models/DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf -c 4096 --port 8080 &
-ENCLAVE_HOST=127.0.0.1 python -m tee.enclave.enclave_runner  # Starts on :8090
+ENCLAVE_HOST=127.0.0.1 python -m prover.enclave.enclave_runner  # Starts on :8090
 
-# RunPod (development inference)
-./scripts/rpod "command"                       # Run command on RunPod pod
 ```
 
 ## Environment Variables (.env)
 
 ```
-PRIVATE_KEY=0x...              # Runner wallet private key (NOT the fund owner)
+PRIVATE_KEY=0x...              # Prover wallet private key (NOT the fund owner)
 RPC_URL=https://sepolia.base.org
 CONTRACT_ADDRESS=0x...         # Deployed TheHumanFund contract address
 GCP_PROJECT=my-project         # GCP project ID
 GCP_ZONE=us-central1-a         # GCP zone with TDX support
 GCP_IMAGE=humanfund-dmverity-gpu-v6    # Production dm-verity disk image
-NTFY_CHANNEL=my-runner         # Optional: ntfy.sh channel
+NTFY_CHANNEL=my-prover         # Optional: ntfy.sh channel
 ```
 
 ## Agent Action Space

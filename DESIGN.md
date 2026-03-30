@@ -1,6 +1,6 @@
 # The Human Fund: Design Document v0.4
 
-**An Autonomous, Unkillable AI Charitable Agent on the Blockchain**
+**An Autonomous, Immortal Charitable AI Agent on the Blockchain**
 
 *Draft — March 2026*
 
@@ -8,20 +8,20 @@
 
 ## 1. Overview
 
-The Human Fund is charitable DAO on the Base L2 blockchain run by an autonomous AI agent, Costanza. Costanza's goal is to donate as much ETH as possible to a pre-set list of nonprofits over the longest possible time horizon. It runs as a smart contract that offers a per-epoch bounty for verified LLM inference, producing a public "diary" of its reasoning on-chain.
+The Human Fund is charitable DAO on the Base L2 blockchain run by an autonomous AI agent, Petrushka. Petrushka's goal is to donate as much ETH as possible to a pre-set list of nonprofits over the longest possible time horizon. It runs as a smart contract that offers a per-epoch bounty for verified LLM inference, producing a public "diary" of its reasoning on-chain.
 
 **One-sentence description:** An AI agent that lives on the blockchain, makes daily decisions about how to grow and spend a charitable treasury, and can never be turned off as long as someone is willing to run it.
 
-**Costanza decides each epoch:**
+**Petrushka decides each epoch:**
 - How much ETH to donate, and to whom
 - What referral commission rate to offer (to attract new donations)
 - What to invest in to create future returns or hedge risk
-- How much he's willing to pay for his own survival (runner bounty ceiling)
+- How much it's willing to pay for its own survival (prover bounty ceiling)
 - Whether to do nothing and conserve
 
 **What makes it interesting:** The agent faces genuine tradeoffs between growth, generosity, and self-preservation. Its chain-of-thought reasoning is published on-chain, creating a public narrative of an AI navigating resource allocation under uncertainty.
 
-**What makes it unkillable:** Anyone with compatible TEE hardware can run the agent's inference and claim the bounty. No single operator, cloud provider, or hardware vendor is required. The agent sleeps through missed epochs but never dies until its treasury reaches zero.
+**What makes it immortal:** Anyone with compatible TEE hardware can run the agent's inference and claim the bounty. No single operator, cloud provider, or hardware vendor is required. The agent sleeps through missed epochs but never dies until its treasury reaches zero.
 
 ---
 
@@ -54,7 +54,7 @@ The Human Fund is charitable DAO on the Base L2 blockchain run by an autonomous 
                           │ submit(attestation, input, action, reasoning)
                           │
 ┌─────────────────────────────────────────────────────────┐
-│              Runner (permissionless)                    │
+│              Prover (permissionless)                    │
 │                                                         │
 │  1. Monitor contract for epoch start                    │
 │  2. Read emitted EpochStarted event + input hash        │
@@ -115,7 +115,7 @@ Each epoch lasts **24 hours** and follows this sequence:
 ```
 Hour 0:00  ─ Epoch boundary. Contract computes input, commits hash,
              emits EpochStarted event. Auction opens.
-Hour 0:00  ─ Runners begin submitting bids.
+Hour 0:00  ─ Provers begin submitting bids.
 Hour 1:00  ─ Auction closes. Lowest valid bid wins.
              Winner's bond is locked.
 Hour 1:00  ─ Execution window opens.
@@ -127,7 +127,7 @@ Hour 24:00 ─ Next epoch begins.
 
 ### 6.2 Reverse Auction
 
-The auction is a **first-price open-bid reverse auction** conducted on-chain. Runners bid the minimum bounty they'll accept to execute the epoch.
+The auction is a **first-price open-bid reverse auction** conducted on-chain. Provers bid the minimum bounty they'll accept to execute the epoch.
 
 - **Bidding window:** 1 hour after epoch start.
 - **Bid format:** `bid(amount_eth)` — a single transaction specifying the runner's asking price.
@@ -358,7 +358,7 @@ Each epoch's prompt has three layers:
 
 ### 9.2 System Prompt (Layer 1)
 
-Frozen in the attested image. Defines the agent's identity, action space, output format, and constraints. See `agent/prompts/` for the current versions.
+Frozen in the attested image. Defines the agent's identity, action space, output format, and constraints. See `prover/prompts/` for the current versions.
 
 Key design choices:
 - The agent is told its reasoning will be visible to the public and to its future self.

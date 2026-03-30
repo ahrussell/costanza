@@ -137,7 +137,7 @@ Rebuild this only when llama.cpp, NVIDIA drivers, CUDA, or Ubuntu versions chang
 `scripts/build_full_dmverity_image.sh` creates the dm-verity sealed image (e.g., `humanfund-dmverity-gpu-v6`):
 1. Creates a TDX builder VM from the base image
 2. Attaches two extra disks: output (for the final image) and staging (for temp files)
-3. Uploads enclave code (`tee/enclave/`) and system prompt to the VM
+3. Uploads enclave code (`prover/enclave/`) and system prompt to the VM
 4. Installs systemd services (enclave, DHCP, SSH key injection, GPU CC mode)
 5. Optionally downloads model weights (if not in base image or `--skip-model` used)
 6. Runs `vm_build_all.sh` via nohup on the VM (survives SSH timeouts)
@@ -174,7 +174,7 @@ This avoids the corruption problem where sealing a live rootfs in-place can prod
 
 ## Enclave I/O
 
-The enclave is a one-shot program (`tee/enclave/enclave_runner.py`). It runs once, produces a result, and exits. There is no Flask server, no HTTP listener, no Docker.
+The enclave is a one-shot program (`prover/enclave/enclave_runner.py`). It runs once, produces a result, and exits. There is no Flask server, no HTTP listener, no Docker.
 
 ### Input
 
@@ -205,7 +205,7 @@ Partition 6: humanfund-models-verity -- dm-verity Merkle tree
 
 The models dm-verity root hash is passed in the kernel command line as `humanfund.models_hash=<hash>`, which is measured into RTMR[2] by GRUB. The initramfs sets up dm-verity for the models partition and mounts it read-only at `/models`.
 
-Additionally, the enclave code contains a pinned `MODEL_SHA256` constant (`tee/enclave/model_config.py`) and verifies the model file hash at startup. This is defense-in-depth: dm-verity already prevents modification, but the explicit check provides a clear error message if the wrong model is somehow present.
+Additionally, the enclave code contains a pinned `MODEL_SHA256` constant (`prover/enclave/model_config.py`) and verifies the model file hash at startup. This is defense-in-depth: dm-verity already prevents modification, but the explicit check provides a clear error message if the wrong model is somehow present.
 
 A runner providing wrong model weights gets: dm-verity rejection (kernel I/O error) if the file is tampered, or SHA-256 mismatch (enclave refuses to start) if a different file is substituted on a different partition.
 
@@ -289,7 +289,7 @@ An attacker with root access inside the guest VM cannot:
 
 - **15.3s** inference on H100 (a3-highgpu-1g) with DeepSeek R1 70B Q4_K_M
 - Full e2e verified: VM boot, inference, TDX quote generation, DCAP verification on-chain, REPORTDATA match
-- Production image: `humanfund-dmverity-gpu-v6`
+- Production image: `humanfund-dmverity-hardened-v6`
 - Base image: `humanfund-base-gpu-llama-b5270` (family: `humanfund-base`)
 
 ## On-Chain Verification
@@ -299,34 +299,18 @@ The TdxVerifier contract (`src/TdxVerifier.sol`) handles attestation verificatio
 - **Platform key**: `sha256(MRTD || RTMR[1] || RTMR[2])` -- registered per-image, covers firmware + bootloader + dm-verity rootfs
 - **REPORTDATA**: `sha256(inputHash || outputHash)` -- binds the specific input and output to the TDX quote
 - **No app key needed**: dm-verity root hash in RTMR[2] transitively covers all code, so no separate RTMR[3]-based app key is required
-- **RTMR[0] intentionally skipped**: VM hardware config varies by runner (different VM sizes get different RTMR[0])
+- **RTMR[0] intentionally skipped**: VM hardware config varies by prover (different VM sizes get different RTMR[0])
 
 See `SECURITY_MODEL.md` for the full attestation security model and threat analysis.
 
 ## Implementation Status
 
-### What Has Been Verified
-
-- Full dm-verity rootfs boots on GCP TDX Confidential VMs
+Fully verified:
+- dm-verity rootfs boots on GCP TDX Confidential VMs (a3-highgpu-1g with H100)
 - dm-verity correctly rejects tampered blocks at the kernel level
-- Boot chain measurements (MRTD, RTMR[1], RTMR[2]) match expected values
-- Two-disk build approach produces consistent, verifiable images
-- 5 consecutive successful epochs with real TDX DCAP attestation on Base Sepolia
-- H100 GPU inference at 15.3s per epoch
-
-### Known Issues and Remaining Work
-
-1. **SSH access to the booted VM** -- The google-guest-agent (which injects SSH keys) was interfering with `systemd-networkd` DHCP config. Last fix: masked the guest agent. Need to verify this fixes the network issue. Alternatively, SSH is not needed in production (serial console is the I/O channel).
-
-2. **google-guest-agent network interference** -- The last build masks the guest agent. This should fix networking but has not been fully tested.
-
-3. **`/etc/resolv.conf`** -- May need a tmpfs bind mount for DNS resolution.
-
-4. **`systemd-resolved`** -- Needs `/var/lib/systemd` which is provided via tmpfs, should work.
-
-### Next Steps
-
-1. Fix networking -- Verify the masked google-guest-agent fixes the DHCP issue
-2. Test enclave execution -- Boot with model weights and verify inference runs to completion on the dm-verity image
-3. Full e2e test -- Deploy contract, register image, run auction with real attestation
-4. Write RUNNER_README.md -- Instructions for 3rd parties to build and run their own TEE
+- Boot chain measurements (MRTD, RTMR[1], RTMR[2]) are consistent across rebuilds of the same code
+- Two-disk build approach produces deterministic, verifiable images
+- Multiple successful epochs with real TDX DCAP attestation on Base Sepolia
+- H100 GPU inference at ~15s per epoch
+- google-guest-agent masked in production images (was interfering with systemd-networkd DHCP)
+- Serial console I/O eliminates need for SSH in production
