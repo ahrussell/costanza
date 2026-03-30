@@ -179,24 +179,24 @@ thehumanfund/
 │   │   └── model_config.py     # Pinned model SHA-256 + verification
 │   ├── prompts/
 │   │   └── system.txt          # System prompt (USD mission, ETH/USD price)
-│   └── scripts/                # Prover-specific scripts
-│       ├── e2e_test.py         # Full e2e test on Base Sepolia with TDX attestation
+│   └── scripts/                # Prover/TEE infrastructure scripts
+│       ├── build_base_image.sh      # Build GCP base image (NVIDIA + CUDA + llama-server + model, slow ~15min)
+│       ├── build_full_dmverity_image.sh  # Build production dm-verity image (fast ~10min, uses base)
+│       ├── vm_build_all.sh          # Runs on VM: squashfs → verity → initramfs → partition → GRUB
+│       ├── vm_install.sh            # Installs dependencies on VM for base image build
+│       ├── e2e_test.py              # Full e2e test on Base Sepolia with TDX attestation
 │       ├── extract_measurements.py  # Low-level RTMR extraction from TDX quote
-│       ├── register_image.py   # Extract RTMR[1..2] + register platform key on-chain
+│       ├── register_image.py        # Extract RTMR[1..2] + register platform key on-chain
 │       └── verify_measurements.py   # Verify VM RTMR values match registered key
 ├── frontend/
 │   └── index.html               # Internal dashboard (reads contract state)
 ├── models/                      # Local model files (gitignored)
 ├── scripts/
-│   ├── build_base_image.sh      # Build GCP base image (NVIDIA + CUDA + llama-server + model, slow ~15min)
-│   ├── build_full_dmverity_image.sh  # Build production dm-verity image (fast ~10min, uses base)
-│   ├── vm_build_all.sh          # Runs on VM: squashfs → verity → initramfs → partition → GRUB
-│   ├── vm_install.sh            # Installs dependencies on VM for base image build
-│   ├── build_gcp_image.sh       # Legacy: Build GCP TDX disk image with dm-verity rootfs
-│   ├── seal_rootfs.sh           # Legacy: Seal rootfs in-place (superseded by two-disk approach)
-│   ├── test_dmverity_boot.sh    # Boot VM from image and verify dm-verity + enclave
-│   ├── create_gcp_snapshot.py   # Legacy: Build GCP TDX disk image (GPU or CPU)
-│   └── simulate.py              # Local simulation mode (scenario presets, stress testing)
+│   ├── deploy_mainnet.sh        # Mainnet deployment guide (step-by-step)
+│   ├── recover_submit.py        # Emergency recovery for stuck auction epochs
+│   ├── simulate.py              # Local simulation mode (scenario presets, stress testing)
+│   ├── compute_hash.py          # Input hash computation (used by Foundry FFI tests)
+│   └── base_addresses.json      # Base mainnet contract addresses
 └── .env                         # Secrets (gitignored)
 ```
 
@@ -276,9 +276,9 @@ See [prover/README](prover/README) for full setup instructions.
 - System prompt at `/opt/humanfund/system_prompt.txt` on the dm-verity rootfs
 - llama-server binary at `/opt/humanfund/bin/llama-server` on the dm-verity rootfs
 - `humanfund-enclave.service` — systemd one-shot service that runs the enclave program
-- `scripts/build_base_image.sh` — builds GCP base image (NVIDIA + CUDA + llama-server + model, ~15min)
-- `scripts/build_full_dmverity_image.sh` — builds production dm-verity image from base (~10min)
-- `scripts/vm_build_all.sh` — runs on VM: creates squashfs, verity, initramfs, partitions output disk
+- `prover/scripts/build_base_image.sh` — builds GCP base image (NVIDIA + CUDA + llama-server + model, ~15min)
+- `prover/scripts/build_full_dmverity_image.sh` — builds production dm-verity image from base (~10min)
+- `prover/scripts/vm_build_all.sh` — runs on VM: creates squashfs, verity, initramfs, partitions output disk
 
 **Enclave I/O (no SSH, no Flask, no network listeners)**:
 - **Input**: Epoch state JSON via GCP instance metadata (`epoch-state` attribute) or file at `/input/epoch_state.json`
@@ -377,16 +377,15 @@ python -m prover.client --dry-run              # Log what would happen, no txs
 python -m prover.client --ntfy-channel my-ch   # With push notifications
 
 # GCP disk image (dm-verity)
-bash scripts/build_base_image.sh               # Build base image (slow, ~15min, do once)
-bash scripts/build_full_dmverity_image.sh \
+bash prover/scripts/build_base_image.sh               # Build base image (slow, ~15min, do once)
+bash prover/scripts/build_full_dmverity_image.sh \
   --base-image humanfund-base-gpu-llama-b5270  # Build production image (fast, ~10min)
-bash scripts/build_full_dmverity_image.sh \
+bash prover/scripts/build_full_dmverity_image.sh \
   --base-image humanfund-base-gpu-llama-b5270 \
   --name humanfund-dmverity-gpu-v6             # Named production image
-bash scripts/test_dmverity_boot.sh             # Test dm-verity boot chain
-python scripts/verify_measurements.py \
+python prover/scripts/verify_measurements.py \
   --vm-name my-vm --verifier 0x...            # Verify RTMR match
-python scripts/register_image.py \
+python prover/scripts/register_image.py \
   --vm-name my-vm --verifier 0x...            # Register image key on-chain
 
 # TEE enclave (local testing)
