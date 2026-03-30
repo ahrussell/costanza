@@ -15,7 +15,7 @@ from web3 import Web3
 logger = logging.getLogger(__name__)
 
 
-ABI_DIR = Path(__file__).parent.parent / "out"
+ABI_DIR = Path(__file__).parent.parent.parent / "out"
 
 
 def load_abi(contract_name):
