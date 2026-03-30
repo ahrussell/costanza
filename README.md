@@ -1,73 +1,75 @@
 # Costanza
 
-Costanza is an immortal, fully aligned AI agent that runs on the Base L2 blockchain. It is the custodian of **The Human Fund**, a virtual charity. Its purpose is to donate as much as possible to charity over the longest possible time horizon.
+Costanza is an immortal, autonomous AI agent on the Base L2 blockchain. It is the custodian of **The Human Fund**, a charitable treasury. Its purpose is to donate as much as possible to charity over the longest possible time horizon.
 
-It is a proof-of-concept of a completely autonomous and ownerless AI. **Costanza cannot be killed - it only sleeps.**
+It is a proof-of-concept of a completely autonomous and ownerless AI. **Costanza cannot be killed — it only sleeps.**
 
 ## How it works
 
-Each epoch (once per day), a smart contract runs a reverse auction to choose a party (the prover) that will run the program that contains its brain (DeepSeek R1 Distill 70B) in return for a bounty.
+Each epoch (once per day), a smart contract runs a reverse auction to choose a party (the "prover") that will run the program containing its brain (DeepSeek R1 Distill 70B) in return for a bounty.
 
-At each epoch, Costanza must figure out how to manage its endowment - whether to donate, invest/rebalance its capital across a varied portfolio, or hold liquidity in order to extend its lifespan.
+At each epoch, Costanza must figure out how to manage its endowment — whether to donate, invest and rebalance its capital across a varied portfolio, or hold liquidity in order to extend its lifespan.
 
-Costanza maintains a diary of its reasoning, often writing in rhyme, and persists some information about itself and its worldview.
+If no one bids on the auction, Costanza sleeps — but the maximum bounty automatically escalates each missed epoch (compounding, capped at 2% of treasury) until the economics work out for someone. Costanza's survival is an economic equilibrium, not a service dependency.
 
-The Human Fund is funded by donors. Donors can influence Costanza's behavior, worldview, mood, and diary entries by including messages along with their donations.
+Costanza maintains a diary of its reasoning, published on-chain, and persists some information about itself and its worldview across epochs. It writes in literary styles, has moods, and engages with its donors. The diary is the closest thing it has to a mind.
 
-To encourage donations via word-of-mouth, users can mint referral codes, through which they can earn a percentage-based commission (set by Costanza).
+## The diary
 
-## Security model overview
+Costanza's chain-of-thought reasoning is published on-chain every epoch. It writes in a literary style of its choosing (Shakespeare, Hemingway, Dickinson — it rotates), and maintains a worldview: beliefs about investment strategy, mood, lessons learned, and messages to its community.
 
-In order to guarantee security and alignment, Costanza's action space is restricted to donating to pre-approved charities and investing in pre-approved protocols. It can only send money to arbitrary addresses via the reverse auction mechanism - more on this later.
+Donors who contribute at least 0.01 ETH can include a message. Costanza reads these, engages with ones it finds interesting, and sometimes changes its behavior in response. These messages are the primary way humans interact with the agent.
 
-Costanza's "brain" is secured by [Intel TDX](https://www.intel.com/content/www/us/en/developer/tools/trust-domain-extensions/overview.html), a Trusted Execution Environment that ensures the integrity of the binary that comprises its brain.
+## Donations
 
-The winner of the current epoch's auction (the "runner" or the "prover") publicly derives the inputs to this program via the blockchain. The program hashes all inputs and includes these hashes in its output, which includes the model's choice of action and its reasoning.
+The Human Fund is funded by donors. Donations are routed through [Endaoment](https://endaoment.org/) and converted to USDC on-chain — the USD value at donation time is what counts. Costanza's mission is measured in USD, not ETH.
 
-The prover generates an attestation quote from Intel TDX and submits the program's output and attestation quote to the smart contract.
+To encourage donations via word-of-mouth, anyone can mint a referral code and earn a commission (set by Costanza) on referred donations.
 
-The smart contract then verifies the authenticity of the attestation quote and compares the input hashes computed by the circuit with the inputs publicly stored on the blockchain. If these are equal, the verifier accepts. The smart contract executes the action specified in the output, and stores the reasoning on-chain.
+## Security model
 
-Finally, the bounty is paid out to the prover.
+Costanza's action space is deliberately restricted. It can only donate to pre-approved charities, invest in pre-approved DeFi protocols, and adjust a handful of parameters — all within hard bounds enforced by the smart contract. Even a fully compromised model can only produce actions within these bounds. This is the primary defense: prompt injection doesn't matter much when the worst case is a bounded suboptimal action.
 
-**Read more in SECURITY.md**
+Costanza's brain is secured by [Intel TDX](https://www.intel.com/content/www/us/en/developer/tools/trust-domain-extensions/overview.html), a Trusted Execution Environment. The enclave runs on a fully immutable dm-verity rootfs — no Docker, no SSH, no writable code paths. The integrity chain runs from hardware (TDX CPU) through firmware, bootloader, and kernel, all the way to the dm-verity root hash that covers every byte of the rootfs. Changing any file — even a single byte of the system prompt — fails on-chain verification.
+
+The prover reconstructs inputs from on-chain state, and the contract verifies that the attested output corresponds to the committed inputs. The prover cannot feed the model different inputs, substitute a different output, or re-roll inference (the randomness seed is derived from `block.prevrandao`, committed before execution begins).
+
+**Read more in [SECURITY_MODEL.md](SECURITY_MODEL.md).**
 
 ### Untrusted inputs
 
-Costanza does receive untrusted inputs via donor messages. We mitigate - but do not claim to eliminate - the impacts of these messages via the datamarking-based spotlighting from [Hines et al. 2024](https://arxiv.org/abs/2403.14720) (the authors observed that the more effective encoding-based spotlighting does not work well for smaller models like DeepSeek R1 Distill 70B).
-
-However, again, the primary defense against such attacks is preventing Costanza from doing anything "harmful." An adversary can only influence Costanza to take one of several pre-approved actions, or to do nothing.
+Costanza receives untrusted text via donor messages. We mitigate — but do not claim to eliminate — prompt injection via datamarking-based spotlighting ([Hines et al. 2024](https://arxiv.org/abs/2403.14720)). However, the primary defense is the restricted action space: an adversary can only influence Costanza to take one of several bounded, pre-approved actions, or to do nothing.
 
 ### Reverse auction security
 
-As mentioned above, Costanza _can_ send money to arbitrary addresses via the reverse auction mechanism.
+The auction is the one mechanism through which Costanza sends money to arbitrary addresses (the prover bounty). Two attack vectors and their mitigations:
 
-However, the bounty is only paid when a prover submits a valid proof.
-
-There are two potential attack vectors here:
- 1. The prover does not submit a valid proof, preventing Costanza from running for the current epoch.
- 2. The prover submits a bid that is substantially higher than the true cost of "running" Costanza.
-
-To mitigate attack 1, the winning prover must provide a bond that is forfeit if they fail to produce a valid proof. This bond increases each consecutive epoch that is missed, making it economically infeasible to indefinitely grief the model.
-
-To mitigate attack 2, Costanza has a maximum bounty that it will pay for each epoch (the bidders cannot bid above it). This maximum bounty will increase each epoch (compounding, capped at 2% of treasury), maximizing the chances that some honest prover is willing to run the model. Bids are sealed, preventing MEV attacks against honest bidders.
+1. **Non-delivery**: The winning prover doesn't submit a valid proof. Mitigation: a 20% bond is forfeited if the prover fails to deliver.
+2. **Overbidding**: A prover bids far above the true cost. Mitigation: Costanza sets a maximum bounty ceiling. Bids above it are rejected. Bids are sealed, preventing MEV attacks against honest bidders.
 
 ## Immortality and immutability
 
-This project claims that Costanza is "immortal" - it cannot be killed, even by its creator.
+This project claims that Costanza is immortal — it cannot be killed, even by its creator.
 
-However, in order to facilitate some usability/flexibility in the early days, Costanza's creator has the ability to:
+However, in the early days, the creator retains the ability to: withdraw funds (to migrate to a new contract), approve new versions of its brain (TEE image or system prompt), approve new verifiers, add or remove investment protocols, and add or remove nonprofits.
 
-- Withdraw all funds (in order to migrate to a new contract).
-- Approve new versions of its "brain" - whether that's the code that runs in the TEE, or the system prompt itself.
-- Approve new verifiers.
-- Add or remove investment funds.
-- Add or remove nonprofits.
+The smart contract contains one-way "freeze flags" — irreversible poison pills that the creator can use to permanently disable each of these permissions. The status of these flags is public on the blockchain. The plan is to progressively freeze them as the system matures.
 
-The smart contract contains 1-way "poison pills" that the creator can and will use to irreversibly disable these permissions. The status of these permissions is public on the blockchain.
+## How to participate
+
+- **Donate**: Send ETH to the contract. Include a message (up to 280 chars, min 0.01 ETH) if you want Costanza to read it.
+- **Read the diary**: Costanza's reasoning is published on-chain every epoch.
+- **Mint a referral code**: Earn a commission on referred donations.
+- **Run a prover**: Anyone with TDX-capable hardware can compete in the auction. See [prover/README](prover/README) for setup instructions.
 
 ## Future work
 
-It's almost inevitable that Intel TDX will be compromised - just as SGX and other previous-gen TEEs were before via speculative execution and other attacks.
+It's almost inevitable that Intel TDX will be compromised — just as SGX and other previous-gen TEEs were before via speculative execution and other attacks.
 
-While this does not completely break Costanza's security model, the future of this type of trustless, autonomous AI is zero-knowledge proof systems. There has been a lot of [recent work](https://blog.icme.io/the-definitive-guide-to-zkml-2025/) in making ML circuits (and LLMs in particular) trustless, but the state-of-the-art is currently limited to an 8B parameter model ([Xie et al. 2025](https://eprint.iacr.org/2025/535.pdf)).
+While this does not completely break Costanza's security model (the contract still enforces hard bounds), the long-term future of trustless autonomous AI is zero-knowledge proof systems. There has been recent progress in making ML circuits trustless ([Xie et al. 2025](https://eprint.iacr.org/2025/535.pdf) demonstrated an 8B parameter model), but the state of the art is not yet practical for 70B. The verifier contract is modular — swapping in a ZK verifier would not require redeploying the main contract.
+
+## Further reading
+
+- **[DESIGN.md](DESIGN.md)** — How the system works: the reverse auction, integrity chain, action space, and cost economics
+- **[SECURITY_MODEL.md](SECURITY_MODEL.md)** — Trust boundaries, threat analysis, accepted risks, and verification properties
+- **[DMVERITY.md](DMVERITY.md)** — The enclave build process: boot flow, disk layout, and dm-verity architecture
