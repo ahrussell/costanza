@@ -8,7 +8,7 @@ so calling the same function multiple times is safe.
 import logging
 import secrets
 
-from web3.exceptions import ContractLogicError
+from web3.exceptions import ContractLogicError, ContractCustomError
 
 from .chain import ChainClient
 from .state import load as load_state, save as save_state, clear as clear_state
@@ -44,12 +44,11 @@ def start_epoch(chain: ChainClient, dry_run=False):
         chain.send_tx(chain.contract.functions.startEpoch(), gas=GAS_START_EPOCH)
         logger.info("startEpoch() submitted")
         return True
-    except ContractLogicError as e:
-        if "WrongPhase" in str(e) or "already" in str(e).lower():
+    except (ContractLogicError, ContractCustomError) as e:
+        err = str(e)
+        if "WrongPhase" in err or "already" in err.lower() or "0x0730a2ce" in err:
             logger.info("Epoch already started (OK)")
             return True
-        raise
-    except Exception:
         raise
 
 
@@ -102,12 +101,11 @@ def close_commit(chain: ChainClient, dry_run=False):
         chain.send_tx(chain.contract.functions.closeCommit(), gas=GAS_CLOSE_COMMIT)
         logger.info("closeCommit() submitted")
         return True
-    except ContractLogicError as e:
-        if "WrongPhase" in str(e) or "TimingError" in str(e):
-            logger.info("closeCommit() skipped: %s", e)
+    except (ContractLogicError, ContractCustomError) as e:
+        err = str(e)
+        if "WrongPhase" in err or "TimingError" in err or "0x0730a2ce" in err:
+            logger.info("closeCommit() not ready yet (commit window still open)")
             return False
-        raise
-    except Exception:
         raise
 
 
@@ -137,12 +135,11 @@ def close_reveal(chain: ChainClient, dry_run=False):
         chain.send_tx(chain.contract.functions.closeReveal(), gas=GAS_CLOSE_REVEAL)
         logger.info("closeReveal() submitted")
         return True
-    except ContractLogicError as e:
-        if "WrongPhase" in str(e) or "TimingError" in str(e):
-            logger.info("closeReveal() skipped: %s", e)
+    except (ContractLogicError, ContractCustomError) as e:
+        err = str(e)
+        if "WrongPhase" in err or "TimingError" in err or "0x0730a2ce" in err:
+            logger.info("closeReveal() not ready yet (reveal window still open)")
             return False
-        raise
-    except Exception:
         raise
 
 
