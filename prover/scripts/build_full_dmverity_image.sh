@@ -17,7 +17,7 @@ BASE_IMAGE=""
 VM_NAME="humanfund-builder-$(date +%s)"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -168,7 +168,7 @@ fi
 # ─── Step 3: Upload build script and run via nohup ───────────────────
 
 echo "─── Step 3: Running build via nohup ───"
-vm_scp "$SCRIPT_DIR/vm_build_all.sh" "/tmp/vm_build_all.sh"
+vm_scp "$PROJECT_ROOT/scripts/vm_build_all.sh" "/tmp/vm_build_all.sh"
 SSH_ENV=""
 $ENABLE_SSH && SSH_ENV="ENABLE_SSH=1 " && echo "  ⚠ DEBUG BUILD: SSH enabled (different dm-verity hash → won't pass production attestation)"
 vm_run "sudo bash -c '${SSH_ENV}nohup bash /tmp/vm_build_all.sh > /mnt/staging/build.log 2>&1 &'"
