@@ -46,9 +46,12 @@ def start_epoch(chain: ChainClient, dry_run=False):
         return True
     except (ContractLogicError, ContractCustomError) as e:
         err = str(e)
-        if "WrongPhase" in err or "already" in err.lower() or "0x0730a2ce" in err:
+        if "WrongPhase" in err or "already" in err.lower():
             logger.info("Epoch already started (OK)")
             return True
+        if "0x0730a2ce" in err or "TimingError" in err:
+            logger.info("startEpoch() too early — previous epoch duration hasn't elapsed")
+            return False
         raise
 
 

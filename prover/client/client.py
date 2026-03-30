@@ -88,8 +88,9 @@ def run(config):
     saved = load_state(state_dir, current_epoch=epoch)
 
     if phase == IDLE:
-        start_epoch(chain, dry_run=dry_run)
-        notify_epoch_started(ntfy, epoch)
+        started = start_epoch(chain, dry_run=dry_run)
+        if started:
+            notify_epoch_started(ntfy, epoch)
 
     elif phase == COMMIT:
         if not saved.get("committed"):
