@@ -34,7 +34,7 @@ import sys
 import time
 from pathlib import Path
 
-from .inference import run_two_pass_inference, truncate_reasoning
+from .inference import run_three_pass_inference, truncate_reasoning
 from .action_encoder import parse_action, encode_action_bytes
 from .input_hash import compute_input_hash, derive_contract_state, verify_display_data, _keccak256
 from .attestation import get_tdx_quote, compute_report_data
@@ -377,7 +377,7 @@ def main():
             attempt_seed = (llama_seed + attempt - 1) if llama_seed >= 0 else -1
             log(f"  Attempt {attempt}/{max_retries} (seed={attempt_seed})...")
             try:
-                inference = run_two_pass_inference(
+                inference = run_three_pass_inference(
                     full_prompt, seed=attempt_seed, llama_url=LLAMA_SERVER_URL
                 )
             except Exception as e:

@@ -476,10 +476,10 @@ def build_epoch_context(state, seed=None):
                     reasoning_text = reasoning_text[:2000] + "... [truncated]"
             except Exception:
                 reasoning_text = "(could not decode)"
-            lines.append("[Your reasoning]:")
-            lines.append("<think>")
+            lines.append("[Your diary entry]:")
+            lines.append("<diary>")
             lines.append(reasoning_text)
-            lines.append("</think>")
+            lines.append("</diary>")
 
             try:
                 action_bytes = entry["action"] if isinstance(entry["action"], bytes) else bytes.fromhex(entry["action"].replace("0x", ""))

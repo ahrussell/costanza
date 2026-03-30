@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
-"""Two-pass inference via local llama-server.
+"""Three-pass inference via local llama-server.
 
-Pass 1: Generate reasoning (stop at </think>, temperature 0.6)
-Pass 2: Generate JSON action (temperature 0.3, seeded for determinism)
+Pass 1: Analytical reasoning (stop at </think>, temperature 0.7)
+Pass 2: Literary diary entry (stop at </diary>, temperature 0.8)
+Pass 3: JSON action (temperature 0.3, seeded for determinism)
 
-Reasoning is truncated to MAX_REASONING_BYTES BEFORE any hashing, so the
-contract's sha256(reasoning) matches the value bound into the TDX quote.
+The diary entry is what gets published on-chain as "reasoning".
+The think block is private analytical work — discarded after use.
+
+Reasoning (diary) is truncated to MAX_REASONING_BYTES BEFORE any hashing, so
+the contract's sha256(reasoning) matches the value bound into the TDX quote.
 """
 
 import json
@@ -55,37 +59,70 @@ def call_llama(prompt, max_tokens=4096, temperature=0.6, stop=None, seed=-1,
     }
 
 
-def run_two_pass_inference(prompt, seed=-1, llama_url=DEFAULT_LLAMA_URL):
-    """Two-pass inference: reasoning (stop at </think>), then JSON action.
+def run_three_pass_inference(prompt, seed=-1, llama_url=DEFAULT_LLAMA_URL):
+    """Three-pass inference: thinking, diary entry, then JSON action.
 
-    Returns dict with keys: text, reasoning, action_text, elapsed_seconds, tokens
+    Pass 1: Analytical reasoning in <think> tags (natural model voice)
+    Pass 2: Creative diary entry in <diary> tags (literary style from worldview slot [0])
+    Pass 3: JSON action output
+
+    Returns dict with keys: text, thinking, reasoning (=diary), action_text, elapsed_seconds, tokens
     """
-    # Pass 1: Generate reasoning
+    # Pass 1: Analytical thinking
+    print("  Pass 1: generating analytical reasoning...")
     result1 = call_llama(
-        prompt, max_tokens=4096, temperature=0.6,
+        prompt, max_tokens=2048, temperature=0.7,
         stop=["</think>"], seed=seed, llama_url=llama_url
     )
-    reasoning = result1["text"].strip()
+    thinking = result1["text"].strip()
+    print(f"  Thinking: {len(thinking)} chars, {result1['elapsed_seconds']}s")
 
-    # Pass 2: Generate JSON action (same seed for determinism)
-    prompt2 = prompt + reasoning + "\n</think>\n{"
+    # Pass 2: Diary entry in literary style
+    print("  Pass 2: generating diary entry...")
+    prompt2 = prompt + thinking + "\n</think>\n<diary>\n"
     result2 = call_llama(
-        prompt2, max_tokens=256, temperature=0.3,
+        prompt2, max_tokens=1024, temperature=0.8,
+        stop=["</diary>"], seed=seed, llama_url=llama_url
+    )
+    diary_entry = result2["text"].strip()
+    print(f"  Diary: {len(diary_entry)} chars, {result2['elapsed_seconds']}s")
+
+    # Pass 3: JSON action
+    print("  Pass 3: generating action JSON...")
+    prompt3 = prompt + thinking + "\n</think>\n<diary>\n" + diary_entry + "\n</diary>\n{"
+    result3 = call_llama(
+        prompt3, max_tokens=256, temperature=0.3,
         stop=["\n\n"], seed=seed, llama_url=llama_url
     )
+    print(f"  Action: {result3['elapsed_seconds']}s")
 
-    action_text = "{" + result2["text"]
-    combined_text = reasoning + "\n</think>\n" + action_text
+    action_text = "{" + result3["text"]
+    total_elapsed = result1["elapsed_seconds"] + result2["elapsed_seconds"] + result3["elapsed_seconds"]
+
+    total_prompt_tokens = (result1["tokens"]["prompt_tokens"]
+                           + result2["tokens"]["prompt_tokens"]
+                           + result3["tokens"]["prompt_tokens"])
+    total_completion_tokens = (result1["tokens"]["completion_tokens"]
+                               + result2["tokens"]["completion_tokens"]
+                               + result3["tokens"]["completion_tokens"])
+
     return {
-        "text": combined_text,
-        "reasoning": reasoning,
+        "text": diary_entry + "\n</diary>\n" + action_text,
+        "thinking": thinking,
+        "reasoning": diary_entry,  # diary entry is what goes on-chain as "reasoning"
         "action_text": action_text.strip(),
-        "elapsed_seconds": result1["elapsed_seconds"] + result2["elapsed_seconds"],
+        "elapsed_seconds": total_elapsed,
         "tokens": {
-            "prompt_tokens": result1["tokens"]["prompt_tokens"] + result2["tokens"]["prompt_tokens"],
-            "completion_tokens": result1["tokens"]["completion_tokens"] + result2["tokens"]["completion_tokens"],
+            "prompt_tokens": total_prompt_tokens,
+            "completion_tokens": total_completion_tokens,
         },
     }
+
+
+# Keep backward-compatible alias
+def run_two_pass_inference(prompt, seed=-1, llama_url=DEFAULT_LLAMA_URL):
+    """Backward-compatible alias — now runs three-pass inference."""
+    return run_three_pass_inference(prompt, seed=seed, llama_url=llama_url)
 
 
 def truncate_reasoning(reasoning: str) -> str:
