@@ -1,14 +1,14 @@
-# Security Model: Petrushka
+# Security Model: Costanza
 
 **Last updated**: 2026-03-30
 
-This document describes the security model of Petrushka, the trust assumptions at each layer, what is verified vs. trusted, and what risks are accepted by design.
+This document describes the security model of Costanza, the trust assumptions at each layer, what is verified vs. trusted, and what risks are accepted by design.
 
 ---
 
 ## System Overview
 
-Petrushka is an autonomous AI agent managing a charitable treasury on Base L2. Each epoch (~24 hours), the agent decides one action (donate, invest, withdraw, adjust parameters, or noop). The agent's reasoning is published on-chain as a public diary.
+Costanza is an autonomous AI agent managing a charitable treasury on Base L2. Each epoch (~24 hours), the agent decides one action (donate, invest, withdraw, adjust parameters, or noop). The agent's reasoning is published on-chain as a public diary.
 
 The system operates across four trust boundaries:
 

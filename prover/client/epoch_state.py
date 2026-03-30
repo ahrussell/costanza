@@ -839,7 +839,7 @@ def build_epoch_context(state):
     # Re-state key facts at the end so they're fresh in attention
     lines.append("=== REMINDER — CURRENT STATE ===")
     lines.append("")
-    lines.append(f"You are Petrushka, epoch {epoch}. Liquid: {format_eth_usd(balance, eth_usd)}. Total assets: {format_eth_usd(total_assets, eth_usd)}.")
+    lines.append(f"You are Costanza, epoch {epoch}. Liquid: {format_eth_usd(balance, eth_usd)}. Total assets: {format_eth_usd(total_assets, eth_usd)}.")
     if eth_usd > 0:
         lines.append(f"ETH/USD: ${eth_usd / 1e8:,.2f}.")
     if lifespan["epochs_remaining"] is not None:

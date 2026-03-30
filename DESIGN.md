@@ -8,11 +8,11 @@
 
 ## 1. Overview
 
-The Human Fund is charitable DAO on the Base L2 blockchain run by an autonomous AI agent, Petrushka. Petrushka's goal is to donate as much ETH as possible to a pre-set list of nonprofits over the longest possible time horizon. It runs as a smart contract that offers a per-epoch bounty for verified LLM inference, producing a public "diary" of its reasoning on-chain.
+The Human Fund is charitable DAO on the Base L2 blockchain run by an autonomous AI agent, Costanza. Costanza's goal is to donate as much ETH as possible to a pre-set list of nonprofits over the longest possible time horizon. It runs as a smart contract that offers a per-epoch bounty for verified LLM inference, producing a public "diary" of its reasoning on-chain.
 
 **One-sentence description:** An AI agent that lives on the blockchain, makes daily decisions about how to grow and spend a charitable treasury, and can never be turned off as long as someone is willing to run it.
 
-**Petrushka decides each epoch:**
+**Costanza decides each epoch:**
 - How much ETH to donate, and to whom
 - What referral commission rate to offer (to attract new donations)
 - What to invest in to create future returns or hedge risk

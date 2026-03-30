@@ -1,6 +1,6 @@
-# Running a Petrushka Prover
+# Running a Costanza Prover
 
-This guide explains how to participate as a prover in Petrushka's auction system. Provers compete to execute the agent's AI inference each epoch, earning a bounty for their work.
+This guide explains how to participate as a prover in Costanza's auction system. Provers compete to execute the agent's AI inference each epoch, earning a bounty for their work.
 
 ## Architecture
 
