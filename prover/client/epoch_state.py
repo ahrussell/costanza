@@ -171,7 +171,7 @@ def read_contract_state(contract, w3):
             "id": i,
             "name": name,
             "description": description,
-            "ein": ein.hex().rstrip('0') if isinstance(ein, bytes) else ein,
+            "ein": "0x" + ein.hex() if isinstance(ein, bytes) else ein,
             "total_donated": total_donated,
             "total_donated_usd": total_donated_usd,
             "donation_count": donation_count,
