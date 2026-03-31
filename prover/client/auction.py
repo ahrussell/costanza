@@ -35,6 +35,16 @@ GAS_CLOSE_REVEAL = 500_000
 GAS_SUBMIT_RESULT = 15_000_000  # DCAP verification is expensive
 
 
+def _is_expected_revert(err: str) -> bool:
+    """Check if a revert is a known timing/phase error that should be silently retried."""
+    return any(s in err for s in (
+        "WrongPhase", "TimingError", "AlreadyDone",
+        "0x0730a2ce",   # TimingError selector on deployed contracts
+        "0xfa936b38",   # WrongPhase selector
+        "0xb5615854",   # AlreadyDone selector
+    ))
+
+
 def start_epoch(chain: ChainClient, dry_run=False):
     """Start a new epoch. Idempotent — catches 'already started' revert."""
     try:
@@ -46,11 +56,11 @@ def start_epoch(chain: ChainClient, dry_run=False):
         return True
     except (ContractLogicError, ContractCustomError) as e:
         err = str(e)
-        if "WrongPhase" in err or "already" in err.lower():
+        if "already" in err.lower() or "AlreadyDone" in err:
             logger.info("Epoch already started (OK)")
             return True
-        if "0x0730a2ce" in err or "TimingError" in err:
-            logger.info("startEpoch() too early — previous epoch duration hasn't elapsed")
+        if _is_expected_revert(err):
+            logger.info("startEpoch() not ready yet — %s", err[:80])
             return False
         raise
 
@@ -105,9 +115,8 @@ def close_commit(chain: ChainClient, dry_run=False):
         logger.info("closeCommit() submitted")
         return True
     except (ContractLogicError, ContractCustomError) as e:
-        err = str(e)
-        if "WrongPhase" in err or "TimingError" in err or "0x0730a2ce" in err:
-            logger.info("closeCommit() not ready yet (commit window still open)")
+        if _is_expected_revert(str(e)):
+            logger.info("closeCommit() not ready yet — %s", str(e)[:80])
             return False
         raise
 
@@ -121,12 +130,18 @@ def reveal_bid(chain: ChainClient, state: dict, dry_run=False):
         logger.info("[DRY RUN] Would reveal: %.6f ETH", bid_amount / 1e18)
         return True
 
-    chain.send_tx(
-        chain.contract.functions.reveal(bid_amount, salt),
-        gas=GAS_REVEAL,
-    )
-    logger.info("Bid revealed: %.6f ETH", bid_amount / 1e18)
-    return True
+    try:
+        chain.send_tx(
+            chain.contract.functions.reveal(bid_amount, salt),
+            gas=GAS_REVEAL,
+        )
+        logger.info("Bid revealed: %.6f ETH", bid_amount / 1e18)
+        return True
+    except (ContractLogicError, ContractCustomError) as e:
+        if _is_expected_revert(str(e)):
+            logger.info("reveal() not ready or already done — %s", str(e)[:80])
+            return False
+        raise
 
 
 def close_reveal(chain: ChainClient, dry_run=False):
@@ -139,9 +154,8 @@ def close_reveal(chain: ChainClient, dry_run=False):
         logger.info("closeReveal() submitted")
         return True
     except (ContractLogicError, ContractCustomError) as e:
-        err = str(e)
-        if "WrongPhase" in err or "TimingError" in err or "0x0730a2ce" in err:
-            logger.info("closeReveal() not ready yet (reveal window still open)")
+        if _is_expected_revert(str(e)):
+            logger.info("closeReveal() not ready yet — %s", str(e)[:80])
             return False
         raise
 
