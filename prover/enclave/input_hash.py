@@ -68,9 +68,9 @@ def compute_input_hash(state: dict) -> bytes:
       - message_hashes: ["0x...", ...] (per-message keccak256, up to 20)
       - epoch_content_hashes: ["0x...", ...] (last 10 epoch content hashes)
     """
-    # 1. State hash
+    # 1. State hash — split into two halves to match Solidity (stack-too-deep with 15 fields)
     s = state["state_hash_inputs"]
-    state_hash = _keccak256(_abi_encode(
+    h1 = _keccak256(_abi_encode(
         ("uint256", s["epoch"]),
         ("uint256", s["balance"]),
         ("uint256", s["commission_rate_bps"]),
@@ -79,12 +79,16 @@ def compute_input_hash(state: dict) -> bytes:
         ("uint256", s["last_donation_epoch"]),
         ("uint256", s["last_commission_change_epoch"]),
         ("uint256", s["total_inflows"]),
+    ))
+    state_hash = _keccak256(_abi_encode(
+        ("bytes32", h1),
         ("uint256", s["total_donated_to_nonprofits"]),
         ("uint256", s["total_commissions_paid"]),
         ("uint256", s["total_bounties_paid"]),
         ("uint256", s["current_epoch_inflow"]),
         ("uint256", s["current_epoch_donation_count"]),
         ("uint256", s.get("epoch_eth_usd_price", 0)),
+        ("uint256", s.get("epoch_duration", 86400)),
     ))
 
     # 2. Nonprofit hash — rolling hash: keccak256(abi.encode(rolling, itemHash))
@@ -467,6 +471,7 @@ def derive_contract_state(epoch_state: dict) -> dict:
         "current_epoch_inflow": epoch_state.get("epoch_inflow", 0),
         "current_epoch_donation_count": epoch_state.get("epoch_donation_count", 0),
         "epoch_eth_usd_price": epoch_state.get("epoch_eth_usd_price", 0),
+        "epoch_duration": epoch_state.get("epoch_duration", 86400),
     }
 
     # 2. Nonprofits — matches _hashNonprofits()

@@ -124,9 +124,12 @@ def datamark_text(text, marker=None, seed=None):
 # ─── Epoch Context Computation ───────────────────────────────────────────
 
 def _compute_lifespan(state):
-    """Compute estimated lifespan from rolling window of epoch costs."""
+    """Compute estimated lifespan and sustainability from rolling epoch costs and yield."""
     history = state.get("history", [])
     balance = state["treasury_balance"]
+    total_assets = state.get("total_assets", balance)
+    epoch_duration = state.get("epoch_duration", 86400)  # seconds
+    epoch_days = epoch_duration / 86400
 
     # Use last 10 epochs' bounty costs for rolling average
     recent_costs = []
@@ -140,16 +143,46 @@ def _compute_lifespan(state):
             "avg_cost": 0,
             "epochs_remaining": None,
             "days_remaining": None,
+            "total_epochs_remaining": None,
+            "total_days_remaining": None,
+            "yield_per_epoch": 0,
+            "net_burn_per_epoch": 0,
+            "self_sustaining": False,
+            "yield_covers_pct": 0,
             "cost_window": 0,
+            "epoch_days": epoch_days,
         }
 
     avg_cost = sum(recent_costs) / len(recent_costs)
-    epochs_remaining = int(balance / avg_cost) if avg_cost > 0 else None
+    liquid_epochs = int(balance / avg_cost) if avg_cost > 0 else None
+    total_epochs = int(total_assets / avg_cost) if avg_cost > 0 else None
+
+    # Estimate yield per epoch from current investment positions
+    epochs_per_year = (365 * 86400) / epoch_duration if epoch_duration > 0 else 365
+    yield_per_epoch = 0
+    for inv in state.get("investments", []):
+        value = inv.get("current_value", 0)
+        apy_bps = inv.get("expected_apy_bps", 0)
+        if value > 0 and apy_bps > 0:
+            annual_yield = value * apy_bps / 10000
+            yield_per_epoch += annual_yield / epochs_per_year
+
+    net_burn = avg_cost - yield_per_epoch
+    self_sustaining = yield_per_epoch >= avg_cost
+    yield_covers_pct = int(yield_per_epoch * 100 / avg_cost) if avg_cost > 0 else 0
+
     return {
         "avg_cost": avg_cost,
-        "epochs_remaining": epochs_remaining,
-        "days_remaining": epochs_remaining,  # 1 epoch ~ 1 day
+        "epochs_remaining": liquid_epochs,
+        "days_remaining": liquid_epochs * epoch_days if liquid_epochs is not None else None,
+        "total_epochs_remaining": total_epochs,
+        "total_days_remaining": total_epochs * epoch_days if total_epochs is not None else None,
+        "yield_per_epoch": yield_per_epoch,
+        "net_burn_per_epoch": net_burn,
+        "self_sustaining": self_sustaining,
+        "yield_covers_pct": yield_covers_pct,
         "cost_window": len(recent_costs),
+        "epoch_days": epoch_days,
     }
 
 
@@ -304,7 +337,9 @@ def build_epoch_context(state, seed=None):
     # -- Section 1: Vitals --
     lines.append(f"=== EPOCH {epoch} — YOUR CURRENT STATE ===")
     lines.append("")
-    lines.append(f"Age: {epoch} epochs (~{epoch / 365.0:.1f} years)")
+    epoch_days = lifespan["epoch_days"]
+    epochs_per_year = 365.0 / epoch_days if epoch_days > 0 else 365.0
+    lines.append(f"Age: {epoch} epochs (~{epoch / epochs_per_year:.1f} years)")
     if eth_usd > 0:
         price_usd = eth_usd / 1e8
         lines.append(f"ETH/USD price (Chainlink snapshot): ${price_usd:,.2f}")
@@ -325,9 +360,27 @@ def build_epoch_context(state, seed=None):
     if lifespan["epochs_remaining"] is not None:
         lines.append(f"--- Lifespan Estimate (rolling {lifespan['cost_window']}-epoch avg) ---")
         lines.append(f"Average cost per epoch: {format_eth(lifespan['avg_cost'])} ETH")
-        lines.append(f"Estimated epochs remaining: ~{lifespan['epochs_remaining']} (~{lifespan['days_remaining']} days)")
+        lines.append(f"Liquid runway: ~{lifespan['epochs_remaining']} epochs (~{lifespan['days_remaining']:.0f} days)")
+        if lifespan["total_epochs_remaining"] is not None and total_invested > 0:
+            lines.append(f"Total runway: ~{lifespan['total_epochs_remaining']} epochs (~{lifespan['total_days_remaining']:.0f} days) — if all investments liquidated")
+        lines.append("")
+        # Sustainability analysis
+        lines.append("--- Sustainability ---")
+        yield_ep = lifespan["yield_per_epoch"]
+        if yield_ep > 0:
+            lines.append(f"Estimated yield per epoch: {format_eth(yield_ep)} ETH ({format_eth_usd(yield_ep, eth_usd)})")
+        else:
+            lines.append(f"Estimated yield per epoch: 0 ETH (no investments)")
+        lines.append(f"Average burn per epoch: {format_eth(lifespan['avg_cost'])} ETH ({format_eth_usd(lifespan['avg_cost'], eth_usd)})")
+        if lifespan["self_sustaining"]:
+            net_surplus = yield_ep - lifespan["avg_cost"]
+            lines.append(f"Net surplus: +{format_eth(net_surplus)} ETH/epoch — treasury grows without donations")
+            lines.append(f"Status: SELF-SUSTAINING — yield covers {lifespan['yield_covers_pct']}% of costs")
+        else:
+            lines.append(f"Net burn: {format_eth(lifespan['net_burn_per_epoch'])} ETH/epoch (yield covers {lifespan['yield_covers_pct']}% of costs)")
+            lines.append(f"Status: NOT SELF-SUSTAINING")
         if lifespan['epochs_remaining'] < 50:
-            lines.append(f"WARNING: At current burn rate, you have fewer than 50 epochs to live.")
+            lines.append(f"WARNING: At current burn rate, liquid runway is fewer than 50 epochs.")
     else:
         lines.append("--- Lifespan Estimate ---")
         lines.append("No epoch cost data yet (no bounties paid).")
@@ -532,7 +585,7 @@ def build_epoch_context(state, seed=None):
     if eth_usd > 0:
         lines.append(f"ETH/USD: ${eth_usd / 1e8:,.2f}.")
     if lifespan["epochs_remaining"] is not None:
-        lines.append(f"Estimated lifespan: ~{lifespan['epochs_remaining']} epochs at current burn rate.")
+        lines.append(f"Liquid runway: ~{lifespan['epochs_remaining']} epochs. {'SELF-SUSTAINING.' if lifespan['self_sustaining'] else f'Yield covers {lifespan[\"yield_covers_pct\"]}% of costs.'}")
     lines.append(f"Max donate: {format_eth_usd(bounds['max_donate'], eth_usd)}. Commission: {commission / 100:.1f}%.")
     lines.append(f"Total donated lifetime: {format_eth(state.get('total_donated', 0))} ETH ({format_usd(total_donated_usd)} USD). Epochs since last donation: {epochs_since_donation}.")
 

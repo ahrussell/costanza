@@ -140,6 +140,7 @@ contract CrossStackHashTest is Test {
             ',"current_epoch_inflow":', vm.toString(fund.currentEpochInflow()),
             ',"current_epoch_donation_count":', vm.toString(fund.currentEpochDonationCount()),
             ',"epoch_eth_usd_price":', vm.toString(fund.epochEthUsdPrice()),
+            ',"epoch_duration":', vm.toString(fund.epochDuration()),
             '}'
         );
 

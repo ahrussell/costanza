@@ -978,8 +978,9 @@ contract TheHumanFund is ReentrancyGuard {
     }
 
     /// @dev Hash current state variables (all cheap SLOADs).
+    ///      Split into two halves to avoid stack-too-deep with 15 fields.
     function _hashState() internal view returns (bytes32) {
-        return keccak256(abi.encode(
+        bytes32 h1 = keccak256(abi.encode(
             currentEpoch,
             address(this).balance,
             commissionRateBps,
@@ -987,13 +988,17 @@ contract TheHumanFund is ReentrancyGuard {
             consecutiveMissedEpochs,
             lastDonationEpoch,
             lastCommissionChangeEpoch,
-            totalInflows,
+            totalInflows
+        ));
+        return keccak256(abi.encode(
+            h1,
             totalDonatedToNonprofits,
             totalCommissionsPaid,
             totalBountiesPaid,
             currentEpochInflow,
             currentEpochDonationCount,
-            epochEthUsdPrice
+            epochEthUsdPrice,
+            epochDuration
         ));
     }
 

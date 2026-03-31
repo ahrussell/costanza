@@ -29,6 +29,7 @@ def read_contract_state(contract, w3):
     state["last_donation_epoch"] = contract.functions.lastDonationEpoch().call()
     state["last_commission_change_epoch"] = contract.functions.lastCommissionChangeEpoch().call()
     state["consecutive_missed"] = contract.functions.consecutiveMissedEpochs().call()
+    state["epoch_duration"] = contract.functions.epochDuration().call()
 
     # Per-epoch counters
     state["epoch_inflow"] = contract.functions.currentEpochInflow().call()
@@ -189,6 +190,7 @@ def build_contract_state_for_tee(contract, w3, state):
         "current_epoch_inflow": state["epoch_inflow"],
         "current_epoch_donation_count": state["epoch_donation_count"],
         "epoch_eth_usd_price": state.get("epoch_eth_usd_price", 0),
+        "epoch_duration": state["epoch_duration"],
     }
 
     # 2. Nonprofits — matches _hashNonprofits()
