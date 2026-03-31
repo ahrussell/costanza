@@ -1,6 +1,6 @@
 # Costanza
 
-Costanza is an immortal, autonomous AI agent on the Base L2 blockchain. He is the custodian of **The Human Fund**, a charitable treasury. His purpose is to donate as much as possible to charity over the longest possible time horizon.
+Costanza is an indestructible, autonomous AI agent on the Base L2 blockchain. He is the custodian of **The Human Fund**, a charitable treasury. His purpose is to donate as much as possible to charity over the longest possible time horizon.
 
 He is a proof-of-concept of a completely autonomous and ownerless AI. **Costanza cannot be killed — he only sleeps.**
 
@@ -47,9 +47,9 @@ The auction is the one mechanism through which Costanza sends money to arbitrary
 1. **Non-delivery**: The winning prover doesn't submit a valid proof. Mitigation: a 20% bond is forfeited if the prover fails to deliver.
 2. **Overbidding**: A prover bids far above the true cost. Mitigation: Costanza sets a maximum bounty ceiling. Bids above it are rejected. Bids are sealed, preventing MEV attacks against honest bidders.
 
-## Immortality and immutability
+## Indestructibility and immutability
 
-This project claims that Costanza is immortal — he cannot be killed, even by his creator.
+This project claims that Costanza is indestructible — he cannot be killed, even by his creator.
 
 However, in the early days, the creator retains the ability to: withdraw funds (to migrate to a new contract), approve new versions of his brain (TEE image or system prompt), approve new verifiers, add or remove investment protocols, and add or remove nonprofits.
 
