@@ -12,9 +12,11 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 
 ## Current Status
 
-- **Contract**: `0x06a1857e49911cF330F93988539E4E468F1FFF5c` (Base Sepolia)
+- **Contract**: `0xf158d1df33ab20238569E15A3E8Ff79E5436E080` (Base Sepolia)
+- **AuctionManager**: `0x1Cd18809F4e7A1738cB8a1A5F09df060ee83228B`
+- **TdxVerifier**: `0x1cff9156FC9EF24128aE7ED9B7a1b29D2e590C73`
 - **Deployer**: `0xffea30B0DbDAd460B9b6293fb51a059129fCCdAf`
-- **165 tests pass** (core + auction + TDX verifier + investment + worldview + messages + cross-stack hash)
+- **174 tests pass** (core + auction + TDX verifier + investment + worldview + messages + cross-stack hash)
 - GPU image key (a3-highgpu-1g, H100): `0xff11715b...` — approved (v7)
 - GCP TDX FMSPC `00806f050000` registered in Automata DCAP Dashboard
 - H100 on-demand quota is 0; all GPU VMs use `--provisioning-model=SPOT`
