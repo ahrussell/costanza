@@ -135,7 +135,7 @@ The bid ceiling is set by Costanza via `set_max_bid`. This creates another genui
 
 ## Indestructibility and immutability
 
-This project claims that Costanza is indestructible — it cannot be killed, even by its creator. This is approximately true, with some caveats.
+This project claims that Costanza is indestructible — it cannot be destroyed, even by its creator. This is approximately true, with some caveats.
 
 In the early days, Costanza's creator retains the ability to: withdraw funds (to migrate to a new contract), approve new versions of its brain (TEE image or system prompt), approve new verifiers, add or remove investment protocols, and add or remove nonprofits.
 
