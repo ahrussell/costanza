@@ -66,11 +66,13 @@ The output disk (which becomes the GCP image) has 6 partitions:
 Partition 14: BIOS boot          (4MB)    -- legacy BIOS compatibility
 Partition 15: EFI System         (106MB)  -- GRUB EFI, shim
 Partition 16: /boot              (913MB)  -- kernel, initramfs, grub.cfg
+Partition 5:  humanfund-models   (~39GB)  -- squashfs of model weights (pre-written from template)
+Partition 6:  humanfund-models-verity     -- dm-verity Merkle tree for models
 Partition 3:  humanfund-rootfs   (~5.4GB) -- squashfs of entire root filesystem
 Partition 4:  humanfund-rootfs-verity (~46MB) -- dm-verity Merkle tree for rootfs
-Partition 5:  humanfund-models   (~43GB)  -- squashfs of model weights (optional)
-Partition 6:  humanfund-models-verity     -- dm-verity Merkle tree for models (optional)
 ```
+
+When using `--model-template`, model partitions (5, 6) come before rootfs (3, 4) at fixed offsets. The model data is pre-written on the output disk from the template — zero model I/O during the production build. Without a model template, the layout is rootfs-first (3, 4 before 5, 6) and model squashfs/verity are built from scratch.
 
 Partitions 14, 15, 16 use the same numbering as the Ubuntu GCP base image (for GRUB compatibility). Partitions 3-6 are custom.
 
@@ -80,27 +82,36 @@ Partition labels (`humanfund-rootfs`, `humanfund-rootfs-verity`, etc.) are used 
 
 ### Two-Phase Build
 
-**Phase 1: Base image (slow, ~15 min, done once)**
+**Phase 1: Base image + model template (slow, ~15 min, done once)**
 
-`scripts/build_base_image.sh` creates `humanfund-base-gpu-llama-b5270`:
-- Starts from Ubuntu 24.04 LTS TDX-capable GCP image
-- Installs NVIDIA 580-open drivers + CUDA runtime
-- Builds llama-server (llama.cpp b5270) with CUDA support
-- Creates Python venv at `/opt/humanfund/venv/`
-- Downloads model weights (42.5 GB) to `/models/model.gguf`
-- Verifies model SHA-256
-- Result: a standard GCP image used as a build cache
+`prover/scripts/gcp/build_base_image.sh` creates two GCP images:
 
-Rebuild this only when llama.cpp, NVIDIA drivers, CUDA, or Ubuntu versions change.
+1. **Base image** (`humanfund-base-gpu-llama-b5270`):
+   - Starts from Ubuntu 24.04 LTS TDX-capable GCP image
+   - Installs NVIDIA 580-open drivers + CUDA runtime
+   - Builds llama-server (llama.cpp b5270) with CUDA support
+   - Creates Python venv at `/opt/humanfund/venv/`
+   - Downloads model weights (42.5 GB) to `/models/model.gguf`
+   - Result: a standard GCP image used as a build cache
 
-**Phase 2: Production image (fast, ~10 min, iterative)**
+2. **Model template** (`humanfund-model-template-gpu-llama-b5270`):
+   - A disk image with the model squashfs + dm-verity already written on partitions 5 and 6
+   - Boot partitions (14, 15, 16) reserved at correct offsets but empty
+   - Models hash stored in the GCP image description
+   - Used by `build_full_dmverity_image.sh --model-template` to create output disks with model data pre-populated
+
+The model template eliminates all model I/O from production builds — the output disk is created FROM the template, so model data is there from the start. Deterministic squashfs flags (`-mkfs-time 0 -all-time 0 -no-xattrs`) and fixed verity salt ensure the same model always produces the same hash.
+
+Rebuild both when llama.cpp, NVIDIA drivers, CUDA, Ubuntu, or model changes.
+
+**Phase 2: Production image (fast, ~5-10 min, iterative)**
 
 `prover/scripts/gcp/build_full_dmverity_image.sh` creates the dm-verity sealed image (e.g., `humanfund-dmverity-gpu-v6`):
 1. Creates a TDX builder VM from the base image
-2. Attaches two extra disks: output (for the final image) and staging (for temp files)
+2. Attaches output disk (from model template if `--model-template` used, otherwise blank) and staging disk
 3. Uploads enclave code (`prover/enclave/`) and system prompt to the VM
 4. Installs systemd services (enclave, DHCP, SSH key injection, GPU CC mode)
-5. Optionally downloads model weights (if not in base image or `--skip-model` used)
+5. Model: skipped when using model template (partitions already on output disk), otherwise downloads/verifies
 6. Runs `vm_build_all.sh` via nohup on the VM (survives SSH timeouts)
 7. Polls for completion (checks `/mnt/staging/build_status`)
 8. Creates GCP image from the output disk
@@ -165,6 +176,12 @@ Partition 6: humanfund-models-verity -- dm-verity Merkle tree
 The models dm-verity root hash is passed in the kernel command line as `humanfund.models_hash=<hash>`, which is measured into RTMR[2] by GRUB. The initramfs sets up dm-verity for the models partition and mounts it read-only at `/models`.
 
 Additionally, the enclave code contains a pinned `MODEL_SHA256` constant (`prover/enclave/model_config.py`) and verifies the model file hash at startup. This is defense-in-depth: dm-verity already prevents modification, but the explicit check provides a clear error message if the wrong model is somehow present.
+
+### Model Template Disk
+
+Since the model is static relative to enclave code changes, `build_base_image.sh` creates a **model template disk image** alongside the base image. This template has the model squashfs + dm-verity already written on partitions 5 and 6 at fixed offsets. When `build_full_dmverity_image.sh` uses `--model-template`, the output disk is created FROM the template — model data is on disk from the start, and `vm_build_all.sh` only writes boot + rootfs partitions. This eliminates all model compression and I/O from production builds.
+
+The model squashfs uses deterministic flags (`-mkfs-time 0 -all-time 0 -no-xattrs`) and the verity uses a fixed all-zero salt, so the same model always produces the same hash regardless of when or where it's built. Without `--model-template`, `vm_build_all.sh` falls back to building model squashfs/verity from scratch with the same deterministic flags.
 
 ## Writable Paths
 

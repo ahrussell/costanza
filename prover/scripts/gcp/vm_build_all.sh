@@ -3,12 +3,17 @@
 #
 # This single script does everything needed on the VM:
 #   1. Clean rootfs for squashing
-#   2. Create squashfs of the entire root (with pseudo-entries for /proc /sys /dev)
+#   2. Create squashfs of the entire root
 #   3. Compute dm-verity hash tree
+#   3b. Models squashfs + verity (skipped when model template is used)
 #   4. Create initramfs with dm-verity hooks
-#   5. Partition the output disk
+#   5. Partition the output disk (template-aware: models before rootfs when template used)
 #   6. Copy boot partitions + write squashfs/verity to output disk
 #   7. Update GRUB on the output disk
+#
+# When MODELS_HASH env var is set, the output disk was created from a model template
+# image that already has model partitions (5, 6) pre-written. The script skips model
+# squashfs/verity creation and places rootfs partitions after the existing model partitions.
 #
 # Usage:
 #   sudo nohup bash /tmp/vm_build_all.sh > /mnt/staging/build.log 2>&1 &
@@ -22,6 +27,11 @@ set -euo pipefail
 # When set, SSH service + key injection + /etc overlay are included.
 # When unset (production), SSH is disabled and /etc stays immutable.
 ENABLE_SSH="${ENABLE_SSH:-}"
+
+# MODELS_HASH: set by build_full_dmverity_image.sh when --model-template is used.
+# When set, the output disk already has model partitions pre-written from the template.
+# vm_build_all.sh skips model squashfs+verity creation and places rootfs AFTER models.
+MODELS_HASH="${MODELS_HASH:-}"
 
 echo "═══ VM Build — $(date) ═══"
 
@@ -163,6 +173,7 @@ rm -f /mnt/staging/rootfs.squashfs
 # For dirs we fully exclude (boot, models), use -pf pseudo-entries to recreate.
 mksquashfs / /mnt/staging/rootfs.squashfs \
     -noappend -comp zstd -Xcompression-level 3 \
+    -mkfs-time 0 -all-time 0 -no-xattrs \
     -wildcards \
     -e 'proc/*' -e 'sys/*' -e 'dev/*' -e 'run/*' -e 'tmp/*' \
     -e 'boot/*' -e 'models/*' -e 'mnt/*' -e 'media/*' \
@@ -180,6 +191,7 @@ rm -f /mnt/staging/rootfs.verity
 
 veritysetup format /mnt/staging/rootfs.squashfs /mnt/staging/rootfs.verity \
     --data-block-size=4096 --hash-block-size=4096 --hash=sha256 \
+    --salt=0000000000000000000000000000000000000000000000000000000000000000 \
     > /mnt/staging/verity-info.txt 2>&1
 
 ROOTFS_HASH=$(grep 'Root hash:' /mnt/staging/verity-info.txt | awk '{print $NF}')
@@ -188,16 +200,26 @@ echo "$ROOTFS_HASH" > /mnt/staging/rootfs-verity-roothash
 echo "  Root hash: $ROOTFS_HASH"
 echo "  Verity size: $(du -h /mnt/staging/rootfs.verity | cut -f1)"
 
-# ─── Step 3b: Models squashfs + verity (if present) ──────────────────
+# ─── Step 3b: Models squashfs + verity (if needed) ──────────────────
 
-MODELS_HASH=""
-if [ -f /models/model.gguf ]; then
+if [ -n "$MODELS_HASH" ]; then
+    # Model template: output disk already has model partitions pre-written.
+    # MODELS_HASH was passed via env var from build_full_dmverity_image.sh.
     echo ""
-    echo "─── Step 3b: Models squashfs + verity ───"
+    echo "─── Step 3b: Model partitions pre-written on output disk (template) ───"
+    echo "  Models hash: $MODELS_HASH"
+elif [ -f /models/model.gguf ]; then
+    # No template: build model squashfs + verity from scratch
+    echo ""
+    echo "─── Step 3b: Building model squashfs + verity from scratch ───"
     rm -f /mnt/staging/models.squashfs /mnt/staging/models.verity
-    mksquashfs /models /mnt/staging/models.squashfs -noappend -comp zstd -Xcompression-level 3 2>&1 | tail -3
+    mksquashfs /models /mnt/staging/models.squashfs \
+        -noappend -comp zstd -Xcompression-level 3 \
+        -mkfs-time 0 -all-time 0 -no-xattrs \
+        2>&1 | tail -3
     veritysetup format /mnt/staging/models.squashfs /mnt/staging/models.verity \
         --data-block-size=4096 --hash-block-size=4096 --hash=sha256 \
+        --salt=0000000000000000000000000000000000000000000000000000000000000000 \
         > /mnt/staging/models-verity-info.txt 2>&1
     MODELS_HASH=$(grep 'Root hash:' /mnt/staging/models-verity-info.txt | awk '{print $NF}')
     echo "$MODELS_HASH" > /mnt/staging/models-verity-roothash
@@ -341,32 +363,59 @@ BOOT_PART_END=$(sgdisk -i 16 "$BOOT_DISK" | grep 'Last sector' | awk '{print $3}
 BIOS_START=$(sgdisk -i 14 "$BOOT_DISK" | grep 'First sector' | awk '{print $3}')
 BIOS_END=$(sgdisk -i 14 "$BOOT_DISK" | grep 'Last sector' | awk '{print $3}')
 
-# Partition output disk
-sgdisk --zap-all "$OUTPUT"
-
 rootfs_sectors=$(( (ROOTFS_SQ_SIZE + 511) / 512 + 4096 ))
 rootfs_v_sectors=$(( (ROOTFS_V_SIZE + 511) / 512 + 4096 ))
 
-sgdisk -n 14:$BIOS_START:$BIOS_END -t 14:EF02 -c 14:"BIOS boot" "$OUTPUT"
-sgdisk -n 15:$EFI_START:$EFI_END -t 15:EF00 -c 15:"EFI System" "$OUTPUT"
-sgdisk -n 16:$BOOT_PART_START:$BOOT_PART_END -t 16:EA00 -c 16:"Linux extended boot" "$OUTPUT"
+# Check if output disk has pre-written model partitions (from model template)
+HAS_MODEL_TEMPLATE=false
+if sgdisk -i 5 "$OUTPUT" 2>/dev/null | grep -q 'humanfund-models'; then
+    HAS_MODEL_TEMPLATE=true
+    echo "  Output disk has model template partitions"
+fi
 
-ROOTFS_START=$((BOOT_PART_END + 2048))
-sgdisk -n 3:$ROOTFS_START:+${rootfs_sectors} -c 3:"humanfund-rootfs" "$OUTPUT"
-ROOTFS_ACTUAL_END=$(sgdisk -i 3 "$OUTPUT" | grep 'Last sector' | awk '{print $3}')
+if $HAS_MODEL_TEMPLATE; then
+    # Template path: model partitions (5, 6) already exist with data.
+    # Layout: 14 | 15 | 16 | 5: models | 6: models-verity | 3: rootfs | 4: rootfs-verity
+    # Add boot + rootfs partitions without touching models.
+    MODELS_V_END=$(sgdisk -i 6 "$OUTPUT" | grep 'Last sector' | awk '{print $3}')
 
-V_START=$((ROOTFS_ACTUAL_END + 2048))
-sgdisk -n 4:$V_START:+${rootfs_v_sectors} -c 4:"humanfund-rootfs-verity" "$OUTPUT"
+    # Delete boot + rootfs partitions if they exist (from a previous attempt), keep 5 and 6
+    for p in 3 4 14 15 16; do sgdisk -d $p "$OUTPUT" 2>/dev/null || true; done
 
-if [ -n "$MODELS_HASH" ]; then
-    MODEL_SQ="/mnt/staging/models.squashfs"
-    MODEL_V="/mnt/staging/models.verity"
-    model_sectors=$(( ($(stat -c%s "$MODEL_SQ") + 511) / 512 + 4096 ))
-    model_v_sectors=$(( ($(stat -c%s "$MODEL_V") + 511) / 512 + 4096 ))
-    V_END=$(sgdisk -i 4 "$OUTPUT" | grep 'Last sector' | awk '{print $3}')
-    sgdisk -n 5:$((V_END + 2048)):+${model_sectors} -c 5:"humanfund-models" "$OUTPUT"
-    M_END=$(sgdisk -i 5 "$OUTPUT" | grep 'Last sector' | awk '{print $3}')
-    sgdisk -n 6:$((M_END + 2048)):+${model_v_sectors} -c 6:"humanfund-models-verity" "$OUTPUT"
+    sgdisk -n 14:$BIOS_START:$BIOS_END -t 14:EF02 -c 14:"BIOS boot" "$OUTPUT"
+    sgdisk -n 15:$EFI_START:$EFI_END -t 15:EF00 -c 15:"EFI System" "$OUTPUT"
+    sgdisk -n 16:$BOOT_PART_START:$BOOT_PART_END -t 16:EA00 -c 16:"Linux extended boot" "$OUTPUT"
+
+    ROOTFS_START=$((MODELS_V_END + 2048))
+    sgdisk -n 3:$ROOTFS_START:+${rootfs_sectors} -c 3:"humanfund-rootfs" "$OUTPUT"
+    ROOTFS_ACTUAL_END=$(sgdisk -i 3 "$OUTPUT" | grep 'Last sector' | awk '{print $3}')
+    V_START=$((ROOTFS_ACTUAL_END + 2048))
+    sgdisk -n 4:$V_START:+${rootfs_v_sectors} -c 4:"humanfund-rootfs-verity" "$OUTPUT"
+else
+    # No template: build everything from scratch.
+    # Layout: 14 | 15 | 16 | 3: rootfs | 4: rootfs-verity | 5: models | 6: models-verity
+    sgdisk --zap-all "$OUTPUT"
+
+    sgdisk -n 14:$BIOS_START:$BIOS_END -t 14:EF02 -c 14:"BIOS boot" "$OUTPUT"
+    sgdisk -n 15:$EFI_START:$EFI_END -t 15:EF00 -c 15:"EFI System" "$OUTPUT"
+    sgdisk -n 16:$BOOT_PART_START:$BOOT_PART_END -t 16:EA00 -c 16:"Linux extended boot" "$OUTPUT"
+
+    ROOTFS_START=$((BOOT_PART_END + 2048))
+    sgdisk -n 3:$ROOTFS_START:+${rootfs_sectors} -c 3:"humanfund-rootfs" "$OUTPUT"
+    ROOTFS_ACTUAL_END=$(sgdisk -i 3 "$OUTPUT" | grep 'Last sector' | awk '{print $3}')
+    V_START=$((ROOTFS_ACTUAL_END + 2048))
+    sgdisk -n 4:$V_START:+${rootfs_v_sectors} -c 4:"humanfund-rootfs-verity" "$OUTPUT"
+
+    if [ -n "$MODELS_HASH" ] && [ -f /mnt/staging/models.squashfs ]; then
+        MODEL_SQ="/mnt/staging/models.squashfs"
+        MODEL_V="/mnt/staging/models.verity"
+        model_sectors=$(( ($(stat -c%s "$MODEL_SQ") + 511) / 512 + 4096 ))
+        model_v_sectors=$(( ($(stat -c%s "$MODEL_V") + 511) / 512 + 4096 ))
+        V_END=$(sgdisk -i 4 "$OUTPUT" | grep 'Last sector' | awk '{print $3}')
+        sgdisk -n 5:$((V_END + 2048)):+${model_sectors} -c 5:"humanfund-models" "$OUTPUT"
+        M_END=$(sgdisk -i 5 "$OUTPUT" | grep 'Last sector' | awk '{print $3}')
+        sgdisk -n 6:$((M_END + 2048)):+${model_v_sectors} -c 6:"humanfund-models-verity" "$OUTPUT"
+    fi
 fi
 
 partprobe "$OUTPUT"
@@ -384,6 +433,9 @@ dd if="${BOOT_DISK}p14" of="${OUTPUT}p14" bs=4M status=none
 dd if="${BOOT_DISK}p15" of="${OUTPUT}p15" bs=4M status=none
 dd if="${BOOT_DISK}p16" of="${OUTPUT}p16" bs=4M status=none
 echo "  Boot partitions copied."
+
+# Fix journal after dd copy (ext4 journal may be dirty from the source disk)
+fsck.ext4 -y "${OUTPUT}p16" > /dev/null 2>&1 || true
 
 # ─── Step 7: Update GRUB on output disk ─────────────────────────────
 
@@ -437,7 +489,9 @@ echo "─── Step 8: Writing dm-verity data ───"
 dd if="$ROOTFS_SQ" of="${OUTPUT}p3" bs=4M status=progress
 dd if="$ROOTFS_V" of="${OUTPUT}p4" bs=4M status=progress
 
-if [ -n "$MODELS_HASH" ]; then
+if $HAS_MODEL_TEMPLATE; then
+    echo "  Model partitions already on disk (template) — skipping write"
+elif [ -n "$MODELS_HASH" ] && [ -f /mnt/staging/models.squashfs ]; then
     dd if="/mnt/staging/models.squashfs" of="${OUTPUT}p5" bs=4M status=progress
     dd if="/mnt/staging/models.verity" of="${OUTPUT}p6" bs=4M status=progress
 fi
@@ -451,12 +505,11 @@ echo ""
 echo "─── Step 9: Verifying dm-verity ───"
 
 veritysetup verify "${OUTPUT}p3" "${OUTPUT}p4" "$ROOTFS_HASH"
-VERIFY_EXIT=$?
-echo "  Verify exit code: $VERIFY_EXIT"
+echo "  Rootfs verify: OK"
 
-if [ "$VERIFY_EXIT" -ne 0 ]; then
-    echo "FAILED: dm-verity verify" > "$STATUS_FILE"
-    exit 1
+if [ -n "$MODELS_HASH" ]; then
+    veritysetup verify "${OUTPUT}p5" "${OUTPUT}p6" "$MODELS_HASH"
+    echo "  Models verify: OK"
 fi
 
 echo ""

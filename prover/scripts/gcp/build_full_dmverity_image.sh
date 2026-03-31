@@ -14,6 +14,7 @@ SKIP_MODEL=false
 ENABLE_SSH=false
 IMAGE_NAME=""
 BASE_IMAGE=""
+MODEL_TEMPLATE=""
 VM_NAME="humanfund-builder-$(date +%s)"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -26,6 +27,7 @@ while [[ $# -gt 0 ]]; do
         --name) IMAGE_NAME="$2"; shift 2 ;;
         --base-image) BASE_IMAGE="$2"; shift 2 ;;
         --project) GCP_PROJECT="$2"; shift 2 ;;
+        --model-template) MODEL_TEMPLATE="$2"; shift 2 ;;
         --skip-model) SKIP_MODEL=true; shift ;;
         --debug) ENABLE_SSH=true; shift ;;
         *) echo "Unknown arg: $1"; exit 1 ;;
@@ -34,11 +36,25 @@ done
 
 [ -z "$IMAGE_NAME" ] && IMAGE_NAME="humanfund-dmverity-$($USE_GPU && echo gpu || echo cpu)-v5"
 
+# Read models hash from template image description (if using template)
+TEMPLATE_MODELS_HASH=""
+if [ -n "$MODEL_TEMPLATE" ]; then
+    TEMPLATE_MODELS_HASH=$(gcloud compute images describe "$MODEL_TEMPLATE" \
+        --project="$GCP_PROJECT" --format='value(description)' 2>/dev/null \
+        | grep -o 'models-hash:[a-f0-9]*' | cut -d: -f2 || true)
+    if [ -z "$TEMPLATE_MODELS_HASH" ]; then
+        echo "ERROR: Could not read models-hash from template image description"
+        exit 1
+    fi
+fi
+
 echo "═══ The Human Fund — GCP Image Builder ═══"
 echo "  Base: ${BASE_IMAGE:-scratch}"
+echo "  Model template: ${MODEL_TEMPLATE:-none}"
 echo "  Image: $IMAGE_NAME"
 echo "  VM: $VM_NAME"
 echo "  SSH: $($ENABLE_SSH && echo "ENABLED (debug)" || echo "DISABLED (production)")"
+[ -n "$TEMPLATE_MODELS_HASH" ] && echo "  Models hash (from template): $TEMPLATE_MODELS_HASH"
 echo ""
 
 OUTPUT_DISK="${VM_NAME}-output"
@@ -73,11 +89,18 @@ $SKIP_MODEL || DISK_SIZE=100
 IMAGE_FLAGS="--image-family=ubuntu-2404-lts-amd64 --image-project=ubuntu-os-cloud"
 [ -n "$BASE_IMAGE" ] && IMAGE_FLAGS="--image=$BASE_IMAGE"
 
+# Output disk: create from model template (pre-populated model partitions) or blank
+if [ -n "$MODEL_TEMPLATE" ]; then
+    OUTPUT_DISK_FLAG="name=$OUTPUT_DISK,size=${DISK_SIZE}GB,type=pd-ssd,device-name=output,image=$MODEL_TEMPLATE"
+else
+    OUTPUT_DISK_FLAG="name=$OUTPUT_DISK,size=${DISK_SIZE}GB,type=pd-ssd,device-name=output"
+fi
+
 gcloud compute instances create "$VM_NAME" \
     --project="$GCP_PROJECT" --zone="$GCP_ZONE" \
     --machine-type=c3-standard-8 $IMAGE_FLAGS \
     --boot-disk-size=300GB --boot-disk-type=pd-ssd \
-    --create-disk="name=$OUTPUT_DISK,size=${DISK_SIZE}GB,type=pd-ssd,device-name=output" \
+    --create-disk="$OUTPUT_DISK_FLAG" \
     --create-disk="size=100GB,type=pd-ssd,auto-delete=yes,device-name=staging" \
     --confidential-compute-type=TDX \
     --no-restart-on-failure --maintenance-policy=TERMINATE 2>&1 | tail -5
@@ -147,8 +170,10 @@ WantedBy=multi-user.target
 EOF'
 vm_run "sudo systemctl daemon-reload && sudo systemctl enable humanfund-enclave && sudo mkdir -p /models"
 
-# Download model weights
-if ! $SKIP_MODEL; then
+# Download model weights (skip when model template provides pre-built partitions)
+if [ -n "$MODEL_TEMPLATE" ]; then
+    echo "─── Skipping model download (model template provides pre-built partitions) ───"
+elif ! $SKIP_MODEL; then
     echo "─── Downloading model weights (42.5GB) ───"
     MODEL_URL="https://huggingface.co/bartowski/DeepSeek-R1-Distill-Llama-70B-GGUF/resolve/main/DeepSeek-R1-Distill-Llama-70B-Q4_K_M.gguf"
     MODEL_SHA256="181a82a1d6d2fa24fe4db83a68eee030384986bdbdd4773ba76424e3a6eb9fd8"
@@ -169,9 +194,10 @@ fi
 
 echo "─── Step 3: Running build via nohup ───"
 vm_scp "$SCRIPT_DIR/vm_build_all.sh" "/tmp/vm_build_all.sh"
-SSH_ENV=""
-$ENABLE_SSH && SSH_ENV="ENABLE_SSH=1 " && echo "  ⚠ DEBUG BUILD: SSH enabled (different dm-verity hash → won't pass production attestation)"
-vm_run "sudo bash -c '${SSH_ENV}nohup bash /tmp/vm_build_all.sh > /mnt/staging/build.log 2>&1 &'"
+BUILD_ENV=""
+$ENABLE_SSH && BUILD_ENV="ENABLE_SSH=1 " && echo "  ⚠ DEBUG BUILD: SSH enabled (different dm-verity hash → won't pass production attestation)"
+[ -n "$TEMPLATE_MODELS_HASH" ] && BUILD_ENV="${BUILD_ENV}MODELS_HASH=$TEMPLATE_MODELS_HASH "
+vm_run "sudo bash -c '${BUILD_ENV}nohup bash /tmp/vm_build_all.sh > /mnt/staging/build.log 2>&1 &'"
 
 # ─── Step 4: Poll for completion ────────────────────────────────────
 
@@ -184,7 +210,11 @@ for i in $(seq 1 60); do
     if [ "$STATUS" = "SUCCESS" ]; then
         echo "  ✓ Build complete!"
         ROOTFS_HASH=$(vm_run "cat /mnt/staging/rootfs-verity-roothash" | tr -d '[:space:]')
+        # Models hash: from template env var, or from staging file (built from scratch)
+        MODELS_HASH="${TEMPLATE_MODELS_HASH:-}"
+        [ -z "$MODELS_HASH" ] && MODELS_HASH=$(vm_run "cat /mnt/staging/models-verity-roothash 2>/dev/null" | tr -d '[:space:]')
         echo "  Rootfs hash: $ROOTFS_HASH"
+        [ -n "$MODELS_HASH" ] && echo "  Models hash: $MODELS_HASH"
         break
     elif echo "$STATUS" | grep -q "FAILED"; then
         echo "  ✗ Build failed: $STATUS"
@@ -210,5 +240,6 @@ gcloud compute disks delete "$OUTPUT_DISK" --project="$GCP_PROJECT" --zone="$GCP
 IMAGE_CREATED=true
 echo ""
 echo "═══ BUILD COMPLETE ═══"
-echo "  Image: $IMAGE_NAME"
-echo "  Hash:  $ROOTFS_HASH"
+echo "  Image:       $IMAGE_NAME"
+echo "  Rootfs hash: $ROOTFS_HASH"
+[ -n "${MODELS_HASH:-}" ] && echo "  Models hash: $MODELS_HASH"

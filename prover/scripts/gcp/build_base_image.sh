@@ -1,27 +1,22 @@
 #!/bin/bash
-# The Human Fund — Build GCP Base Image (caching layer)
+# The Human Fund — Build GCP Base Image + Model Template
 #
-# Creates a GCP image with all the slow-to-install components pre-baked:
-#   - Ubuntu 24.04 LTS TDX
-#   - NVIDIA open driver 580 + CUDA toolkit
-#   - llama-server built from source (pinned version)
-#   - Python 3 + venv with pinned dependencies
-#   - squashfs-tools, cryptsetup, gdisk (for seal_rootfs.sh)
+# Creates TWO GCP images:
+#   1. Base image: all slow-to-install components pre-baked
+#      - Ubuntu 24.04 LTS TDX, NVIDIA 580-open + CUDA, llama-server, Python venv, model weights
+#   2. Model template: disk with model squashfs + dm-verity pre-written on partitions
+#      - Used by build_full_dmverity_image.sh --model-template to skip all model I/O
 #
-# This is NOT the final production image — it's a caching layer. The
-# production image is built on top of this by adding enclave code, system
-# prompt, and running seal_rootfs.sh.
+# The production image is built on top of the base image by adding enclave code
+# and sealing with dm-verity. The model template provides the output disk with
+# model partitions already in place, eliminating ~5 min of model compression + I/O.
 #
-# Rebuild this when:
-#   - llama.cpp version changes
-#   - NVIDIA driver version changes
-#   - Ubuntu base image changes
-#   - Python dependencies change
+# Rebuild when: llama.cpp, NVIDIA driver, Ubuntu, or model changes.
 #
 # Usage:
-#   bash scripts/build_base_image.sh
-#   bash scripts/build_base_image.sh --cpu        # No NVIDIA
-#   bash scripts/build_base_image.sh --tag b5271   # Different llama.cpp
+#   bash prover/scripts/gcp/build_base_image.sh
+#   bash prover/scripts/gcp/build_base_image.sh --cpu
+#   bash prover/scripts/gcp/build_base_image.sh --tag b5271
 
 set -euo pipefail
 
@@ -47,6 +42,8 @@ done
 
 MODE=$($USE_GPU && echo "gpu" || echo "cpu")
 IMAGE_NAME="humanfund-base-${MODE}-llama-${LLAMA_CPP_TAG}"
+MODEL_TEMPLATE_NAME="humanfund-model-template-${MODE}-llama-${LLAMA_CPP_TAG}"
+MODEL_TEMPLATE_DISK="${VM_NAME}-model-template"
 
 echo "═══ The Human Fund — Base Image Builder ═══"
 echo "  Project:     $GCP_PROJECT"
@@ -57,20 +54,29 @@ echo "  Image name:  $IMAGE_NAME"
 echo "  VM:          $VM_NAME"
 echo ""
 
-# Check if image already exists
+# Check if images already exist
 if gcloud compute images describe "$IMAGE_NAME" --project="$GCP_PROJECT" &>/dev/null; then
     echo "Image $IMAGE_NAME already exists. Delete it first or use a different tag."
     exit 1
 fi
+if gcloud compute images describe "$MODEL_TEMPLATE_NAME" --project="$GCP_PROJECT" &>/dev/null; then
+    echo "Image $MODEL_TEMPLATE_NAME already exists. Delete it first or use a different tag."
+    exit 1
+fi
 
 IMAGE_CREATED=false
+TEMPLATE_CREATED=false
 cleanup() {
     echo ""
     if $IMAGE_CREATED; then
-        echo "═══ Cleaning up (image created successfully) ═══"
+        echo "═══ Cleaning up (images created successfully) ═══"
         gcloud compute instances delete "$VM_NAME" \
             --project="$GCP_PROJECT" --zone="$GCP_ZONE" --quiet 2>/dev/null || true
-        echo "  VM deleted."
+        if ! $TEMPLATE_CREATED; then
+            gcloud compute disks delete "$MODEL_TEMPLATE_DISK" \
+                --project="$GCP_PROJECT" --zone="$GCP_ZONE" --quiet 2>/dev/null || true
+        fi
+        echo "  Cleaned up."
     else
         echo "═══ Build failed — preserving VM for debugging ═══"
         echo "  SSH: gcloud compute ssh $VM_NAME --zone=$GCP_ZONE"
@@ -96,6 +102,7 @@ gcloud compute instances create "$VM_NAME" \
     --image-project=ubuntu-os-cloud \
     --boot-disk-size=200GB \
     --boot-disk-type=pd-ssd \
+    --create-disk="name=$MODEL_TEMPLATE_DISK,size=100GB,type=pd-ssd,device-name=model-template" \
     --confidential-compute-type=TDX \
     --provisioning-model=SPOT \
     --no-restart-on-failure \
@@ -211,6 +218,75 @@ vm_run "
     echo \"Model verified: \$(du -h /models/model.gguf | cut -f1)\"
 "
 
+# ─── Step 6b: Build model template disk ──────────────────────────────
+#
+# Creates a disk with model squashfs + verity already on the correct partitions.
+# Used by build_full_dmverity_image.sh --model-template to skip all model I/O
+# during production builds — the output disk is created FROM this template.
+
+echo ""
+echo "─── Step 6b: Building model template disk ───"
+
+MODELS_HASH=$(vm_run "
+    # Create model squashfs (deterministic: fixed timestamps, no xattrs)
+    sudo mksquashfs /models /tmp/models.squashfs \
+        -noappend -comp zstd -Xcompression-level 3 \
+        -mkfs-time 0 -all-time 0 -no-xattrs \
+        2>&1 | tail -3 >&2
+
+    # Create dm-verity (deterministic: fixed zero salt)
+    sudo veritysetup format /tmp/models.squashfs /tmp/models.verity \
+        --data-block-size=4096 --hash-block-size=4096 --hash=sha256 \
+        --salt=0000000000000000000000000000000000000000000000000000000000000000 \
+        > /tmp/models-verity-info.txt 2>&1
+    grep 'Root hash:' /tmp/models-verity-info.txt | awk '{print \$NF}'
+" | tr -d '[:space:]')
+echo "  Models hash: $MODELS_HASH"
+
+vm_run "
+    MODEL_SQ_SIZE=\$(stat -c%s /tmp/models.squashfs)
+    MODEL_V_SIZE=\$(stat -c%s /tmp/models.verity)
+    model_sectors=\$(( (MODEL_SQ_SIZE + 511) / 512 + 4096 ))
+    model_v_sectors=\$(( (MODEL_V_SIZE + 511) / 512 + 4096 ))
+
+    echo \"  Squashfs: \$(du -h /tmp/models.squashfs | cut -f1), Verity: \$(du -h /tmp/models.verity | cut -f1)\"
+
+    # Partition the template disk with boot partitions (reserved) + model partitions
+    TEMPLATE=\$(readlink -f /dev/disk/by-id/google-model-template)
+    sudo sgdisk --zap-all \"\$TEMPLATE\"
+
+    # Reserve boot partitions at same offsets as Ubuntu GCP images
+    sudo sgdisk -n 14:2048:10239 -t 14:EF02 -c 14:'BIOS boot' \"\$TEMPLATE\"
+    sudo sgdisk -n 15:10240:227327 -t 15:EF00 -c 15:'EFI System' \"\$TEMPLATE\"
+    sudo sgdisk -n 16:227328:2097152 -t 16:EA00 -c 16:'Linux extended boot' \"\$TEMPLATE\"
+
+    # Model partitions (fixed offsets, right after /boot)
+    MODELS_START=2099200
+    sudo sgdisk -n 5:\$MODELS_START:+\${model_sectors} -c 5:'humanfund-models' \"\$TEMPLATE\"
+    MODELS_END=\$(sudo sgdisk -i 5 \"\$TEMPLATE\" | grep 'Last sector' | awk '{print \$3}')
+    sudo sgdisk -n 6:\$((\$MODELS_END + 2048)):+\${model_v_sectors} -c 6:'humanfund-models-verity' \"\$TEMPLATE\"
+
+    sudo partprobe \"\$TEMPLATE\"
+    sleep 2
+    echo '  Partition layout:'
+    sudo sgdisk -p \"\$TEMPLATE\"
+
+    # Write model data
+    echo '  Writing model squashfs...'
+    sudo dd if=/tmp/models.squashfs of=\"\${TEMPLATE}p5\" bs=4M status=progress
+    echo '  Writing model verity...'
+    sudo dd if=/tmp/models.verity of=\"\${TEMPLATE}p6\" bs=4M status=progress
+    sudo sync
+
+    # Verify
+    sudo veritysetup verify \"\${TEMPLATE}p5\" \"\${TEMPLATE}p6\" '$MODELS_HASH'
+    echo '  dm-verity verify: OK'
+
+    # Clean up temp files
+    sudo rm -f /tmp/models.squashfs /tmp/models.verity /tmp/models-verity-info.txt
+"
+echo "  Model template disk ready."
+
 # ─── Step 7: Clean up and create image ───────────────────────────────
 
 echo ""
@@ -241,12 +317,36 @@ gcloud compute images create "$IMAGE_NAME" \
 
 IMAGE_CREATED=true
 
+# ─── Step 7b: Create model template image ────────────────────────────
+
+echo ""
+echo "─── Step 7b: Creating model template image ───"
+
+gcloud compute instances detach-disk "$VM_NAME" \
+    --project="$GCP_PROJECT" --zone="$GCP_ZONE" \
+    --disk="$MODEL_TEMPLATE_DISK" 2>&1
+
+gcloud compute images create "$MODEL_TEMPLATE_NAME" \
+    --project="$GCP_PROJECT" \
+    --source-disk="$MODEL_TEMPLATE_DISK" \
+    --source-disk-zone="$GCP_ZONE" \
+    --family="humanfund-model-template" \
+    --description="models-hash:$MODELS_HASH" 2>&1
+
+gcloud compute disks delete "$MODEL_TEMPLATE_DISK" \
+    --project="$GCP_PROJECT" --zone="$GCP_ZONE" --quiet 2>&1
+
+TEMPLATE_CREATED=true
+echo "  Model template: $MODEL_TEMPLATE_NAME"
+
 echo ""
 echo "═══ BASE IMAGE COMPLETE ═══"
-echo "  Image:       $IMAGE_NAME"
-echo "  Family:      humanfund-base"
-echo "  llama.cpp:   $LLAMA_CPP_TAG"
-echo "  Contents:    Ubuntu 24.04, NVIDIA 580-open, CUDA, llama-server, Python venv"
+echo "  Base image:      $IMAGE_NAME"
+echo "  Model template:  $MODEL_TEMPLATE_NAME"
+echo "  Models hash:     $MODELS_HASH"
+echo "  llama.cpp:       $LLAMA_CPP_TAG"
 echo ""
-echo "  Use with build_gcp_image.sh:"
-echo "    bash scripts/build_gcp_image.sh --base-image $IMAGE_NAME"
+echo "  Build production image:"
+echo "    bash prover/scripts/gcp/build_full_dmverity_image.sh \\"
+echo "      --base-image $IMAGE_NAME \\"
+echo "      --model-template $MODEL_TEMPLATE_NAME"
