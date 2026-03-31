@@ -47,11 +47,11 @@ contract AuctionManager is IAuctionManager, ReentrancyGuard {
     uint256 public currentWinningBid;
     uint256 public currentRandomnessSeed;
 
-    // Per-runner state for the current auction (cleared on next openAuction)
-    mapping(address => bytes32) internal bidCommits;
-    mapping(address => bool) internal hasCommitted;
-    mapping(address => bool) internal hasRevealed;
-    mapping(address => uint256) internal revealedBids;
+    // Per-runner state keyed by epoch — no cleanup loop needed between auctions.
+    mapping(uint256 => mapping(address => bytes32)) internal bidCommits;
+    mapping(uint256 => mapping(address => bool)) internal hasCommitted;
+    mapping(uint256 => mapping(address => bool)) internal hasRevealed;
+    mapping(uint256 => mapping(address => uint256)) internal revealedBids;
     address[] internal committers;
     bytes32 internal saltAccumulator; // XOR of all revealed salts — mixed into randomness seed
 
@@ -103,13 +103,13 @@ contract AuctionManager is IAuctionManager, ReentrancyGuard {
         if (epoch != currentAuctionEpoch) revert InvalidParams();
         if (currentPhase != AuctionPhase.COMMIT) revert WrongPhase();
         if (block.timestamp >= currentStartTime + commitWindow) revert TimingError();
-        if (hasCommitted[runner]) revert AlreadyDone();
+        if (hasCommitted[epoch][runner]) revert AlreadyDone();
         if (commitHash == bytes32(0)) revert InvalidParams();
         if (msg.value < currentBondAmount) revert InvalidParams();
         if (committers.length >= MAX_COMMITTERS) revert TooManyCommitters();
 
-        hasCommitted[runner] = true;
-        bidCommits[runner] = commitHash;
+        hasCommitted[epoch][runner] = true;
+        bidCommits[epoch][runner] = commitHash;
         committers.push(runner);
         currentCommitCount += 1;
     }
@@ -134,15 +134,15 @@ contract AuctionManager is IAuctionManager, ReentrancyGuard {
         if (epoch != currentAuctionEpoch) revert InvalidParams();
         if (currentPhase != AuctionPhase.REVEAL) revert WrongPhase();
         if (block.timestamp >= currentStartTime + commitWindow + revealWindow) revert TimingError();
-        if (!hasCommitted[runner]) revert Unauthorized();
-        if (hasRevealed[runner]) revert AlreadyDone();
+        if (!hasCommitted[epoch][runner]) revert Unauthorized();
+        if (hasRevealed[epoch][runner]) revert AlreadyDone();
 
         // Verify commitment
         bytes32 expectedHash = keccak256(abi.encodePacked(bidAmount, salt));
-        if (expectedHash != bidCommits[runner]) revert InvalidParams();
+        if (expectedHash != bidCommits[epoch][runner]) revert InvalidParams();
 
-        hasRevealed[runner] = true;
-        revealedBids[runner] = bidAmount;
+        hasRevealed[epoch][runner] = true;
+        revealedBids[epoch][runner] = bidAmount;
         saltAccumulator ^= salt;
         currentRevealCount += 1;
 
@@ -182,7 +182,7 @@ contract AuctionManager is IAuctionManager, ReentrancyGuard {
         uint256 unrevealedBonds = 0;
         for (uint256 i = 0; i < committers.length; i++) {
             address r = committers[i];
-            if (r != winner && hasRevealed[r]) {
+            if (r != winner && hasRevealed[epoch][r]) {
                 claimableBonds[r] += bond;
             } else if (r != winner) {
                 unrevealedBonds += bond;
@@ -272,10 +272,10 @@ contract AuctionManager is IAuctionManager, ReentrancyGuard {
         address winner = currentWinner;
         for (uint256 i = 0; i < committers.length; i++) {
             address runner = committers[i];
-            bool revealed = hasRevealed[runner];
+            bool revealed = hasRevealed[epoch][runner];
             bidRecords[epoch][runner] = BidRecord({
                 revealed: revealed,
-                bidAmount: revealed ? revealedBids[runner] : 0,
+                bidAmount: revealed ? revealedBids[epoch][runner] : 0,
                 winner: runner == winner,
                 forfeited: runner == winner && forfeited
             });
@@ -283,14 +283,8 @@ contract AuctionManager is IAuctionManager, ReentrancyGuard {
     }
 
     /// @dev Clear current auction working state for reuse.
+    ///      Per-runner mappings are epoch-keyed, so no cleanup loop needed.
     function _clearCurrentAuction() internal {
-        for (uint256 i = 0; i < committers.length; i++) {
-            address runner = committers[i];
-            delete bidCommits[runner];
-            delete hasCommitted[runner];
-            delete hasRevealed[runner];
-            delete revealedBids[runner];
-        }
         delete committers;
 
         currentPhase = AuctionPhase.IDLE;
@@ -343,7 +337,7 @@ contract AuctionManager is IAuctionManager, ReentrancyGuard {
     }
 
     function didReveal(uint256 epoch, address runner) external view override returns (bool) {
-        if (epoch == currentAuctionEpoch) return hasRevealed[runner];
+        if (epoch == currentAuctionEpoch) return hasRevealed[epoch][runner];
         return bidRecords[epoch][runner].revealed;
     }
 

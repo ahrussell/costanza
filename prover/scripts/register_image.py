@@ -28,6 +28,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -41,10 +42,10 @@ MEASUREMENTS_END = "===HUMANFUND_MEASUREMENTS_END==="
 
 
 def gcloud(args, project=None, check=True, timeout=120):
-    cmd = f"gcloud {args}"
+    cmd = ["gcloud"] + shlex.split(args)
     if project:
-        cmd += f" --project={project}"
-    result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+        cmd += [f"--project={project}"]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     if check and result.returncode != 0:
         raise RuntimeError(f"gcloud failed: {result.stderr[:500]}")
     return result.stdout.strip()

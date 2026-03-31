@@ -126,17 +126,14 @@ python -m runner.client --dry-run
 
 RUNNER
 
-# ─── Step 6: Enable auctions ─────────────────────────────────────────
-cat << 'ENABLE'
+# ─── Step 6: Start first auction ─────────────────────────────────────
+cat << 'START'
 
-# Only after everything above is confirmed working:
-cast send $FUND "setAuctionEnabled(bool)" true \
-  --rpc-url $RPC_URL \
-  --private-key $PRIVATE_KEY
-
+# Auction is always available (no setAuctionEnabled needed).
+# Direct submission is frozen at deploy time.
 # Monitor first epoch closely!
 
-ENABLE
+START
 
 # ─── Step 7: Progressive freeze (after 5+ successful epochs) ─────────
 cat << 'FREEZE'

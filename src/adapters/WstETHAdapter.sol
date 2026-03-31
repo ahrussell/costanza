@@ -69,7 +69,7 @@ contract WstETHAdapter is IProtocolAdapter {
             address(wstETH),
             uint24(100),    // 0.01% fee tier
             address(this),
-            block.timestamp, // deadline: execute immediately
+            block.timestamp + 300, // deadline: 5-minute buffer
             msg.value,
             (msg.value * MIN_OUTPUT_BPS) / 10000, // slippage floor: expect ≥95% of ETH value in wstETH
             uint160(0)      // sqrtPriceLimitX96 (no limit)
@@ -103,7 +103,7 @@ contract WstETHAdapter is IProtocolAdapter {
             address(0x4200000000000000000000000000000000000006), // WETH
             uint24(100),
             address(this),
-            block.timestamp, // deadline: execute immediately
+            block.timestamp + 300, // deadline: 5-minute buffer
             shares,
             (ethValue * MIN_OUTPUT_BPS) / 10000, // slippage floor in ETH terms
             uint160(0)

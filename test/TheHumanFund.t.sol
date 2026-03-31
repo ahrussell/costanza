@@ -464,9 +464,6 @@ contract TheHumanFundTest is Test {
         fund.freeze(fund.FREEZE_AUCTION_CONFIG());
 
         vm.expectRevert(TheHumanFund.Frozen.selector);
-        fund.setAuctionEnabled(true);
-
-        vm.expectRevert(TheHumanFund.Frozen.selector);
         fund.setAuctionTiming(86400, 3600, 1800, 7200);
     }
 

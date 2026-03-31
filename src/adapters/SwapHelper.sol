@@ -74,7 +74,7 @@ abstract contract SwapHelper {
                 tokenOut: address(usdc),
                 fee: swapFee,
                 recipient: address(this),
-                deadline: block.timestamp,
+                deadline: block.timestamp + 300,
                 amountIn: ethAmount,
                 amountOutMinimum: minOut,
                 sqrtPriceLimitX96: 0
@@ -95,7 +95,7 @@ abstract contract SwapHelper {
                 tokenOut: address(weth),
                 fee: swapFee,
                 recipient: address(this),
-                deadline: block.timestamp,
+                deadline: block.timestamp + 300,
                 amountIn: usdcAmount,
                 amountOutMinimum: minOut,
                 sqrtPriceLimitX96: 0

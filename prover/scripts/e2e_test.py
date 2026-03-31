@@ -99,20 +99,27 @@ BOOT_DISK_SIZE_GB = 200
 
 
 def run_cmd(cmd, check=True, capture=True, timeout=300):
-    """Run a shell command and return output."""
-    print(f"  $ {cmd[:120]}{'...' if len(cmd) > 120 else ''}")
+    """Run a command and return output. Accepts a string (split via shlex) or list."""
+    import shlex
+    if isinstance(cmd, str):
+        display = cmd[:120] + ('...' if len(cmd) > 120 else '')
+        cmd = shlex.split(cmd)
+    else:
+        display = ' '.join(cmd)[:120]
+    print(f"  $ {display}")
     result = subprocess.run(
-        cmd, shell=True, capture_output=capture, text=True, timeout=timeout
+        cmd, capture_output=capture, text=True, timeout=timeout
     )
     if check and result.returncode != 0:
         print(f"  STDERR: {result.stderr[:500] if result.stderr else '(none)'}")
-        raise RuntimeError(f"Command failed (exit {result.returncode}): {cmd[:80]}")
+        raise RuntimeError(f"Command failed (exit {result.returncode}): {display[:80]}")
     return result.stdout.strip() if capture else ""
 
 
 def gcloud(cmd, **kwargs):
     """Run a gcloud command with project/zone defaults."""
-    return run_cmd(f"gcloud {cmd} --project={GCP_PROJECT}", **kwargs)
+    import shlex
+    return run_cmd(["gcloud"] + shlex.split(cmd) + [f"--project={GCP_PROJECT}"], **kwargs)
 
 
 # --- Step 1: Deploy Contracts -------------------------------------------------
@@ -265,19 +272,7 @@ def deploy_contracts(w3, account):
     nonce += 1
 
     # approvedPromptHash removed — prompt verified via dm-verity image key
-
-    # Enable auction mode
-    print("Enabling auction mode...")
-    tx = fund.functions.setAuctionEnabled(True).build_transaction({
-        "from": deployer, "nonce": nonce,
-        "gas": 100_000,
-        "maxFeePerGas": w3.eth.gas_price * 2,
-        "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
-    })
-    signed = account.sign_transaction(tx)
-    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-    w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
-    nonce += 1
+    # setAuctionEnabled removed — auction is always available
 
     # Deploy InvestmentManager
     print("Deploying InvestmentManager...")

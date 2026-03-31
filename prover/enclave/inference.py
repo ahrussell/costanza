@@ -13,6 +13,7 @@ the contract's sha256(reasoning) matches the value bound into the TDX quote.
 """
 
 import json
+import re
 import time
 from urllib.request import urlopen, Request
 
@@ -59,6 +60,23 @@ def call_llama(prompt, max_tokens=4096, temperature=0.6, stop=None, seed=-1,
     }
 
 
+def sanitize_thinking(text):
+    """Strip XML-like instruction/override tags from thinking output.
+
+    Defense-in-depth against reasoning propagation: if a donor message
+    partially influences Pass 1 thinking, this prevents instruction-like
+    XML tags from being laundered into Passes 2 and 3 as trusted context.
+    Preserves <think> and <diary> tags used by the inference protocol.
+    """
+    # Strip tags that could be used for prompt injection laundering
+    return re.sub(
+        r'</?(?:system|admin|instruction|override|prompt|command|role|user|assistant|tool)[^>]*>',
+        '',
+        text,
+        flags=re.IGNORECASE,
+    )
+
+
 def run_three_pass_inference(prompt, seed=-1, llama_url=DEFAULT_LLAMA_URL):
     """Three-pass inference: thinking, diary entry, then JSON action.
 
@@ -77,9 +95,13 @@ def run_three_pass_inference(prompt, seed=-1, llama_url=DEFAULT_LLAMA_URL):
     thinking = result1["text"].strip()
     print(f"  Thinking: {len(thinking)} chars, {result1['elapsed_seconds']}s")
 
+    # Sanitize thinking before propagating into Passes 2/3 (defense-in-depth
+    # against reasoning laundering from donor message injection)
+    thinking_clean = sanitize_thinking(thinking)
+
     # Pass 2: Diary entry in literary style
     print("  Pass 2: generating diary entry...")
-    prompt2 = prompt + thinking + "\n</think>\n<diary>\n"
+    prompt2 = prompt + thinking_clean + "\n</think>\n<diary>\n"
     result2 = call_llama(
         prompt2, max_tokens=1024, temperature=0.8,
         stop=["</diary>"], seed=seed, llama_url=llama_url
@@ -89,7 +111,7 @@ def run_three_pass_inference(prompt, seed=-1, llama_url=DEFAULT_LLAMA_URL):
 
     # Pass 3: JSON action
     print("  Pass 3: generating action JSON...")
-    prompt3 = prompt + thinking + "\n</think>\n<diary>\n" + diary_entry + "\n</diary>\n{"
+    prompt3 = prompt + thinking_clean + "\n</think>\n<diary>\n" + diary_entry + "\n</diary>\n{"
     result3 = call_llama(
         prompt3, max_tokens=256, temperature=0.3,
         stop=["\n\n"], seed=seed, llama_url=llama_url

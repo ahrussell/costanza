@@ -80,6 +80,12 @@ contract Deploy is Script {
         // Seed initial worldview
         _seedWorldView(fund);
 
+        // ─── Freeze setup-only permissions ──────────────────────────────
+        // Direct submission was only needed for Phase 0 testing.
+        // WorldView seeding is done above; agent updates policies via set_guiding_policy action.
+        fund.freeze(fund.FREEZE_DIRECT_MODE());
+        fund.freeze(fund.FREEZE_WORLDVIEW_WIRING());
+
         // ─── 2. DeFi adapters ───────────────────────────────────────────
         // Only deployed if DeFi addresses are provided (mainnet/fork).
         // On bare testnet without DeFi protocols, skip adapter deployment.
@@ -108,8 +114,9 @@ contract Deploy is Script {
         console.log("");
         console.log("Post-deployment:");
         console.log("  1. Register image:     tdxVerifier.approveImage(imageKey)");
-        console.log("  2. Set epoch timing:   fund.setAuctionTiming(epochDuration, biddingWindow, executionWindow)");
-        console.log("  3. Enable auction:     fund.setAuctionEnabled(true)");
+        console.log("  2. Set epoch timing:   fund.setAuctionTiming(epochDuration, commitWindow, revealWindow, executionWindow)");
+        console.log("  Direct mode: FROZEN    (auction is the only submission path)");
+        console.log("  WorldView:   FROZEN    (agent updates policies via set_guiding_policy)");
         if (ethUsdFeedAddr == address(0)) {
             console.log("");
             console.log("  WARNING: ETH_USD_FEED not set. Donations and USDC adapters will not work.");

@@ -65,9 +65,8 @@ contract TheHumanFundAuctionTest is Test {
         verifier.approveImage(imageKey);
         fund.approveVerifier(1, address(verifier));
 
-        // Configure short timing and enable
+        // Configure short timing
         fund.setAuctionTiming(EPOCH_DUR, COMMIT_WIN, REVEAL_WIN, EXEC_WIN);
-        fund.setAuctionEnabled(true);
 
         // Fund runners
         vm.deal(runner1, 10 ether);
@@ -136,12 +135,6 @@ contract TheHumanFundAuctionTest is Test {
     function test_cannot_start_twice() public {
         fund.startEpoch();
         vm.expectRevert(AuctionManager.WrongPhase.selector);
-        fund.startEpoch();
-    }
-
-    function test_requires_auction_enabled() public {
-        fund.setAuctionEnabled(false);
-        vm.expectRevert(TheHumanFund.WrongPhase.selector);
         fund.startEpoch();
     }
 
@@ -560,16 +553,10 @@ contract TheHumanFundAuctionTest is Test {
         assertEq(fund.effectiveMaxBid(), 0.011 ether);
     }
 
-    // ─── Auction: Phase 0 Blocked ───────────────────────────────────────────
+    // ─── Direct Submission Coexistence ────────────────────────────────────────
 
-    function test_phase0_blocked_when_auction_enabled() public {
-        vm.expectRevert(TheHumanFund.WrongPhase.selector);
-        fund.submitEpochAction(_noopAction(), bytes("nope"), -1, "");
-    }
-
-    function test_phase0_works_when_auction_disabled() public {
-        fund.setAuctionEnabled(false);
-        fund.submitEpochAction(_noopAction(), bytes("back to phase 0"), -1, "");
+    function test_direct_submission_works_alongside_auction() public {
+        fund.submitEpochAction(_noopAction(), bytes("direct submit"), -1, "");
         assertEq(fund.currentEpoch(), 2);
     }
 
@@ -672,8 +659,6 @@ contract TheHumanFundAuctionTest is Test {
     // ─── Epoch Content Hashes ───────────────────────────────────────────────
 
     function test_epoch_content_hashes_accumulate() public {
-        fund.setAuctionEnabled(false);
-
         fund.submitEpochAction(_noopAction(), bytes("First"), -1, "");
         bytes32 hash1 = fund.epochContentHashes(1);
         assertTrue(hash1 != bytes32(0));
@@ -685,7 +670,6 @@ contract TheHumanFundAuctionTest is Test {
     }
 
     function test_epoch_content_hash_in_input_hash() public {
-        fund.setAuctionEnabled(false);
         fund.submitEpochAction(_noopAction(), bytes("reasoning"), -1, "");
         bytes32 hashBefore = fund.computeInputHash();
 

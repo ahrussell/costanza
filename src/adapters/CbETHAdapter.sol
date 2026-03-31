@@ -59,7 +59,7 @@ contract CbETHAdapter is IProtocolAdapter {
             address(cbETH),
             uint24(500),    // 0.05% fee tier (ETH/cbETH pair)
             address(this),
-            block.timestamp, // deadline: execute immediately
+            block.timestamp + 300, // deadline: 5-minute buffer
             msg.value,
             minCbEth,       // slippage floor in cbETH terms
             uint160(0)
@@ -90,7 +90,7 @@ contract CbETHAdapter is IProtocolAdapter {
             address(0x4200000000000000000000000000000000000006),
             uint24(500),
             address(this),
-            block.timestamp, // deadline: execute immediately
+            block.timestamp + 300, // deadline: 5-minute buffer
             shares,
             (ethValue * MIN_OUTPUT_BPS) / 10000, // slippage floor in ETH terms
             uint160(0)

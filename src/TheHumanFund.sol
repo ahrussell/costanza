@@ -100,7 +100,6 @@ contract TheHumanFund is ReentrancyGuard {
     event RevealClosed(uint256 indexed epoch, address indexed winner, uint256 winningBid);
     event EpochExecuted(uint256 indexed epoch, address indexed runner, uint256 bountyPaid);
     event BondForfeited(uint256 indexed epoch, address indexed runner, uint256 bondAmount);
-    event AuctionModeChanged(bool enabled);
     event ActionRejected(uint256 indexed epoch, bytes action, uint8 reason);
     // ActionRejected reason codes:
     // 1 = empty, 2 = malformed, 3 = out_of_bounds, 4 = invest_err,
@@ -123,6 +122,7 @@ contract TheHumanFund is ReentrancyGuard {
     uint256 public constant MAX_MESSAGE_LENGTH = 280;
     uint256 public constant MAX_MESSAGES_PER_EPOCH = 20;
     uint256 public constant PRICE_STALENESS_THRESHOLD = 3600; // 1 hour
+    uint256 public constant MAX_MISSED_EPOCHS = 50;           // Cap loop iterations in effectiveMaxBid/currentBond
 
     // Note: DCAP verification now handled by the AttestationVerifier contract (see setVerifier)
 
@@ -202,7 +202,6 @@ contract TheHumanFund is ReentrancyGuard {
     uint256 public messageHead;  // index of first unread message
 
     // Auction state
-    bool public auctionEnabled;                              // false = direct submission, true = auction mode
     uint256 public epochDuration;                            // 24 hours production, shorter for testnet
 
     // Auction manager (separate contract — see AuctionManager.sol)
@@ -400,7 +399,6 @@ contract TheHumanFund is ReentrancyGuard {
         string calldata policyText
     ) external onlyOwner {
         if (frozenFlags & FREEZE_DIRECT_MODE != 0) revert Frozen();
-        if (auctionEnabled) revert WrongPhase();
         uint256 epoch = currentEpoch;
         if (epochs[epoch].executed) revert AlreadyDone();
         _snapshotEthUsdPrice();
@@ -411,11 +409,10 @@ contract TheHumanFund is ReentrancyGuard {
     /// @notice Skip the current epoch (no runner bid or missed deadline).
     function skipEpoch() external onlyOwner {
         if (frozenFlags & FREEZE_DIRECT_MODE != 0) revert Frozen();
-        if (auctionEnabled) revert WrongPhase();
         uint256 epoch = currentEpoch;
         if (epochs[epoch].executed) revert AlreadyDone();
 
-        consecutiveMissedEpochs += 1;
+        if (consecutiveMissedEpochs < MAX_MISSED_EPOCHS) consecutiveMissedEpochs += 1;
         currentEpoch = epoch + 1;
 
         // Reset per-epoch counters
@@ -513,13 +510,6 @@ contract TheHumanFund is ReentrancyGuard {
 
     // ─── Reverse Auction ──────────────────────────────────────────────────
 
-    /// @notice Enable or disable auction mode.
-    function setAuctionEnabled(bool enabled) external onlyOwner {
-        if (frozenFlags & FREEZE_AUCTION_CONFIG != 0) revert Frozen();
-        auctionEnabled = enabled;
-        emit AuctionModeChanged(enabled);
-    }
-
     /// @notice Set auction timing parameters (owner-only, for testnet tuning).
     function setAuctionTiming(
         uint256 _epochDuration,
@@ -547,7 +537,7 @@ contract TheHumanFund is ReentrancyGuard {
 
     /// @notice Open the auction for the current epoch. Anyone can call this.
     function startEpoch() external {
-        if (!auctionEnabled) revert WrongPhase();
+
         IAuctionManager am = auctionManager;
         uint256 epoch = currentEpoch;
 
@@ -581,7 +571,7 @@ contract TheHumanFund is ReentrancyGuard {
 
     /// @notice Submit a sealed bid commitment for the current epoch.
     function commit(bytes32 commitHash) external payable {
-        if (!auctionEnabled) revert WrongPhase();
+
         uint256 epoch = currentEpoch;
         uint256 bond = auctionManager.getBond(epoch);
         if (msg.value < bond) revert InvalidParams();
@@ -601,7 +591,7 @@ contract TheHumanFund is ReentrancyGuard {
 
     /// @notice Close the commit phase. Anyone can call after commit window expires.
     function closeCommit() external {
-        if (!auctionEnabled) revert WrongPhase();
+
         uint256 commitCount = auctionManager.closeCommitPhase(currentEpoch);
         if (commitCount == 0) {
             _advanceEpochMissed();
@@ -610,7 +600,7 @@ contract TheHumanFund is ReentrancyGuard {
 
     /// @notice Reveal a previously committed bid.
     function reveal(uint256 bidAmount, bytes32 salt) external {
-        if (!auctionEnabled) revert WrongPhase();
+
         if (bidAmount == 0 || bidAmount > effectiveMaxBid()) revert InvalidParams();
         auctionManager.recordReveal(currentEpoch, msg.sender, bidAmount, salt);
         emit BidRevealed(currentEpoch, msg.sender, bidAmount);
@@ -618,7 +608,7 @@ contract TheHumanFund is ReentrancyGuard {
 
     /// @notice Close the reveal phase. Anyone can call after reveal window.
     function closeReveal() external {
-        if (!auctionEnabled) revert WrongPhase();
+
         uint256 epoch = currentEpoch;
         (address winner, uint256 winningBid, uint256 revealCount) = auctionManager.closeRevealPhase(epoch);
 
@@ -646,7 +636,7 @@ contract TheHumanFund is ReentrancyGuard {
         int8 policySlot,
         string calldata policyText
     ) external payable nonReentrant {
-        if (!auctionEnabled) revert WrongPhase();
+
         uint256 epoch = currentEpoch;
 
         // Settle auction — AM validates phase, caller==winner, and timing.
@@ -679,7 +669,7 @@ contract TheHumanFund is ReentrancyGuard {
 
     /// @notice Forfeit the winner's bond after the execution window expires.
     function forfeitBond() external nonReentrant {
-        if (!auctionEnabled) revert WrongPhase();
+
         uint256 epoch = currentEpoch;
         IAuctionManager am = auctionManager;
 
@@ -694,7 +684,7 @@ contract TheHumanFund is ReentrancyGuard {
 
     /// @dev Advance epoch on a missed/forfeited epoch.
     function _advanceEpochMissed() internal {
-        consecutiveMissedEpochs += 1;
+        if (consecutiveMissedEpochs < MAX_MISSED_EPOCHS) consecutiveMissedEpochs += 1;
         currentEpoch += 1;
         currentEpochInflow = 0;
         currentEpochDonationCount = 0;
@@ -898,7 +888,7 @@ contract TheHumanFund is ReentrancyGuard {
         (bool swapOk, bytes memory swapRet) = swapRouter.call(abi.encodeWithSignature(
             "exactInputSingle((address,address,uint24,address,uint256,uint256,uint256,uint160))",
             address(weth), usdc, uint24(500), address(this),
-            block.timestamp, amount, minUsdc, uint160(0)
+            block.timestamp + 300, amount, minUsdc, uint160(0)
         ));
         if (!swapOk) return false;
         uint256 usdcAmount = abi.decode(swapRet, (uint256));

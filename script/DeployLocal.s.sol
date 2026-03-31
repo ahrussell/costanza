@@ -83,9 +83,8 @@ contract DeployLocal is Script {
         // Register TDX verifier at ID 1
         fund.approveVerifier(1, address(verifier));
 
-        // Configure short timing for local testing (30s epoch, 10s bid, 15s exec)
+        // Configure short timing for local testing (30s epoch, 10s commit, 5s reveal, 10s exec)
         fund.setAuctionTiming(30, 10, 5, 10);
-        fund.setAuctionEnabled(true);
 
         console.log("=== Local Deployment ===");
         console.log("TheHumanFund:", address(fund));
