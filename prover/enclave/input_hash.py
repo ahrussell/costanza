@@ -356,7 +356,10 @@ def _verify_history_hashes(epoch_state: dict, contract_state: dict):
 
         reasoning_data = entry["reasoning"]
         if isinstance(reasoning_data, str):
-            reasoning_data = reasoning_data.encode("utf-8")
+            if reasoning_data.startswith("0x"):
+                reasoning_data = bytes.fromhex(reasoning_data[2:])
+            else:
+                reasoning_data = reasoning_data.encode("utf-8")
         elif not isinstance(reasoning_data, bytes):
             reasoning_data = bytes(reasoning_data)
 

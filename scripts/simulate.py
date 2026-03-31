@@ -45,11 +45,10 @@ from urllib.request import urlopen, Request
 # ─── Path setup ──────────────────────────────────────────────────────────
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PROJECT_ROOT / "agent"))
-sys.path.insert(0, str(PROJECT_ROOT / "tee"))
+sys.path.insert(0, str(PROJECT_ROOT))
 
-from runner import build_epoch_context, format_eth
-from enclave_runner import encode_action_bytes, _extract_json_object, parse_action
+from prover.enclave.prompt_builder import build_epoch_context, format_eth
+from prover.enclave.enclave_runner import encode_action_bytes, _extract_json_object, parse_action
 
 # ─── Constants ───────────────────────────────────────────────────────────
 
@@ -909,7 +908,7 @@ def apply_action(state, action_json):
         changes.append(f"  Max bid: {format_eth(old_bid)} -> {format_eth(amount_wei)} ETH")
 
     elif action == "invest":
-        from enclave_runner import _parse_protocol_id
+        from prover.enclave.enclave_runner import _parse_protocol_id
         pid = _parse_protocol_id(params)
         amount_str = str(params.get("amount_eth", params.get("amount", "0.1")))
         for suffix in [" ETH", " eth", "ETH", "eth"]:
@@ -934,7 +933,7 @@ def apply_action(state, action_json):
                 break
 
     elif action == "withdraw":
-        from enclave_runner import _parse_protocol_id
+        from prover.enclave.enclave_runner import _parse_protocol_id
         pid = _parse_protocol_id(params)
         amount_str = str(params.get("amount_eth", params.get("amount", "0.1")))
         for suffix in [" ETH", " eth", "ETH", "eth"]:

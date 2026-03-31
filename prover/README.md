@@ -87,18 +87,26 @@ bash prover/scripts/build_full_dmverity_image.sh \
   --name humanfund-dmverity-gpu-mainnet-v1
 ```
 
-### 3. Verify Measurements
+### 3. Register and Verify Measurements
 
-Confirm your image produces attestation measurements matching what's registered on-chain:
+Register your image's platform key on-chain. This boots a temporary TDX VM, extracts RTMR measurements from the serial console (no SSH required), and registers the key:
+
+```bash
+python prover/scripts/register_image.py \
+  --image humanfund-dmverity-gpu-mainnet-v1 \
+  --verifier <TdxVerifier-address>
+```
+
+To verify an image matches what's already registered:
 
 ```bash
 python prover/scripts/verify_measurements.py \
-  --vm-name <test-vm> \
+  --image humanfund-dmverity-gpu-mainnet-v1 \
   --verifier <TdxVerifier-address> \
   --rpc-url <rpc-url>
 ```
 
-If the platform key matches, your VM will pass attestation. If not (e.g., the cloud provider updated firmware), the fund owner needs to register the new key.
+Both scripts work with hardened dm-verity images (SSH disabled) by reading measurements from the serial console. The enclave emits RTMR values at boot between `===HUMANFUND_MEASUREMENTS_START===` and `===HUMANFUND_MEASUREMENTS_END===` markers.
 
 ### 4. Configure
 
@@ -227,7 +235,7 @@ If `verify_measurements.py` shows a mismatch, either:
 
 The fund owner registers new images via:
 ```bash
-python prover/scripts/register_image.py --vm-name <vm> --verifier <addr> --rpc-url <rpc>
+python prover/scripts/register_image.py --image <image-name> --verifier <addr>
 ```
 
 ### Bond Forfeiture
@@ -264,7 +272,7 @@ prover/
 │   ├── auction.py      # Auction state machine
 │   ├── chain.py        # Contract interaction
 │   ├── config.py       # Configuration (env vars + CLI)
-│   ├── epoch_state.py  # Epoch context building
+│   ├── epoch_state.py  # Contract state reading for TEE
 │   ├── bid_strategy.py # Bid calculation
 │   ├── state.py        # Persistent state
 │   ├── notifier.py     # ntfy.sh notifications
@@ -284,8 +292,7 @@ prover/
 └── scripts/
     ├── build_base_image.sh          # Build base VM image
     ├── build_full_dmverity_image.sh # Build sealed dm-verity image
-    ├── register_image.py            # Register platform key on-chain
-    ├── verify_measurements.py       # Verify measurements match on-chain
-    ├── extract_measurements.py      # Extract RTMR values
+    ├── register_image.py            # Register platform key on-chain (serial console, no SSH)
+    ├── verify_measurements.py       # Verify measurements match on-chain (serial console, no SSH)
     └── e2e_test.py                  # Full end-to-end test
 ```

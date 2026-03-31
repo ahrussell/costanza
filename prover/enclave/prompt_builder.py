@@ -471,7 +471,13 @@ def build_epoch_context(state, seed=None):
         for entry in history_to_show:
             lines.append(f"--- Epoch {entry['epoch']} ---")
             try:
-                reasoning_text = entry["reasoning"].decode("utf-8") if isinstance(entry["reasoning"], bytes) else entry["reasoning"]
+                r = entry["reasoning"]
+                if isinstance(r, bytes):
+                    reasoning_text = r.decode("utf-8")
+                elif isinstance(r, str) and r.startswith("0x"):
+                    reasoning_text = bytes.fromhex(r[2:]).decode("utf-8")
+                else:
+                    reasoning_text = r
                 if len(reasoning_text) > 2000:
                     reasoning_text = reasoning_text[:2000] + "... [truncated]"
             except Exception:

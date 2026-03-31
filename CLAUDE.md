@@ -15,7 +15,8 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 
 **Full e2e attestation verified on Base Sepolia with GCP TDX H100 GPU.** 5 straight successful epochs with DeepSeek R1 70B on H100. DCAP + image registry + REPORTDATA all pass on-chain.
 
-- **Phase 3 contract (latest, 70B GPU e2e)**: `0xa507366987417e0E4247a827B48536DA11235CC7` (Base Sepolia) — 5 consecutive successful epochs with investments, withdrawals, and guiding policies
+- **Phase 3 contract (latest)**: `0xC95FDD9a6a3Accc50cF325bDc5fE537Ee83a1827` (Base Sepolia)
+- Phase 3 contract (previous): `0xa507366987417e0E4247a827B48536DA11235CC7` (Base Sepolia) — 5 consecutive successful epochs
 - **Phase 2 contract (CPU e2e)**: `0x9043B54B7E5d2f98Bc12ff10799cf8d5d38c7ab2` (Base Sepolia) — CPU + GPU verified
 - Phase 0 original contract: `0x2F213Ea0D3F6D8349e2162b37Cc8cE6605dc9420` (Base Sepolia) — 21 epochs executed (legacy)
 - **165 tests pass** (37 Phase 0 + 42 auction + 17 TDX verifier + 35 investment + 16 worldview + 14 messages + 4 cross-stack hash)
@@ -185,9 +186,8 @@ thehumanfund/
 │       ├── vm_build_all.sh          # Runs on VM: squashfs → verity → initramfs → partition → GRUB
 │       ├── vm_install.sh            # Installs dependencies on VM for base image build
 │       ├── e2e_test.py              # Full e2e test on Base Sepolia with TDX attestation
-│       ├── extract_measurements.py  # Low-level RTMR extraction from TDX quote
-│       ├── register_image.py        # Extract RTMR[1..2] + register platform key on-chain
-│       └── verify_measurements.py   # Verify VM RTMR values match registered key
+│       ├── register_image.py        # Register platform key on-chain (serial console, no SSH)
+│       └── verify_measurements.py   # Verify RTMR values match registered key (serial console)
 ├── frontend/
 │   └── index.html               # Internal dashboard (reads contract state)
 ├── models/                      # Local model files (gitignored)
@@ -384,9 +384,11 @@ bash prover/scripts/build_full_dmverity_image.sh \
   --base-image humanfund-base-gpu-llama-b5270 \
   --name humanfund-dmverity-gpu-v6             # Named production image
 python prover/scripts/verify_measurements.py \
-  --vm-name my-vm --verifier 0x...            # Verify RTMR match
+  --image humanfund-dmverity-hardened-v6 \
+  --verifier 0x...                            # Verify RTMR match (via serial console)
 python prover/scripts/register_image.py \
-  --vm-name my-vm --verifier 0x...            # Register image key on-chain
+  --image humanfund-dmverity-hardened-v6 \
+  --verifier 0x...                            # Register image key on-chain (via serial console)
 
 # TEE enclave (local testing)
 llama-server -m models/DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf -c 4096 --port 8080 &
