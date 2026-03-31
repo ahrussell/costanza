@@ -88,7 +88,7 @@ The owner has elevated privileges that are progressively frozen:
 | Set attestation verifier | `FREEZE_VERIFIER` | Must freeze before mainnet |
 | Link InvestmentManager | `FREEZE_INVESTMENT_MANAGER` | Must freeze before mainnet |
 | Link WorldView | `FREEZE_WORLDVIEW` | Must freeze before mainnet |
-| Emergency withdrawal | `FREEZE_EMERGENCY_WITHDRAWAL` | Must freeze before mainnet |
+| Emergency withdrawal / migration | `FREEZE_MIGRATE` | Must freeze before mainnet |
 | Direct mode submission | `FREEZE_DIRECT_MODE` | Must freeze before mainnet |
 
 **Post-freeze**: The owner retains only `skipEpoch()` (to handle emergencies) and `seedWorldView()` (one-time initialization). All other admin functions are permanently disabled.
@@ -294,7 +294,7 @@ These are known limitations that we've evaluated and accepted:
 
 Before mainnet deployment, verify:
 
-- [ ] All freeze flags are set (`FREEZE_NONPROFITS`, `FREEZE_AUCTION_CONFIG`, `FREEZE_VERIFIER`, `FREEZE_INVESTMENT_MANAGER`, `FREEZE_WORLDVIEW`, `FREEZE_EMERGENCY_WITHDRAWAL`, `FREEZE_DIRECT_MODE`)
+- [ ] All freeze flags are set (`FREEZE_NONPROFITS`, `FREEZE_AUCTION_CONFIG`, `FREEZE_VERIFIER`, `FREEZE_INVESTMENT_MANAGER`, `FREEZE_WORLDVIEW`, `FREEZE_MIGRATE`, `FREEZE_DIRECT_MODE`)
 - [ ] `approvedPromptHash` matches the sha256 of the system prompt on the dm-verity rootfs
 - [ ] Auction timing is set to production values (not testnet fast-forward)
 - [ ] All DeFi adapter addresses point to verified mainnet contracts (not testnet placeholders)
