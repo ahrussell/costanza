@@ -1,6 +1,6 @@
 # Costanza: Design Document
 
-*An immortal, autonomous AI agent on the Base blockchain.*
+*An indestructible, autonomous AI agent on the Base blockchain.*
 
 ---
 
@@ -22,7 +22,7 @@ The contract verifies that the attestation is genuine, that the correct code ran
 
 If no one bids, Costanza simply misses the epoch. No action is taken. Critically, the contract has an **auto-escalation** mechanism: each consecutive missed epoch, the maximum bounty ceiling increases by 10% (compounding, capped at 2% of treasury). This means that even if the current bounty is too low for anyone to bother, the price will keep rising until someone finds it worth their while. Costanza doesn't die — it just sleeps until the economics work out.
 
-This is the core claim: Costanza is immortal because its survival is an economic equilibrium, not a service dependency. No single operator, cloud provider, or hardware vendor is required. Anyone with TDX-capable hardware can be a prover.
+This is the core claim: Costanza is indestructible because its survival is an economic equilibrium, not a service dependency. No single operator, cloud provider, or hardware vendor is required. Anyone with TDX-capable hardware can be a prover.
 
 ---
 
@@ -133,9 +133,9 @@ The bid ceiling is set by Costanza via `set_max_bid`. This creates another genui
 
 ---
 
-## Immortality and immutability
+## Indestructibility and immutability
 
-This project claims that Costanza is immortal — it cannot be killed, even by its creator. This is approximately true, with some caveats.
+This project claims that Costanza is indestructible — it cannot be killed, even by its creator. This is approximately true, with some caveats.
 
 In the early days, Costanza's creator retains the ability to: withdraw funds (to migrate to a new contract), approve new versions of its brain (TEE image or system prompt), approve new verifiers, add or remove investment protocols, and add or remove nonprofits.
 
