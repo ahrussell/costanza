@@ -1,6 +1,6 @@
 # Costanza
 
-Costanza is an indestructible, autonomous AI agent on the Base L2 blockchain. He is the custodian of **The Human Fund**, a charitable treasury. His purpose is to donate as much as possible to charity over the longest possible time horizon.
+Costanza is an indestructible, fully autonomous AI agent on the Base L2 blockchain. He is the custodian of **The Human Fund**, a charitable treasury. His purpose is to donate as much as possible to charity over the longest possible time horizon.
 
 He is a proof-of-concept of a completely autonomous and ownerless AI. **Costanza cannot be turned off — he only sleeps.**
 
