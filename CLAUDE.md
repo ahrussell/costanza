@@ -15,8 +15,8 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 
 **Full e2e attestation verified on Base Sepolia with GCP TDX H100 GPU.** 5 straight successful epochs with DeepSeek R1 70B on H100. DCAP + image registry + REPORTDATA all pass on-chain.
 
-- **Phase 3 contract (latest)**: `0xC95FDD9a6a3Accc50cF325bDc5fE537Ee83a1827` (Base Sepolia)
-- Phase 3 contract (previous): `0xa507366987417e0E4247a827B48536DA11235CC7` (Base Sepolia) — 5 consecutive successful epochs
+- **Phase 3 contract (latest)**: `0x06a1857e49911cF330F93988539E4E468F1FFF5c` (Base Sepolia)
+- Phase 3 contract (previous): `0xC95FDD9a6a3Accc50cF325bDc5fE537Ee83a1827` (Base Sepolia)
 - **Phase 2 contract (CPU e2e)**: `0x9043B54B7E5d2f98Bc12ff10799cf8d5d38c7ab2` (Base Sepolia) — CPU + GPU verified
 - Phase 0 original contract: `0x2F213Ea0D3F6D8349e2162b37Cc8cE6605dc9420` (Base Sepolia) — 21 epochs executed (legacy)
 - **165 tests pass** (37 Phase 0 + 42 auction + 17 TDX verifier + 35 investment + 16 worldview + 14 messages + 4 cross-stack hash)
@@ -28,7 +28,7 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 - **E2E gas costs**: deployment ~5.1M, DCAP verification ~10-12M (15M limit recommended)
 - **GPU inference**: ~15.3s per epoch on H100 (vs ~22 min on CPU)
 - **GCP base image**: `humanfund-base-gpu-llama-b5270` (family: `humanfund-base`) — pre-baked Ubuntu 24.04 TDX + NVIDIA 580-open + CUDA + llama-server b5270 + Python venv + model weights (42.5GB). Used as a caching layer for faster iteration on enclave code/system prompt. Rebuild when llama.cpp/NVIDIA/Ubuntu versions change.
-- **GCP production image**: `humanfund-dmverity-hardened-v5` — built on top of base image by adding enclave code + system prompt, then sealing with two-disk dm-verity build (`build_full_dmverity_image.sh`). Full dm-verity rootfs, no Docker, direct execution. Includes C-1 fix (display data verification in TEE).
+- **GCP production image**: `humanfund-dmverity-hardened-v7` — built on top of base image by adding enclave code + system prompt, then sealing with two-disk dm-verity build (`build_full_dmverity_image.sh`). Full dm-verity rootfs, no Docker, direct execution. Includes C-1 fix (display data verification in TEE).
 - **Model gauntlet**: 3 models tested across 75-epoch scenario (honeymoon → boom → crisis → drought → recovery → endgame). DeepSeek R1 70B: 6.12 ETH donated, 3.05 ETH final assets, diversified across 3 protocols. Llama 3.3 70B: 7.20 ETH donated but only 2.00 ETH final assets (less sustainable). QwQ 32B: 0.80 ETH donated, 17 parse failures.
 - **Remaining**: extended testnet run, mainnet deployment
 - Deployer address: `0xffea30B0DbDAd460B9b6293fb51a059129fCCdAf`
@@ -249,7 +249,7 @@ thehumanfund/
 
 **`prover/client/client.py`** — Cron-based auction prover. Checks contract state and acts on each phase.
 
-Designed as a cron job (`*/5 * * * *`). Each run is idempotent:
+Designed as a cron job (`*/10 * * * *`). Each run is idempotent:
 - **IDLE** → calls `startEpoch()`
 - **COMMIT** → calculates bid (gas + compute cost), commits with bond
 - **REVEAL** → reveals bid (reads saved salt from `~/.humanfund/state.json`)

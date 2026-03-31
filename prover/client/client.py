@@ -12,7 +12,7 @@ auction phase and takes the appropriate action:
 
 Usage:
     # Cron entry (every 5 minutes)
-    */5 * * * * cd /path/to/thehumanfund && python -m runner.client
+    */10 * * * * cd /path/to/thehumanfund && python -m runner.client
 
     # Manual run with notifications
     python -m runner.client --ntfy-channel my-channel

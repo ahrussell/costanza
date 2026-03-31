@@ -17,7 +17,7 @@ BASE_IMAGE=""
 VM_NAME="humanfund-builder-$(date +%s)"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
+PROJECT_ROOT="$(dirname "$(dirname "$(dirname "$SCRIPT_DIR")")")"
 
 while [[ $# -gt 0 ]]; do
     case $1 in

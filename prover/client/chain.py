@@ -122,5 +122,6 @@ class ChainClient:
             tx["gas"] = self.w3.eth.estimate_gas(tx)
 
         signed = self.account.sign_transaction(tx)
-        tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
+        raw = getattr(signed, "raw_transaction", None) or signed.rawTransaction
+        tx_hash = self.w3.eth.send_raw_transaction(raw)
         return self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
