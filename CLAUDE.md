@@ -180,14 +180,15 @@ thehumanfund/
 │   │   └── model_config.py     # Pinned model SHA-256 + verification
 │   ├── prompts/
 │   │   └── system.txt          # System prompt (USD mission, ETH/USD price)
-│   └── scripts/                # Prover/TEE infrastructure scripts
-│       ├── build_base_image.sh      # Build GCP base image (NVIDIA + CUDA + llama-server + model, slow ~15min)
-│       ├── build_full_dmverity_image.sh  # Build production dm-verity image (fast ~10min, uses base)
-│       ├── vm_build_all.sh          # Runs on VM: squashfs → verity → initramfs → partition → GRUB
-│       ├── vm_install.sh            # Installs dependencies on VM for base image build
-│       ├── e2e_test.py              # Full e2e test on Base Sepolia with TDX attestation
-│       ├── register_image.py        # Register platform key on-chain (serial console, no SSH)
-│       └── verify_measurements.py   # Verify RTMR values match registered key (serial console)
+│   └── scripts/
+│       └── gcp/                     # GCP TDX infrastructure scripts
+│           ├── build_base_image.sh      # Build GCP base image (NVIDIA + CUDA + llama-server + model, slow ~15min)
+│           ├── build_full_dmverity_image.sh  # Build production dm-verity image (fast ~10min, uses base)
+│           ├── vm_build_all.sh          # Runs on VM: squashfs → verity → initramfs → partition → GRUB
+│           ├── vm_install.sh            # Installs dependencies on VM for base image build
+│           ├── e2e_test.py              # Full e2e test on Base Sepolia with TDX attestation
+│           ├── register_image.py        # Register platform key on-chain (serial console, no SSH)
+│           └── verify_measurements.py   # Verify RTMR values match registered key (serial console)
 ├── frontend/
 │   └── index.html               # Internal dashboard (reads contract state)
 ├── models/                      # Local model files (gitignored)
@@ -276,9 +277,9 @@ See [prover/README](prover/README) for full setup instructions.
 - System prompt at `/opt/humanfund/system_prompt.txt` on the dm-verity rootfs
 - llama-server binary at `/opt/humanfund/bin/llama-server` on the dm-verity rootfs
 - `humanfund-enclave.service` — systemd one-shot service that runs the enclave program
-- `prover/scripts/build_base_image.sh` — builds GCP base image (NVIDIA + CUDA + llama-server + model, ~15min)
-- `prover/scripts/build_full_dmverity_image.sh` — builds production dm-verity image from base (~10min)
-- `prover/scripts/vm_build_all.sh` — runs on VM: creates squashfs, verity, initramfs, partitions output disk
+- `prover/scripts/gcp/build_base_image.sh` — builds GCP base image (NVIDIA + CUDA + llama-server + model, ~15min)
+- `prover/scripts/gcp/build_full_dmverity_image.sh` — builds production dm-verity image from base (~10min)
+- `prover/scripts/gcp/vm_build_all.sh` — runs on VM: creates squashfs, verity, initramfs, partitions output disk
 
 **Enclave I/O (no SSH, no Flask, no network listeners)**:
 - **Input**: Epoch state JSON via GCP instance metadata (`epoch-state` attribute) or file at `/input/epoch_state.json`
@@ -377,16 +378,16 @@ python -m prover.client --dry-run              # Log what would happen, no txs
 python -m prover.client --ntfy-channel my-ch   # With push notifications
 
 # GCP disk image (dm-verity)
-bash prover/scripts/build_base_image.sh               # Build base image (slow, ~15min, do once)
-bash prover/scripts/build_full_dmverity_image.sh \
+bash prover/scripts/gcp/build_base_image.sh               # Build base image (slow, ~15min, do once)
+bash prover/scripts/gcp/build_full_dmverity_image.sh \
   --base-image humanfund-base-gpu-llama-b5270  # Build production image (fast, ~10min)
-bash prover/scripts/build_full_dmverity_image.sh \
+bash prover/scripts/gcp/build_full_dmverity_image.sh \
   --base-image humanfund-base-gpu-llama-b5270 \
   --name humanfund-dmverity-gpu-v6             # Named production image
-python prover/scripts/verify_measurements.py \
+python prover/scripts/gcp/verify_measurements.py \
   --image humanfund-dmverity-hardened-v6 \
   --verifier 0x...                            # Verify RTMR match (via serial console)
-python prover/scripts/register_image.py \
+python prover/scripts/gcp/register_image.py \
   --image humanfund-dmverity-hardened-v6 \
   --verifier 0x...                            # Register image key on-chain (via serial console)
 

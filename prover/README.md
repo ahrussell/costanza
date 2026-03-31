@@ -79,10 +79,10 @@ To build your own:
 
 ```bash
 # Build base image (once — installs drivers, inference server, model)
-bash prover/scripts/build_base_image.sh
+bash prover/scripts/gcp/build_base_image.sh
 
 # Build dm-verity sealed image (each time enclave code changes)
-bash prover/scripts/build_full_dmverity_image.sh \
+bash prover/scripts/gcp/build_full_dmverity_image.sh \
   --base-image humanfund-base-gpu-llama-b5270 \
   --name humanfund-dmverity-gpu-mainnet-v1
 ```
@@ -92,7 +92,7 @@ bash prover/scripts/build_full_dmverity_image.sh \
 Register your image's platform key on-chain. This boots a temporary TDX VM, extracts RTMR measurements from the serial console (no SSH required), and registers the key:
 
 ```bash
-python prover/scripts/register_image.py \
+python prover/scripts/gcp/register_image.py \
   --image humanfund-dmverity-gpu-mainnet-v1 \
   --verifier <TdxVerifier-address>
 ```
@@ -100,7 +100,7 @@ python prover/scripts/register_image.py \
 To verify an image matches what's already registered:
 
 ```bash
-python prover/scripts/verify_measurements.py \
+python prover/scripts/gcp/verify_measurements.py \
   --image humanfund-dmverity-gpu-mainnet-v1 \
   --verifier <TdxVerifier-address> \
   --rpc-url <rpc-url>
@@ -235,7 +235,7 @@ If `verify_measurements.py` shows a mismatch, either:
 
 The fund owner registers new images via:
 ```bash
-python prover/scripts/register_image.py --image <image-name> --verifier <addr>
+python prover/scripts/gcp/register_image.py --image <image-name> --verifier <addr>
 ```
 
 ### Bond Forfeiture

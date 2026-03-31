@@ -6,17 +6,17 @@ computes the platform key, and checks it against the on-chain registry.
 
 Usage:
     # Verify a running VM against on-chain registry
-    python prover/scripts/verify_measurements.py \
+    python prover/scripts/gcp/verify_measurements.py \
         --vm-name my-vm \
         --verifier 0x1D9E...
 
     # Verify an image by booting a temporary VM
-    python prover/scripts/verify_measurements.py \
+    python prover/scripts/gcp/verify_measurements.py \
         --image humanfund-dmverity-hardened-v6 \
         --verifier 0x1D9E...
 
     # Verify against a known key (no chain access needed)
-    python prover/scripts/verify_measurements.py \
+    python prover/scripts/gcp/verify_measurements.py \
         --vm-name my-vm \
         --expected-image-key 0xabc...
 """
@@ -117,9 +117,9 @@ def main():
                 print(f"\n  FAIL: Image key is NOT approved on-chain")
                 print(f"    Register with:")
                 if args.image:
-                    print(f"    python prover/scripts/register_image.py --image {args.image} --verifier {args.verifier}")
+                    print(f"    python prover/scripts/gcp/register_image.py --image {args.image} --verifier {args.verifier}")
                 else:
-                    print(f"    python prover/scripts/register_image.py --vm-name {vm_name} --verifier {args.verifier}")
+                    print(f"    python prover/scripts/gcp/register_image.py --vm-name {vm_name} --verifier {args.verifier}")
                 sys.exit(1)
 
     finally:

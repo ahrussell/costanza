@@ -95,7 +95,7 @@ Rebuild this only when llama.cpp, NVIDIA drivers, CUDA, or Ubuntu versions chang
 
 **Phase 2: Production image (fast, ~10 min, iterative)**
 
-`prover/scripts/build_full_dmverity_image.sh` creates the dm-verity sealed image (e.g., `humanfund-dmverity-gpu-v6`):
+`prover/scripts/gcp/build_full_dmverity_image.sh` creates the dm-verity sealed image (e.g., `humanfund-dmverity-gpu-v6`):
 1. Creates a TDX builder VM from the base image
 2. Attaches two extra disks: output (for the final image) and staging (for temp files)
 3. Uploads enclave code (`prover/enclave/`) and system prompt to the VM
@@ -126,10 +126,10 @@ This avoids the corruption problem where sealing a live rootfs in-place can prod
 
 | Script | Where It Runs | Purpose |
 |--------|--------------|---------|
-| `prover/scripts/build_base_image.sh` | Local (gcloud) | Creates GCP base image with NVIDIA + CUDA + llama-server + model |
-| `prover/scripts/build_full_dmverity_image.sh` | Local (gcloud) | Orchestrates the full dm-verity build: creates VM, uploads code, runs build, creates image |
-| `prover/scripts/vm_build_all.sh` | On the VM (via nohup) | Does the actual work: squashfs, verity, initramfs, partition, GRUB |
-| `prover/scripts/vm_install.sh` | On the VM | Installs dependencies for the base image build |
+| `prover/scripts/gcp/build_base_image.sh` | Local (gcloud) | Creates GCP base image with NVIDIA + CUDA + llama-server + model |
+| `prover/scripts/gcp/build_full_dmverity_image.sh` | Local (gcloud) | Orchestrates the full dm-verity build: creates VM, uploads code, runs build, creates image |
+| `prover/scripts/gcp/vm_build_all.sh` | On the VM (via nohup) | Does the actual work: squashfs, verity, initramfs, partition, GRUB |
+| `prover/scripts/gcp/vm_install.sh` | On the VM | Installs dependencies for the base image build |
 
 ## Enclave I/O
 

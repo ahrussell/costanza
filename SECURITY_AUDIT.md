@@ -68,7 +68,7 @@ If `epochEthUsdPrice()` call fails, the prover silently falls back to $2000 in 8
 
 #### L-5: TOCTOU in dm-verity Build Process
 
-**Component**: `prover/scripts/vm_build_all.sh`
+**Component**: `prover/scripts/gcp/vm_build_all.sh`
 
 The build runs on a live VM. Between code installation and squashfs creation, GCP guest agents or other system services could modify files on the rootfs. The dm-verity hash captures whatever state exists at squashfs creation time, so any modification would be consistently captured — the risk is that unintended content makes it into the verified image.
 
@@ -80,7 +80,7 @@ If GCP preempts a SPOT VM during inference, the prover loses the epoch and forfe
 
 #### L-7: Hardcoded Username in Debug Image Build
 
-**Component**: `prover/scripts/build_full_dmverity_image.sh:116`
+**Component**: `prover/scripts/gcp/build_full_dmverity_image.sh:116`
 
 SSH key is baked with hardcoded username `andrewrussell`. This only applies to debug builds (`ENABLE_SSH=true`) and debug images produce a different dm-verity hash that won't pass production attestation. However, if multiple operators build debug images, the hardcoded username is wrong for all but one.
 
