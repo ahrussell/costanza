@@ -24,17 +24,19 @@ Usage:
 """
 
 import argparse
+import atexit
 import hashlib
 import json
 import os
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).parent.parent.parent
+PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
 
 # Markers emitted by the enclave at boot (see enclave_runner.py)
 MEASUREMENTS_START = "===HUMANFUND_MEASUREMENTS_START==="
@@ -77,11 +79,11 @@ def delete_vm(vm_name, project, zone):
     print(f"  Deleting VM: {vm_name}")
     gcloud(
         f"compute instances delete {vm_name} --zone={zone} --quiet",
-        project=project, check=False, timeout=120,
+        project=project, check=False, timeout=180,
     )
 
 
-def extract_measurements_from_serial(vm_name, project, zone, timeout=180):
+def extract_measurements_from_serial(vm_name, project, zone, timeout=300):
     """Poll serial console for RTMR measurements emitted by the enclave at boot.
 
     The enclave writes measurements between HUMANFUND_MEASUREMENTS_START and
@@ -196,6 +198,16 @@ def main():
     if args.image:
         vm_name = create_measurement_vm(args.image, args.project, args.zone)
         created_vm = vm_name
+
+        # Register cleanup via atexit + signal handlers so VM is deleted even on crash/SIGTERM
+        def _cleanup():
+            if created_vm:
+                delete_vm(created_vm, args.project, args.zone)
+
+        atexit.register(_cleanup)
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            signal.signal(sig, lambda *_: sys.exit(1))
+
         print(f"  Waiting for boot...")
         time.sleep(30)
     else:

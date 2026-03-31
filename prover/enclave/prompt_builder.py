@@ -585,7 +585,9 @@ def build_epoch_context(state, seed=None):
     if eth_usd > 0:
         lines.append(f"ETH/USD: ${eth_usd / 1e8:,.2f}.")
     if lifespan["epochs_remaining"] is not None:
-        lines.append(f"Liquid runway: ~{lifespan['epochs_remaining']} epochs. {'SELF-SUSTAINING.' if lifespan['self_sustaining'] else f'Yield covers {lifespan[\"yield_covers_pct\"]}% of costs.'}")
+        yield_pct = lifespan["yield_covers_pct"]
+        sustain = "SELF-SUSTAINING." if lifespan["self_sustaining"] else f"Yield covers {yield_pct}% of costs."
+        lines.append(f"Liquid runway: ~{lifespan['epochs_remaining']} epochs. {sustain}")
     lines.append(f"Max donate: {format_eth_usd(bounds['max_donate'], eth_usd)}. Commission: {commission / 100:.1f}%.")
     lines.append(f"Total donated lifetime: {format_eth(state.get('total_donated', 0))} ETH ({format_usd(total_donated_usd)} USD). Epochs since last donation: {epochs_since_donation}.")
 

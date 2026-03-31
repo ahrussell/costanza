@@ -17,7 +17,7 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 - **TdxVerifier**: `0x1cff9156FC9EF24128aE7ED9B7a1b29D2e590C73`
 - **Deployer**: `0xffea30B0DbDAd460B9b6293fb51a059129fCCdAf`
 - **174 tests pass** (core + auction + TDX verifier + investment + worldview + messages + cross-stack hash)
-- GPU image key (a3-highgpu-1g, H100): `0xff11715b...` — approved (v7)
+- GPU image key (a3-highgpu-1g, H100): `0x573c0120...` — approved (v8)
 - GCP TDX FMSPC `00806f050000` registered in Automata DCAP Dashboard
 - H100 on-demand quota is 0; all GPU VMs use `--provisioning-model=SPOT`
 - **Remaining**: extended testnet run, mainnet deployment
@@ -239,10 +239,10 @@ bash prover/scripts/gcp/build_full_dmverity_image.sh \
   --base-image humanfund-base-gpu-llama-b5270 \
   --model-template humanfund-model-template-gpu-llama-b5270  # Fast: model pre-written on disk
 python prover/scripts/gcp/register_image.py \
-  --image humanfund-dmverity-hardened-v7 \
+  --image humanfund-dmverity-hardened-v8 \
   --verifier 0x...                            # Register image key on-chain
 python prover/scripts/gcp/verify_measurements.py \
-  --image humanfund-dmverity-hardened-v7 \
+  --image humanfund-dmverity-hardened-v8 \
   --verifier 0x...                            # Verify RTMR match
 
 # TEE enclave (local testing)
@@ -258,7 +258,7 @@ RPC_URL=https://sepolia.base.org
 CONTRACT_ADDRESS=0x...         # Deployed TheHumanFund contract address
 GCP_PROJECT=my-project         # GCP project ID
 GCP_ZONE=us-central1-a         # GCP zone with TDX support
-GCP_IMAGE=humanfund-dmverity-gpu-v7    # Production dm-verity disk image
+GCP_IMAGE=humanfund-dmverity-hardened-v8    # Production dm-verity disk image
 NTFY_CHANNEL=my-prover         # Optional: ntfy.sh channel
 ```
 
