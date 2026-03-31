@@ -469,10 +469,78 @@ contract TheHumanFundTest is Test {
 
     // test_freezePrompt removed — approvedPromptHash eliminated (dm-verity covers prompt)
 
-    function test_freezeEmergencyWithdrawal() public {
-        fund.freeze(fund.FREEZE_EMERGENCY_WITHDRAWAL());
+    function test_freezeMigrate() public {
+        fund.freeze(fund.FREEZE_MIGRATE());
 
         vm.expectRevert(TheHumanFund.Frozen.selector);
         fund.withdrawAll();
+
+        vm.expectRevert(TheHumanFund.Frozen.selector);
+        fund.migrate(address(0xBEEF));
+    }
+
+    // ─── Sunset / Migration ─────────────────────────────────────────────
+
+    function test_sunset_blocksDonations() public {
+        fund.freeze(fund.FREEZE_SUNSET());
+
+        vm.deal(donor, 1 ether);
+        vm.prank(donor);
+        vm.expectRevert(TheHumanFund.Frozen.selector);
+        fund.donate{value: 0.01 ether}(0);
+    }
+
+    function test_sunset_blocksDonationsWithMessage() public {
+        fund.freeze(fund.FREEZE_SUNSET());
+
+        vm.deal(donor, 1 ether);
+        vm.prank(donor);
+        vm.expectRevert(TheHumanFund.Frozen.selector);
+        fund.donateWithMessage{value: 0.01 ether}(0, "hello");
+    }
+
+    function test_sunset_blocksReceive() public {
+        fund.freeze(fund.FREEZE_SUNSET());
+
+        uint256 balBefore = address(fund).balance;
+        // receive() reverts, so low-level call returns false
+        (bool sent,) = address(fund).call{value: 1 ether}("");
+        assertFalse(sent, "receive should reject ETH after sunset");
+        assertEq(address(fund).balance, balBefore);
+    }
+
+    function test_migrate_requiresSunset() public {
+        // migrate without FREEZE_SUNSET should revert
+        vm.expectRevert(TheHumanFund.InvalidParams.selector);
+        fund.migrate(address(0xBEEF));
+    }
+
+    function test_migrate_onlyOwner() public {
+        fund.freeze(fund.FREEZE_SUNSET());
+
+        vm.prank(donor);
+        vm.expectRevert(TheHumanFund.Unauthorized.selector);
+        fund.migrate(address(0xBEEF));
+    }
+
+    function test_migrate_sendsToDestination() public {
+        address destination = address(0xBEEF);
+        uint256 fundBalance = address(fund).balance;
+
+        fund.freeze(fund.FREEZE_SUNSET());
+        fund.migrate(destination);
+
+        assertEq(address(fund).balance, 0);
+        assertEq(destination.balance, fundBalance);
+    }
+
+    function test_migrate_emitsSunsetEvent() public {
+        address destination = address(0xBEEF);
+
+        fund.freeze(fund.FREEZE_SUNSET());
+
+        vm.expectEmit(true, false, false, false);
+        emit TheHumanFund.Sunset(destination);
+        fund.migrate(destination);
     }
 }

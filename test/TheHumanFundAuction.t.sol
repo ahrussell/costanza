@@ -678,4 +678,67 @@ contract TheHumanFundAuctionTest is Test {
 
         assertTrue(hashBefore != hashAfter);
     }
+
+    // ─── Sunset / Migration ─────────────────────────────────────────────
+
+    function test_sunset_blocksStartEpoch() public {
+        fund.freeze(fund.FREEZE_SUNSET());
+
+        vm.expectRevert(TheHumanFund.Frozen.selector);
+        fund.startEpoch();
+    }
+
+    function test_sunset_blocksCommit() public {
+        // Start an epoch before sunset
+        fund.startEpoch();
+        // Now freeze
+        fund.freeze(fund.FREEZE_SUNSET());
+
+        uint256 bond = fund.currentBond();
+        bytes32 commitHash = _commitHash(0.001 ether, bytes32("salt1"));
+
+        vm.prank(runner1);
+        vm.expectRevert(TheHumanFund.Frozen.selector);
+        fund.commit{value: bond}(commitHash);
+    }
+
+    function test_migrate_requiresNoActiveAuction() public {
+        // Start an epoch — puts auction in COMMIT phase
+        fund.startEpoch();
+        fund.freeze(fund.FREEZE_SUNSET());
+
+        vm.expectRevert(TheHumanFund.WrongPhase.selector);
+        fund.migrate(address(0xBEEF));
+    }
+
+    function test_migrate_afterAuctionSettles() public {
+        // Run a full auction cycle to settlement
+        bytes32 salt = bytes32("s1");
+        uint256 bidAmount = 0.005 ether;
+        _runAuctionTo(runner1, bidAmount, salt);
+
+        // Submit attested result to settle the auction
+        bytes32 inputHash = fund.epochInputHashes(1);
+        bytes memory action = _noopAction();
+        bytes memory reasoning = bytes("Conserving resources.");
+
+        bytes32 outputHash = keccak256(abi.encodePacked(sha256(action), sha256(reasoning)));
+        bytes32 expectedReportData = sha256(abi.encodePacked(inputHash, outputHash));
+
+        AuctionMockDcapVerifier etchedMock = AuctionMockDcapVerifier(0xaDdeC7e85c2182202b66E331f2a4A0bBB2cEEa1F);
+        etchedMock.setOutput(_buildDcapOutput(expectedReportData));
+        etchedMock.setShouldSucceed(true);
+
+        vm.prank(runner1);
+        fund.submitAuctionResult(action, reasoning, bytes("mock_quote"), uint8(1), -1, "");
+
+        // Now sunset + migrate
+        address dest = address(0xCAFE);
+        uint256 bal = address(fund).balance;
+        fund.freeze(fund.FREEZE_SUNSET());
+        fund.migrate(dest);
+
+        assertEq(address(fund).balance, 0);
+        assertEq(dest.balance, bal);
+    }
 }

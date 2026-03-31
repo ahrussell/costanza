@@ -215,16 +215,22 @@ contract TheHumanFund is ReentrancyGuard {
     uint256 public constant FREEZE_VERIFIERS           = 1 << 4;
     // FREEZE_PROMPT (1 << 5) removed — prompt verified via dm-verity image key
     uint256 public constant FREEZE_DIRECT_MODE         = 1 << 6;
-    uint256 public constant FREEZE_EMERGENCY_WITHDRAWAL = 1 << 7;
+    uint256 public constant FREEZE_MIGRATE              = 1 << 7;
+    uint256 public constant FREEZE_SUNSET               = 1 << 8;
     uint256 public frozenFlags;
 
     event PermissionFrozen(uint256 indexed flag);
+    event Sunset(address indexed destination);
 
     // ─── Modifiers ───────────────────────────────────────────────────────
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert Unauthorized();
         _;
+    }
+
+    function _requireNotSunset() internal view {
+        if (frozenFlags & FREEZE_SUNSET != 0) revert Frozen();
     }
 
     // ─── Constructor ─────────────────────────────────────────────────────
@@ -292,6 +298,7 @@ contract TheHumanFund is ReentrancyGuard {
     /// @notice Donate ETH to the fund, optionally with a referral code.
     /// @param referralCodeId The referral code ID (0 for no referral).
     function donate(uint256 referralCodeId) external payable nonReentrant {
+        _requireNotSunset();
         if (msg.value < MIN_DONATION_AMOUNT) revert InvalidParams();
 
         // State updates BEFORE external call (checks-effects-interactions)
@@ -311,6 +318,7 @@ contract TheHumanFund is ReentrancyGuard {
     /// @param referralCodeId The referral code ID (0 for no referral).
     /// @param message A message for the agent (max 280 characters, requires >= 0.01 ETH).
     function donateWithMessage(uint256 referralCodeId, string calldata message) external payable nonReentrant {
+        _requireNotSunset();
         if (msg.value < MIN_MESSAGE_DONATION) revert InvalidParams();
 
         // State updates BEFORE external call (checks-effects-interactions)
@@ -453,16 +461,35 @@ contract TheHumanFund is ReentrancyGuard {
     /// @notice Withdraw all DeFi positions and transfer entire treasury to owner.
     /// @dev Emergency shutdown: unwinds all investments, sends everything to owner.
     function withdrawAll() external onlyOwner {
-        if (frozenFlags & FREEZE_EMERGENCY_WITHDRAWAL != 0) revert Frozen();
-        // Unwind all DeFi positions — ETH sent directly to owner
-        if (address(investmentManager) != address(0)) {
-            investmentManager.withdrawAll(owner);
-        }
+        if (frozenFlags & FREEZE_MIGRATE != 0) revert Frozen();
+        _withdrawTo(owner);
+    }
 
-        // Transfer remaining liquid balance to owner
+    /// @notice Graceful migration: requires FREEZE_SUNSET to be set first (blocking inflows),
+    ///         then unwinds all positions and sends funds to the destination address.
+    /// @param destination The address to receive all funds (e.g., a new contract).
+    function migrate(address destination) external onlyOwner {
+        if (frozenFlags & FREEZE_MIGRATE != 0) revert Frozen();
+        if (frozenFlags & FREEZE_SUNSET == 0) revert InvalidParams();
+        // Ensure no auction is in flight
+        IAuctionManager am = auctionManager;
+        uint256 epoch = currentEpoch;
+        if (address(am) != address(0) && epoch > 0) {
+            IAuctionManager.AuctionPhase phase = am.getPhase(epoch);
+            if (phase != IAuctionManager.AuctionPhase.IDLE
+                && phase != IAuctionManager.AuctionPhase.SETTLED) revert WrongPhase();
+        }
+        _withdrawTo(destination);
+        emit Sunset(destination);
+    }
+
+    function _withdrawTo(address recipient) internal {
+        if (address(investmentManager) != address(0)) {
+            investmentManager.withdrawAll(recipient);
+        }
         uint256 bal = address(this).balance;
         if (bal > 0) {
-            (bool sent, ) = owner.call{value: bal}("");
+            (bool sent,) = recipient.call{value: bal}("");
             if (!sent) revert TransferFailed();
         }
     }
@@ -537,6 +564,7 @@ contract TheHumanFund is ReentrancyGuard {
 
     /// @notice Open the auction for the current epoch. Anyone can call this.
     function startEpoch() external {
+        _requireNotSunset();
 
         IAuctionManager am = auctionManager;
         uint256 epoch = currentEpoch;
@@ -571,6 +599,7 @@ contract TheHumanFund is ReentrancyGuard {
 
     /// @notice Submit a sealed bid commitment for the current epoch.
     function commit(bytes32 commitHash) external payable {
+        _requireNotSunset();
 
         uint256 epoch = currentEpoch;
         uint256 bond = auctionManager.getBond(epoch);
@@ -1137,6 +1166,7 @@ contract TheHumanFund is ReentrancyGuard {
 
     // Allow receiving ETH directly (for seed funding)
     receive() external payable {
+        _requireNotSunset();
         totalInflows += msg.value;
     }
 }
