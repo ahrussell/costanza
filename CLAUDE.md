@@ -57,6 +57,14 @@ Every value shown to the model in the epoch context MUST be included in the `inp
 
 Without this, a malicious runner could feed the TEE arbitrary values for that field and on-chain verification would not catch it.
 
+### Gas Estimates
+
+When contract functions change (new logic, different codegen from `via_ir`, etc.), the hardcoded gas limits in `prover/client/auction.py` may become too low, causing silent out-of-gas reverts. After any contract change, verify gas usage against the limits:
+
+- `GAS_START_EPOCH`, `GAS_COMMIT`, `GAS_CLOSE_COMMIT`, `GAS_REVEAL`, `GAS_CLOSE_REVEAL`, `GAS_SUBMIT_RESULT`
+
+Check actual gas used via `cast send` or test transactions and update the constants with comfortable headroom.
+
 ## Tech Stack
 
 - **Chain**: Base (Coinbase L2), Solidity ^0.8.20
