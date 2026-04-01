@@ -25,4 +25,7 @@ COPY out/AuctionManager.sol/ /app/out/AuctionManager.sol/
 COPY out/InvestmentManager.sol/ /app/out/InvestmentManager.sol/
 COPY out/WorldView.sol/ /app/out/WorldView.sol/
 
-ENTRYPOINT ["python", "-m", "prover.client"]
+COPY prover/client/entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
+ENTRYPOINT ["/app/entrypoint.sh"]
