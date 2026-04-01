@@ -51,9 +51,12 @@ def start_epoch(chain: ChainClient, dry_run=False):
         if dry_run:
             logger.info("[DRY RUN] Would call startEpoch()")
             return True
-        chain.send_tx(chain.contract.functions.startEpoch(), gas=GAS_START_EPOCH)
-        logger.info("startEpoch() submitted")
+        receipt = chain.send_tx(chain.contract.functions.startEpoch(), gas=GAS_START_EPOCH)
+        logger.info("startEpoch() confirmed: gas=%s", receipt.get("gasUsed", "?"))
         return True
+    except RuntimeError as e:
+        logger.error("startEpoch() reverted on-chain: %s", e)
+        return False
     except (ContractLogicError, ContractCustomError) as e:
         err = str(e)
         if "already" in err.lower() or "AlreadyDone" in err:

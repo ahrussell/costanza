@@ -108,6 +108,9 @@ class ChainClient:
 
         Returns:
             Transaction receipt.
+
+        Raises:
+            RuntimeError: If the transaction reverts on-chain (receipt status != 1).
         """
         tx = fn.build_transaction({
             "from": self.account.address,
@@ -124,4 +127,10 @@ class ChainClient:
         signed = self.account.sign_transaction(tx)
         raw = getattr(signed, "raw_transaction", None) or signed.rawTransaction
         tx_hash = self.w3.eth.send_raw_transaction(raw)
-        return self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+        receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+        if receipt["status"] != 1:
+            raise RuntimeError(
+                f"Transaction reverted on-chain: tx={tx_hash.hex()}, "
+                f"gas_used={receipt.get('gasUsed', '?')}"
+            )
+        return receipt
