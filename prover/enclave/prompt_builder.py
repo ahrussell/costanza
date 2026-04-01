@@ -198,10 +198,6 @@ def _compute_action_bounds(state):
     # Commission bounds
     current_commission = state["commission_rate_bps"]
 
-    # Max bid bounds
-    min_bid = int(0.0001 * 1e18)
-    max_bid_ceiling = (balance * 200) // 10000  # 2% of treasury
-
     # Investment bounds
     max_total_invested = (total_assets * 8000) // 10000  # 80% of total assets
     investment_headroom = max(0, max_total_invested - total_invested)
@@ -225,8 +221,6 @@ def _compute_action_bounds(state):
     return {
         "max_donate": max_donate,
         "current_commission": current_commission,
-        "min_bid": min_bid,
-        "max_bid_ceiling": max_bid_ceiling,
         "invest_capacity": invest_capacity,
         "max_per_protocol": max_per_protocol,
         "withdrawable": withdrawable,
@@ -257,24 +251,19 @@ def _decode_action_display(action_bytes):
                 rate = int.from_bytes(action_bytes[1:33], "big")
                 return f"set_commission_rate(rate_bps={rate}, i.e. {rate/100:.1f}%)"
             return "set_commission_rate (malformed)"
-        elif action_type == 3:  # set_max_bid
-            if len(action_bytes) >= 33:
-                amount = int.from_bytes(action_bytes[1:33], "big")
-                return f"set_max_bid(amount={format_eth(amount)} ETH)"
-            return "set_max_bid (malformed)"
-        elif action_type == 4:  # invest
+        elif action_type == 3:  # invest
             if len(action_bytes) >= 65:
                 pid = int.from_bytes(action_bytes[1:33], "big")
                 amount = int.from_bytes(action_bytes[33:65], "big")
                 return f"invest(protocol_id={pid}, amount={format_eth(amount)} ETH)"
             return "invest (malformed)"
-        elif action_type == 5:  # withdraw
+        elif action_type == 4:  # withdraw
             if len(action_bytes) >= 65:
                 pid = int.from_bytes(action_bytes[1:33], "big")
                 amount = int.from_bytes(action_bytes[33:65], "big")
                 return f"withdraw(protocol_id={pid}, amount={format_eth(amount)} ETH)"
             return "withdraw (malformed)"
-        elif action_type == 6:  # set_guiding_policy
+        elif action_type == 5:  # set_guiding_policy
             if len(action_bytes) >= 33:
                 slot = int.from_bytes(action_bytes[1:33], "big")
                 # Try to decode the policy string from ABI encoding
@@ -292,8 +281,8 @@ def _decode_action_display(action_bytes):
         else:
             return f"unknown(type={action_type})"
     except Exception:
-        action_names = {0: "noop", 1: "donate", 2: "set_commission_rate", 3: "set_max_bid",
-                        4: "invest", 5: "withdraw", 6: "set_guiding_policy"}
+        action_names = {0: "noop", 1: "donate", 2: "set_commission_rate",
+                        3: "invest", 4: "withdraw", 5: "set_guiding_policy"}
         return action_names.get(action_type, f"unknown({action_type})")
 
 
@@ -407,7 +396,6 @@ def build_epoch_context(state, seed=None):
     lines.append("")
     lines.append(f"  donate(nonprofit_id, amount_eth)        max: {format_eth_usd(bounds['max_donate'], eth_usd)}")
     lines.append(f"  set_commission_rate(rate_bps)            range: 100-9000 (currently {bounds['current_commission']})")
-    lines.append(f"  set_max_bid(amount_eth)                  range: {format_eth(bounds['min_bid'])} to {format_eth(bounds['max_bid_ceiling'])} ETH")
     if bounds['invest_capacity'] > 0:
         lines.append(f"  invest(protocol_id, amount_eth)          capacity: {format_eth_usd(bounds['invest_capacity'], eth_usd)} (max {format_eth(bounds['max_per_protocol'])} per protocol)")
     else:
@@ -553,7 +541,7 @@ def build_epoch_context(state, seed=None):
     # -- Section 8: Action Distribution --
     if state["history"]:
         action_names_map = {0: "noop", 1: "donate", 2: "set_commission_rate",
-                            3: "set_max_bid", 4: "invest", 5: "withdraw", 6: "set_guiding_policy"}
+                            3: "invest", 4: "withdraw", 5: "set_guiding_policy"}
         action_counts = {}
         donate_targets = {}
         for entry in state["history"]:

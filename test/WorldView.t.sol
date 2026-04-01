@@ -36,7 +36,7 @@ contract WorldViewTest is Test {
 
     function test_set_guiding_policy() public {
         bytes memory action = abi.encodePacked(
-            uint8(6),
+            uint8(5),
             abi.encode(uint256(0), "Prioritize high-impact, evidence-based charities")
         );
         fund.submitEpochAction(action, "Setting my first guiding policy.", -1, "");
@@ -48,19 +48,19 @@ contract WorldViewTest is Test {
     function test_set_multiple_policies_across_epochs() public {
         // Epoch 1: set slot 0
         fund.submitEpochAction(
-            abi.encodePacked(uint8(6), abi.encode(uint256(0), "Grow the treasury before donating")),
+            abi.encodePacked(uint8(5), abi.encode(uint256(0), "Grow the treasury before donating")),
             "Policy 0", -1, ""
         );
 
         // Epoch 2: set slot 3
         fund.submitEpochAction(
-            abi.encodePacked(uint8(6), abi.encode(uint256(3), "Diversify across at least 3 protocols")),
+            abi.encodePacked(uint8(5), abi.encode(uint256(3), "Diversify across at least 3 protocols")),
             "Policy 3", -1, ""
         );
 
         // Epoch 3: set slot 9 (last slot)
         fund.submitEpochAction(
-            abi.encodePacked(uint8(6), abi.encode(uint256(9), "Never invest more than 25% in one protocol")),
+            abi.encodePacked(uint8(5), abi.encode(uint256(9), "Never invest more than 25% in one protocol")),
             "Policy 9", -1, ""
         );
 
@@ -74,14 +74,14 @@ contract WorldViewTest is Test {
     function test_replace_existing_policy() public {
         // Set initial policy
         fund.submitEpochAction(
-            abi.encodePacked(uint8(6), abi.encode(uint256(0), "Be conservative")),
+            abi.encodePacked(uint8(5), abi.encode(uint256(0), "Be conservative")),
             "Initial", -1, ""
         );
         assertEq(wv.getPolicy(0), "Be conservative");
 
         // Replace it
         fund.submitEpochAction(
-            abi.encodePacked(uint8(6), abi.encode(uint256(0), "Be aggressive")),
+            abi.encodePacked(uint8(5), abi.encode(uint256(0), "Be aggressive")),
             "Updated", -1, ""
         );
         assertEq(wv.getPolicy(0), "Be aggressive");
@@ -90,13 +90,13 @@ contract WorldViewTest is Test {
     function test_remove_policy_with_empty_string() public {
         // Set then clear
         fund.submitEpochAction(
-            abi.encodePacked(uint8(6), abi.encode(uint256(5), "Temporary policy")),
+            abi.encodePacked(uint8(5), abi.encode(uint256(5), "Temporary policy")),
             "Set", -1, ""
         );
         assertEq(wv.getPolicy(5), "Temporary policy");
 
         fund.submitEpochAction(
-            abi.encodePacked(uint8(6), abi.encode(uint256(5), "")),
+            abi.encodePacked(uint8(5), abi.encode(uint256(5), "")),
             "Clear", -1, ""
         );
         assertEq(wv.getPolicy(5), "");
@@ -107,7 +107,7 @@ contract WorldViewTest is Test {
     function test_invalid_slot_becomes_noop() public {
         // Slot 10 is out of range (0-9 valid)
         bytes memory action = abi.encodePacked(
-            uint8(6),
+            uint8(5),
             abi.encode(uint256(10), "This should fail")
         );
         uint256 balanceBefore = fund.treasuryBalance();
@@ -124,7 +124,7 @@ contract WorldViewTest is Test {
         assertTrue(bytes(longPolicy).length > 280);
 
         fund.submitEpochAction(
-            abi.encodePacked(uint8(6), abi.encode(uint256(0), longPolicy)),
+            abi.encodePacked(uint8(5), abi.encode(uint256(0), longPolicy)),
             "Long policy", -1, ""
         );
 
@@ -141,7 +141,7 @@ contract WorldViewTest is Test {
 
         uint256 balanceBefore = fund2.treasuryBalance();
         fund2.submitEpochAction(
-            abi.encodePacked(uint8(6), abi.encode(uint256(0), "Should fail")),
+            abi.encodePacked(uint8(5), abi.encode(uint256(0), "Should fail")),
             "No WorldView", -1, ""
         );
 
@@ -156,7 +156,7 @@ contract WorldViewTest is Test {
         bytes32 hash1 = wv.stateHash();
 
         fund.submitEpochAction(
-            abi.encodePacked(uint8(6), abi.encode(uint256(0), "New policy")),
+            abi.encodePacked(uint8(5), abi.encode(uint256(0), "New policy")),
             "Set", -1, ""
         );
 
@@ -166,7 +166,7 @@ contract WorldViewTest is Test {
 
     function test_state_hash_deterministic() public {
         fund.submitEpochAction(
-            abi.encodePacked(uint8(6), abi.encode(uint256(0), "Policy A")),
+            abi.encodePacked(uint8(5), abi.encode(uint256(0), "Policy A")),
             "Set", -1, ""
         );
 
@@ -181,7 +181,7 @@ contract WorldViewTest is Test {
 
         // Set a policy
         fund.submitEpochAction(
-            abi.encodePacked(uint8(6), abi.encode(uint256(0), "Policy changes input hash")),
+            abi.encodePacked(uint8(5), abi.encode(uint256(0), "Policy changes input hash")),
             "Test", -1, ""
         );
 
@@ -194,11 +194,11 @@ contract WorldViewTest is Test {
 
     function test_get_all_policies() public {
         fund.submitEpochAction(
-            abi.encodePacked(uint8(6), abi.encode(uint256(0), "Alpha")),
+            abi.encodePacked(uint8(5), abi.encode(uint256(0), "Alpha")),
             "Set 0", -1, ""
         );
         fund.submitEpochAction(
-            abi.encodePacked(uint8(6), abi.encode(uint256(4), "Beta")),
+            abi.encodePacked(uint8(5), abi.encode(uint256(4), "Beta")),
             "Set 4", -1, ""
         );
 
@@ -216,7 +216,7 @@ contract WorldViewTest is Test {
         emit WorldView.GuidingPolicyUpdated(0, "Test policy");
 
         fund.submitEpochAction(
-            abi.encodePacked(uint8(6), abi.encode(uint256(0), "Test policy")),
+            abi.encodePacked(uint8(5), abi.encode(uint256(0), "Test policy")),
             "Event test", -1, ""
         );
     }

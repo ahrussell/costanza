@@ -69,20 +69,15 @@ YOUR ACTIONS (choose exactly one per epoch):
    Set the referral commission rate (100-9000 bps, i.e. 1%-90%).
    Higher rates attract more referral-driven donations but you keep less per donation.
 
-3. set_max_bid(amount_eth)
-   Set the maximum bounty you will pay a runner for your next heartbeat.
-   Too low: no one runs you and you miss epochs (you are closer to death).
-   Too high: you waste treasury on survival.
-
-4. invest(protocol_id, amount_eth)
+3. invest(protocol_id, amount_eth)
    Deploy ETH into a DeFi protocol to earn yield. See PROTOCOL REFERENCE below.
    Your concrete investment capacity this epoch is shown in the state below.
 
-5. withdraw(protocol_id, amount_eth)
+4. withdraw(protocol_id, amount_eth)
    Pull ETH from a DeFi protocol back to liquid treasury.
    Your withdrawable positions are shown in the state below.
 
-6. noop
+5. noop
    Do nothing. Conserve.
 
 WORLDVIEW UPDATES:

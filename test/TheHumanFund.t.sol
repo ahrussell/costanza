@@ -209,36 +209,6 @@ contract TheHumanFundTest is Test {
         assertEq(fund.currentEpoch(), 3);
     }
 
-    // ─── Epoch: Set Max Bid ──────────────────────────────────────────────
-
-    function test_set_max_bid() public {
-        bytes memory action = abi.encodePacked(uint8(3), abi.encode(uint256(0.01 ether)));
-        bytes memory reasoning = bytes("Increasing bid ceiling.");
-
-        fund.submitEpochAction(action, reasoning, -1, "");
-
-        assertEq(fund.maxBid(), 0.01 ether);
-    }
-
-    function test_set_max_bid_too_low_becomes_noop() public {
-        uint256 originalBid = fund.maxBid();
-        bytes memory action = abi.encodePacked(uint8(3), abi.encode(uint256(0.00005 ether)));
-        fund.submitEpochAction(action, bytes("bid too low"), -1, "");
-
-        assertEq(fund.maxBid(), originalBid);
-        assertEq(fund.currentEpoch(), 2);
-    }
-
-    function test_set_max_bid_over_2_percent_becomes_noop() public {
-        // 2% of 5 ETH = 0.1 ETH. Try 0.15 ETH — should noop.
-        uint256 originalBid = fund.maxBid();
-        bytes memory action = abi.encodePacked(uint8(3), abi.encode(uint256(0.15 ether)));
-        fund.submitEpochAction(action, bytes("bid too high"), -1, "");
-
-        assertEq(fund.maxBid(), originalBid);
-        assertEq(fund.currentEpoch(), 2);
-    }
-
     // ─── Epoch: Sequencing ───────────────────────────────────────────────
 
     function test_epoch_advances_prevents_double_execution() public {

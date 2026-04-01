@@ -38,7 +38,6 @@ The owner sets these parameters during deployment but progressively surrenders c
 |-----------|-------|-------------|
 | Max donation per epoch | 10% of liquid treasury | `_executeDonate` |
 | Commission rate | 1% — 90% | `_executeSetCommissionRate` |
-| Max bid | 0.0001 ETH — 2% of treasury | `_executeSetMaxBid` |
 | Max total invested | 80% of total assets | `InvestmentManager.deposit` |
 | Max per protocol | 25% of total assets | `InvestmentManager.deposit` |
 | Min liquid reserve | 20% of total assets | `InvestmentManager.deposit` |
