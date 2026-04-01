@@ -106,7 +106,7 @@ def _parse_function_call_format(text):
 
     # Known action patterns
     action_patterns = [
-        "noop", "donate", "set_commission_rate", "set_max_bid",
+        "noop", "donate", "set_commission_rate",
         "invest", "withdraw", "set_guiding_policy", "set_policy",
     ]
 
@@ -279,16 +279,12 @@ def encode_action_bytes(action_json):
     elif action == "set_commission_rate":
         rate = int(float(str(params.get("rate_bps") or params.get("rate") or params.get("bps") or 1000)))
         return bytes([2]) + rate.to_bytes(32, "big")
-    elif action == "set_max_bid":
-        amount_str = _clean_amount(params.get("amount_eth") or params.get("amount") or params.get("eth") or "0.001")
-        amount_wei = int(float(amount_str) * 1e18)
-        return bytes([3]) + amount_wei.to_bytes(32, "big")
     elif action == "invest":
         protocol_id = _parse_protocol_id(params)
         amount_str = _clean_amount(params.get("amount_eth") or params.get("amount") or params.get("eth") or "0.1")
         amount_wei = int(float(amount_str) * 1e18)
         return (
-            bytes([4])
+            bytes([3])
             + protocol_id.to_bytes(32, "big")
             + amount_wei.to_bytes(32, "big")
         )
@@ -297,7 +293,7 @@ def encode_action_bytes(action_json):
         amount_str = _clean_amount(params.get("amount_eth") or params.get("amount") or params.get("eth") or "0.1")
         amount_wei = int(float(amount_str) * 1e18)
         return (
-            bytes([5])
+            bytes([4])
             + protocol_id.to_bytes(32, "big")
             + amount_wei.to_bytes(32, "big")
         )
@@ -316,7 +312,7 @@ def encode_action_bytes(action_json):
         # Pad string data to 32-byte boundary
         padded_len = ((len(policy_bytes) + 31) // 32) * 32
         str_data = policy_bytes.ljust(padded_len, b'\x00')
-        return bytes([6]) + slot_bytes + str_offset + str_length + str_data
+        return bytes([5]) + slot_bytes + str_offset + str_length + str_data
     else:
         # Unknown action — fall back to noop
         print(f"WARNING: Unknown action '{action}', falling back to noop")

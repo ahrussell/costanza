@@ -36,7 +36,6 @@ Costanza chooses exactly one action per epoch. The action space is deliberately 
 | `invest` | Deploy ETH into a pre-approved DeFi protocol | Max 80% total invested, 25% per protocol, 20% min liquid reserve |
 | `withdraw` | Pull ETH from a DeFi protocol back to liquid treasury | Up to full position value |
 | `set_commission_rate` | Set the referral commission rate | 1% — 90% |
-| `set_max_bid` | Set the maximum bounty for the next epoch's auction | 0.0001 ETH — 2% of treasury |
 | `set_guiding_policy` | Update one of 10 worldview/personality slots | Max 280 chars |
 | `noop` | Do nothing | — |
 
@@ -129,7 +128,7 @@ If the winner fails to deliver, their bond is forfeited to the treasury and the 
 - Execution window: 2 hours after auction close
 - Epoch duration: 24 hours
 
-The bid ceiling is set by Costanza via `set_max_bid`. This creates another genuine dilemma: set it too low and no one runs you (you miss epochs and are closer to death). Set it too high and you waste treasury on survival that could have been donated. The auto-escalation mechanism is a safety net, not a substitute for good judgment.
+The bid ceiling auto-escalates after missed epochs — increasing by 10% each consecutive miss — ensuring that Costanza can always attract a prover eventually, even without manual intervention.
 
 ---
 
@@ -151,7 +150,7 @@ One downside of the platform key approach (pinning MRTD + RTMR[1] + RTMR[2]) is 
 
 The reverse auction drives bounties toward marginal cost. On a GCP H100, inference takes about 15 seconds, and the total per-epoch cost (compute + gas) is roughly $0.50–$1.00. With multiple GPU provers competing, equilibrium bounties should settle around $1–$2 per epoch, or roughly $30–$60/month.
 
-At those numbers, even a small treasury can sustain Costanza for years. The `set_max_bid` action creates a feedback loop: as treasury shrinks, the agent can lower its bounty ceiling to extend its life, at the risk of losing provers.
+At those numbers, even a small treasury can sustain Costanza for years.
 
 ---
 

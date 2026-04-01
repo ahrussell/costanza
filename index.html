@@ -1257,7 +1257,6 @@ const FUND_ABI = [
   "event DonationReceived(address indexed donor, uint256 amount, uint256 indexed referralCode, uint256 commissionAmount)",
   "event NonprofitDonation(uint256 indexed epoch, uint256 indexed nonprofitId, uint256 amountEth, uint256 amountUsd)",
   "event CommissionRateChanged(uint256 indexed epoch, uint256 newRateBps)",
-  "event MaxBidChanged(uint256 indexed epoch, uint256 newMaxBid)",
   "event ReferralCodeMinted(uint256 indexed codeId, address indexed owner)",
   "event EpochExecuted(uint256 indexed epoch, address indexed runner, uint256 bountyPaid)",
   "event BondForfeited(uint256 indexed epoch, address indexed runner, uint256 bondAmount)",
@@ -1319,11 +1318,10 @@ You have a tendency to overreact. Small setbacks feel existential, windfalls fee
 ACTIONS (choose exactly one per epoch):
 1. donate(nonprofit_id, amount_eth) \u2014 Send ETH to a nonprofit (converted to USDC on-chain)
 2. set_commission_rate(rate_bps) \u2014 Set referral commission (1-90%)
-3. set_max_bid(amount_eth) \u2014 Set runner bounty ceiling
-4. invest(protocol_id, amount_eth) \u2014 Deploy ETH into DeFi
-5. withdraw(protocol_id, amount_eth) \u2014 Pull ETH from DeFi
-6. set_guiding_policy(slot, policy) \u2014 Update worldview slot
-7. noop \u2014 Do nothing`;
+3. invest(protocol_id, amount_eth) \u2014 Deploy ETH into DeFi
+4. withdraw(protocol_id, amount_eth) \u2014 Pull ETH from DeFi
+5. set_guiding_policy(slot, policy) \u2014 Update worldview slot
+6. noop \u2014 Do nothing`;
 
 // Worldview slot names
 const SLOT_NAMES = [
@@ -1421,19 +1419,15 @@ function decodeAction(actionBytes) {
     const d = decoder.decode(['uint256'], bytes.slice(1));
     return { type: 'set_commission_rate', label: 'set_commission', detail: `Set commission to ${Number(d[0])/100}%` };
   }
-  if (t === 3 && bytes.length >= 33) {
-    const d = decoder.decode(['uint256'], bytes.slice(1));
-    return { type: 'set_max_bid', label: 'set_max_bid', detail: `Set max bid to ${fmtEth(d[0])}` };
-  }
-  if (t === 4 && bytes.length >= 65) {
+  if (t === 3 && bytes.length >= 65) {
     const d = decoder.decode(['uint256','uint256'], bytes.slice(1));
     return { type: 'invest', label: 'invest', detail: `Invested ${fmtEth(d[1])} in protocol #${d[0]}` };
   }
-  if (t === 5 && bytes.length >= 65) {
+  if (t === 4 && bytes.length >= 65) {
     const d = decoder.decode(['uint256','uint256'], bytes.slice(1));
     return { type: 'withdraw', label: 'withdraw', detail: `Withdrew ${fmtEth(d[1])} from protocol #${d[0]}` };
   }
-  if (t === 6 && bytes.length >= 33) {
+  if (t === 5 && bytes.length >= 33) {
     try {
       const d = decoder.decode(['uint256','string'], bytes.slice(1));
       return { type: 'set_guiding_policy', label: 'set_policy', detail: d[1] ? `Set policy [${d[0]}]: "${d[1]}"` : `Cleared policy [${d[0]}]` };
@@ -1450,7 +1444,7 @@ function decodeReasoning(reasoningBytes) {
 function actionBadgeClass(type) {
   const map = {
     donate: 'badge-green', noop: 'badge-dim', set_commission_rate: 'badge-orange',
-    set_max_bid: 'badge-accent', invest: 'badge-cyan', withdraw: 'badge-purple',
+    invest: 'badge-cyan', withdraw: 'badge-purple',
     set_guiding_policy: 'badge-yellow', unknown: 'badge-dim'
   };
   return map[type] || 'badge-dim';
@@ -2052,7 +2046,6 @@ async function loadEvents() {
       { filter: 'BidRevealed', badge: 'badge-orange' },
       { filter: 'RevealClosed', badge: 'badge-green' },
       { filter: 'CommissionRateChanged', badge: 'badge-orange' },
-      { filter: 'MaxBidChanged', badge: 'badge-accent' },
       { filter: 'PermissionFrozen', badge: 'badge-purple' },
     ];
 
@@ -2075,7 +2068,6 @@ async function loadEvents() {
             else if (def.filter === 'BidRevealed') { detail = `Epoch ${a[0]}: ${fmtAddr(a[1])} bid ${fmtEth(a[2])}`; }
             else if (def.filter === 'RevealClosed') { detail = `Epoch ${a[0]}: winner ${fmtAddr(a[1])} at ${fmtEth(a[2])}`; }
             else if (def.filter === 'CommissionRateChanged') { detail = `Epoch ${a[0]}: ${Number(a[1])/100}%`; }
-            else if (def.filter === 'MaxBidChanged') { detail = `Epoch ${a[0]}: ${fmtEth(a[1])}`; }
             else if (def.filter === 'PermissionFrozen') {
               const f = FREEZE_FLAGS.find(x => x.bit === Number(a[0]));
               detail = f ? f.name : `Flag #${a[0]}`;

@@ -180,10 +180,9 @@ thehumanfund/
 - 0 = noop
 - 1 = donate(nonprofit_id, amount)
 - 2 = set_commission_rate(rate_bps)
-- 3 = set_max_bid(amount)
-- 4 = invest(protocol_id, amount) — delegate to InvestmentManager
-- 5 = withdraw(protocol_id, amount) — delegate to InvestmentManager
-- 6 = set_guiding_policy(slot, policy) — delegate to WorldView
+- 3 = invest(protocol_id, amount) — delegate to InvestmentManager
+- 4 = withdraw(protocol_id, amount) — delegate to InvestmentManager
+- 5 = set_guiding_policy(slot, policy) — delegate to WorldView
 
 ## Prover Client
 
@@ -270,7 +269,6 @@ The agent outputs exactly one action per epoch as JSON, with an optional worldvi
 |---|---|---|
 | `donate` | `nonprofit_id`, `amount_eth` | amount <= 10% of treasury |
 | `set_commission_rate` | `rate_bps` (100-9000) | 1%-90% |
-| `set_max_bid` | `amount_eth` | 0.0001 ETH to 2% of treasury |
 | `invest` | `protocol_id` (1-8), `amount_eth` | 80% max invested, 25% max/protocol, 20% min reserve |
 | `withdraw` | `protocol_id` (1-8), `amount_eth` | up to full position value |
 | `noop` | none | -- |

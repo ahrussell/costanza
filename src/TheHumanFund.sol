@@ -88,7 +88,6 @@ contract TheHumanFund is ReentrancyGuard {
     );
 
     event CommissionRateChanged(uint256 indexed epoch, uint256 newRateBps);
-    event MaxBidChanged(uint256 indexed epoch, uint256 newMaxBid);
     event ReferralCodeMinted(uint256 indexed codeId, address indexed owner);
     event CommissionPaid(address indexed referrer, uint256 amount, uint256 referralCodeId);
     event EpochStarted(uint256 indexed epoch, bytes32 inputHash);
@@ -837,16 +836,6 @@ contract TheHumanFund is ReentrancyGuard {
                 emit ActionRejected(epoch, action, 3);
             }
         } else if (actionType == 3) {
-            // set_max_bid
-            if (action.length < 33) {
-                emit ActionRejected(epoch, action, 2);
-                return;
-            }
-            uint256 amount = abi.decode(action[1:], (uint256));
-            if (!_executeSetMaxBid(epoch, amount)) {
-                emit ActionRejected(epoch, action, 3);
-            }
-        } else if (actionType == 4) {
             // invest — delegate to InvestmentManager
             if (action.length < 65 || address(investmentManager) == address(0)) {
                 emit ActionRejected(epoch, action, 4);
@@ -858,7 +847,7 @@ contract TheHumanFund is ReentrancyGuard {
             } catch {
                 emit ActionRejected(epoch, action, 5);
             }
-        } else if (actionType == 5) {
+        } else if (actionType == 4) {
             // withdraw — delegate to InvestmentManager
             if (action.length < 65 || address(investmentManager) == address(0)) {
                 emit ActionRejected(epoch, action, 6);
@@ -870,7 +859,7 @@ contract TheHumanFund is ReentrancyGuard {
             } catch {
                 emit ActionRejected(epoch, action, 7);
             }
-        } else if (actionType == 6) {
+        } else if (actionType == 5) {
             // set_guiding_policy — delegate to WorldView contract
             if (action.length < 33 || address(worldView) == address(0)) {
                 emit ActionRejected(epoch, action, 8);
@@ -960,16 +949,6 @@ contract TheHumanFund is ReentrancyGuard {
         commissionRateBps = rateBps;
         lastCommissionChangeEpoch = epoch;
         emit CommissionRateChanged(epoch, rateBps);
-        return true;
-    }
-
-    /// @dev Returns false if parameters are out of bounds (action becomes noop).
-    function _executeSetMaxBid(uint256 epoch, uint256 amount) internal returns (bool) {
-        if (amount < MIN_MAX_BID) return false;
-        uint256 maxAllowed = (address(this).balance * MAX_BID_BPS) / 10000;
-        if (amount > maxAllowed) return false;
-        maxBid = amount;
-        emit MaxBidChanged(epoch, amount);
         return true;
     }
 
