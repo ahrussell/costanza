@@ -12,9 +12,9 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 
 ## Current Status
 
-- **Contract**: `0xf158d1df33ab20238569E15A3E8Ff79E5436E080` (Base Sepolia)
-- **AuctionManager**: `0x1Cd18809F4e7A1738cB8a1A5F09df060ee83228B`
-- **TdxVerifier**: `0x1cff9156FC9EF24128aE7ED9B7a1b29D2e590C73`
+- **Contract**: `0x69716cd7836f4d5c573b309c32a7a8e93484e719` (Base Sepolia)
+- **AuctionManager**: `0x6fd985c7ee2ef558a1fa3f388fd1c110f8e4d4d9`
+- **TdxVerifier**: `0x1749e5132b3b12c63cbc5c419aab1623ba4cd7c7`
 - **Deployer**: `0xffea30B0DbDAd460B9b6293fb51a059129fCCdAf`
 - **182 tests pass** (core + auction + TDX verifier + investment + worldview + messages + cross-stack hash)
 - GPU image key (a3-highgpu-1g, H100): `0x573c0120...` — approved (v8)
