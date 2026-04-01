@@ -251,11 +251,11 @@ These are known limitations that we've evaluated and accepted:
 
 **Why accepted**: (1) Contract bounds cap single-epoch damage to ~10% of treasury. (2) The auction is competitive — an attacker must consistently outbid honest provers, which costs real ETH. (3) The public diary makes manipulation visible, enabling community response. 
 
-### A-5: `startEpoch` Auto-Forfeit Race Condition
+### A-5: `startEpoch` Auto-Cleanup Race Condition
 
-**Risk**: When the execution window expires, anyone calling `startEpoch()` triggers automatic bond forfeiture of the winner, even if the winner's submission is pending in the mempool.
+**Risk**: When an auction is stale, anyone calling `startEpoch()` triggers automatic cleanup — chaining through whatever phase the auction is stuck in (COMMIT, REVEAL, or EXECUTION). This can forfeit bonds even if a participant's transaction is pending in the mempool. For example, a winner's `submitAuctionResult` may be in-flight when someone else calls `startEpoch()` and forfeits their bond.
 
-**Why accepted**: (1) This is inherent to blockchain finality — there's no way to distinguish between "transaction is pending" and "prover abandoned." (2) The execution window is configurable and should be set generously (hours, not minutes). (3) Provers should submit well before the deadline. 
+**Why accepted**: (1) This is inherent to blockchain finality — there's no way to distinguish between "transaction is pending" and "prover abandoned." (2) All phase windows are configurable and should be set generously (hours, not minutes). (3) Participants should act well before deadlines. (4) All phase transitions are permissionless — bidders can call `closeCommit`, `closeReveal`, etc. themselves rather than relying on others.
 
 ### A-6: `receive()` Inflating `totalInflows`
 

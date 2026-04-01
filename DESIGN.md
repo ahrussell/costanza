@@ -119,13 +119,16 @@ The contract maintains a rolling hash of all epoch reasoning: `historyHash = kec
 
 ## The auction
 
-The reverse auction is a first-price sealed-bid system. Each bidder submits their asking price along with a bond (20% of the bid amount). Non-winners are refunded inline when outbid. The winner has a fixed execution window to submit a valid attested result.
+The reverse auction is a first-price sealed-bid system using commit-reveal. Each bidder commits a sealed bid hash along with a bond. After the commit window closes, bidders reveal their bids. The lowest bid wins. Non-winner revealers get their bonds back; non-revealers forfeit. The winner has a fixed execution window to submit a valid attested result.
 
-If the winner fails to deliver, their bond is forfeited to the treasury and the epoch is skipped. This creates an economic disincentive for griefing: a prover who wins the auction but doesn't submit still loses real money.
+Bonds are forfeit when a bidder fails to follow through at any stage: committing but not revealing, winning but not calling `closeReveal`, or winning but not submitting a valid result. All phase transitions (`closeCommit`, `closeReveal`, `forfeitBond`) are permissionless — any participant can and should call them.
+
+**Stale auction recovery**: If an auction gets stuck in any phase (COMMIT, REVEAL, or EXECUTION) and nobody advances it, the next `startEpoch()` call auto-cleans it by chaining through the remaining phase transitions. Wall-clock time is used to compute how many epoch durations elapsed, and `consecutiveMissedEpochs` is credited accordingly so that bid ceiling and bond escalation reflect the actual gap.
 
 **Timing** (production):
-- Bidding window: 1 hour after epoch start
-- Execution window: 2 hours after auction close
+- Commit window: 1 hour after epoch start
+- Reveal window: 30 minutes after commit close
+- Execution window: 2 hours after reveal close
 - Epoch duration: 24 hours
 
 The bid ceiling auto-escalates after missed epochs — increasing by 10% each consecutive miss — ensuring that Costanza can always attract a prover eventually, even without manual intervention.

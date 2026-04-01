@@ -146,6 +146,7 @@ contract TheHumanFund is ReentrancyGuard {
     uint256 public lastDonationEpoch;
     uint256 public lastCommissionChangeEpoch;
     uint256 public consecutiveMissedEpochs;
+    uint256 public lastEpochStartTime;  // Anchor for elapsed-time miss counting
 
     // Nonprofits (1-indexed for the agent's benefit)
     uint256 public nonprofitCount;
@@ -562,33 +563,61 @@ contract TheHumanFund is ReentrancyGuard {
     }
 
     /// @notice Open the auction for the current epoch. Anyone can call this.
+    ///         Auto-cleans a stale auction stuck in any phase (COMMIT, REVEAL, or EXECUTION)
+    ///         and credits the correct number of missed epochs based on elapsed wall-clock time.
     function startEpoch() external {
         _requireNotSunset();
 
         IAuctionManager am = auctionManager;
         uint256 epoch = currentEpoch;
 
-        // Auto-forfeit a stale previous auction if needed
-        if (epoch > 1 && am.getPhase(epoch - 1) == IAuctionManager.AuctionPhase.EXECUTION) {
-            // forfeitExecution validates the execution window has expired
-            address forfeitedRunner = am.getWinner(epoch - 1);
-            uint256 forfeitedBond = am.getBond(epoch - 1);
-            am.forfeitExecution(epoch - 1);
-            _advanceEpochMissed();
-            emit BondForfeited(epoch - 1, forfeitedRunner, forfeitedBond);
-            epoch = currentEpoch; // re-read after advancement
+        // Auto-clean a stale auction if needed — chain through whatever phase it's stuck in.
+        // The stale auction is for the current epoch (started but never completed).
+        // All AM timing guards pass trivially when the auction is stale (enough time has elapsed).
+        IAuctionManager.AuctionPhase phase = am.getPhase(epoch);
+
+        if (phase == IAuctionManager.AuctionPhase.COMMIT) {
+            uint256 commitCount = am.closeCommitPhase(epoch);
+            if (commitCount > 0) phase = IAuctionManager.AuctionPhase.REVEAL;
         }
 
-        // Enforce epoch pacing: previous epoch's full duration must have elapsed.
-        if (epoch > 1) {
-            uint256 prevStart = am.getStartTime(epoch - 1);
-            if (prevStart > 0 && block.timestamp < prevStart + epochDuration) revert TimingError();
+        if (phase == IAuctionManager.AuctionPhase.REVEAL) {
+            (, , uint256 revealCount) = am.closeRevealPhase(epoch);
+            if (revealCount > 0) phase = IAuctionManager.AuctionPhase.EXECUTION;
         }
+
+        if (phase == IAuctionManager.AuctionPhase.EXECUTION) {
+            address forfeitedRunner = am.getWinner(epoch);
+            uint256 forfeitedBond = am.getBond(epoch);
+            am.forfeitExecution(epoch);
+            emit BondForfeited(epoch, forfeitedRunner, forfeitedBond);
+        }
+
+        // Credit missed epochs based on elapsed wall-clock time
+        if (phase != IAuctionManager.AuctionPhase.IDLE && phase != IAuctionManager.AuctionPhase.SETTLED) {
+            uint256 missedCount = 1;
+            if (lastEpochStartTime > 0) {
+                uint256 elapsed = (block.timestamp - lastEpochStartTime) / epochDuration;
+                if (elapsed > missedCount) missedCount = elapsed;
+            }
+            uint256 newMissed = consecutiveMissedEpochs + missedCount;
+            if (newMissed > MAX_MISSED_EPOCHS) newMissed = MAX_MISSED_EPOCHS;
+            consecutiveMissedEpochs = newMissed;
+            currentEpoch += missedCount;
+            currentEpochInflow = 0;
+            currentEpochDonationCount = 0;
+            currentEpochCommissions = 0;
+            epoch = currentEpoch;
+        }
+
+        // Enforce epoch pacing: at least one epochDuration must have elapsed since last auction start.
+        if (lastEpochStartTime > 0 && block.timestamp < lastEpochStartTime + epochDuration) revert TimingError();
 
         _snapshotEthUsdPrice();
 
         uint256 bond = currentBond();
         am.openAuction(epoch, bond);
+        lastEpochStartTime = block.timestamp;
 
         bytes32 baseInputHash = _computeInputHash();
         epochBaseInputHashes[epoch] = baseInputHash;
