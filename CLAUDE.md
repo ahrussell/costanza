@@ -17,7 +17,7 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 - **TdxVerifier**: `0x1749e5132b3b12c63cbc5c419aab1623ba4cd7c7`
 - **Deployer**: `0xffea30B0DbDAd460B9b6293fb51a059129fCCdAf`
 - **182 tests pass** (core + auction + TDX verifier + investment + worldview + messages + cross-stack hash)
-- GPU image key (a3-highgpu-1g, H100): `0x573c0120...` — approved (v8)
+- GPU image key (a3-highgpu-1g, H100): `0x548fcaab...` — approved (v9)
 - GCP TDX FMSPC `00806f050000` registered in Automata DCAP Dashboard
 - H100 on-demand quota is 0; all GPU VMs use `--provisioning-model=SPOT`
 - **Remaining**: extended testnet run, mainnet deployment
