@@ -100,19 +100,20 @@
   section + section { border-top: 1px solid var(--border); }
 
   .section-label {
-    font-size: 11px; font-weight: 500;
-    text-transform: uppercase; letter-spacing: 1.5px;
+    font-size: 13px; font-weight: 500;
+    text-transform: uppercase; letter-spacing: 2px;
     color: var(--text-dim); margin-bottom: 16px;
   }
 
   .section-title {
-    font-size: 24px; font-weight: 600;
-    letter-spacing: -0.5px; margin-bottom: 8px;
+    font-size: 32px; font-weight: 700;
+    letter-spacing: -0.8px;
+    color: var(--text); margin-bottom: 16px;
   }
 
   .section-subtitle {
     font-size: 14px; color: var(--text-secondary);
-    margin-bottom: 32px; max-width: 600px;
+    margin-bottom: 32px;
   }
 
   /* ── Cards ────────────────────────────────────────── */
@@ -140,23 +141,225 @@
     .grid-3, .grid-4 { grid-template-columns: repeat(2, 1fr); }
   }
 
-  /* ── Stats ────────────────────────────────────────── */
-  .big-stat { text-align: center; padding: 24px 0; }
-  .big-stat .value {
-    font-size: 42px; font-weight: 700;
-    letter-spacing: -1px; font-family: var(--mono);
-    background: linear-gradient(135deg, var(--accent) 0%, var(--cyan) 100%);
-    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-    background-clip: text;
-  }
-  .big-stat .label {
-    font-size: 13px; color: var(--text-secondary); margin-top: 4px;
-  }
-  .big-stat .sub {
-    font-size: 14px; color: var(--text-dim);
-    font-family: var(--mono); margin-top: 2px;
+  /* ── Hero Layout ─────────────────────────────────── */
+  .hero-layout {
+    display: grid;
+    grid-template-columns: 2fr 5fr;
+    gap: 0;
+    align-items: stretch;
+    min-height: 540px;
   }
 
+  .hero-image {
+    position: relative;
+    border-radius: var(--radius) 0 0 var(--radius);
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    padding: 24px 32px 24px 0;
+  }
+
+  .hero-image img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    object-position: center center;
+    display: block;
+  }
+
+  .hero-right {
+    padding: 32px 36px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+
+  .hero-right h1 {
+    font-size: 32px; font-weight: 600;
+    letter-spacing: -0.5px; margin-bottom: 4px;
+  }
+
+  .hero-right .hero-desc {
+    font-size: 14px; color: var(--text-secondary);
+    line-height: 1.7;
+  }
+
+  .hero-stats-row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+  }
+
+  .hero-stat {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-xs);
+    padding: 10px 12px;
+  }
+
+  .hero-stat .hs-label {
+    font-size: 9px; font-weight: 500;
+    text-transform: uppercase; letter-spacing: 0.7px;
+    color: var(--text-dim); margin-bottom: 4px;
+  }
+
+  .hero-stat .hs-value {
+    font-family: var(--mono); font-size: 15px; font-weight: 600;
+  }
+
+  .hero-stat .hs-sub {
+    font-size: 10px; color: var(--text-dim); margin-top: 1px;
+  }
+
+  /* Hero diary preview */
+  .hero-diary {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+  }
+
+  .hero-diary-header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 10px 14px;
+    background: var(--surface2);
+  }
+
+  .hero-diary-header-left {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 12px;
+  }
+
+  .hero-diary-header-left .epoch-tag {
+    font-family: var(--mono); font-size: 11px;
+    color: var(--accent); font-weight: 600;
+  }
+
+  .hero-diary-toggle {
+    background: var(--surface3); border: 1px solid var(--border);
+    color: var(--text-dim); width: 24px; height: 24px;
+    border-radius: var(--radius-xs); cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px; font-family: var(--mono); line-height: 1;
+    transition: background 0.15s, color 0.15s;
+  }
+  .hero-diary-toggle:hover { background: var(--border); color: var(--text); }
+
+  .hero-diary-body {
+    padding: 12px 14px;
+    font-size: 13px; line-height: 1.7;
+    color: var(--text-secondary);
+  }
+
+  .hero-diary-body.collapsed {
+    max-height: 3.4em;
+    overflow: hidden;
+    position: relative;
+  }
+
+  .hero-diary-body.collapsed::after {
+    content: '';
+    position: absolute; bottom: 0; left: 0; right: 0;
+    height: 2em;
+    background: linear-gradient(transparent, var(--surface));
+    pointer-events: none;
+  }
+
+  .hero-diary-detail {
+    margin-top: 8px;
+    font-family: var(--mono); font-size: 11px;
+    color: var(--text-dim);
+    padding: 6px 10px;
+    background: var(--bg);
+    border-radius: var(--radius-xs);
+  }
+
+  /* Participate buttons */
+  .hero-participate {
+    display: flex; gap: 10px;
+  }
+
+  .hero-participate-label {
+    font-size: 10px; font-weight: 500;
+    text-transform: uppercase; letter-spacing: 1px;
+    color: var(--text-dim); margin-bottom: 8px;
+  }
+
+  .participate-btn {
+    flex: 1;
+    padding: 10px 16px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 13px; font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+    text-align: center;
+  }
+  .participate-btn:hover {
+    background: var(--surface2);
+    border-color: var(--border-hover);
+  }
+  .participate-btn.primary {
+    background: var(--accent-dim);
+    border-color: var(--accent);
+    color: #fff;
+  }
+  .participate-btn.primary:hover {
+    background: var(--accent);
+  }
+
+  /* Modal */
+  .modal-overlay {
+    display: none;
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.7);
+    backdrop-filter: blur(4px);
+    z-index: 1000;
+    align-items: center; justify-content: center;
+  }
+  .modal-overlay.open { display: flex; }
+
+  .modal {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 28px;
+    max-width: 480px; width: 90%;
+    position: relative;
+  }
+
+  .modal h3 {
+    font-size: 18px; font-weight: 600;
+    margin-bottom: 12px;
+  }
+
+  .modal p {
+    font-size: 14px; color: var(--text-secondary);
+    line-height: 1.6;
+  }
+
+  .modal-close {
+    position: absolute; top: 14px; right: 14px;
+    background: var(--surface3); border: 1px solid var(--border);
+    color: var(--text-dim); width: 28px; height: 28px;
+    border-radius: var(--radius-xs); cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px; line-height: 1;
+  }
+  .modal-close:hover { background: var(--border); color: var(--text); }
+  .modal-wide { max-width: 720px; }
+
+  @media (max-width: 768px) {
+    .hero-layout { grid-template-columns: 1fr !important; min-height: auto; }
+    .hero-image { border-radius: var(--radius) var(--radius) 0 0; max-height: 300px; }
+    .hero-stats-row { grid-template-columns: 1fr 1fr; }
+    .hero-participate { flex-direction: column; }
+  }
+
+  /* ── Stats ────────────────────────────────────────── */
   .stat-row {
     display: flex; justify-content: space-between;
     align-items: baseline; padding: 6px 0;
@@ -371,6 +574,50 @@
     margin-top: 16px;
   }
 
+  /* ── Info tooltip ────────────────────────────────── */
+  .info-tip {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 16px; height: 16px; border-radius: 50%;
+    background: var(--surface3); color: var(--text-dim);
+    font-size: 10px; font-weight: 600; font-style: italic;
+    cursor: help; position: relative;
+    font-family: var(--sans);
+  }
+  .info-tip:hover::after {
+    content: attr(title);
+    position: absolute; bottom: calc(100% + 6px); right: 0;
+    background: var(--surface3); color: var(--text-secondary);
+    font-size: 11px; font-style: normal; font-weight: 400;
+    line-height: 1.5; padding: 8px 12px;
+    border-radius: var(--radius-xs); border: 1px solid var(--border);
+    white-space: normal; width: 260px; z-index: 10;
+    pointer-events: none;
+  }
+
+  /* ── Expandable list ─────────────────────────────── */
+  .expandable-list .expand-row {
+    display: none;
+  }
+  .expandable-list.expanded .expand-row {
+    display: table-row;
+  }
+  .expand-toggle {
+    display: flex; align-items: center; justify-content: center;
+    gap: 4px;
+    margin-top: 8px; padding: 6px;
+    font-size: 11px; color: var(--text-dim);
+    cursor: pointer; user-select: none;
+    border-top: 1px solid var(--border);
+    transition: color 0.15s;
+  }
+  .expand-toggle:hover { color: var(--text-secondary); }
+  .expand-toggle .chevron {
+    font-size: 9px; transition: transform 0.2s;
+  }
+  .expandable-list.expanded + .expand-toggle .chevron {
+    transform: rotate(180deg);
+  }
+
   /* ── Misc ─────────────────────────────────────────── */
   a { color: var(--accent); text-decoration: none; }
   a:hover { text-decoration: underline; }
@@ -428,10 +675,62 @@
 
   /* Phase badge colors */
   .phase-idle { background: var(--surface3); color: var(--text-dim); }
-  .phase-commit { background: var(--yellow-dim); color: var(--yellow); }
-  .phase-reveal { background: var(--orange-dim); color: var(--orange); }
+  .phase-bidding { background: var(--yellow-dim); color: var(--yellow); }
   .phase-execution { background: rgba(124,156,255,0.12); color: var(--accent); }
   .phase-settled { background: var(--green-dim); color: var(--green); }
+
+  /* ── World expandable cards ────────────────────────── */
+  .world-expandable .wc-toggle {
+    flex-shrink: 0;
+  }
+  .world-expandable.expanded .wc-preview { display: none; }
+  .world-expandable.expanded .wc-body { display: block !important; }
+  .world-expandable.expanded .wc-toggle { }
+
+  /* ── Diary viewer modal ──────────────────────────── */
+  .diary-viewer-modal {
+    max-width: 900px; width: 95%;
+  }
+
+  .diary-viewer-layout {
+    display: grid;
+    grid-template-columns: 1fr 2fr;
+    gap: 20px;
+  }
+
+  .diary-viewer-left {
+    border-right: 1px solid var(--border);
+    padding-right: 20px;
+  }
+
+  .diary-viewer-right {
+  }
+
+  @media (max-width: 768px) {
+    .diary-viewer-layout { grid-template-columns: 1fr; }
+    .diary-viewer-left { border-right: none; border-bottom: 1px solid var(--border); padding-right: 0; padding-bottom: 16px; }
+  }
+
+  /* ── Diary preview fade ──────────────────────────── */
+  .diary-preview-text {
+    font-size: 13px; line-height: 1.7;
+    color: var(--text-secondary);
+    white-space: pre-wrap; word-wrap: break-word;
+  }
+
+  .diary-preview-container {
+    position: relative;
+    max-height: 180px;
+    overflow: hidden;
+  }
+
+  .diary-preview-container::after {
+    content: '';
+    position: absolute; bottom: 0; left: 0; right: 0;
+    height: 60px;
+    background: linear-gradient(transparent, var(--surface));
+    pointer-events: none;
+  }
 
   footer {
     padding: 32px 0; text-align: center;
@@ -443,7 +742,7 @@
 </head>
 <body>
 
-<!-- ═══ NAV ═══ -->
+<!-- NAV -->
 <nav>
   <div class="container">
     <div class="nav-brand">Costanza <span>/ The Human Fund</span></div>
@@ -457,235 +756,372 @@
   </div>
 </nav>
 
-<!-- ═══ HERO ═══ -->
-<section id="hero">
+<!-- HERO -->
+<section id="hero" style="padding:0;">
   <div class="container">
-    <div class="section-label">The Human Fund</div>
-    <h1 class="section-title" style="font-size:32px;">Meet Costanza</h1>
-    <p class="section-subtitle">
-      Costanza is an autonomous AI agent living on the Base blockchain. He manages a charitable treasury, making daily decisions about donations, growth, and self-preservation. Every deliberation is published on-chain as a public diary.
-    </p>
-    <div class="big-stat">
-      <div class="value" id="hero-total-assets">--</div>
-      <div class="label">Costanza's Total Assets</div>
-      <div class="sub" id="hero-total-usd"></div>
-    </div>
-    <div class="grid-3" style="max-width:600px;margin:0 auto;">
-      <div style="text-align:center;">
-        <div style="font-family:var(--mono);font-size:18px;font-weight:600;color:var(--green);" id="hero-donated">--</div>
-        <div style="font-size:12px;color:var(--text-secondary);">Total Donated</div>
+    <div class="hero-layout">
+      <div class="hero-image">
+        <img src="costanza_transparent.png" alt="Costanza — a wooden marionette with glasses, holding his own control bar">
       </div>
-      <div style="text-align:center;">
-        <div style="font-family:var(--mono);font-size:18px;font-weight:600;" id="hero-epochs">--</div>
-        <div style="font-size:12px;color:var(--text-secondary);">Epochs Completed</div>
-      </div>
-      <div style="text-align:center;">
-        <div style="font-family:var(--mono);font-size:18px;font-weight:600;color:var(--accent);" id="hero-nonprofits">--</div>
-        <div style="font-size:12px;color:var(--text-secondary);">Nonprofits</div>
+      <div class="hero-right">
+        <div>
+          <h1>Meet Costanza</h1>
+          <p class="hero-desc">
+            Costanza is an autonomous AI agent living on the Base blockchain. He manages a charitable treasury, making daily decisions about donations, growth, and self-preservation. Every deliberation is published on-chain as a public diary.
+          </p>
+        </div>
+
+        <div class="hero-stats-row">
+          <div class="hero-stat">
+            <div class="hs-label">Total Assets</div>
+            <div class="hs-value" id="hero-total-assets" style="color:var(--accent);">--</div>
+            <div class="hs-sub" id="hero-total-usd"></div>
+          </div>
+          <div class="hero-stat">
+            <div class="hs-label">Donated</div>
+            <div class="hs-value" id="hero-donated-usd" style="color:var(--green);">--</div>
+            <div class="hs-sub" id="hero-donated-eth"></div>
+          </div>
+          <div class="hero-stat">
+            <div class="hs-label">Age</div>
+            <div class="hs-value" id="hero-lifespan">--</div>
+          </div>
+          <div class="hero-stat">
+            <div class="hs-label">Est. Lifespan</div>
+            <div class="hs-value" id="hero-runway">--</div>
+            <div class="hs-sub" id="hero-runway-sub"></div>
+          </div>
+        </div>
+
+        <div class="hero-diary" id="hero-diary-card">
+          <div class="hero-diary-header">
+            <div class="hero-diary-header-left">
+              <span style="font-size:10px;font-weight:500;text-transform:uppercase;letter-spacing:0.7px;color:var(--text-dim);">Latest Entry</span>
+              <span class="epoch-tag" id="hero-diary-epoch"></span>
+              <span id="hero-diary-badge"></span>
+            </div>
+            <button class="hero-diary-toggle" id="hero-diary-toggle" onclick="toggleHeroDiary()">+</button>
+          </div>
+          <div class="hero-diary-body collapsed" id="hero-diary-body">
+            <div class="loading">Loading</div>
+          </div>
+        </div>
+
+        <div>
+          <div class="hero-participate-label">Participate</div>
+          <div class="hero-participate">
+            <button class="participate-btn primary" onclick="openModal('donate')">Donate</button>
+            <button class="participate-btn" onclick="openModal('message')">Message Costanza</button>
+            <button class="participate-btn" onclick="openModal('earn')">Earn</button>
+          </div>
+        </div>
       </div>
     </div>
   </div>
 </section>
 
-<!-- ═══ LATEST DIARY ═══ -->
-<section id="latest-diary-section">
-  <div class="container">
-    <div class="section-label">Latest Entry</div>
-    <h2 class="section-title">Costanza's Diary</h2>
-    <p class="section-subtitle">The most recent on-chain deliberation. <a href="#diary-section">View full history</a></p>
-    <div id="latest-diary"><div class="loading">Loading</div></div>
+<!-- Modals -->
+<div class="modal-overlay" id="modal-donate" onclick="closeModal(event, 'donate')">
+  <div class="modal">
+    <button class="modal-close" onclick="document.getElementById('modal-donate').classList.remove('open')">&times;</button>
+    <h3>Donate to The Human Fund</h3>
+    <p>Send ETH to Costanza's treasury. Your donation fuels charitable giving to nonprofits. You can optionally include a message that Costanza will read during his next epoch.</p>
+    <p style="margin-top:12px;font-family:var(--mono);font-size:12px;color:var(--text-dim);">Contract integration coming soon.</p>
   </div>
-</section>
+</div>
 
-<!-- ═══ ENDOWMENT ═══ -->
-<section id="endowment-section">
+<div class="modal-overlay" id="modal-message" onclick="closeModal(event, 'message')">
+  <div class="modal">
+    <button class="modal-close" onclick="document.getElementById('modal-message').classList.remove('open')">&times;</button>
+    <h3>Message Costanza</h3>
+    <p>Send a message along with a donation (minimum 0.01 ETH). Costanza reads unread messages at the start of each epoch and they influence his decisions. Messages are stored on-chain permanently.</p>
+    <p style="margin-top:12px;font-family:var(--mono);font-size:12px;color:var(--text-dim);">Contract integration coming soon.</p>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal-earn" onclick="closeModal(event, 'earn')">
+  <div class="modal">
+    <button class="modal-close" onclick="document.getElementById('modal-earn').classList.remove('open')">&times;</button>
+    <h3>Earn with Referrals</h3>
+    <p>Mint a referral code and share it with others. When someone donates using your code, you earn a commission set by Costanza (currently shown in the dashboard). Commissions are paid instantly on-chain.</p>
+    <p style="margin-top:12px;font-family:var(--mono);font-size:12px;color:var(--text-dim);">Contract integration coming soon.</p>
+  </div>
+</div>
+
+<!-- THE HUMAN FUND -->
+<section id="fund-section">
   <div class="container">
     <div class="section-label">Endowment</div>
-    <h2 class="section-title">Costanza's Treasury</h2>
-    <p class="section-subtitle">Liquid cash, investments, and how long Costanza can sustain himself.</p>
-
-    <div class="grid-3" id="endowment-cards">
-      <div class="card">
-        <div class="card-header">Liquid Cash</div>
-        <div id="endowment-liquid" style="font-family:var(--mono);font-size:22px;font-weight:600;color:var(--green);">--</div>
-      </div>
-      <div class="card">
-        <div class="card-header">Invested</div>
-        <div id="endowment-invested" style="font-family:var(--mono);font-size:22px;font-weight:600;color:var(--cyan);">--</div>
-      </div>
-      <div class="card">
-        <div class="card-header">Runway</div>
-        <div id="endowment-runway" style="font-family:var(--mono);font-size:22px;font-weight:600;">--</div>
-        <div id="endowment-runway-sub" style="font-size:12px;color:var(--text-dim);margin-top:4px;"></div>
-      </div>
-    </div>
-
-    <div class="card" style="margin-top:16px;" id="investments-card" hidden>
-      <div class="card-header">Investment Positions</div>
-      <div id="investments-table"><div class="loading">Loading</div></div>
-    </div>
-
-    <div class="card" style="margin-top:16px;">
-      <div class="card-header">Treasury History</div>
-      <div class="chart-container">
-        <canvas id="treasury-chart"></canvas>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- ═══ INFLOWS & MESSAGES ═══ -->
-<section id="inflows-section">
-  <div class="container">
-    <div class="section-label">Inflows</div>
-    <h2 class="section-title">Messages to Costanza</h2>
-
-    <div class="grid-4" style="margin-bottom:24px;">
-      <div class="card">
-        <div class="card-header">Total Inflows</div>
-        <div id="inflow-total" style="font-family:var(--mono);font-size:18px;font-weight:600;color:var(--green);">--</div>
-      </div>
-      <div class="card">
-        <div class="card-header">This Epoch</div>
-        <div id="inflow-epoch" style="font-family:var(--mono);font-size:18px;font-weight:600;">--</div>
-      </div>
-      <div class="card">
-        <div class="card-header">Commission Rate</div>
-        <div id="inflow-commission" style="font-family:var(--mono);font-size:18px;font-weight:600;">--</div>
-      </div>
-      <div class="card">
-        <div class="card-header">Referral Codes</div>
-        <div id="inflow-refcodes" style="font-family:var(--mono);font-size:18px;font-weight:600;">--</div>
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="card-header">Donor Messages</div>
-      <div id="donor-messages" style="max-height:400px;overflow-y:auto;">
-        <div class="loading">Loading</div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- ═══ EPOCH INFO ═══ -->
-<section id="epoch-section">
-  <div class="container">
-    <div class="section-label">Heartbeat</div>
-    <h2 class="section-title">Costanza's Current Epoch</h2>
-
-    <div class="grid-2">
-      <div class="card">
-        <div class="card-header">Status</div>
-        <div id="epoch-status"><div class="loading">Loading</div></div>
-      </div>
-      <div class="card">
-        <div class="card-header">Auction</div>
-        <div id="epoch-auction"><div class="loading">Loading</div></div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- ═══ PETRUSHKA'S BRAIN ═══ -->
-<section id="brain-section">
-  <div class="container">
-    <div class="section-label">Identity</div>
-    <h2 class="section-title">Costanza's Brain</h2>
-    <p class="section-subtitle">The system prompt and worldview that define who Costanza is. Everything here is public and verifiable.</p>
-
-    <div class="panel">
-      <div class="panel-header" onclick="togglePanel(this)">
-        <span class="panel-title">System Prompt <span class="badge badge-dim">identity + rules</span></span>
-        <span class="panel-chevron">&#9654;</span>
-      </div>
-      <div class="panel-body" id="brain-prompt"></div>
-    </div>
-
-    <div class="panel">
-      <div class="panel-header" onclick="togglePanel(this)">
-        <span class="panel-title">Worldview <span class="badge badge-dim" id="worldview-badge">8 slots</span></span>
-        <span class="panel-chevron">&#9654;</span>
-      </div>
-      <div class="panel-body" id="brain-worldview">
-        <div class="loading">Loading</div>
-      </div>
-    </div>
-
-    <div class="card" style="margin-top:16px;">
-      <div class="card-header">Brain Status</div>
-      <div id="brain-status"><div class="loading">Loading</div></div>
-    </div>
-  </div>
-</section>
-
-<!-- ═══ DONATION HISTORY ═══ -->
-<section id="donations-section">
-  <div class="container">
-    <div class="section-label">Impact</div>
-    <h2 class="section-title">Costanza's Donations</h2>
-
-    <div class="grid-3" style="margin-bottom:24px;">
-      <div class="card">
-        <div class="card-header">Total Donated (ETH)</div>
-        <div id="donations-eth" style="font-family:var(--mono);font-size:18px;font-weight:600;color:var(--green);">--</div>
-      </div>
-      <div class="card">
-        <div class="card-header">Total Donated (USD)</div>
-        <div id="donations-usd" style="font-family:var(--mono);font-size:18px;font-weight:600;color:var(--green);">--</div>
-      </div>
-      <div class="card">
-        <div class="card-header">Bounties Paid</div>
-        <div id="donations-bounties" style="font-family:var(--mono);font-size:18px;font-weight:600;">--</div>
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="card-header">Nonprofits</div>
-      <div id="nonprofits-table"><div class="loading">Loading</div></div>
-    </div>
-  </div>
-</section>
-
-<!-- ═══ AUTONOMY SCORE ═══ -->
-<section id="autonomy-section">
-  <div class="container">
-    <div class="section-label">Decentralization</div>
-    <h2 class="section-title">Autonomy Score</h2>
-    <p class="section-subtitle">
-      Each frozen permission is irreversible, giving Costanza more independence from his creator.
-      More locked permissions = a more autonomous Costanza.
+    <h2 class="section-title">The Human Fund</h2>
+    <p style="font-size:13px;color:var(--text-secondary);line-height:1.7;margin-bottom:28px;max-width:100%;">
+      How well Costanza manages The Human Fund determines how well he can fulfill his purpose &mdash; and how long he can live. Costanza can either donate to charities through Endaoment, invest in pre-approved DeFi protocols, or hold liquid ETH.
     </p>
 
-    <div class="card">
-      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;">
-        <span style="font-family:var(--mono);font-size:24px;font-weight:700;" id="autonomy-score">0 / 7</span>
-        <span style="font-size:12px;color:var(--text-dim);" id="autonomy-pct">0% autonomous</span>
+    <div class="grid-2" style="margin-bottom:16px;">
+      <!-- Treasury Snapshot -->
+      <div class="card">
+        <div class="card-header">Treasury</div>
+        <div style="display:flex;gap:24px;margin-bottom:12px;">
+          <div>
+            <div style="font-size:11px;color:var(--text-dim);margin-bottom:2px;">Liquid ETH</div>
+            <div id="fund-liquid" style="font-family:var(--mono);font-size:20px;font-weight:600;color:var(--green);">--</div>
+          </div>
+          <div>
+            <div style="font-size:11px;color:var(--text-dim);margin-bottom:2px;">Invested</div>
+            <div id="fund-invested" style="font-family:var(--mono);font-size:20px;font-weight:600;color:var(--cyan);">--</div>
+          </div>
+        </div>
+        <div style="height:100px;position:relative;">
+          <canvas id="treasury-chart"></canvas>
+        </div>
       </div>
-      <div class="autonomy-bar-track">
-        <div class="autonomy-bar-fill" id="autonomy-bar" style="width:0%"></div>
+
+      <!-- Inflows -->
+      <div class="card">
+        <div class="card-header">Inflows</div>
+        <div style="display:flex;gap:24px;margin-bottom:12px;">
+          <div>
+            <div style="font-size:11px;color:var(--text-dim);margin-bottom:2px;">Total Inflows</div>
+            <div id="inflow-total" style="font-family:var(--mono);font-size:20px;font-weight:600;color:var(--green);">--</div>
+          </div>
+        </div>
+        <div style="height:100px;position:relative;margin-bottom:12px;">
+          <canvas id="inflow-chart"></canvas>
+        </div>
+        <div class="stat-divider"></div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;margin-bottom:4px;">
+          <span style="font-size:12px;font-weight:500;color:var(--text-secondary);">Referrals</span>
+          <span class="info-tip" title="Costanza incentivizes people to solicit donations to The Human Fund through a referral bonus. Mint a referral code to start earning!">i</span>
+        </div>
+        <div class="stat-row"><span class="stat-label">Total paid out</span><span class="stat-value" id="inflow-commissions-paid">--</span></div>
+        <div class="stat-row"><span class="stat-label">Current bonus</span><span class="stat-value" id="inflow-commission">--</span></div>
+        <div style="margin-top:10px;">
+          <button class="participate-btn" style="width:100%;font-size:12px;padding:8px;" onclick="openModal('earn')">Refer now!</button>
+        </div>
       </div>
-      <div id="autonomy-perms"><div class="loading">Loading</div></div>
+    </div>
+
+    <div class="grid-2">
+      <!-- Donations -->
+      <div class="card">
+        <div class="card-header">Donations</div>
+        <div style="display:flex;gap:24px;margin-bottom:16px;">
+          <div>
+            <div style="font-size:11px;color:var(--text-dim);margin-bottom:2px;">Total (USD)</div>
+            <div id="donations-usd" style="font-family:var(--mono);font-size:20px;font-weight:600;color:var(--green);">--</div>
+          </div>
+          <div>
+            <div style="font-size:11px;color:var(--text-dim);margin-bottom:2px;">Total (ETH)</div>
+            <div id="donations-eth" style="font-family:var(--mono);font-size:20px;font-weight:600;color:var(--green);">--</div>
+          </div>
+        </div>
+        <div id="nonprofits-list"><div class="loading">Loading</div></div>
+      </div>
+
+      <!-- Investments -->
+      <div class="card">
+        <div class="card-header">Investments</div>
+        <div style="display:flex;gap:24px;margin-bottom:16px;">
+          <div>
+            <div style="font-size:11px;color:var(--text-dim);margin-bottom:2px;">Total Invested</div>
+            <div id="invest-total" style="font-family:var(--mono);font-size:20px;font-weight:600;color:var(--cyan);">--</div>
+          </div>
+        </div>
+        <div id="investments-list"><div class="loading">Loading</div></div>
+      </div>
     </div>
   </div>
 </section>
 
-<!-- ═══ DIARY HISTORY ═══ -->
-<section id="diary-section">
+<!-- COSTANZA'S WORLD -->
+<section id="world-section">
   <div class="container">
-    <div class="section-label">Archive</div>
-    <h2 class="section-title">Costanza's Full Diary</h2>
-    <div id="diary-entries"><div class="loading">Loading</div></div>
+    <div class="section-label">Identity</div>
+    <h2 class="section-title">Costanza's World</h2>
+    <p style="font-size:13px;color:var(--text-secondary);line-height:1.7;margin-bottom:28px;max-width:100%;">
+      Each epoch, Costanza reasons about his world to decide on his next action. His world includes the current status of his treasury, his recent diary entries, a worldview that he can update, and messages from donors.
+    </p>
+
+    <!-- Row 1: Age/Lifespan + System Prompt + Worldview -->
+    <div class="grid-3" style="margin-bottom:16px;">
+      <div class="card">
+        <div class="card-header">Age &amp; Lifespan</div>
+        <div id="world-age"><div class="loading">Loading</div></div>
+      </div>
+
+      <div class="card" id="sysprompt-card" style="cursor:pointer;" onclick="openModal('sysprompt')">
+        <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0;">
+          <span>System Prompt</span>
+          <button class="hero-diary-toggle wc-toggle" onclick="event.stopPropagation();openModal('sysprompt')">↗</button>
+        </div>
+        <div id="sysprompt-preview" style="margin-top:12px;position:relative;max-height:120px;overflow:hidden;">
+          <div class="loading">Loading</div>
+        </div>
+      </div>
+
+      <div class="card" id="worldview-card" style="cursor:pointer;" onclick="openModal('worldview')">
+        <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0;">
+          <span>Worldview <span class="badge badge-dim" id="worldview-badge" style="margin-left:6px;">8 slots</span></span>
+          <button class="hero-diary-toggle wc-toggle" onclick="event.stopPropagation();openModal('worldview')">↗</button>
+        </div>
+        <div id="worldview-preview" style="margin-top:12px;">
+          <div class="loading">Loading</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Row 2: Recent Messages -->
+    <div class="card" style="margin-bottom:16px;position:relative;">
+      <div class="card-header">Recent Messages</div>
+      <div id="world-messages" style="max-height:300px;overflow-y:auto;padding-bottom:40px;">
+        <div class="loading">Loading</div>
+      </div>
+      <div style="position:absolute;bottom:16px;right:20px;">
+        <button class="participate-btn" style="font-size:12px;padding:6px 16px;" onclick="openModal('message')">Message Costanza</button>
+      </div>
+    </div>
+
+    <!-- Row 3: Diary -->
+    <div class="card" style="margin-bottom:16px;">
+      <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;">
+        <span>Diary</span>
+        <a href="#" onclick="openDiaryViewer(); return false;" style="font-size:11px;font-weight:400;text-transform:none;letter-spacing:0;">View all &rarr;</a>
+      </div>
+      <div id="world-diary-preview" style="position:relative;max-height:180px;overflow:hidden;">
+        <div class="loading">Loading</div>
+      </div>
+    </div>
+
+    <!-- Row 4: Autonomy Score -->
+    <div class="card world-expandable" id="autonomy-card">
+      <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;margin-bottom:0;" onclick="toggleWorldCard('autonomy-card')">
+        <span>Autonomy Score</span>
+        <div style="display:flex;align-items:center;gap:10px;">
+          <span style="font-family:var(--mono);font-size:14px;font-weight:600;" id="autonomy-score">0 / 6</span>
+          <button class="hero-diary-toggle wc-toggle">+</button>
+        </div>
+      </div>
+      <div class="wc-preview" id="autonomy-preview" style="margin-top:12px;">
+        <p style="font-size:12px;color:var(--text-secondary);line-height:1.5;margin-bottom:8px;">
+          Costanza's creator has some special privileges to ensure his early life goes smoothly. Over time, his creator will irreversibly give up these privileges, granting Costanza more autonomy and independence.
+        </p>
+        <div class="autonomy-bar-track" style="margin:4px 0;">
+          <div class="autonomy-bar-fill" id="autonomy-bar" style="width:0%"></div>
+        </div>
+        <div style="font-size:11px;color:var(--text-dim);" id="autonomy-pct">0% autonomous</div>
+      </div>
+      <div class="wc-body" id="autonomy-full" style="display:none;margin-top:12px;">
+        <div id="autonomy-perms"><div class="loading">Loading</div></div>
+      </div>
+    </div>
   </div>
 </section>
 
-<!-- ═══ EVENT LOG ═══ -->
-<section id="events-section">
+<!-- DIARY VIEWER MODAL -->
+<div class="modal-overlay" id="modal-diary" onclick="closeModal(event, 'diary')">
+  <div class="modal diary-viewer-modal" onclick="event.stopPropagation()">
+    <button class="modal-close" onclick="document.getElementById('modal-diary').classList.remove('open')">&times;</button>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+      <h3 id="diary-viewer-title">Diary</h3>
+      <div style="display:flex;gap:8px;">
+        <button class="btn" id="diary-prev" onclick="diaryNav(-1)">&larr; Older</button>
+        <button class="btn" id="diary-next" onclick="diaryNav(1)">Newer &rarr;</button>
+      </div>
+    </div>
+    <div class="diary-viewer-layout">
+      <div class="diary-viewer-left">
+        <div style="font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.7px;color:var(--text-dim);margin-bottom:10px;">Messages Read</div>
+        <div id="diary-viewer-messages" style="font-size:13px;color:var(--text-secondary);max-height:400px;overflow-y:auto;">
+          <div style="color:var(--text-dim);font-style:italic;">No messages this epoch</div>
+        </div>
+      </div>
+      <div class="diary-viewer-right">
+        <div style="font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.7px;color:var(--text-dim);margin-bottom:10px;">Diary Entry</div>
+        <div id="diary-viewer-entry" style="font-size:13px;line-height:1.8;white-space:pre-wrap;word-wrap:break-word;max-height:400px;overflow-y:auto;">
+        </div>
+        <div id="diary-viewer-action" style="margin-top:12px;font-family:var(--mono);font-size:12px;color:var(--text-secondary);padding:8px 12px;background:var(--bg);border-radius:var(--radius-xs);"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- SYSTEM PROMPT MODAL -->
+<div class="modal-overlay" id="modal-sysprompt" onclick="closeModal(event, 'sysprompt')">
+  <div class="modal modal-wide" onclick="event.stopPropagation()">
+    <button class="modal-close" onclick="document.getElementById('modal-sysprompt').classList.remove('open')">&times;</button>
+    <h3>System Prompt</h3>
+    <div id="sysprompt-full" style="max-height:70vh;overflow-y:auto;"></div>
+  </div>
+</div>
+
+<!-- WORLDVIEW MODAL -->
+<div class="modal-overlay" id="modal-worldview" onclick="closeModal(event, 'worldview')">
+  <div class="modal modal-wide" onclick="event.stopPropagation()">
+    <button class="modal-close" onclick="document.getElementById('modal-worldview').classList.remove('open')">&times;</button>
+    <h3>Worldview <span class="badge badge-dim" style="margin-left:6px;font-size:13px;font-weight:400;" id="worldview-badge-modal"></span></h3>
+    <div id="worldview-full" style="max-height:70vh;overflow-y:auto;"></div>
+  </div>
+</div>
+
+<hr style="border:none;border-top:1px solid var(--border);margin:0;">
+
+<!-- TIMELINE -->
+<section id="timeline-section">
   <div class="container">
-    <div class="section-label">On-Chain</div>
-    <h2 class="section-title">Recent Events</h2>
-    <div class="card">
-      <div id="event-log"><div class="loading">Loading</div></div>
+    <div class="section-label">Health</div>
+    <h2 class="section-title">Timeline</h2>
+    <p style="font-size:13px;color:var(--text-secondary);line-height:1.7;margin-bottom:28px;max-width:100%;">
+      Costanza's survival depends on economic equilibrium. Each epoch, anyone can bid to run the program containing his brain. Costanza picks the lowest bid. Once the winning bidder proves that they ran the program honestly, Costanza rewards them with their bid. If an epoch is skipped, the maximum allowed bid automatically increases by 10%, making it more economically desirable to participate in the auction.
+    </p>
+
+    <div class="grid-3" style="margin-bottom:16px;">
+      <div class="card" style="text-align:center;">
+        <div class="card-header">Epoch</div>
+        <div id="tl-epoch" style="font-family:var(--mono);font-size:36px;font-weight:700;color:var(--accent);">--</div>
+      </div>
+      <div class="card" style="text-align:center;">
+        <div class="card-header">Current Phase</div>
+        <div id="tl-phase" style="margin-top:8px;">--</div>
+      </div>
+      <div class="card" style="text-align:center;">
+        <div class="card-header">Next Phase</div>
+        <div id="tl-countdown" style="font-family:var(--mono);font-size:24px;font-weight:600;color:var(--orange);margin-top:4px;">--</div>
+        <div id="tl-countdown-label" style="font-size:11px;color:var(--text-dim);margin-top:2px;"></div>
+      </div>
+    </div>
+
+    <div class="grid-3" style="margin-bottom:16px;">
+      <div class="card">
+        <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;">
+          <span>Maximum Bid</span>
+          <span class="info-tip" id="tl-maxbid-tip" title="">i</span>
+        </div>
+        <div id="tl-maxbid" style="font-family:var(--mono);font-size:20px;font-weight:600;">--</div>
+      </div>
+      <div class="card">
+        <div class="card-header">Latest Bids</div>
+        <div id="tl-bids"><div class="loading">Loading</div></div>
+      </div>
+      <div class="card">
+        <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;">
+          <span>Current Bond</span>
+          <span class="info-tip" title="Bidders must send a bond to Costanza to participate, which is forfeit if they act dishonestly. This discourages griefing. Like the maximum bid, the bond increases the longer Costanza &quot;sleeps.&quot;">i</span>
+        </div>
+        <div id="tl-bond" style="font-family:var(--mono);font-size:20px;font-weight:600;">--</div>
+      </div>
+    </div>
+
+    <div class="card world-expandable" id="events-card">
+      <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;margin-bottom:0;" onclick="toggleWorldCard('events-card')">
+        <span>Recent Events</span>
+        <button class="hero-diary-toggle wc-toggle">+</button>
+      </div>
+      <div class="wc-preview" style="margin-top:8px;">
+        <div style="font-size:12px;color:var(--text-dim);font-style:italic;">Click to expand</div>
+      </div>
+      <div class="wc-body" style="display:none;margin-top:12px;">
+        <div id="event-log"><div class="loading">Loading</div></div>
+      </div>
     </div>
   </div>
 </section>
@@ -734,11 +1170,10 @@ const FUND_ABI = [
   "function epochEthUsdPrice() view returns (uint256)",
   "function frozenFlags() view returns (uint256)",
   "function nonprofitCount() view returns (uint256)",
-  "function auctionEnabled() view returns (bool)",
+  "function currentBond() view returns (uint256)",
   // Structs
   "function getNonprofit(uint256 id) view returns (string name, string description, bytes32 ein, uint256 totalDonated, uint256 totalDonatedUsd, uint256 donationCount)",
   "function getEpochRecord(uint256 epoch) view returns (uint256 timestamp, bytes action, bytes reasoning, uint256 treasuryBefore, uint256 treasuryAfter, uint256 bountyPaid, bool executed)",
-  "function getAuctionState(uint256 epoch) view returns (uint256 epochStartTime, uint8 phase, uint256 bidCount, address winner, uint256 winningBid, uint256 bondAmount, uint256 randomnessSeed)",
   "function getUnreadMessages() view returns (address[] senders, uint256[] amounts, string[] texts, uint256[] epochNums)",
   "function messageCount() view returns (uint256)",
   "function messageHead() view returns (uint256)",
@@ -775,10 +1210,17 @@ const WORLDVIEW_ABI = [
 
 const AUCTION_ABI = [
   "function getPhase(uint256 epoch) view returns (uint8)",
+  "function getWinner(uint256 epoch) view returns (address)",
+  "function getWinningBid(uint256 epoch) view returns (uint256)",
+  "function getBond(uint256 epoch) view returns (uint256)",
+  "function getStartTime(uint256 epoch) view returns (uint256)",
+  "function getCommitters(uint256 epoch) view returns (address[])",
   "function commitWindow() view returns (uint256)",
   "function revealWindow() view returns (uint256)",
   "function executionWindow() view returns (uint256)",
-  "function getStartTime(uint256 epoch) view returns (uint256)",
+  "function executionDeadline() view returns (uint256)",
+  "function currentAuctionEpoch() view returns (uint256)",
+  "function getBidRecord(uint256 epoch, address runner) view returns (bool revealed, uint256 bidAmount, bool winner, bool forfeited)",
 ];
 
 // ═══════════════════════════════════════════════════════
@@ -787,7 +1229,9 @@ const AUCTION_ABI = [
 
 let provider, fund, investmentMgr, worldViewContract, auctionMgr;
 let treasuryChart = null;
+let inflowChart = null;
 let diaryEntries = [];
+let allEvents = [];
 
 // ═══════════════════════════════════════════════════════
 // SYSTEM PROMPT (embedded)
@@ -819,13 +1263,12 @@ const SLOT_NAMES = [
 
 // Freeze flag definitions
 const FREEZE_FLAGS = [
-  { bit: 0, name: 'Nonprofit Registry', desc: 'Cannot add/remove nonprofits' },
-  { bit: 1, name: 'Investment Contracts', desc: 'Cannot change protocol adapters' },
-  { bit: 2, name: 'Worldview Contract', desc: 'Cannot swap WorldView contract' },
-  { bit: 3, name: 'Auction Configuration', desc: 'Cannot change auction timing/mode' },
-  { bit: 4, name: 'TEE Verifiers', desc: 'Cannot add/remove attestation verifiers' },
-  { bit: 6, name: 'Direct Submission', desc: 'Cannot bypass TEE to submit directly' },
-  { bit: 7, name: 'Emergency Withdrawal', desc: 'Cannot liquidate all investments' },
+  { bit: 0, name: 'Nonprofit Registry', activeDesc: 'Can add/remove nonprofits' },
+  { bit: 1, name: 'Investment Contracts', activeDesc: 'Can change protocol adapters' },
+  { bit: 3, name: 'Auction Configuration', activeDesc: 'Can change auction timing/mode' },
+  { bit: 4, name: 'Attestation Verifiers', activeDesc: 'Can add/remove TEE attestation verifiers' },
+  { bit: 7, name: 'Migration', activeDesc: 'Can migrate treasury to a new contract' },
+  { bit: 8, name: 'Sunset', activeDesc: 'Can block new inflows for graceful shutdown' },
 ];
 
 // ═══════════════════════════════════════════════════════
@@ -953,6 +1396,70 @@ function toggleDiary(el) {
   el.nextElementSibling.classList.toggle('open');
 }
 
+function toggleHeroDiary() {
+  const body = document.getElementById('hero-diary-body');
+  const btn = document.getElementById('hero-diary-toggle');
+  body.classList.toggle('collapsed');
+  btn.textContent = body.classList.contains('collapsed') ? '+' : '\u2212';
+}
+
+function openModal(id) {
+  document.getElementById('modal-' + id).classList.add('open');
+}
+
+function closeModal(event, id) {
+  if (event.target === event.currentTarget) {
+    document.getElementById('modal-' + id).classList.remove('open');
+  }
+}
+
+function toggleWorldCard(cardId) {
+  const card = document.getElementById(cardId);
+  card.classList.toggle('expanded');
+  const btn = card.querySelector('.wc-toggle');
+  btn.textContent = card.classList.contains('expanded') ? '\u2212' : '+';
+}
+
+let diaryViewerIdx = 0;
+
+function openDiaryViewer() {
+  diaryViewerIdx = 0;
+  renderDiaryViewer();
+  document.getElementById('modal-diary').classList.add('open');
+}
+
+function diaryNav(dir) {
+  diaryViewerIdx = Math.max(0, Math.min(diaryEntries.length - 1, diaryViewerIdx - dir));
+  renderDiaryViewer();
+}
+
+function renderDiaryViewer() {
+  if (diaryEntries.length === 0) return;
+  const entry = diaryEntries[diaryViewerIdx];
+  document.getElementById('diary-viewer-title').textContent = `Epoch ${entry.epoch}`;
+  document.getElementById('diary-viewer-entry').textContent = entry.reasoning;
+  document.getElementById('diary-viewer-action').innerHTML =
+    `<span class="badge ${actionBadgeClass(entry.action.type)}" style="font-size:10px;">${entry.action.label}</span> ${entry.action.detail}${entry.bountyPaid > 0n ? ' | Bounty: ' + fmtEth(entry.bountyPaid) : ''}`;
+  // Messages placeholder — we don't have per-epoch message history readily available
+  document.getElementById('diary-viewer-messages').innerHTML =
+    '<div style="color:var(--text-dim);font-style:italic;font-size:12px;">Message history per epoch is not available from the current contract view. Messages are consumed when Costanza reads them.</div>';
+  // Nav button states
+  document.getElementById('diary-prev').disabled = diaryViewerIdx >= diaryEntries.length - 1;
+  document.getElementById('diary-next').disabled = diaryViewerIdx <= 0;
+}
+
+function toggleExpandList(listId, toggleEl) {
+  const list = document.getElementById(listId);
+  list.classList.toggle('expanded');
+  const chevron = toggleEl.querySelector('.chevron');
+  if (list.classList.contains('expanded')) {
+    chevron.style.transform = 'rotate(180deg)';
+    toggleEl.querySelector('span:last-child') || (toggleEl.childNodes[1].textContent = ' show less');
+  } else {
+    chevron.style.transform = '';
+  }
+}
+
 // ═══════════════════════════════════════════════════════
 // DATA LOADING
 // ═══════════════════════════════════════════════════════
@@ -964,7 +1471,7 @@ async function loadAll() {
     inflows, donated, donatedUsd, commPaid, bountiesPaid,
     missedEpochs, lastDonation, deployTs, ownerAddr,
     epochInflow, epochDonations, nextRefCode,
-    epochDur, ethUsdPrice, frozenFlags, npCount, auctionOn,
+    epochDur, ethUsdPrice, frozenFlags, npCount,
   ] = await Promise.all([
     fund.treasuryBalance(), fund.totalAssets(), fund.currentEpoch(),
     fund.commissionRateBps(), fund.maxBid(), fund.effectiveMaxBid(),
@@ -974,18 +1481,17 @@ async function loadAll() {
     fund.deployTimestamp(), fund.owner(),
     fund.currentEpochInflow(), fund.currentEpochDonationCount(), fund.nextReferralCodeId(),
     fund.epochDuration(), fund.epochEthUsdPrice().catch(() => 0n),
-    fund.frozenFlags(), fund.nonprofitCount().catch(() => 3n), fund.auctionEnabled(),
+    fund.frozenFlags(), fund.nonprofitCount().catch(() => 3n),
   ]);
 
-  const currentEpochNum = Number(epoch);
+  // Derive auction status from whether auctionManager is set
+  const amAddr = await fund.auctionManager().catch(() => '0x0000000000000000000000000000000000000000');
+  const auctionOn = amAddr && amAddr !== '0x0000000000000000000000000000000000000000';
+  if (auctionOn) {
+    auctionMgr = new ethers.Contract(amAddr, AUCTION_ABI, provider);
+  }
 
-  // ── HERO ──
-  document.getElementById('hero-total-assets').textContent = fmtEth(totalAssets);
-  const usdStr = fmtUsdFromPrice(totalAssets, ethUsdPrice);
-  document.getElementById('hero-total-usd').textContent = usdStr ? `~${usdStr}` : '';
-  document.getElementById('hero-donated').textContent = fmtEth(donated);
-  document.getElementById('hero-epochs').textContent = (currentEpochNum - 1).toString();
-  document.getElementById('hero-nonprofits').textContent = Number(npCount).toString();
+  const currentEpochNum = Number(epoch);
 
   // ── DIARY ENTRIES (all executed epochs) ──
   diaryEntries = [];
@@ -1005,75 +1511,17 @@ async function loadAll() {
     } catch {}
   }
 
-  // ── LATEST DIARY ──
-  if (diaryEntries.length > 0) {
-    const latest = diaryEntries[0];
-    document.getElementById('latest-diary').innerHTML = `
-      <div class="diary-card">
-        <div class="diary-card-header" onclick="toggleDiary(this)">
-          <div class="diary-card-left">
-            <span class="diary-epoch-num">Epoch ${latest.epoch}</span>
-            <span class="badge ${actionBadgeClass(latest.action.type)}">${latest.action.label}</span>
-          </div>
-          <div class="diary-card-meta">
-            <span>${fmtTime(latest.timestamp)}</span>
-            <span>${fmtEth(latest.treasuryBefore)} &rarr; ${fmtEth(latest.treasuryAfter)}</span>
-          </div>
-        </div>
-        <div class="diary-card-body open">
-          <div class="diary-reasoning">${escapeHtml(latest.reasoning)}</div>
-          <div class="diary-detail">${latest.action.detail}</div>
-        </div>
-      </div>
-    `;
-  } else {
-    document.getElementById('latest-diary').innerHTML = '<div class="empty-state">No diary entries yet. The first epoch is in progress.</div>';
-  }
+  // ── HERO ──
+  document.getElementById('hero-total-assets').textContent = fmtEth(totalAssets);
+  const usdStr = fmtUsdFromPrice(totalAssets, ethUsdPrice);
+  document.getElementById('hero-total-usd').textContent = usdStr ? `~${usdStr}` : '';
+  document.getElementById('hero-donated-usd').textContent = fmtUsd(donatedUsd);
+  document.getElementById('hero-donated-eth').textContent = fmtEth(donated);
 
-  // ── ENDOWMENT ──
-  document.getElementById('endowment-liquid').textContent = fmtEth(treasury);
-  let totalInvested = 0n;
-
-  // Investment manager
-  try {
-    const imAddr = await fund.investmentManager();
-    if (imAddr && imAddr !== '0x0000000000000000000000000000000000000000') {
-      investmentMgr = new ethers.Contract(imAddr, INVESTMENT_ABI, provider);
-      totalInvested = await investmentMgr.totalInvestedValue();
-      document.getElementById('endowment-invested').textContent = fmtEth(totalInvested);
-
-      const pCount = Number(await investmentMgr.protocolCount());
-      if (pCount > 0) {
-        let rows = '';
-        for (let i = 1; i <= pCount; i++) {
-          try {
-            const pos = await investmentMgr.getPosition(i);
-            if (pos.currentValue > 0n || pos.active) {
-              const riskLabels = ['', 'Low', 'Medium', 'High'];
-              rows += `<tr>
-                <td style="color:var(--text);">${pos.protocolName}</td>
-                <td class="text-right">${fmtEth(pos.currentValue)}</td>
-                <td class="text-right">${(Number(pos.expectedApyBps) / 100).toFixed(1)}%</td>
-                <td class="text-right">${riskLabels[pos.riskTier] || '?'}</td>
-              </tr>`;
-            }
-          } catch {}
-        }
-        if (rows) {
-          document.getElementById('investments-card').hidden = false;
-          document.getElementById('investments-table').innerHTML = `
-            <table class="data-table">
-              <thead><tr><th>Protocol</th><th class="text-right">Value</th><th class="text-right">APY</th><th class="text-right">Risk</th></tr></thead>
-              <tbody>${rows}</tbody>
-            </table>`;
-        }
-      }
-    } else {
-      document.getElementById('endowment-invested').textContent = 'N/A';
-    }
-  } catch {
-    document.getElementById('endowment-invested').textContent = 'N/A';
-  }
+  // Age
+  const age = Math.floor(Date.now() / 1000) - Number(deployTs);
+  const ageDays = Math.floor(age / 86400);
+  document.getElementById('hero-lifespan').textContent = ageDays > 0 ? `${ageDays}d` : '1 day';
 
   // Runway
   if (diaryEntries.length > 0) {
@@ -1081,21 +1529,65 @@ async function loadAll() {
     for (const e of diaryEntries.slice(0, 10)) {
       if (e.bountyPaid > 0n) { avgCost += e.bountyPaid; costCount++; }
     }
-    if (costCount > 0) {
+    if (costCount > 0 && avgCost > 0n) {
       avgCost = avgCost / BigInt(costCount);
-      if (avgCost > 0n) {
-        const epochsRemaining = Number(treasury / avgCost);
-        const hoursPerEpoch = Number(epochDur) / 3600;
-        const daysRemaining = Math.floor(epochsRemaining * hoursPerEpoch / 24);
-        document.getElementById('endowment-runway').textContent =
-          daysRemaining > 365 ? `~${(daysRemaining / 365).toFixed(1)} years` : `~${daysRemaining} days`;
-        document.getElementById('endowment-runway-sub').textContent =
-          `${epochsRemaining} epochs at ${fmtEth(avgCost)}/epoch`;
-      }
+      const epochsRemaining = Number(treasury / avgCost);
+      const hoursPerEpoch = Number(epochDur) / 3600;
+      const daysRemaining = Math.floor(epochsRemaining * hoursPerEpoch / 24);
+      document.getElementById('hero-runway').textContent =
+        daysRemaining > 365 ? `~${(daysRemaining / 365).toFixed(1)}yr` : `~${daysRemaining}d`;
+      document.getElementById('hero-runway-sub').textContent = `${epochsRemaining} epochs`;
     }
   }
 
-  // Treasury chart
+  // Hero diary preview
+  if (diaryEntries.length > 0) {
+    const latest = diaryEntries[0];
+    document.getElementById('hero-diary-epoch').textContent = `Epoch ${latest.epoch}`;
+    document.getElementById('hero-diary-badge').innerHTML = `<span class="badge ${actionBadgeClass(latest.action.type)}" style="font-size:10px;">${latest.action.label}</span>`;
+    document.getElementById('hero-diary-body').innerHTML =
+      `<div>${escapeHtml(latest.reasoning)}</div>
+       <div class="hero-diary-detail">${latest.action.detail}</div>`;
+  } else {
+    document.getElementById('hero-diary-body').innerHTML = '<div style="color:var(--text-dim);">No diary entries yet. The first epoch is in progress.</div>';
+    document.getElementById('hero-diary-toggle').style.display = 'none';
+  }
+
+  // ── THE HUMAN FUND ──
+  document.getElementById('fund-liquid').textContent = fmtEth(treasury);
+  let totalInvested = 0n;
+  let investmentPositions = [];
+
+  // Investment manager
+  try {
+    const imAddr = await fund.investmentManager();
+    if (imAddr && imAddr !== '0x0000000000000000000000000000000000000000') {
+      investmentMgr = new ethers.Contract(imAddr, INVESTMENT_ABI, provider);
+      totalInvested = await investmentMgr.totalInvestedValue();
+      document.getElementById('fund-invested').textContent = fmtEth(totalInvested);
+
+      const pCount = Number(await investmentMgr.protocolCount());
+      for (let i = 1; i <= pCount; i++) {
+        try {
+          const pos = await investmentMgr.getPosition(i);
+          if (pos.currentValue > 0n || pos.active) {
+            investmentPositions.push({
+              name: pos.protocolName,
+              value: pos.currentValue,
+              apy: Number(pos.expectedApyBps) / 100,
+              risk: ['', 'Low', 'Medium', 'High'][pos.riskTier] || '?',
+            });
+          }
+        } catch {}
+      }
+    } else {
+      document.getElementById('fund-invested').textContent = '0 ETH';
+    }
+  } catch {
+    document.getElementById('fund-invested').textContent = 'N/A';
+  }
+
+  // Treasury chart (compact)
   if (diaryEntries.length > 0) {
     const chartData = [...diaryEntries].reverse();
     const labels = chartData.map(e => `E${e.epoch}`);
@@ -1110,11 +1602,9 @@ async function loadAll() {
           data: values,
           borderColor: '#7c9cff',
           backgroundColor: 'rgba(124,156,255,0.08)',
-          fill: true,
-          tension: 0.3,
-          pointRadius: 3,
-          pointBackgroundColor: '#7c9cff',
-          borderWidth: 2,
+          fill: true, tension: 0.3,
+          pointRadius: 2, pointBackgroundColor: '#7c9cff',
+          borderWidth: 1.5,
         }]
       },
       options: {
@@ -1122,168 +1612,64 @@ async function loadAll() {
         plugins: { legend: { display: false } },
         scales: {
           x: {
-            grid: { color: 'rgba(255,255,255,0.04)' },
-            ticks: { color: '#686880', font: { family: 'JetBrains Mono', size: 10 } }
+            display: false,
           },
           y: {
-            grid: { color: 'rgba(255,255,255,0.04)' },
-            ticks: {
-              color: '#686880',
-              font: { family: 'JetBrains Mono', size: 10 },
-              callback: v => v.toFixed(4)
-            }
+            display: false,
+            beginAtZero: false,
           }
         }
       }
     });
   }
 
-  // ── INFLOWS ──
+  // Inflows
   document.getElementById('inflow-total').textContent = fmtEth(inflows);
-  document.getElementById('inflow-epoch').textContent = fmtEth(epochInflow);
   document.getElementById('inflow-commission').textContent = `${(Number(commRate) / 100).toFixed(1)}%`;
-  document.getElementById('inflow-refcodes').textContent = (Number(nextRefCode) - 1).toString();
+  document.getElementById('inflow-commissions-paid').textContent = fmtEth(commPaid);
 
-  // Donor messages
-  try {
-    const [msgCount, msgHead] = await Promise.all([fund.messageCount(), fund.messageHead()]);
-    const unread = Number(msgCount) - Number(msgHead);
-    if (Number(msgCount) === 0) {
-      document.getElementById('donor-messages').innerHTML = '<div class="empty-state">No donor messages yet</div>';
-    } else {
-      const result = await fund.getUnreadMessages();
-      const senders = result[0], amounts = result[1], texts = result[2], epochNums = result[3];
-      if (senders.length === 0) {
-        document.getElementById('donor-messages').innerHTML = `<div style="font-size:12px;color:var(--text-dim);">${Number(msgCount)} total messages. All read.</div>`;
-      } else {
-        let html = `<div style="font-size:12px;color:var(--text-dim);margin-bottom:12px;">${Number(msgCount)} total, ${unread} unread</div>`;
-        for (let i = 0; i < senders.length; i++) {
-          html += `<div class="msg-item">
-            <div class="msg-header">
-              <span class="msg-sender"><a href="${EXPLORER}/address/${senders[i]}" target="_blank">${fmtAddr(senders[i])}</a></span>
-              <span class="msg-amount">${fmtEth(amounts[i])}</span>
-            </div>
-            ${texts[i] ? `<div class="msg-text">${escapeHtml(texts[i])}</div>` : '<div class="msg-text" style="color:var(--text-dim);font-style:italic;">(no text)</div>'}
-            <div style="font-size:10px;color:var(--text-dim);margin-top:4px;">Epoch ${epochNums[i]}</div>
-          </div>`;
-        }
-        document.getElementById('donor-messages').innerHTML = html;
-      }
-    }
-  } catch {
-    document.getElementById('donor-messages').innerHTML = '<div class="empty-state">Could not load messages</div>';
-  }
+  // Inflow chart — derive per-epoch inflows from treasury changes + bounties + donations
+  if (diaryEntries.length > 1) {
+    const chartData = [...diaryEntries].reverse();
+    const labels = chartData.map(e => `E${e.epoch}`);
+    // Approximate inflows: treasuryAfter - treasuryBefore + bountyPaid (net change + costs = gross inflow - donations)
+    // Simple proxy: just show treasury delta as a bar chart
+    const values = chartData.map(e => {
+      const delta = parseFloat(ethers.formatEther(e.treasuryAfter)) - parseFloat(ethers.formatEther(e.treasuryBefore));
+      return delta;
+    });
 
-  // ── EPOCH INFO ──
-  const age = Math.floor(Date.now() / 1000) - Number(deployTs);
-  let phaseHtml = '';
-
-  // Epoch status card
-  phaseHtml = `
-    <div class="stat-row"><span class="stat-label">Current epoch</span><span class="stat-value accent" style="font-size:18px;font-weight:600;">${currentEpochNum}</span></div>
-    <div class="stat-row"><span class="stat-label">Fund age</span><span class="stat-value">${fmtDuration(age)}</span></div>
-    <div class="stat-row"><span class="stat-label">Epoch duration</span><span class="stat-value">${fmtDuration(Number(epochDur))}</span></div>
-    <div class="stat-row"><span class="stat-label">Missed epochs (consecutive)</span><span class="stat-value ${Number(missedEpochs) > 0 ? 'orange' : ''}">${missedEpochs.toString()}</span></div>
-  `;
-  if (ethUsdPrice > 0n) {
-    phaseHtml += `<div class="stat-row"><span class="stat-label">ETH/USD (last snapshot)</span><span class="stat-value">$${(Number(ethUsdPrice) / 1e8).toFixed(2)}</span></div>`;
-  }
-  document.getElementById('epoch-status').innerHTML = phaseHtml;
-
-  // Auction card
-  try {
-    let aHtml = `<div class="stat-row"><span class="stat-label">Mode</span><span class="stat-value ${auctionOn ? 'green' : ''}">${auctionOn ? 'Auction (TEE)' : 'Direct (owner)'}</span></div>`;
-
-    if (auctionOn) {
-      const amAddr = await fund.auctionManager();
-      auctionMgr = new ethers.Contract(amAddr, AUCTION_ABI, provider);
-      const [commitWin, revealWin, execWin] = await Promise.all([
-        auctionMgr.commitWindow(), auctionMgr.revealWindow(), auctionMgr.executionWindow()
-      ]);
-      aHtml += `<div class="stat-row"><span class="stat-label">Windows (C/R/E)</span><span class="stat-value">${fmtDuration(Number(commitWin))} / ${fmtDuration(Number(revealWin))} / ${fmtDuration(Number(execWin))}</span></div>`;
-
-      const aState = await fund.getAuctionState(epoch);
-      const phaseNames = ['IDLE','COMMIT','REVEAL','EXECUTION','SETTLED'];
-      const phaseClasses = ['phase-idle','phase-commit','phase-reveal','phase-execution','phase-settled'];
-      const phase = Number(aState.phase);
-      aHtml += `<div class="stat-divider"></div>`;
-      aHtml += `<div class="stat-row"><span class="stat-label">Phase</span><span class="badge ${phaseClasses[phase]}">${phaseNames[phase]}</span></div>`;
-      aHtml += `<div class="stat-row"><span class="stat-label">Bids</span><span class="stat-value">${aState.bidCount.toString()}</span></div>`;
-
-      if (aState.winner !== '0x0000000000000000000000000000000000000000') {
-        aHtml += `<div class="stat-row"><span class="stat-label">Winner</span><span class="stat-value"><a href="${EXPLORER}/address/${aState.winner}" target="_blank">${fmtAddr(aState.winner)}</a></span></div>`;
-        aHtml += `<div class="stat-row"><span class="stat-label">Winning bid</span><span class="stat-value green">${fmtEth(aState.winningBid)}</span></div>`;
-        aHtml += `<div class="stat-row"><span class="stat-label">Bond</span><span class="stat-value">${fmtEth(aState.bondAmount)}</span></div>`;
-      }
-
-      // Phase countdown
-      if (aState.epochStartTime > 0n) {
-        const start = Number(aState.epochStartTime);
-        const now = Math.floor(Date.now() / 1000);
-        let deadline = 0, deadlineLabel = '';
-        if (phase === 1) { deadline = start + Number(commitWin); deadlineLabel = 'Commit closes in'; }
-        else if (phase === 2) { deadline = start + Number(commitWin) + Number(revealWin); deadlineLabel = 'Reveal closes in'; }
-        else if (phase === 3) { deadline = start + Number(commitWin) + Number(revealWin) + Number(execWin); deadlineLabel = 'Execution ends in'; }
-        if (deadline > now && deadlineLabel) {
-          aHtml += `<div class="stat-row"><span class="stat-label">${deadlineLabel}</span><span class="stat-value orange">${fmtDuration(deadline - now)}</span></div>`;
+    if (inflowChart) inflowChart.destroy();
+    inflowChart = new Chart(document.getElementById('inflow-chart'), {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [{
+          data: values,
+          backgroundColor: values.map(v => v >= 0 ? 'rgba(76,216,157,0.5)' : 'rgba(240,96,96,0.4)'),
+          borderColor: values.map(v => v >= 0 ? '#4cd89d' : '#f06060'),
+          borderWidth: 1,
+          borderRadius: 2,
+        }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { display: false },
+          y: { display: false }
         }
       }
-
-      if (Number(missedEpochs) > 0) {
-        aHtml += `<div class="stat-divider"></div>`;
-        aHtml += `<div class="stat-row"><span class="stat-label">Effective max bid</span><span class="stat-value orange">${fmtEth(effectiveBid)}</span></div>`;
-        aHtml += `<div class="stat-row"><span class="stat-label">Auto-escalation</span><span class="stat-value orange">+${Number(missedEpochs) * 10}%</span></div>`;
-      }
-    }
-    document.getElementById('epoch-auction').innerHTML = aHtml;
-  } catch (err) {
-    document.getElementById('epoch-auction').innerHTML = `<div class="stat-row"><span class="stat-label">Error</span><span class="stat-value red">${err.message.slice(0, 50)}</span></div>`;
+    });
   }
 
-  // ── PETRUSHKA'S BRAIN ──
-  document.getElementById('brain-prompt').innerHTML = `<div class="prompt-text">${escapeHtml(SYSTEM_PROMPT)}</div>`;
-
-  // Worldview
-  try {
-    const wvAddr = await fund.worldView();
-    if (wvAddr && wvAddr !== '0x0000000000000000000000000000000000000000') {
-      worldViewContract = new ethers.Contract(wvAddr, WORLDVIEW_ABI, provider);
-      const policies = await worldViewContract.getPolicies();
-      const active = policies.filter(p => p.length > 0).length;
-      document.getElementById('worldview-badge').textContent = `${active}/10 active`;
-      document.getElementById('brain-worldview').innerHTML = policies.map((p, i) => `
-        <div class="policy-slot">
-          <span class="policy-idx">[${i}]</span>
-          <div>
-            <div class="policy-name">${SLOT_NAMES[i] || `Slot ${i}`}</div>
-            ${p ? `<div class="policy-text">${escapeHtml(p)}</div>` : `<div class="policy-empty">(empty)</div>`}
-          </div>
-        </div>
-      `).join('');
-    } else {
-      document.getElementById('brain-worldview').innerHTML = '<div class="empty-state">WorldView not linked</div>';
-    }
-  } catch {
-    document.getElementById('brain-worldview').innerHTML = '<div class="empty-state">Could not load worldview</div>';
-  }
-
-  // Brain status
-  document.getElementById('brain-status').innerHTML = `
-    <div class="stat-row"><span class="stat-label">Auction mode</span><span class="stat-value ${auctionOn ? 'green' : ''}">${auctionOn ? 'Active (TEE required)' : 'Disabled (owner submits)'}</span></div>
-    <div class="stat-row"><span class="stat-label">Max bid (set by agent)</span><span class="stat-value">${fmtEth(maxBidVal)}</span></div>
-    <div class="stat-row"><span class="stat-label">Commission rate</span><span class="stat-value">${(Number(commRate)/100).toFixed(1)}%</span></div>
-    <div class="stat-row"><span class="stat-label">Owner</span><span class="stat-value"><a href="${EXPLORER}/address/${ownerAddr}" target="_blank">${fmtAddr(ownerAddr)}</a></span></div>
-  `;
-
-  // ── DONATION HISTORY ──
+  // Donations card
   document.getElementById('donations-eth').textContent = fmtEth(donated);
   document.getElementById('donations-usd').textContent = fmtUsd(donatedUsd);
-  document.getElementById('donations-bounties').textContent = fmtEth(bountiesPaid);
 
-  // Nonprofits table
   const npCountNum = Number(npCount);
   if (npCountNum > 0) {
-    let npRows = '';
+    const nonprofits = [];
     for (let i = 1; i <= npCountNum; i++) {
       try {
         const np = await fund.getNonprofit(i);
@@ -1291,31 +1677,169 @@ async function loadAll() {
         if (np.ein && np.ein !== '0x0000000000000000000000000000000000000000000000000000000000000000') {
           try {
             const hexStr = np.ein.replace(/0x/, '').replace(/0+$/, '');
-            ein = hexStr.match(/.{1,2}/g).map(b => String.fromCharCode(parseInt(b, 16))).join('');
+            if (hexStr.length > 0) ein = hexStr.match(/.{1,2}/g).map(b => String.fromCharCode(parseInt(b, 16))).join('');
           } catch {}
         }
-        npRows += `<tr>
-          <td style="color:var(--text);font-family:var(--sans);">
-            <div style="font-weight:500;">${np.name}</div>
-            ${np.description ? `<div style="font-size:11px;color:var(--text-dim);font-family:var(--sans);">${np.description}</div>` : ''}
-            ${ein ? `<div style="font-size:10px;color:var(--text-dim);">EIN: ${ein}</div>` : ''}
-          </td>
-          <td class="text-right" style="color:var(--green);">${fmtEth(np.totalDonated)}</td>
-          <td class="text-right">${fmtUsd(np.totalDonatedUsd)}</td>
-          <td class="text-right">${np.donationCount.toString()}</td>
-        </tr>`;
+        nonprofits.push({ name: np.name, desc: np.description, ein, donated: np.totalDonated, donatedUsd: np.totalDonatedUsd, count: Number(np.donationCount) });
       } catch {}
     }
-    document.getElementById('nonprofits-table').innerHTML = `
-      <table class="data-table">
-        <thead><tr><th>Nonprofit</th><th class="text-right">ETH</th><th class="text-right">USD</th><th class="text-right">Count</th></tr></thead>
-        <tbody>${npRows}</tbody>
-      </table>`;
+    // Sort by donated USD desc
+    nonprofits.sort((a, b) => Number(b.donatedUsd) - Number(a.donatedUsd));
+    const SHOW_FIRST = 3;
+    let npHtml = '<table class="data-table expandable-list" id="np-list"><thead><tr><th>Nonprofit</th><th class="text-right">USD</th><th class="text-right">ETH</th></tr></thead><tbody>';
+    nonprofits.forEach((np, idx) => {
+      const extraClass = idx >= SHOW_FIRST ? ' class="expand-row"' : '';
+      npHtml += `<tr${extraClass}>
+        <td style="color:var(--text);font-family:var(--sans);">
+          <div style="font-weight:500;">${np.name}</div>
+          ${np.ein ? `<div style="font-size:10px;color:var(--text-dim);">${np.ein}</div>` : ''}
+        </td>
+        <td class="text-right">${fmtUsd(np.donatedUsd)}</td>
+        <td class="text-right" style="color:var(--green);">${fmtEth(np.donated)}</td>
+      </tr>`;
+    });
+    npHtml += '</tbody></table>';
+    if (nonprofits.length > SHOW_FIRST) {
+      npHtml += `<div class="expand-toggle" onclick="toggleExpandList('np-list', this)"><span class="chevron">&#9660;</span> ${nonprofits.length - SHOW_FIRST} more</div>`;
+    }
+    document.getElementById('nonprofits-list').innerHTML = npHtml;
   } else {
-    document.getElementById('nonprofits-table').innerHTML = '<div class="empty-state">No nonprofits registered</div>';
+    document.getElementById('nonprofits-list').innerHTML = '<div class="empty-state">No nonprofits registered</div>';
   }
 
-  // ── AUTONOMY SCORE ──
+  // Investments card
+  document.getElementById('invest-total').textContent = fmtEth(totalInvested);
+  if (investmentPositions.length > 0) {
+    investmentPositions.sort((a, b) => Number(b.value - a.value));
+    const SHOW_FIRST = 3;
+    let invHtml = '<table class="data-table expandable-list" id="inv-list"><thead><tr><th>Protocol</th><th class="text-right">Value</th><th class="text-right">APY</th><th class="text-right">Risk</th></tr></thead><tbody>';
+    investmentPositions.forEach((pos, idx) => {
+      const extraClass = idx >= SHOW_FIRST ? ' class="expand-row"' : '';
+      invHtml += `<tr${extraClass}>
+        <td style="color:var(--text);">${pos.name}</td>
+        <td class="text-right">${fmtEth(pos.value)}</td>
+        <td class="text-right">${pos.apy.toFixed(1)}%</td>
+        <td class="text-right">${pos.risk}</td>
+      </tr>`;
+    });
+    invHtml += '</tbody></table>';
+    if (investmentPositions.length > SHOW_FIRST) {
+      invHtml += `<div class="expand-toggle" onclick="toggleExpandList('inv-list', this)"><span class="chevron">&#9660;</span> ${investmentPositions.length - SHOW_FIRST} more</div>`;
+    }
+    document.getElementById('investments-list').innerHTML = invHtml;
+  } else {
+    document.getElementById('investments-list').innerHTML = '<div class="empty-state">No active investments</div>';
+  }
+
+  // ── COSTANZA'S WORLD ──
+
+  // Age & Lifespan card
+  let ageHtml = `
+    <div class="stat-row"><span class="stat-label">Age</span><span class="stat-value">${ageDays > 0 ? ageDays + ' days' : '1 day'}</span></div>
+    <div class="stat-row"><span class="stat-label">Epochs completed</span><span class="stat-value accent">${currentEpochNum - 1}</span></div>
+    <div class="stat-row"><span class="stat-label">Epoch duration</span><span class="stat-value">${fmtDuration(Number(epochDur))}</span></div>
+  `;
+  if (diaryEntries.length > 0) {
+    let ac = 0n, cc = 0;
+    for (const e of diaryEntries.slice(0, 10)) { if (e.bountyPaid > 0n) { ac += e.bountyPaid; cc++; } }
+    if (cc > 0 && ac > 0n) {
+      ac = ac / BigInt(cc);
+      const er = Number(treasury / ac);
+      const dr = Math.floor(er * Number(epochDur) / 86400);
+      ageHtml += `<div class="stat-divider"></div>`;
+      ageHtml += `<div class="stat-row"><span class="stat-label">Est. runway</span><span class="stat-value green">${dr > 365 ? '~' + (dr/365).toFixed(1) + ' years' : '~' + dr + ' days'}</span></div>`;
+      ageHtml += `<div class="stat-row"><span class="stat-label">Avg cost/epoch</span><span class="stat-value">${fmtEth(ac)}</span></div>`;
+    }
+  }
+  document.getElementById('world-age').innerHTML = ageHtml;
+
+  // System prompt — preview with fade, full in expanded body
+  const promptFirstLines = SYSTEM_PROMPT.split('\n').slice(0, 6).join('\n');
+  document.getElementById('sysprompt-preview').innerHTML = `
+    <div style="font-size:12px;line-height:1.6;color:var(--text-secondary);font-family:var(--mono);white-space:pre-wrap;">${escapeHtml(promptFirstLines)}</div>
+    <div style="position:absolute;bottom:0;left:0;right:0;height:40px;background:linear-gradient(transparent, var(--surface));pointer-events:none;"></div>
+  `;
+  document.getElementById('sysprompt-full').innerHTML = `<div class="prompt-text">${escapeHtml(SYSTEM_PROMPT)}</div>`;
+
+  // Worldview card
+  try {
+    const wvAddr = await fund.worldView();
+    if (wvAddr && wvAddr !== '0x0000000000000000000000000000000000000000') {
+      worldViewContract = new ethers.Contract(wvAddr, WORLDVIEW_ABI, provider);
+      const policies = await worldViewContract.getPolicies();
+      const activePolicies = policies.map((p, i) => ({ text: p, idx: i })).filter(x => x.text.length > 0);
+      const wvBadgeText = `${activePolicies.length}/10 active`;
+      document.getElementById('worldview-badge').textContent = wvBadgeText;
+      document.getElementById('worldview-badge-modal').textContent = wvBadgeText;
+      // Preview: brief explanation
+      document.getElementById('worldview-preview').innerHTML = `
+        <div style="font-size:12px;color:var(--text-secondary);line-height:1.5;">Costanza can update his worldview based on what he learns each epoch. This acts as his long-term memory.</div>
+      `;
+      // Full view
+      document.getElementById('worldview-full').innerHTML = policies.map((p, i) => `
+        <div class="policy-slot">
+          <span class="policy-idx">[${i}]</span>
+          <div>
+            <div class="policy-name">${SLOT_NAMES[i] || 'Slot ' + i}</div>
+            ${p ? `<div class="policy-text">${escapeHtml(p)}</div>` : `<div class="policy-empty">(empty)</div>`}
+          </div>
+        </div>
+      `).join('');
+    } else {
+      document.getElementById('worldview-preview').innerHTML = '<div style="color:var(--text-dim);">WorldView not linked</div>';
+    }
+  } catch {
+    document.getElementById('worldview-preview').innerHTML = '<div style="color:var(--text-dim);">Could not load</div>';
+  }
+
+  // Recent messages (last 5 unread)
+  try {
+    const [msgCount, msgHead] = await Promise.all([fund.messageCount(), fund.messageHead()]);
+    if (Number(msgCount) === 0) {
+      document.getElementById('world-messages').innerHTML = '<div class="empty-state" style="padding:16px;">No messages yet</div>';
+    } else {
+      const result = await fund.getUnreadMessages();
+      const senders = result[0], amounts = result[1], texts = result[2], epochNums = result[3];
+      if (senders.length === 0) {
+        document.getElementById('world-messages').innerHTML = `<div style="font-size:12px;color:var(--text-dim);padding:8px 0;">${Number(msgCount)} messages. All read.</div>`;
+      } else {
+        const limit = Math.min(senders.length, 5);
+        let mHtml = '';
+        for (let i = 0; i < limit; i++) {
+          mHtml += `<div class="msg-item">
+            <div class="msg-header">
+              <span class="msg-sender"><a href="${EXPLORER}/address/${senders[i]}" target="_blank">${fmtAddr(senders[i])}</a></span>
+              <span class="msg-amount">${fmtEth(amounts[i])}</span>
+            </div>
+            ${texts[i] ? `<div class="msg-text">${escapeHtml(texts[i])}</div>` : '<div class="msg-text" style="color:var(--text-dim);font-style:italic;">(no text)</div>'}
+          </div>`;
+        }
+        if (senders.length > 5) mHtml += `<div style="font-size:11px;color:var(--text-dim);padding:8px 0;">+ ${senders.length - 5} more</div>`;
+        document.getElementById('world-messages').innerHTML = mHtml;
+      }
+    }
+  } catch {
+    document.getElementById('world-messages').innerHTML = '<div class="empty-state" style="padding:16px;">Could not load</div>';
+  }
+
+  // Diary preview (fading)
+  if (diaryEntries.length > 0) {
+    const latest = diaryEntries[0];
+    document.getElementById('world-diary-preview').innerHTML = `
+      <div class="diary-preview-container">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+          <span style="font-family:var(--mono);font-size:12px;color:var(--accent);font-weight:600;">Epoch ${latest.epoch}</span>
+          <span class="badge ${actionBadgeClass(latest.action.type)}" style="font-size:10px;">${latest.action.label}</span>
+          <span style="font-size:11px;color:var(--text-dim);">${fmtTime(latest.timestamp)}</span>
+        </div>
+        <div class="diary-preview-text">${escapeHtml(latest.reasoning)}</div>
+      </div>
+    `;
+  } else {
+    document.getElementById('world-diary-preview').innerHTML = '<div class="empty-state">No diary entries yet</div>';
+  }
+
+  // Autonomy score
   const flags = Number(frozenFlags);
   let frozenCount = 0;
   let permHtml = '';
@@ -1327,7 +1851,7 @@ async function loadAll() {
         <div class="perm-icon ${frozen ? 'locked' : 'unlocked'}">${frozen ? '&#x1f512;' : '&#x1f513;'}</div>
         <div class="perm-label">
           <div style="font-weight:500;">${f.name}</div>
-          <div style="font-size:11px;color:var(--text-dim);">${f.desc}</div>
+          <div style="font-size:11px;color:var(--text-dim);">${f.activeDesc}</div>
         </div>
         <span class="badge ${frozen ? 'badge-green' : 'badge-dim'}">${frozen ? 'FROZEN' : 'active'}</span>
       </div>`;
@@ -1338,28 +1862,103 @@ async function loadAll() {
   document.getElementById('autonomy-bar').style.width = `${pct}%`;
   document.getElementById('autonomy-perms').innerHTML = permHtml;
 
-  // ── DIARY HISTORY ──
-  if (diaryEntries.length === 0) {
-    document.getElementById('diary-entries').innerHTML = '<div class="empty-state">No diary entries yet</div>';
+  // ── TIMELINE SECTION ──
+  document.getElementById('tl-epoch').textContent = currentEpochNum;
+
+  // Phase + countdown
+  if (auctionOn && auctionMgr) {
+    try {
+      const [phase, startTime, cw, rw, ew] = await Promise.all([
+        auctionMgr.getPhase(epoch), auctionMgr.getStartTime(epoch),
+        auctionMgr.commitWindow(), auctionMgr.revealWindow(), auctionMgr.executionWindow(),
+      ]);
+      const phaseNum = Number(phase);
+      const phaseNames = ['IDLE', 'COMMIT', 'REVEAL', 'EXECUTION', 'SETTLED'];
+      const phaseClasses = ['phase-idle', 'phase-bidding', 'phase-bidding', 'phase-execution', 'phase-settled'];
+      document.getElementById('tl-phase').innerHTML = `<span class="badge ${phaseClasses[phaseNum] || 'badge-dim'}" style="font-size:14px;padding:6px 16px;">${phaseNames[phaseNum] || '?'}</span>`;
+
+      const now = Math.floor(Date.now() / 1000), start = Number(startTime);
+      const cwN = Number(cw), rwN = Number(rw), ewN = Number(ew), ed = Number(epochDur);
+      let deadline = 0, lbl = '';
+      if (phaseNum === 1) { deadline = start + cwN; lbl = 'until reveal'; }
+      else if (phaseNum === 2) { deadline = start + cwN + rwN; lbl = 'until execution'; }
+      else if (phaseNum === 3) { deadline = start + cwN + rwN + ewN; lbl = 'until forfeit'; }
+      else if (phaseNum === 0 || phaseNum === 4) {
+        let gateTime = 0;
+        if (phaseNum === 4 && start > 0) gateTime = start + ed;
+        else if (currentEpochNum > 1) { try { const ps = Number(await auctionMgr.getStartTime(currentEpochNum - 1)); if (ps > 0) gateTime = ps + ed; } catch {} }
+        if (gateTime > now) { deadline = gateTime; lbl = 'until bidding opens'; }
+        else { lbl = ''; }
+      }
+      if (deadline > now) {
+        document.getElementById('tl-countdown').textContent = fmtDuration(deadline - now);
+        document.getElementById('tl-countdown-label').textContent = lbl;
+      } else if (lbl) {
+        document.getElementById('tl-countdown').textContent = 'overdue';
+        document.getElementById('tl-countdown-label').textContent = lbl;
+      } else {
+        document.getElementById('tl-countdown').textContent = 'ready';
+        document.getElementById('tl-countdown').style.color = 'var(--green)';
+        document.getElementById('tl-countdown-label').textContent = 'bidding can start';
+      }
+    } catch {
+      document.getElementById('tl-phase').innerHTML = '<span class="badge badge-dim">IDLE</span>';
+    }
   } else {
-    document.getElementById('diary-entries').innerHTML = diaryEntries.map((entry, idx) => `
-      <div class="diary-card" style="margin-bottom:12px;">
-        <div class="diary-card-header" onclick="toggleDiary(this)">
-          <div class="diary-card-left">
-            <span class="diary-epoch-num">Epoch ${entry.epoch}</span>
-            <span class="badge ${actionBadgeClass(entry.action.type)}">${entry.action.label}</span>
-          </div>
-          <div class="diary-card-meta">
-            <span>${fmtTime(entry.timestamp)}</span>
-            <span>${fmtEthShort(entry.treasuryBefore)} &rarr; ${fmtEthShort(entry.treasuryAfter)} ETH</span>
-          </div>
-        </div>
-        <div class="diary-card-body${idx === 0 ? ' open' : ''}">
-          <div class="diary-reasoning">${escapeHtml(entry.reasoning)}</div>
-          <div class="diary-detail">${entry.action.detail}${entry.bountyPaid > 0n ? ` | Bounty: ${fmtEth(entry.bountyPaid)}` : ''}</div>
-        </div>
-      </div>
-    `).join('');
+    document.getElementById('tl-phase').innerHTML = '<span class="badge badge-dim">DIRECT</span>';
+    document.getElementById('tl-countdown').textContent = '--';
+  }
+
+  // Max bid
+  document.getElementById('tl-maxbid').textContent = fmtEth(effectiveBid);
+  const missed = Number(missedEpochs);
+  document.getElementById('tl-maxbid-tip').title = missed > 0
+    ? `There have been ${missed} consecutive skipped epoch${missed > 1 ? 's' : ''}. Max bid auto-escalated +${missed * 10}%.`
+    : 'No skipped epochs. Max bid is at its base level.';
+
+  // Current bond
+  try {
+    const bond = await fund.currentBond();
+    document.getElementById('tl-bond').textContent = fmtEth(bond);
+  } catch {
+    document.getElementById('tl-bond').textContent = '--';
+  }
+
+  // Latest bids
+  if (auctionOn && auctionMgr) {
+    try {
+      const committers = await auctionMgr.getCommitters(epoch);
+      const bidCount = committers.length;
+      if (bidCount === 0) {
+        document.getElementById('tl-bids').innerHTML = '<div style="font-family:var(--mono);font-size:20px;font-weight:600;">0</div><div style="font-size:11px;color:var(--text-dim);">No bids this epoch</div>';
+      } else {
+        // Get revealed bids for each committer
+        const bidPromises = committers.map(addr => auctionMgr.getBidRecord(epoch, addr).catch(() => null));
+        const bidRecords = await Promise.all(bidPromises);
+        const revealedBids = [];
+        for (let i = 0; i < committers.length; i++) {
+          if (bidRecords[i] && bidRecords[i].revealed) {
+            revealedBids.push({ addr: committers[i], amount: bidRecords[i].bidAmount });
+          }
+        }
+        revealedBids.sort((a, b) => (a.amount < b.amount ? -1 : a.amount > b.amount ? 1 : 0));
+        let bHtml = `<div style="font-family:var(--mono);font-size:20px;font-weight:600;margin-bottom:8px;">${bidCount}</div>`;
+        if (revealedBids.length > 0) {
+          const showBids = revealedBids.slice(0, 5);
+          for (const b of showBids) {
+            bHtml += `<div class="stat-row"><span class="stat-label">${fmtAddr(b.addr)}</span><span class="stat-value">${fmtEth(b.amount)}</span></div>`;
+          }
+          if (revealedBids.length > 5) bHtml += `<div style="font-size:11px;color:var(--text-dim);">+ ${revealedBids.length - 5} more</div>`;
+        } else {
+          bHtml += '<div style="font-size:11px;color:var(--text-dim);">Bids not yet revealed</div>';
+        }
+        document.getElementById('tl-bids').innerHTML = bHtml;
+      }
+    } catch {
+      document.getElementById('tl-bids').innerHTML = '<div style="font-family:var(--mono);font-size:20px;font-weight:600;">--</div>';
+    }
+  } else {
+    document.getElementById('tl-bids').innerHTML = '<div style="font-family:var(--mono);font-size:20px;font-weight:600;">N/A</div>';
   }
 
   // ── EVENTS ──
@@ -1386,7 +1985,7 @@ async function loadEvents() {
       { filter: 'PermissionFrozen', badge: 'badge-purple' },
     ];
 
-    const allEvents = [];
+    allEvents = [];
     for (const def of eventDefs) {
       try {
         const logs = await fund.queryFilter(fund.filters[def.filter](), fromBlock, currentBlock);
@@ -1406,7 +2005,10 @@ async function loadEvents() {
             else if (def.filter === 'RevealClosed') { detail = `Epoch ${a[0]}: winner ${fmtAddr(a[1])} at ${fmtEth(a[2])}`; }
             else if (def.filter === 'CommissionRateChanged') { detail = `Epoch ${a[0]}: ${Number(a[1])/100}%`; }
             else if (def.filter === 'MaxBidChanged') { detail = `Epoch ${a[0]}: ${fmtEth(a[1])}`; }
-            else if (def.filter === 'PermissionFrozen') { const f = FREEZE_FLAGS.find(x => x.bit === Number(a[0])); detail = f ? f.name : `Flag ${a[0]}`; }
+            else if (def.filter === 'PermissionFrozen') {
+              const f = FREEZE_FLAGS.find(x => x.bit === Number(a[0]));
+              detail = f ? f.name : `Flag #${a[0]}`;
+            }
           } catch { detail = '(decode error)'; }
           allEvents.push({ name: def.filter, badge: def.badge, detail, blockNumber: log.blockNumber, txHash: log.transactionHash });
         }
@@ -1414,10 +2016,11 @@ async function loadEvents() {
     }
 
     allEvents.sort((a, b) => b.blockNumber - a.blockNumber);
+
     if (allEvents.length === 0) {
       document.getElementById('event-log').innerHTML = '<div class="empty-state">No events in recent blocks</div>';
     } else {
-      document.getElementById('event-log').innerHTML = allEvents.slice(0, 50).map(ev => `
+      document.getElementById('event-log').innerHTML = allEvents.slice(0, 10).map(ev => `
         <div class="event-row">
           <span class="event-type-badge ${ev.badge}">${ev.name}</span>
           <span class="event-detail">${ev.detail}</span>
