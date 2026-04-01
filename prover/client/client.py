@@ -114,10 +114,10 @@ def run(config):
 
     elif phase == REVEAL:
         if saved.get("committed") and not saved.get("revealed"):
-            reveal_bid(chain, saved, dry_run=dry_run)
-            saved["revealed"] = True
-            save_state(saved, state_dir)
-            notify_bid_revealed(ntfy, epoch, saved["bid_amount"] / 1e18)
+            if reveal_bid(chain, saved, dry_run=dry_run):
+                saved["revealed"] = True
+                save_state(saved, state_dir)
+                notify_bid_revealed(ntfy, epoch, saved["bid_amount"] / 1e18)
         elif not saved.get("committed"):
             logger.info("Didn't commit this epoch, skipping reveal")
         else:
