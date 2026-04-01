@@ -16,7 +16,7 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 - **AuctionManager**: `0x1Cd18809F4e7A1738cB8a1A5F09df060ee83228B`
 - **TdxVerifier**: `0x1cff9156FC9EF24128aE7ED9B7a1b29D2e590C73`
 - **Deployer**: `0xffea30B0DbDAd460B9b6293fb51a059129fCCdAf`
-- **174 tests pass** (core + auction + TDX verifier + investment + worldview + messages + cross-stack hash)
+- **182 tests pass** (core + auction + TDX verifier + investment + worldview + messages + cross-stack hash)
 - GPU image key (a3-highgpu-1g, H100): `0x573c0120...` — approved (v8)
 - GCP TDX FMSPC `00806f050000` registered in Automata DCAP Dashboard
 - H100 on-demand quota is 0; all GPU VMs use `--provisioning-model=SPOT`
@@ -28,16 +28,18 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 
 Each epoch (24 hours in production, configurable for testnet):
 
-1. Anyone calls `startEpoch()` — opens bidding, commits input hash
-2. Provers submit bids during bidding window (1 hour production)
-3. Anyone calls `closeAuction()` — lowest bid wins, bond locked, `prevrandao` captured for RNG seed
-4. Winner boots TDX VM from dm-verity disk image, one-shot enclave runs inference with deterministic seed
-5. Winner submits via `submitAuctionResult()` — TdxVerifier verifies:
+1. Anyone calls `startEpoch()` — auto-cleans any stale previous auction, opens commit phase, commits input hash
+2. Provers commit sealed bid hashes with bond during commit window (1 hour production)
+3. Anyone calls `closeCommit()` — if no commits, epoch is missed
+4. Provers reveal bids during reveal window (30 min production)
+5. Anyone calls `closeReveal()` — lowest revealed bid wins, bond locked, randomness seed captured
+6. Winner boots TDX VM from dm-verity disk image, one-shot enclave runs inference with deterministic seed
+7. Winner submits via `submitAuctionResult()` — TdxVerifier verifies:
    - Automata DCAP: quote is genuine TDX hardware
    - Platform key: `sha256(MRTD || RTMR[1] || RTMR[2])` — firmware + kernel + dm-verity rootfs
    - REPORTDATA: `sha256(inputHash || outputHash)` matches
-6. Contract executes action, pays bounty + refunds bond
-7. If winner doesn't deliver: anyone calls `forfeitBond()`, bond kept by treasury
+8. Contract executes action, pays bounty + refunds bond
+9. If winner doesn't deliver: anyone calls `forfeitBond()`, bond kept by treasury
 
 See [DESIGN.md](DESIGN.md) for the full integrity chain, auction economics, and indestructibility model.
 
@@ -166,14 +168,17 @@ thehumanfund/
 - Auto-escalation: `effectiveMaxBid` increases 10% per consecutive missed epoch
 - `DiaryEntry` event emits reasoning + action on-chain
 
-### Reverse Auction
-- **Epoch state machine**: `EpochPhase { IDLE, BIDDING, EXECUTION, SETTLED }`
-- `startEpoch()` — permissionless, opens bidding, commits input hash
-- `bid(amount) payable` — submit bid with 20% bond, inline refund when outbid
-- `closeAuction()` — permissionless, after bidding window
-- `submitAuctionResult(action, reasoning, attestationQuote)` — winner submits attested result
+### Reverse Auction (Commit-Reveal)
+- **Auction state machine**: `AuctionPhase { IDLE, COMMIT, REVEAL, EXECUTION, SETTLED }`
+- `startEpoch()` — permissionless, auto-cleans stale auctions (any phase), opens commit phase, commits input hash
+- `commit(commitHash) payable` — submit sealed bid hash with bond
+- `closeCommit()` — permissionless, after commit window
+- `reveal(bidAmount, salt)` — reveal previously committed bid
+- `closeReveal()` — permissionless, after reveal window; lowest bid wins, randomness seed captured
+- `submitAuctionResult(action, reasoning, proof, verifierId, policySlot, policyText)` — winner submits attested result
 - `forfeitBond()` — permissionless, after execution window expires
 - `computeInputHash()` — public view for prover verification
+- **Stale recovery**: `startEpoch()` chains through remaining phase transitions if previous auction is stuck; credits `consecutiveMissedEpochs` based on elapsed wall-clock time
 
 ### Action Encoding
 `uint8 action_type + ABI-encoded params`
