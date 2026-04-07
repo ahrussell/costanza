@@ -151,9 +151,15 @@ def run(config):
     elif phase == EXECUTION:
         winner = auction["winner"]
         if winner.lower() == chain.account.address.lower():
-            # Check if we've already given up on this epoch
+            # Check if we've already given up on this epoch — try to advance past it
             if saved.get("submission_failed"):
-                logger.info("Submission previously failed permanently, waiting for epoch to expire")
+                logger.info("Submission previously failed, attempting to advance past stale epoch")
+                started = start_epoch(chain, dry_run=dry_run)
+                if started:
+                    clear_state(state_dir)
+                    notify_epoch_started(ntfy, epoch)
+                else:
+                    logger.info("Cannot advance yet (epoch duration not elapsed)")
                 return
 
             # Check retry limit
