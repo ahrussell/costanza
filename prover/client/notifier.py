@@ -96,3 +96,13 @@ def notify_vm_started(channel, vm_name):
 
 def notify_bond_forfeited(channel, epoch, runner):
     notify(channel, f"Bond forfeited (epoch {epoch})", f"Runner {runner[:10]}... failed to deliver.", tags=["warning"])
+
+def notify_submission_failed(channel, epoch, error, attempt, max_retries):
+    notify(channel, f"Submit failed (epoch {epoch})",
+           f"Attempt {attempt}/{max_retries}: {_sanitize(str(error)[:300])}",
+           priority="high", tags=["warning"])
+
+def notify_epoch_abandoned(channel, epoch, reason):
+    notify(channel, f"Epoch {epoch} abandoned",
+           f"Giving up: {_sanitize(str(reason)[:300])}",
+           priority="urgent", tags=["rotating_light"])

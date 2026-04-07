@@ -34,6 +34,42 @@ GAS_REVEAL = 200_000
 GAS_CLOSE_REVEAL = 500_000
 GAS_SUBMIT_RESULT = 15_000_000  # DCAP verification is expensive
 
+MAX_SUBMIT_RETRIES = 2  # Max submission attempts before giving up on an epoch
+
+
+class SubmissionError(Exception):
+    """Raised when submitAuctionResult fails with a classified error."""
+    def __init__(self, category, message, should_retry=False):
+        self.category = category
+        self.should_retry = should_retry
+        super().__init__(message)
+
+
+def classify_submit_error(err):
+    """Classify a submitAuctionResult error into a category.
+
+    Returns (category, should_retry, message).
+    """
+    err_str = str(err)
+
+    if "TimingError" in err_str or "0x0730a2ce" in err_str:
+        return ("timing_expired", False, "Execution window expired")
+
+    if "ProofFailed" in err_str or "0xbf930e52" in err_str:
+        return ("proof_failed", False, "Proof verification failed (image key or DCAP issue)")
+
+    if "WrongPhase" in err_str or "0xfa936b38" in err_str:
+        return ("wrong_phase", False, "Auction not in execution phase")
+
+    if "AlreadyDone" in err_str or "0xb5615854" in err_str:
+        return ("already_done", False, "Result already submitted")
+
+    # Bare revert from DCAP verification — transient, worth retrying
+    if "execution reverted" in err_str and "'0x'" in err_str:
+        return ("bare_revert", True, "DCAP verification bare revert (transient)")
+
+    return ("unknown", False, f"Unknown submission error: {err_str[:200]}")
+
 
 def _is_expected_revert(err: str) -> bool:
     """Check if a revert is a known timing/phase error that should be silently retried."""
@@ -166,18 +202,27 @@ def close_reveal(chain: ChainClient, dry_run=False):
 def submit_result(chain: ChainClient, action_bytes: bytes, reasoning: bytes,
                   proof: bytes, verifier_id=1, policy_slot=-1, policy_text="",
                   dry_run=False):
-    """Submit auction result with attestation proof."""
+    """Submit auction result with attestation proof.
+
+    Raises:
+        SubmissionError: On classified contract revert (with category and should_retry).
+    """
     if dry_run:
         logger.info("[DRY RUN] Would submit result: %d action bytes, "
                      "%d reasoning bytes, %d proof bytes",
                      len(action_bytes), len(reasoning), len(proof))
         return None
 
-    receipt = chain.send_tx(
-        chain.contract.functions.submitAuctionResult(
-            action_bytes, reasoning, proof, verifier_id, policy_slot, policy_text
-        ),
-        gas=GAS_SUBMIT_RESULT,
-    )
-    logger.info("Result submitted! Gas used: %d", receipt['gasUsed'])
-    return receipt
+    try:
+        receipt = chain.send_tx(
+            chain.contract.functions.submitAuctionResult(
+                action_bytes, reasoning, proof, verifier_id, policy_slot, policy_text
+            ),
+            gas=GAS_SUBMIT_RESULT,
+        )
+        logger.info("Result submitted! Gas used: %d", receipt['gasUsed'])
+        return receipt
+    except (ContractLogicError, ContractCustomError, RuntimeError) as e:
+        category, should_retry, message = classify_submit_error(e)
+        logger.error("submitAuctionResult() failed [%s]: %s", category, message)
+        raise SubmissionError(category, message, should_retry=should_retry) from e

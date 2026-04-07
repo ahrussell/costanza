@@ -98,6 +98,19 @@ class ChainClient:
         from .epoch_state import build_contract_state_for_tee
         return build_contract_state_for_tee(self.contract, self.w3, state)
 
+    def get_epoch_timing(self):
+        """Read epoch timing from contract.
+
+        Returns dict with last_epoch_start_time, epoch_duration, next_eligible_time.
+        """
+        last_start = self.contract.functions.lastEpochStartTime().call()
+        duration = self.contract.functions.epochDuration().call()
+        return {
+            "last_epoch_start_time": last_start,
+            "epoch_duration": duration,
+            "next_eligible_time": last_start + duration,
+        }
+
     def send_tx(self, fn, value=0, gas=None):
         """Build, sign, and send a transaction.
 
