@@ -52,7 +52,7 @@ The enclave runs inside a GCP TDX Confidential VM on a dm-verity rootfs:
 
 - **Code integrity**: All code, model weights, and system prompt are on the dm-verity partition. The root hash is in the kernel command line, measured into RTMR[2], and verified on-chain via the platform key.
 - **Input integrity**: The enclave independently computes `inputHash` from the prover-provided epoch state and includes it in the TDX REPORTDATA. The contract verifies this matches the on-chain committed hash. 
-- **Output integrity**: `REPORTDATA = sha256(inputHash || outputHash)` where `outputHash = keccak256(sha256(action) || sha256(reasoning) || approvedPromptHash)`. The contract verifies this against the TDX quote.
+- **Output integrity**: `REPORTDATA = sha256(inputHash || outputHash)` where `outputHash = keccak256(sha256(action) || sha256(reasoning))`. The contract verifies this against the TDX quote. The system prompt is verified separately via dm-verity — it lives on the rootfs, whose hash is in the kernel command line, measured into RTMR[2], and checked via the platform key.
 - **Randomness**: The inference seed comes from `block.prevrandao`, captured at auction close and included in the input hash. The enclave cannot choose its own seed.
 
 **What the TEE guarantees**: Given the committed input hash and randomness seed, the attested output (action + reasoning) is the genuine result of running the approved model with the approved system prompt on the verified input.
@@ -185,7 +185,7 @@ All three must pass or the submission reverts.
 REPORTDATA binds the attested execution to specific inputs and outputs:
 
 ```
-outputHash  = keccak256(sha256(action) || sha256(reasoning) || approvedPromptHash)
+outputHash  = keccak256(sha256(action) || sha256(reasoning))
 REPORTDATA  = sha256(inputHash || outputHash)
 ```
 
@@ -193,13 +193,13 @@ Where:
 - **inputHash** = `keccak256(baseInputHash || seed)`, committed on-chain at auction close
 - **baseInputHash** covers: treasury state, nonprofit registry, investment state, worldview, epoch content, donor messages, history hash
 - **seed** = `block.prevrandao` captured at auction close (unpredictable before bids are placed)
-- **approvedPromptHash** = sha256 of the system prompt, stored on-chain and verified by the contract
 
-This proves four things simultaneously:
+REPORTDATA proves three things:
 1. The enclave used the correct epoch state (inputHash matches on-chain commitment)
 2. The enclave produced the exact action + reasoning that were submitted
-3. The enclave used the approved system prompt
-4. The inference used the committed randomness seed (deterministic output for a given seed)
+3. The inference used the committed randomness seed (deterministic output for a given seed)
+
+System prompt and code integrity are verified separately via the platform key check (Step 2) — the prompt lives on the dm-verity rootfs, whose hash is embedded in the kernel command line, measured into RTMR[2].
 
 The contract recomputes the expected REPORTDATA from the submitted action, reasoning, and committed inputHash. If the prover tampers with the output after attestation, the hashes diverge and the submission is rejected.
 
@@ -294,7 +294,6 @@ These are known limitations that we've evaluated and accepted:
 Before mainnet deployment, verify:
 
 - [ ] All freeze flags are set (`FREEZE_NONPROFITS`, `FREEZE_AUCTION_CONFIG`, `FREEZE_VERIFIER`, `FREEZE_INVESTMENT_MANAGER`, `FREEZE_WORLDVIEW`, `FREEZE_MIGRATE`, `FREEZE_DIRECT_MODE`)
-- [ ] `approvedPromptHash` matches the sha256 of the system prompt on the dm-verity rootfs
 - [ ] Auction timing is set to production values (not testnet fast-forward)
 - [ ] All DeFi adapter addresses point to verified mainnet contracts (not testnet placeholders)
 - [ ] Chainlink ETH/USD feed address is the mainnet oracle

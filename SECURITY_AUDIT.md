@@ -1,6 +1,7 @@
 # Security Audit Report: The Human Fund
 
 **Date**: 2026-03-31
+**Audited commit**: `3bbdb3e` (Fix diary newlines, add Endaoment link, and copy edits)
 **Scope**: Full codebase adversarial review — smart contracts, TEE enclave, prover client, DeFi adapters, build/deployment scripts, auction system
 **Method**: Line-by-line code review from a motivated penetration tester's perspective, with focus on cross-system interaction vulnerabilities
 
@@ -32,7 +33,7 @@ The three-pass inference system (thinking → diary → action) propagates Pass 
 #### M-2: Last-Revealer Influence on Randomness Seed (Accepted)
 
 **Severity**: MEDIUM
-**Component**: `src/AuctionManager.sol:175`
+**Component**: `src/AuctionManager.sol:178`
 
 The randomness seed mixes `block.prevrandao` with the XOR of all revealed salts. The last revealer has a binary choice (reveal or forfeit bond), gaining 1-bit influence over the randomness. On Base, proposer collusion requires compromising Coinbase.
 
@@ -52,7 +53,7 @@ Epoch state JSON is written to a temp file for GCP metadata upload. If the proce
 
 **Component**: Test suite
 
-163 tests pass, but all use hardcoded values. No property-based/fuzz tests for bounds checking, action encoding, hash computation, or adapter interactions. No fork tests against live DeFi protocols.
+175 tests pass, but all use hardcoded values. No property-based/fuzz tests for bounds checking, action encoding, hash computation, or adapter interactions. No fork tests against live DeFi protocols.
 
 #### L-3: `_snapshotEthUsdPrice` Sets Price to 0 on Oracle Failure
 

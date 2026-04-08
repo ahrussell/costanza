@@ -247,7 +247,7 @@ source .venv/bin/activate
 
 # Smart contracts
 forge build                                    # Compile contracts
-forge test                                     # Run all tests (165 tests)
+forge test                                     # Run all tests (175 tests)
 forge test -vvv                                # Verbose test output
 forge test --match-path test/TdxVerifier.t.sol # Specific test file
 forge script script/Deploy.s.sol \

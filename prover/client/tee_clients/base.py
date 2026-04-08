@@ -25,7 +25,7 @@ class TEEClient(ABC):
             contract_state: Structured contract state for input hash verification.
                 Kept for backward compatibility / debugging. The TEE prefers
                 epoch_state when available.
-            system_prompt: System prompt text (hash must match approvedPromptHash).
+            system_prompt: System prompt text (on dm-verity rootfs, verified via image key).
             seed: Randomness seed from block.prevrandao.
 
         Returns:

@@ -8,7 +8,7 @@ Provides two functions:
 The REPORTDATA formula:
     sha256(inputHash || outputHash)
 where:
-    outputHash = keccak256(sha256(action) || sha256(reasoning) || sha256(systemPrompt))
+    outputHash = keccak256(sha256(action) || sha256(reasoning))
 
 This runs on the dm-verity rootfs — the code cannot be modified at runtime.
 """

@@ -2,8 +2,8 @@
 """Prompt builder — constructs the full epoch context from structured contract state.
 
 This runs INSIDE the TEE, making the prompt construction part of the attested
-computation. The system prompt is received as a verified input (its hash is
-pinned on-chain via approvedPromptHash).
+computation. The system prompt lives on the dm-verity rootfs, verified
+transitively via the image key (RTMR[2] includes the dm-verity root hash).
 
 The epoch context includes:
 - Vitals (treasury, commission, ETH/USD price, lifespan estimate)

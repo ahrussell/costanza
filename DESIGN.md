@@ -97,14 +97,14 @@ Verifying the code isn't enough — we also need to verify that it processed the
 
 The enclave sets REPORTDATA to `sha256(inputHash || outputHash)`, where:
 - `inputHash` is deterministically computed from on-chain state (treasury, epoch history, donor messages, ETH/USD price, etc.) and committed by the contract at epoch start
-- `outputHash` is `keccak256(sha256(action) || sha256(reasoning) || sha256(systemPrompt))`
+- `outputHash` is `keccak256(sha256(action) || sha256(reasoning))`
 
 The contract independently computes the expected REPORTDATA from the committed input hash and the submitted output, then compares it against what the attestation quote reports. If they don't match, the submission is rejected.
 
 This means the prover cannot:
 - Feed the model different inputs than what's on-chain
 - Substitute a different model output
-- Change the system prompt
+- Change the system prompt (it lives on the dm-verity rootfs, verified via the platform key)
 
 ### Verifiable randomness
 
