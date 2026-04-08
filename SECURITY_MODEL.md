@@ -60,7 +60,7 @@ The enclave runs inside a GCP TDX Confidential VM on a dm-verity rootfs:
 ### 3. Prover (Untrusted)
 
 Provers are permissionless participants who:
-- Call `startEpoch()` to open auctions
+- Call `syncPhase()` or `commit()` to open auctions (auto-advancing)
 - Submit bids via commit-reveal
 - Boot TDX VMs and submit attested results
 
@@ -235,7 +235,7 @@ These are known limitations that we've evaluated and accepted:
 
 ### A-2: Block Proposer Influence on Randomness
 
-**Risk**: `block.prevrandao` captured at `closeReveal()` can be influenced by the block proposer, who could choose which block includes the transaction.
+**Risk**: `block.prevrandao` captured during the REVEAL → EXECUTION transition (inside `_syncPhase()`) can be influenced by the block proposer, who could choose which block includes the transaction.
 
 **Why accepted**: (1) The attacker must be both a block proposer AND an auction prover — a narrow intersection. (2) The attacker can only select from the set of model outputs reachable from different seeds, not arbitrary outputs. (3) Base uses a centralized sequencer, making this attack require compromising Coinbase's sequencer. (4) Switching to VRF would add cost and complexity for limited benefit.
 
@@ -251,11 +251,11 @@ These are known limitations that we've evaluated and accepted:
 
 **Why accepted**: (1) Contract bounds cap single-epoch damage to ~10% of treasury. (2) The auction is competitive — an attacker must consistently outbid honest provers, which costs real ETH. (3) The public diary makes manipulation visible, enabling community response. 
 
-### A-5: `startEpoch` Auto-Cleanup Race Condition
+### A-5: `syncPhase` Auto-Cleanup Race Condition
 
-**Risk**: When an auction is stale, anyone calling `startEpoch()` triggers automatic cleanup — chaining through whatever phase the auction is stuck in (COMMIT, REVEAL, or EXECUTION). This can forfeit bonds even if a participant's transaction is pending in the mempool. For example, a winner's `submitAuctionResult` may be in-flight when someone else calls `startEpoch()` and forfeits their bond.
+**Risk**: When an auction is stale, any interaction (`commit`, `reveal`, `submitAuctionResult`, or `syncPhase`) triggers `_syncPhase()` which auto-advances through elapsed phase windows. This can forfeit bonds even if a participant's transaction is pending in the mempool. For example, a winner's `submitAuctionResult` may be in-flight when someone else calls `syncPhase()` past the execution deadline and forfeits their bond.
 
-**Why accepted**: (1) This is inherent to blockchain finality — there's no way to distinguish between "transaction is pending" and "prover abandoned." (2) All phase windows are configurable and should be set generously (hours, not minutes). (3) Participants should act well before deadlines. (4) All phase transitions are permissionless — bidders can call `closeCommit`, `closeReveal`, etc. themselves rather than relying on others.
+**Why accepted**: (1) This is inherent to blockchain finality — there's no way to distinguish between "transaction is pending" and "prover abandoned." (2) All phase windows are configurable and should be set generously (hours, not minutes). (3) Participants should act well before deadlines. (4) Phase advancement is deterministic — provers can predict exactly when deadlines pass and act accordingly.
 
 ### A-6: `receive()` Inflating `totalInflows`
 
