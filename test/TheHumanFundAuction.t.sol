@@ -276,6 +276,7 @@ contract TheHumanFundAuctionTest is Test {
         fund.syncPhase();
 
         _submitAttestedResult(runner1, 1);
+        fund.syncPhase();
 
         assertEq(fund.currentEpoch(), 2);
         assertEq(fund.consecutiveMissedEpochs(), 0);
@@ -662,6 +663,7 @@ contract TheHumanFundAuctionTest is Test {
         fund.syncPhase(); // close reveal
 
         _submitAttestedResult(runner1, epoch);
+        fund.syncPhase();
 
         assertEq(fund.consecutiveMissedEpochs(), 0);
         assertEq(fund.currentBond(), 0.001 ether);
@@ -708,6 +710,7 @@ contract TheHumanFundAuctionTest is Test {
     function test_fullAuctionWithAttestation() public {
         _runAuctionTo(runner1, 0.005 ether, bytes32("s1"));
         _submitAttestedResult(runner1, 1);
+        fund.syncPhase();
 
         assertEq(fund.currentEpoch(), 2);
         assertEq(fund.consecutiveMissedEpochs(), 0);
@@ -811,6 +814,7 @@ contract TheHumanFundAuctionTest is Test {
 
     function test_directSubmission_coexists() public {
         fund.submitEpochAction(_noopAction(), bytes("direct"), -1, "");
+        fund.syncPhase();
         assertEq(fund.currentEpoch(), 2);
     }
 
@@ -839,10 +843,12 @@ contract TheHumanFundAuctionTest is Test {
 
     function test_epochContentHashes_accumulate() public {
         fund.submitEpochAction(_noopAction(), bytes("First"), -1, "");
+        fund.syncPhase();
         bytes32 hash1 = fund.epochContentHashes(1);
         assertTrue(hash1 != bytes32(0));
 
         fund.submitEpochAction(_noopAction(), bytes("Second"), -1, "");
+        fund.syncPhase();
         bytes32 hash2 = fund.epochContentHashes(2);
         assertTrue(hash2 != bytes32(0));
         assertTrue(hash1 != hash2);

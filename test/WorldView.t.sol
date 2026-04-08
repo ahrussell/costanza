@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import "forge-std/Test.sol";
 import "../src/TheHumanFund.sol";
+import "../src/AuctionManager.sol";
 import "../src/WorldView.sol";
 import "./helpers/MockEndaoment.sol";
 
@@ -28,6 +29,10 @@ contract WorldViewTest is Test {
 
         mf.preDeployOrg(bytes32("EIN-GD"));
 
+        // Deploy AuctionManager so syncPhase() works
+        AuctionManager am = new AuctionManager(address(fund));
+        fund.setAuctionManager(address(am));
+
         wv = new WorldView(address(fund));
         fund.setWorldView(address(wv));
     }
@@ -41,6 +46,7 @@ contract WorldViewTest is Test {
             int8(0),
             "Prioritize high-impact, evidence-based charities"
         );
+        fund.syncPhase();
 
         assertEq(wv.getPolicy(0), "Prioritize high-impact, evidence-based charities");
         assertEq(fund.currentEpoch(), 2);
@@ -52,18 +58,21 @@ contract WorldViewTest is Test {
             abi.encodePacked(uint8(0)),
             "Policy 0", int8(0), "Grow the treasury before donating"
         );
+        fund.syncPhase();
 
         // Epoch 2: set slot 3
         fund.submitEpochAction(
             abi.encodePacked(uint8(0)),
             "Policy 3", int8(3), "Diversify across at least 3 protocols"
         );
+        fund.syncPhase();
 
         // Epoch 3: set slot 9 (last slot)
         fund.submitEpochAction(
             abi.encodePacked(uint8(0)),
             "Policy 9", int8(9), "Never invest more than 25% in one protocol"
         );
+        fund.syncPhase();
 
         assertEq(wv.getPolicy(0), "Grow the treasury before donating");
         assertEq(wv.getPolicy(1), ""); // untouched
@@ -77,12 +86,14 @@ contract WorldViewTest is Test {
             abi.encodePacked(uint8(0)),
             "Initial", int8(0), "Be conservative"
         );
+        fund.syncPhase();
         assertEq(wv.getPolicy(0), "Be conservative");
 
         fund.submitEpochAction(
             abi.encodePacked(uint8(0)),
             "Updated", int8(0), "Be aggressive"
         );
+        fund.syncPhase();
         assertEq(wv.getPolicy(0), "Be aggressive");
     }
 
@@ -91,12 +102,14 @@ contract WorldViewTest is Test {
             abi.encodePacked(uint8(0)),
             "Set", int8(5), "Temporary policy"
         );
+        fund.syncPhase();
         assertEq(wv.getPolicy(5), "Temporary policy");
 
         fund.submitEpochAction(
             abi.encodePacked(uint8(0)),
             "Clear", int8(5), ""
         );
+        fund.syncPhase();
         assertEq(wv.getPolicy(5), "");
     }
 
@@ -109,6 +122,7 @@ contract WorldViewTest is Test {
             abi.encodePacked(uint8(0)),
             "Set", int8(0), "New policy"
         );
+        fund.syncPhase();
 
         bytes32 hash2 = wv.stateHash();
         assertTrue(hash1 != hash2);
@@ -119,6 +133,7 @@ contract WorldViewTest is Test {
             abi.encodePacked(uint8(0)),
             "Set", int8(0), "Policy A"
         );
+        fund.syncPhase();
 
         bytes32 hash1 = wv.stateHash();
         bytes32 hash2 = wv.stateHash();
@@ -132,6 +147,7 @@ contract WorldViewTest is Test {
             abi.encodePacked(uint8(0)),
             "Test", int8(0), "Policy changes input hash"
         );
+        fund.syncPhase();
 
         bytes32 hash2 = fund.computeInputHash();
         assertTrue(hash1 != hash2);
@@ -144,10 +160,12 @@ contract WorldViewTest is Test {
             abi.encodePacked(uint8(0)),
             "Set 0", int8(0), "Alpha"
         );
+        fund.syncPhase();
         fund.submitEpochAction(
             abi.encodePacked(uint8(0)),
             "Set 4", int8(4), "Beta"
         );
+        fund.syncPhase();
 
         string[10] memory all = wv.getPolicies();
         assertEq(all[0], "Alpha");
@@ -166,6 +184,7 @@ contract WorldViewTest is Test {
             abi.encodePacked(uint8(0)),
             "Event test", int8(0), "Test policy"
         );
+        fund.syncPhase();
     }
 
     // ─── Only Fund Can Set ─────────────────────────────────────────────
@@ -187,6 +206,7 @@ contract WorldViewTest is Test {
             int8(2),
             "Invest conservatively in bear markets"
         );
+        fund.syncPhase();
 
         // Both should have happened
         (,,, uint256 donated,,) = fund.getNonprofit(1);
@@ -202,6 +222,7 @@ contract WorldViewTest is Test {
             int8(0),
             "Stay patient and grow"
         );
+        fund.syncPhase();
 
         assertEq(wv.getPolicy(0), "Stay patient and grow");
     }
@@ -214,6 +235,7 @@ contract WorldViewTest is Test {
             int8(-1),
             "This should be ignored"
         );
+        fund.syncPhase();
 
         assertEq(wv.getPolicy(0), "");
     }

@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import "forge-std/Test.sol";
 import "../src/TheHumanFund.sol";
+import "../src/AuctionManager.sol";
 
 contract MessagesTest is Test {
     TheHumanFund public fund;
@@ -25,6 +26,10 @@ contract MessagesTest is Test {
         fund.addNonprofit("GiveDirectly", "Cash transfers", bytes32("EIN-GD"));
         fund.addNonprofit("Against Malaria Foundation", "Malaria prevention", bytes32("EIN-AMF"));
         fund.addNonprofit("Helen Keller International", "NTDs", bytes32("EIN-HKI"));
+
+        // Deploy AuctionManager so syncPhase() works
+        AuctionManager am = new AuctionManager(address(fund));
+        fund.setAuctionManager(address(am));
     }
 
     // ─── donateWithMessage ──────────────────────────────────────────────
@@ -115,6 +120,7 @@ contract MessagesTest is Test {
         // Execute an epoch (advances head)
         bytes memory noopAction = bytes(hex"00");
         fund.submitEpochAction(noopAction, "reasoning", -1, "");
+        fund.syncPhase();
 
         assertEq(fund.messageHead(), 3);
 
@@ -135,6 +141,7 @@ contract MessagesTest is Test {
         // Execute epoch — should only advance by 20
         bytes memory noopAction = bytes(hex"00");
         fund.submitEpochAction(noopAction, "reasoning", -1, "");
+        fund.syncPhase();
 
         assertEq(fund.messageHead(), 20);
 
@@ -167,10 +174,12 @@ contract MessagesTest is Test {
         // Epoch 1: advances head to 20
         bytes memory noopAction = bytes(hex"00");
         fund.submitEpochAction(noopAction, "reasoning", -1, "");
+        fund.syncPhase();
         assertEq(fund.messageHead(), 20);
 
         // Epoch 2: advances head to 25
         fund.submitEpochAction(noopAction, "reasoning", -1, "");
+        fund.syncPhase();
         assertEq(fund.messageHead(), 25);
 
         // All read

@@ -627,16 +627,20 @@ contract TheHumanFund is ReentrancyGuard {
             }
         }
 
-        // If the auction for the current epoch is now SETTLED (completed or missed),
+        // If the current epoch is done (SETTLED, IDLE, or already executed),
         // advance past any missed epochs and try to open a new one.
-        if (phase == IAuctionManager.AuctionPhase.SETTLED || phase == IAuctionManager.AuctionPhase.IDLE) {
+        bool epochDone = (phase == IAuctionManager.AuctionPhase.SETTLED)
+            || (phase == IAuctionManager.AuctionPhase.IDLE)
+            || epochs[epoch].executed;
+
+        if (epochDone) {
             // Advance past missed epochs (O(1) — arithmetic, no loop).
             uint256 scheduledStart = _epochStartTime(epoch);
             if (block.timestamp >= scheduledStart + epochDuration) {
                 // The current epoch's auction was stale. Credit missed epochs.
                 uint256 missedCount = (block.timestamp - scheduledStart) / epochDuration;
-                if (phase != IAuctionManager.AuctionPhase.IDLE) {
-                    // Only count as missed if there was actually an auction for this epoch
+                if (phase != IAuctionManager.AuctionPhase.IDLE && !epochs[epoch].executed) {
+                    // Only count as missed if there was an auction that wasn't executed
                     uint256 newMissed = consecutiveMissedEpochs + missedCount;
                     if (newMissed > MAX_MISSED_EPOCHS) newMissed = MAX_MISSED_EPOCHS;
                     consecutiveMissedEpochs = newMissed;
@@ -646,10 +650,8 @@ contract TheHumanFund is ReentrancyGuard {
                 currentEpochInflow = 0;
                 currentEpochDonationCount = 0;
                 currentEpochCommissions = 0;
-            } else if (phase == IAuctionManager.AuctionPhase.SETTLED) {
-                // Auction settled normally (not stale) — advance one epoch.
-                // Don't increment missed: the epoch completed (either executed or forfeited).
-                // Note: forfeit already incremented missed in the EXECUTION→SETTLED case above.
+            } else if (phase == IAuctionManager.AuctionPhase.SETTLED || epochs[epoch].executed) {
+                // Epoch completed normally — advance one epoch.
                 currentEpoch += 1;
                 epoch = currentEpoch;
                 currentEpochInflow = 0;
@@ -832,7 +834,6 @@ contract TheHumanFund is ReentrancyGuard {
         currentEpochDonationCount = 0;
         currentEpochCommissions = 0;
         consecutiveMissedEpochs = 0;
-        currentEpoch = epoch + 1;
     }
 
     // ─── Internal: Action Execution ──────────────────────────────────────
