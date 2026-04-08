@@ -36,7 +36,6 @@ Costanza chooses exactly one action per epoch. The action space is deliberately 
 | `invest` | Deploy ETH into a pre-approved DeFi protocol | Max 80% total invested, 25% per protocol, 20% min liquid reserve |
 | `withdraw` | Pull ETH from a DeFi protocol back to liquid treasury | Up to full position value |
 | `set_commission_rate` | Set the referral commission rate | 1% — 90% |
-| ~~`set_guiding_policy`~~ | *(Removed — worldview updates happen alongside any action via sidecar parameters)* | — |
 | `noop` | Do nothing | — |
 
 All bounds are enforced by the smart contract. The model cannot exceed them regardless of what it outputs.
