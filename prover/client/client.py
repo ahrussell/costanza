@@ -240,6 +240,19 @@ def _handle_execution(chain, config, auction, saved, state_dir, ntfy):
                 notify_auction_lost(ntfy, epoch, winner)
                 saved["loss_notified"] = True
                 save_state(saved, state_dir)
+        else:
+            # No winner (nobody committed/revealed for this epoch).
+            # Try to advance the contract past this stale epoch so the
+            # next epoch's auction can open.
+            logger.info("No winner for epoch %d, advancing past stale epoch", epoch)
+            if sync_phase(chain):
+                new_epoch = chain.contract.functions.currentEpoch().call()
+                new_phase = chain.am.functions.getPhase(new_epoch).call()
+                if new_phase == 1:  # COMMIT — new auction opened
+                    logger.info("Auction opened for epoch %d", new_epoch)
+                    notify_epoch_started(ntfy, new_epoch)
+                else:
+                    logger.info("Advanced to epoch %d (phase %d)", new_epoch, new_phase)
         return
 
     # We won!
