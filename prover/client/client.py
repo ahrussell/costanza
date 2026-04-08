@@ -137,12 +137,42 @@ def _try_claim_bonds(chain, ntfy, state_dir):
 # ─── Phase Handlers ─────────────────────────────────────────────────────
 
 def _handle_idle(chain, auction, ntfy):
-    """No auction active or between epochs. Try to advance via syncPhase."""
+    """No auction active or between epochs. Try to advance via syncPhase.
+
+    Only calls syncPhase if we think the commit window may have opened
+    (to avoid burning gas on no-op transactions every cron cycle).
+    """
+    epoch = auction["epoch"]
+    now = auction["now"]
+
+    # Check if the commit window for the current epoch is reachable.
+    # If start_time is 0, the AM has no auction — we need syncPhase to open one.
+    # But only if the wall-clock says the epoch's commit window should be open.
+    epoch_start = chain.contract.functions.epochStartTime(epoch).call()
+    commit_window = chain.am.functions.commitWindow().call()
+    epoch_duration = chain.contract.functions.epochDuration().call()
+    commit_end = epoch_start + commit_window
+
+    if now < epoch_start:
+        # Epoch hasn't started yet according to wall clock
+        logger.info("Epoch %d starts at %d (%ds from now), waiting",
+                    epoch, epoch_start, epoch_start - now)
+        return
+    if now >= commit_end and now < epoch_start + epoch_duration:
+        # Within the epoch but past the commit window — no point syncing
+        logger.info("Epoch %d commit window closed, waiting for next epoch (%ds)",
+                    epoch, epoch_start + epoch_duration - now)
+        return
+
+    old_epoch = epoch
     if sync_phase(chain):
-        # Re-read epoch after sync — it may have opened a new auction
         new_epoch = chain.contract.functions.currentEpoch().call()
-        logger.info("syncPhase advanced to epoch %d", new_epoch)
-        notify_epoch_started(ntfy, new_epoch)
+        new_phase = chain.am.functions.getPhase(new_epoch).call()
+        if new_epoch != old_epoch or new_phase == 1:  # 1 = COMMIT (auction opened)
+            logger.info("syncPhase opened auction for epoch %d", new_epoch)
+            notify_epoch_started(ntfy, new_epoch)
+        else:
+            logger.info("syncPhase advanced state (epoch %d)", new_epoch)
 
 
 def _handle_commit(chain, config, auction, saved, state_dir, ntfy):
