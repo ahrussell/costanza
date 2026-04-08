@@ -17,13 +17,13 @@ def load_config(args=None):
         epilog="""
 Examples:
     # Run once (cron mode)
-    python -m runner.client
+    python -m prover.client
 
     # Run with notifications
-    python -m runner.client --ntfy-channel humanfund-runner
+    python -m prover.client --ntfy-channel humanfund-runner
 
     # Custom bid margin
-    python -m runner.client --bid-margin 2.0
+    python -m prover.client --bid-margin 2.0
         """,
     )
     parser.add_argument("--ntfy-channel", default=os.environ.get("NTFY_CHANNEL"),
@@ -37,8 +37,6 @@ Examples:
     parser.add_argument("--state-dir", type=Path,
                         default=Path(os.environ.get("STATE_DIR", os.path.expanduser("~/.humanfund"))),
                         help="Directory for persistent state (default: ~/.humanfund)")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Don't submit transactions, just log what would happen")
     parser.add_argument("--verbose", "-v", action="store_true",
                         help="Verbose output")
 
@@ -60,12 +58,11 @@ Examples:
         "tee_client": parsed.tee_client,
         "bid_margin": parsed.bid_margin,
         "state_dir": parsed.state_dir,
-        "dry_run": parsed.dry_run,
         "verbose": parsed.verbose,
     }
 
-    # Verifier ID: 1 = TdxVerifier (Intel TDX attestation)
-    config["verifier_id"] = int(os.environ.get("VERIFIER_ID", "1"))
+    # Verifier ID: 2 = TdxVerifier (dm-verity)
+    config["verifier_id"] = int(os.environ.get("VERIFIER_ID", "2"))
 
     # Validate required fields
     missing = []
@@ -77,5 +74,15 @@ Examples:
         missing.append("CONTRACT_ADDRESS")
     if missing:
         parser.error(f"Missing required environment variables: {', '.join(missing)}")
+
+    # Validate GCP config when using GCP TEE client
+    if config["tee_client"].startswith("gcp"):
+        gcp_missing = []
+        if not config["gcp_project"]:
+            gcp_missing.append("GCP_PROJECT")
+        if not config["gcp_image"]:
+            gcp_missing.append("GCP_IMAGE")
+        if gcp_missing:
+            parser.error(f"GCP TEE client requires: {', '.join(gcp_missing)}")
 
     return config

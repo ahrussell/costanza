@@ -88,14 +88,27 @@ def notify_result_submitted(channel, epoch, action, bounty_eth=None, cost=None):
         tags = ["white_check_mark"]
     notify(channel, f"Result submitted (epoch {epoch})", "\n".join(lines), priority="high", tags=tags)
 
+def notify_epoch_settled(channel, epoch):
+    notify(channel, f"Epoch {epoch} settled", f"State cleared, ready for next epoch.", tags=["checkered_flag"])
+
+def notify_execution_expired(channel, epoch):
+    notify(channel, f"Execution expired (epoch {epoch})",
+           f"Execution window passed. Attempting to advance to next epoch.",
+           priority="high", tags=["hourglass_flowing_sand"])
+
+def notify_cached_submission(channel, epoch, attempt, max_retries):
+    notify(channel, f"Retrying submission (epoch {epoch})",
+           f"Using cached TEE result (attempt {attempt}/{max_retries}).",
+           tags=["recycle"])
+
+def notify_commit_closed(channel, epoch):
+    notify(channel, f"Commit closed (epoch {epoch})", f"Commit phase closed.", tags=["fast_forward"])
+
+def notify_reveal_closed(channel, epoch):
+    notify(channel, f"Reveal closed (epoch {epoch})", f"Reveal phase closed.", tags=["fast_forward"])
+
 def notify_error(channel, epoch, error):
     notify(channel, f"ERROR (epoch {epoch})", _sanitize(str(error)[:500]), priority="urgent", tags=["rotating_light"])
-
-def notify_vm_started(channel, vm_name):
-    notify(channel, "TEE VM started", f"VM: {vm_name}", tags=["computer"])
-
-def notify_bond_forfeited(channel, epoch, runner):
-    notify(channel, f"Bond forfeited (epoch {epoch})", f"Runner {runner[:10]}... failed to deliver.", tags=["warning"])
 
 def notify_submission_failed(channel, epoch, error, attempt, max_retries):
     notify(channel, f"Submit failed (epoch {epoch})",

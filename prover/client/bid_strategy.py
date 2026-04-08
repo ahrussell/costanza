@@ -10,18 +10,25 @@ The bid is clamped to the contract's effectiveMaxBid.
 """
 
 
-# Gas cost for submitAuctionResult (includes DCAP verification)
+# Gas cost estimate for submitAuctionResult (DCAP verification).
+# This is a COST ESTIMATE for bid calculation, not the gas limit ceiling.
+# The gas limit (GAS_SUBMIT_RESULT = 15M) is set in auction.py.
+# Re-calibrate by checking actual gasUsed from recent submission receipts.
 SUBMIT_GAS = 12_500_000
 
-# GCP VM hourly rates (USD, on-demand)
+# GCP VM hourly rates (USD, SPOT pricing).
+# We use --provisioning-model=SPOT for all TEE VMs.
+# Re-calibrate by checking current GCP spot pricing for us-central1.
 GCP_HOURLY_RATES = {
-    "a3-highgpu-1g": 35.0,     # 1x H100 80GB
-    "c3-standard-4": 0.21,     # 4 vCPU, 16GB (CPU inference)
+    "a3-highgpu-1g": 11.74,    # 1x H100 80GB (spot, us-central1)
+    "c3-standard-4": 0.08,     # 4 vCPU, 16GB (spot)
 }
 
-# Estimated times (minutes)
-GPU_BOOT_MINUTES = 5     # VM create + model load
-GPU_INFERENCE_MINUTES = 1  # ~30s inference + overhead
+# Estimated times (minutes).
+# GPU timing based on observed runs: ~5 min boot + model load, ~3 min inference.
+# Re-calibrate by checking vm_minutes from recent TEE results in state dir.
+GPU_BOOT_MINUTES = 5       # VM create + model load
+GPU_INFERENCE_MINUTES = 3  # ~3 min inference + overhead (observed: 8 min total)
 CPU_BOOT_MINUTES = 5
 CPU_INFERENCE_MINUTES = 25  # ~22 min inference + overhead
 

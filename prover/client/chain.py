@@ -11,6 +11,7 @@ import json
 import logging
 from pathlib import Path
 from web3 import Web3
+from web3.exceptions import ContractLogicError, ContractCustomError
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,28 @@ def load_abi(contract_name):
     abi_path = ABI_DIR / f"{contract_name}.sol" / f"{contract_name}.json"
     with open(abi_path) as f:
         return json.loads(f.read())["abi"]
+
+
+def build_error_selector_map(*contract_names):
+    """Build {selector_hex: error_name} from compiled ABIs.
+
+    Error selectors are deterministic: keccak256("ErrorName(arg_types)")[:4].
+    This computes them from ABI definitions instead of hardcoding hex values.
+
+    Returns:
+        Dict mapping "0x{selector}" to error name string.
+        Example: {"0x0730a2ce": "TimingError", "0xbf930e52": "ProofFailed"}
+    """
+    selector_map = {}
+    for name in contract_names:
+        abi = load_abi(name)
+        for item in abi:
+            if item.get("type") == "error":
+                input_types = ",".join(inp["type"] for inp in item.get("inputs", []))
+                sig = f"{item['name']}({input_types})"
+                selector = Web3.keccak(text=sig)[:4].hex()
+                selector_map[f"0x{selector}"] = item["name"]
+    return selector_map
 
 
 class ChainClient:
@@ -51,7 +74,7 @@ class ChainClient:
         """Get current auction state from individual AuctionManager getters."""
         try:
             epoch = self.contract.functions.projectedEpoch().call()
-        except Exception:
+        except (ContractLogicError, ContractCustomError):
             epoch = self.contract.functions.currentEpoch().call()
         am = self.am
         phase = am.functions.getPhase(epoch).call()

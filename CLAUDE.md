@@ -204,11 +204,14 @@ thehumanfund/
 
 ## Prover Client
 
-**`prover/client/client.py`** — Cron-based auction prover (`*/10 * * * *`). Each run is idempotent:
-- **IDLE** → calls `startEpoch()`
-- **BIDDING** → calculates bid (gas + compute cost), submits with bond
-- **EXECUTION** → if winner: boots GCP TDX VM, runs inference, submits result
-- **SETTLED** → clears state, waits for next epoch
+**`prover/client/client.py`** — Cron-based auction prover (`*/2 * * * *`). Each run is idempotent:
+- **IDLE** → calls `startEpoch()`, caches next-eligible time on failure
+- **COMMIT** → calculates bid (gas + compute cost), commits with bond; closes commit window when ready
+- **REVEAL** → reveals committed bid; closes reveal window when ready
+- **EXECUTION** → checks stale/expired epoch first; if winner: boots GCP TDX VM, runs inference (with caching), submits result with retry logic
+- **SETTLED** → clears state, notifies, waits for next epoch
+
+ntfy.sh notifications cover the full lifecycle: epoch started → bid committed → commit closed → bid revealed → reveal closed → auction won → TEE inference → result submitted → epoch settled. Error selectors are computed from compiled ABIs at import time (no hardcoded hex values).
 
 **TEE client** (`prover/client/tee_clients/gcp.py`): Creates VM from dm-verity image with epoch state in metadata → polls serial console for output → parses result → deletes VM. No SSH, no HTTP.
 
@@ -247,7 +250,6 @@ forge script script/Deploy.s.sol \
 
 # Prover client (cron mode)
 python -m prover.client                        # Check auction state, act accordingly
-python -m prover.client --dry-run              # Log what would happen, no txs
 python -m prover.client --ntfy-channel my-ch   # With push notifications
 
 # GCP disk image (dm-verity)

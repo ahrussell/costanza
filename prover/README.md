@@ -126,8 +126,11 @@ Required variables:
 ### 5. Test
 
 ```bash
-# Dry run — logs what would happen without submitting transactions
-python -m prover.client --dry-run
+# Run once manually to verify configuration
+python -m prover.client
+
+# For local simulation without a live contract, use:
+python scripts/simulate.py
 ```
 
 ### 6. Set Up Cron
