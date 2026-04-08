@@ -263,26 +263,11 @@ def _decode_action_display(action_bytes):
                 amount = int.from_bytes(action_bytes[33:65], "big")
                 return f"withdraw(protocol_id={pid}, amount={format_eth(amount)} ETH)"
             return "withdraw (malformed)"
-        elif action_type == 5:  # set_guiding_policy
-            if len(action_bytes) >= 33:
-                slot = int.from_bytes(action_bytes[1:33], "big")
-                # Try to decode the policy string from ABI encoding
-                try:
-                    if len(action_bytes) >= 97:  # slot(32) + offset(32) + length(32) + data
-                        str_len = int.from_bytes(action_bytes[65:97], "big")
-                        policy = action_bytes[97:97+str_len].decode("utf-8", errors="replace")
-                        if len(policy) > 80:
-                            policy = policy[:80] + "..."
-                        return f'set_guiding_policy(slot={slot}, policy="{policy}")'
-                except Exception:
-                    pass
-                return f"set_guiding_policy(slot={slot})"
-            return "set_guiding_policy (malformed)"
         else:
             return f"unknown(type={action_type})"
     except Exception:
         action_names = {0: "noop", 1: "donate", 2: "set_commission_rate",
-                        3: "invest", 4: "withdraw", 5: "set_guiding_policy"}
+                        3: "invest", 4: "withdraw"}
         return action_names.get(action_type, f"unknown({action_type})")
 
 
@@ -405,7 +390,6 @@ def build_epoch_context(state, seed=None):
         lines.append(f"  withdraw(protocol_id, amount_eth)        positions: {', '.join(withdraw_parts)}")
     else:
         lines.append(f"  withdraw(protocol_id, amount_eth)        no positions to withdraw")
-    lines.append(f"  set_guiding_policy(slot, policy)         10 slots (0-9), max 280 chars")
     lines.append(f"  noop                                     do nothing")
 
     # -- Section 3: Nonprofits --
@@ -541,7 +525,7 @@ def build_epoch_context(state, seed=None):
     # -- Section 8: Action Distribution --
     if state["history"]:
         action_names_map = {0: "noop", 1: "donate", 2: "set_commission_rate",
-                            3: "invest", 4: "withdraw", 5: "set_guiding_policy"}
+                            3: "invest", 4: "withdraw"}
         action_counts = {}
         donate_targets = {}
         for entry in state["history"]:

@@ -146,7 +146,9 @@ contract TheHumanFund is ReentrancyGuard {
     uint256 public lastDonationEpoch;
     uint256 public lastCommissionChangeEpoch;
     uint256 public consecutiveMissedEpochs;
-    uint256 public lastEpochStartTime;  // Anchor for elapsed-time miss counting
+    uint256 public lastEpochStartTime;  // Scheduled start time of the last opened epoch
+    uint256 public timingAnchor;        // Wall-clock reference point for epoch schedule
+    uint256 public anchorEpoch;         // Epoch number at the anchor
 
     // Nonprofits (1-indexed for the agent's benefit)
     uint256 public nonprofitCount;
@@ -256,6 +258,8 @@ contract TheHumanFund is ReentrancyGuard {
 
         // Default epoch duration (can be overridden via setAuctionTiming)
         epochDuration = 24 hours;
+        timingAnchor = block.timestamp;
+        anchorEpoch = 1;
 
         // Endaoment integration addresses
         endaomentFactory = IEndaomentFactory(_endaomentFactory);
@@ -546,6 +550,11 @@ contract TheHumanFund is ReentrancyGuard {
     ) external onlyOwner {
         if (frozenFlags & FREEZE_AUCTION_CONFIG != 0) revert Frozen();
         if (_commitWindow + _revealWindow + _executionWindow > _epochDuration) revert InvalidParams();
+        // Re-anchor before changing duration so _epochStartTime uses the old value
+        if (anchorEpoch > 0 && currentEpoch >= anchorEpoch) {
+            timingAnchor = _epochStartTime(currentEpoch);
+            anchorEpoch = currentEpoch;
+        }
         epochDuration = _epochDuration;
         auctionManager.setTiming(_commitWindow, _revealWindow, _executionWindow);
     }
@@ -560,6 +569,11 @@ contract TheHumanFund is ReentrancyGuard {
             if (bond >= cap) return cap;
         }
         return bond;
+    }
+
+    /// @notice Compute the deterministic scheduled start time for any epoch.
+    function _epochStartTime(uint256 epoch) internal view returns (uint256) {
+        return timingAnchor + (epoch - anchorEpoch) * epochDuration;
     }
 
     /// @notice Open the auction for the current epoch. Anyone can call this.
@@ -597,7 +611,7 @@ contract TheHumanFund is ReentrancyGuard {
         if (phase != IAuctionManager.AuctionPhase.IDLE && phase != IAuctionManager.AuctionPhase.SETTLED) {
             uint256 missedCount = 1;
             if (lastEpochStartTime > 0) {
-                uint256 elapsed = (block.timestamp - lastEpochStartTime) / epochDuration;
+                uint256 elapsed = (block.timestamp - _epochStartTime(epoch)) / epochDuration;
                 if (elapsed > missedCount) missedCount = elapsed;
             }
             uint256 newMissed = consecutiveMissedEpochs + missedCount;
@@ -610,14 +624,15 @@ contract TheHumanFund is ReentrancyGuard {
             epoch = currentEpoch;
         }
 
-        // Enforce epoch pacing: at least one epochDuration must have elapsed since last auction start.
-        if (lastEpochStartTime > 0 && block.timestamp < lastEpochStartTime + epochDuration) revert TimingError();
+        // Enforce epoch pacing: wall-clock time must have reached this epoch's scheduled start.
+        if (lastEpochStartTime > 0 && block.timestamp < _epochStartTime(epoch)) revert TimingError();
 
         _snapshotEthUsdPrice();
 
         uint256 bond = currentBond();
-        am.openAuction(epoch, bond);
-        lastEpochStartTime = block.timestamp;
+        uint256 scheduledStart = _epochStartTime(epoch);
+        am.openAuction(epoch, bond, scheduledStart);
+        lastEpochStartTime = scheduledStart;
 
         bytes32 baseInputHash = _computeInputHash();
         epochBaseInputHashes[epoch] = baseInputHash;
@@ -888,19 +903,6 @@ contract TheHumanFund is ReentrancyGuard {
             } catch {
                 emit ActionRejected(epoch, action, 7);
             }
-        } else if (actionType == 5) {
-            // set_guiding_policy — delegate to WorldView contract
-            if (action.length < 33 || address(worldView) == address(0)) {
-                emit ActionRejected(epoch, action, 8);
-                return;
-            }
-            // Forward raw ABI-encoded (uint256 slot, string policy) to WorldView
-            (bool ok, ) = address(worldView).call(
-                abi.encodePacked(IWorldView.setPolicy.selector, action[1:])
-            );
-            if (!ok) {
-                emit ActionRejected(epoch, action, 9);
-            }
         } else {
             emit ActionRejected(epoch, action, 10);
         }
@@ -1142,9 +1144,9 @@ contract TheHumanFund is ReentrancyGuard {
     /// Returns what currentEpoch would be if startEpoch() were called now.
     /// Use this instead of currentEpoch() for display when the contract may be idle.
     function projectedEpoch() external view returns (uint256) {
-        if (lastEpochStartTime == 0 || epochDuration == 0) return currentEpoch;
-        uint256 elapsed = (block.timestamp - lastEpochStartTime) / epochDuration;
-        if (elapsed == 0) return currentEpoch;
+        if (timingAnchor == 0 || epochDuration == 0) return currentEpoch;
+        uint256 scheduledStart = _epochStartTime(currentEpoch);
+        if (block.timestamp < scheduledStart) return currentEpoch;
 
         // Only project forward if there's a stale auction (not IDLE/SETTLED)
         IAuctionManager.AuctionPhase phase = auctionManager.getPhase(currentEpoch);
@@ -1153,7 +1155,14 @@ contract TheHumanFund is ReentrancyGuard {
         }
 
         // Mirrors startEpoch() missed-epoch logic: currentEpoch += max(1, elapsed)
+        uint256 elapsed = (block.timestamp - scheduledStart) / epochDuration;
+        if (elapsed == 0) return currentEpoch;
         return currentEpoch + elapsed;
+    }
+
+    /// @notice Compute the deterministic scheduled start time for any epoch.
+    function epochStartTime(uint256 epoch) external view returns (uint256) {
+        return _epochStartTime(epoch);
     }
 
     /// @notice Get the total number of messages.

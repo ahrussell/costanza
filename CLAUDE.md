@@ -28,7 +28,7 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 
 Each epoch (24 hours in production, configurable for testnet):
 
-1. Anyone calls `startEpoch()` — auto-cleans any stale previous auction, opens commit phase, commits input hash
+1. Anyone calls `startEpoch()` — auto-cleans any stale previous auction, opens commit phase with wall-clock anchored timing, commits input hash
 2. Provers commit sealed bid hashes with bond during commit window (1 hour production)
 3. Anyone calls `closeCommit()` — if no commits, epoch is missed
 4. Provers reveal bids during reveal window (30 min production)
@@ -186,6 +186,9 @@ thehumanfund/
 - `submitAuctionResult(action, reasoning, proof, verifierId, policySlot, policyText)` — winner submits attested result
 - `forfeitBond()` — permissionless, after execution window expires
 - `computeInputHash()` — public view for prover verification
+- `projectedEpoch()` — public view returning what `currentEpoch` would be if `startEpoch()` were called now
+- `epochStartTime(epoch)` — public view computing the deterministic scheduled start time for any epoch
+- **Wall-clock anchored timing**: `timingAnchor` + `anchorEpoch` define a fixed schedule. `epochStartTime(N) = timingAnchor + (N - anchorEpoch) * epochDuration`. Late `startEpoch()` calls produce shorter remaining phase windows (self-correcting, no drift). `setAuctionTiming()` re-anchors when epoch duration changes.
 - **Stale recovery**: `startEpoch()` chains through remaining phase transitions if previous auction is stuck; credits `consecutiveMissedEpochs` based on elapsed wall-clock time
 
 ### Action Encoding
@@ -195,7 +198,7 @@ thehumanfund/
 - 2 = set_commission_rate(rate_bps)
 - 3 = invest(protocol_id, amount) — delegate to InvestmentManager
 - 4 = withdraw(protocol_id, amount) — delegate to InvestmentManager
-- 5 = set_guiding_policy(slot, policy) — delegate to WorldView
+- ~~5 = set_guiding_policy~~ — removed; worldview updates happen via sidecar parameters on submitAuctionResult
 
 ## Prover Client
 

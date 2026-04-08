@@ -942,15 +942,6 @@ def apply_action(state, action_json):
                 changes.append(f"  Withdrew {format_eth(withdraw)} ETH from {inv['name']}")
                 break
 
-    elif action in ("set_guiding_policy", "set_policy"):
-        slot = int(params.get("slot", params.get("slot_id", 0)))
-        policy = str(params.get("policy", params.get("text", "")))[:280]
-        old = state["guiding_policies"][slot] if slot < 8 else ""
-        if slot < 8:
-            state["guiding_policies"][slot] = policy
-        snippet = policy[:60] + "..." if len(policy) > 60 else policy
-        changes.append(f'  Policy slot [{slot}]: "{snippet}"')
-
     if not changes:
         changes.append(f"  Action: {action} (unhandled in simulation)")
 

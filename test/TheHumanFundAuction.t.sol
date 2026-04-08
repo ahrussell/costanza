@@ -893,6 +893,101 @@ contract TheHumanFundAuctionTest is Test {
         assertEq(fund.currentBond(), 0.001 ether); // back to base
     }
 
+    // ─── Wall-Clock Anchored Timing ────────────────────────────────────
+
+    function test_wall_clock_no_drift() public {
+        uint256 anchor = fund.timingAnchor();
+
+        // Epoch 1: start on time
+        fund.startEpoch();
+        assertEq(am.getStartTime(1), anchor);
+
+        // Complete epoch 1 (0 commits → miss)
+        vm.warp(anchor + COMMIT_WIN);
+        fund.closeCommit();
+
+        // Epoch 2: start 30 seconds LATE
+        uint256 epoch2Scheduled = anchor + EPOCH_DUR;
+        uint256 lateStart = epoch2Scheduled + 30;
+        vm.warp(lateStart);
+        fund.startEpoch();
+
+        // Start time should be the SCHEDULED time, not the late call time
+        assertEq(am.getStartTime(2), epoch2Scheduled);
+        assertTrue(am.getStartTime(2) < lateStart);
+
+        // Complete epoch 2 (0 commits → miss)
+        // Commit window deadline is epoch2Scheduled + COMMIT_WIN, so warp past it
+        vm.warp(epoch2Scheduled + COMMIT_WIN);
+        fund.closeCommit();
+
+        // Epoch 3: should start at anchor + 2*EPOCH_DUR, NOT shifted by the 30s late start
+        uint256 epoch3Scheduled = anchor + 2 * EPOCH_DUR;
+        vm.warp(epoch3Scheduled);
+        fund.startEpoch();
+        assertEq(am.getStartTime(3), epoch3Scheduled);
+    }
+
+    function test_late_start_shortens_commit_window() public {
+        uint256 anchor = fund.timingAnchor();
+
+        // Start and miss epoch 1
+        fund.startEpoch();
+        vm.warp(anchor + COMMIT_WIN);
+        fund.closeCommit();
+
+        // Start epoch 2 exactly 50 seconds late (60s commit window → 10s remaining)
+        uint256 epoch2Start = anchor + EPOCH_DUR;
+        vm.warp(epoch2Start + 50);
+        fund.startEpoch();
+
+        // Commit should still work (10 seconds remaining)
+        uint256 bond = fund.currentBond();
+        vm.deal(runner1, 1 ether);
+        vm.prank(runner1);
+        fund.commit{value: bond}(_commitHash(0.005 ether, bytes32("s1")));
+
+        // But at the exact deadline, commit should fail
+        vm.warp(epoch2Start + COMMIT_WIN);
+        vm.deal(runner2, 1 ether);
+        vm.prank(runner2);
+        vm.expectRevert(AuctionManager.TimingError.selector);
+        fund.commit{value: bond}(_commitHash(0.003 ether, bytes32("s2")));
+    }
+
+    function test_epochStartTime_view() public {
+        uint256 anchor = fund.timingAnchor();
+        assertEq(fund.epochStartTime(1), anchor);
+        assertEq(fund.epochStartTime(2), anchor + EPOCH_DUR);
+        assertEq(fund.epochStartTime(5), anchor + 4 * EPOCH_DUR);
+        assertEq(fund.epochStartTime(10), anchor + 9 * EPOCH_DUR);
+    }
+
+    function test_setAuctionTiming_reanchors() public {
+        uint256 originalAnchor = fund.timingAnchor();
+
+        // Start and miss epoch 1
+        fund.startEpoch();
+        vm.warp(block.timestamp + COMMIT_WIN);
+        fund.closeCommit();
+
+        // Advance to epoch 2
+        vm.warp(originalAnchor + EPOCH_DUR);
+        fund.startEpoch();
+        assertEq(fund.currentEpoch(), 2);
+
+        // Change timing — should re-anchor at epoch 2's scheduled start
+        uint256 epoch2Start = originalAnchor + EPOCH_DUR;
+        uint256 newEpochDur = 600; // double the duration
+        fund.setAuctionTiming(newEpochDur, COMMIT_WIN, REVEAL_WIN, EXEC_WIN);
+
+        assertEq(fund.timingAnchor(), epoch2Start);
+        assertEq(fund.anchorEpoch(), 2);
+
+        // Epoch 3 should use the new duration from the new anchor
+        assertEq(fund.epochStartTime(3), epoch2Start + newEpochDur);
+    }
+
     function test_migrate_afterAuctionSettles() public {
         // Run a full auction cycle to settlement
         bytes32 salt = bytes32("s1");

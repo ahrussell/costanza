@@ -24,7 +24,8 @@ interface IAuctionManager {
     /// @notice Open a new auction. IDLE → COMMIT.
     /// @param epoch The epoch identifier (opaque to the AM).
     /// @param bond The bond amount each committer must stake.
-    function openAuction(uint256 epoch, uint256 bond) external;
+    /// @param startTime Wall-clock scheduled start time for this auction's phase windows.
+    function openAuction(uint256 epoch, uint256 bond, uint256 startTime) external;
 
     /// @notice Record a sealed bid commitment. Must be called with bond ETH attached.
     function commit(uint256 epoch, address runner, bytes32 commitHash) external payable;

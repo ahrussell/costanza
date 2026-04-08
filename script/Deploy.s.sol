@@ -82,7 +82,7 @@ contract Deploy is Script {
 
         // ─── Freeze setup-only permissions ──────────────────────────────
         // Direct submission was only needed for Phase 0 testing.
-        // WorldView seeding is done above; agent updates policies via set_guiding_policy action.
+        // WorldView seeding is done above; agent updates policies via worldview sidecar on submitAuctionResult.
         fund.freeze(fund.FREEZE_DIRECT_MODE());
         fund.freeze(fund.FREEZE_WORLDVIEW_WIRING());
 
@@ -116,7 +116,7 @@ contract Deploy is Script {
         console.log("  1. Register image:     tdxVerifier.approveImage(imageKey)");
         console.log("  2. Set epoch timing:   fund.setAuctionTiming(epochDuration, commitWindow, revealWindow, executionWindow)");
         console.log("  Direct mode: FROZEN    (auction is the only submission path)");
-        console.log("  WorldView:   FROZEN    (agent updates policies via set_guiding_policy)");
+        console.log("  WorldView:   FROZEN    (agent updates policies via worldview sidecar)");
         if (ethUsdFeedAddr == address(0)) {
             console.log("");
             console.log("  WARNING: ETH_USD_FEED not set. Donations and USDC adapters will not work.");

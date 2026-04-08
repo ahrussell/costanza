@@ -36,7 +36,7 @@ Costanza chooses exactly one action per epoch. The action space is deliberately 
 | `invest` | Deploy ETH into a pre-approved DeFi protocol | Max 80% total invested, 25% per protocol, 20% min liquid reserve |
 | `withdraw` | Pull ETH from a DeFi protocol back to liquid treasury | Up to full position value |
 | `set_commission_rate` | Set the referral commission rate | 1% — 90% |
-| `set_guiding_policy` | Update one of 10 worldview/personality slots | Max 280 chars |
+| ~~`set_guiding_policy`~~ | *(Removed — worldview updates happen alongside any action via sidecar parameters)* | — |
 | `noop` | Do nothing | — |
 
 All bounds are enforced by the smart contract. The model cannot exceed them regardless of what it outputs.
@@ -130,6 +130,8 @@ Bonds are forfeit when a bidder fails to follow through at any stage: committing
 - Reveal window: 30 minutes after commit close
 - Execution window: 2 hours after reveal close
 - Epoch duration: 24 hours
+
+Epoch timing is **wall-clock anchored**: the contract stores a `timingAnchor` timestamp and `anchorEpoch` number, and the scheduled start time for any epoch N is `timingAnchor + (N - anchorEpoch) * epochDuration`. When `startEpoch()` is called late, the auction opens with the *scheduled* start time (in the past), giving the remaining phase windows less time — the system self-corrects without drift. `setAuctionTiming()` re-anchors to preserve the current epoch's start time while applying new durations to future epochs.
 
 The bid ceiling auto-escalates after missed epochs — increasing by 10% each consecutive miss — ensuring that Costanza can always attract a prover eventually, even without manual intervention.
 

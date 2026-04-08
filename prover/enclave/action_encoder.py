@@ -88,8 +88,7 @@ def parse_action(text):
                 return obj
 
     # Fallback 2: parse function-call format output
-    # Model sometimes outputs: set_guiding_policy(slot=1, policy="...")
-    # or: donate(nonprofit_id=1, amount_eth=0.01)
+    # Model sometimes outputs: donate(nonprofit_id=1, amount_eth=0.01)
     return _parse_function_call_format(text)
 
 
@@ -107,7 +106,7 @@ def _parse_function_call_format(text):
     # Known action patterns
     action_patterns = [
         "noop", "donate", "set_commission_rate",
-        "invest", "withdraw", "set_guiding_policy", "set_policy",
+        "invest", "withdraw",
     ]
 
     for action_name in action_patterns:
@@ -297,22 +296,6 @@ def encode_action_bytes(action_json):
             + protocol_id.to_bytes(32, "big")
             + amount_wei.to_bytes(32, "big")
         )
-    elif action in ("set_guiding_policy", "set_policy"):
-        slot = int(params.get("slot") or params.get("slot_id") or params.get("id") or 0)
-        policy = str(params.get("policy") or params.get("text") or params.get("value") or "")
-        # Truncate to 280 chars
-        if len(policy) > 280:
-            policy = policy[:280]
-        # ABI-encode (uint256, string)
-        slot_bytes = slot.to_bytes(32, "big")
-        # String ABI encoding: offset (32) + length + padded data
-        policy_bytes = policy.encode("utf-8")
-        str_offset = (64).to_bytes(32, "big")  # offset to string data (after slot + offset)
-        str_length = len(policy_bytes).to_bytes(32, "big")
-        # Pad string data to 32-byte boundary
-        padded_len = ((len(policy_bytes) + 31) // 32) * 32
-        str_data = policy_bytes.ljust(padded_len, b'\x00')
-        return bytes([5]) + slot_bytes + str_offset + str_length + str_data
     else:
         # Unknown action — fall back to noop
         print(f"WARNING: Unknown action '{action}', falling back to noop")
