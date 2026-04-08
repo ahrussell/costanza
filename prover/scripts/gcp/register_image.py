@@ -83,7 +83,7 @@ def delete_vm(vm_name, project, zone):
     )
 
 
-def extract_measurements_from_serial(vm_name, project, zone, timeout=300):
+def extract_measurements_from_serial(vm_name, project, zone, timeout=600):
     """Poll serial console for RTMR measurements emitted by the enclave at boot.
 
     The enclave writes measurements between HUMANFUND_MEASUREMENTS_START and

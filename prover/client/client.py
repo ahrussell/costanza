@@ -26,11 +26,13 @@ import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
+from web3.exceptions import ContractLogicError, ContractCustomError
+
 from .config import load_config
 from .chain import ChainClient
 from .auction import (
     start_epoch, commit_bid, close_commit, reveal_bid, close_reveal,
-    submit_result, SubmissionError, MAX_SUBMIT_RETRIES,
+    submit_result, SubmissionError, MAX_SUBMIT_RETRIES, _is_expected_revert,
     IDLE, COMMIT, REVEAL, EXECUTION, SETTLED, PHASE_NAMES,
 )
 from .bid_strategy import estimate_bid, clamp_bid
@@ -130,8 +132,16 @@ def run(config):
             bid = clamp_bid(bid, max_bid)
             logger.info("Bid estimate: %.6f ETH (max: %.6f ETH)", bid / 1e18, max_bid / 1e18)
 
-            saved = commit_bid(chain, bid, state_dir=state_dir, dry_run=dry_run)
-            notify_bid_committed(ntfy, epoch, bid / 1e18)
+            try:
+                saved = commit_bid(chain, bid, state_dir=state_dir, dry_run=dry_run)
+                notify_bid_committed(ntfy, epoch, bid / 1e18)
+            except (ContractLogicError, ContractCustomError) as e:
+                if _is_expected_revert(str(e)):
+                    # Commit window likely closed — try to advance
+                    logger.info("Commit window expired, closing commit phase")
+                    close_commit(chain, dry_run=dry_run)
+                else:
+                    raise
         else:
             logger.info("Already committed, waiting for commit window to close")
             close_commit(chain, dry_run=dry_run)
