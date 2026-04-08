@@ -158,16 +158,21 @@ class ChainClient:
         Raises:
             RuntimeError: If the transaction reverts on-chain (receipt status != 1).
         """
-        tx = fn.build_transaction({
+        tx_params = {
             "from": self.account.address,
             "nonce": self.w3.eth.get_transaction_count(self.account.address),
             "value": value,
             "maxFeePerGas": self.w3.eth.gas_price * 2,
             "maxPriorityFeePerGas": self.w3.eth.max_priority_fee,
-        })
+        }
+        # Pass gas limit to build_transaction() so web3 doesn't call
+        # estimate_gas() during fill_transaction_defaults(). Without this,
+        # a contract revert during gas estimation raises ContractCustomError
+        # before we even attempt to send the transaction.
         if gas:
-            tx["gas"] = gas
-        else:
+            tx_params["gas"] = gas
+        tx = fn.build_transaction(tx_params)
+        if not gas:
             tx["gas"] = self.w3.eth.estimate_gas(tx)
 
         signed = self.account.sign_transaction(tx)

@@ -378,7 +378,14 @@ def main():
         run(config)
     except Exception as e:
         logger.error("Runner failed: %s", e, exc_info=True)
-        notify_error(config.get("ntfy_channel"), "?", e)
+        # Try to give a human-readable error message
+        from .auction import _match_error, ERROR_SELECTORS
+        error_name = _match_error(str(e))
+        if error_name:
+            msg = f"Contract error: {error_name} — {str(e)[:200]}"
+        else:
+            msg = str(e)
+        notify_error(config.get("ntfy_channel"), "?", msg)
         sys.exit(1)
     finally:
         lock_fd.close()
