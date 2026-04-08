@@ -273,6 +273,8 @@ def _handle_execution(chain, config, auction, saved, state_dir, ntfy):
     # The original auction dict was read before syncPhase closed the reveal,
     # so randomness_seed was 0. We need the real seed for TEE inference.
     auction = chain.get_auction_state()
+    logger.info("Post-sync state: epoch=%d, phase=%d, seed=%d",
+                auction["epoch"], auction["contract_phase"], auction["randomness_seed"])
 
     # Load or run TEE inference
     tee_result = _run_tee_inference(chain, config, auction, saved, state_dir)
