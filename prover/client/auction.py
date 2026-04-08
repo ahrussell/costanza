@@ -143,8 +143,14 @@ def reveal_bid(chain: ChainClient, state: dict):
     The contract's reveal() calls _syncPhase() first, which closes
     the commit window if needed. Returns True on success.
     """
-    bid_amount = state["bid_amount"]
-    salt = bytes.fromhex(state["commit_salt"][2:])
+    bid_amount = state.get("bid_amount")
+    commit_salt = state.get("commit_salt")
+
+    if bid_amount is None or not commit_salt:
+        logger.error("Cannot reveal: missing bid_amount or commit_salt in state")
+        return False
+
+    salt = bytes.fromhex(commit_salt[2:])
 
     try:
         chain.send_tx(

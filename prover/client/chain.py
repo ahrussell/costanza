@@ -109,6 +109,35 @@ class ChainClient:
             "now": now,
         }
 
+    def check_participation(self, epoch):
+        """Query chain for our participation status in a given epoch.
+
+        Returns dict with committed, revealed, won, winner, bid_amount, forfeited.
+        This is the source of truth — local state is advisory only.
+        """
+        my_addr = self.account.address
+        am = self.am
+
+        # Check if we committed by scanning the committers list.
+        # hasCommitted is internal in the AM, so we scan the list (bounded by MAX_COMMITTERS).
+        committers = am.functions.getCommitters(epoch).call()
+        committed = any(Web3.to_checksum_address(c) == my_addr for c in committers)
+
+        # Get our bid record: (revealed, bidAmount, winner, forfeited)
+        bid_record = am.functions.getBidRecord(epoch, my_addr).call()
+
+        # Epoch-level winner address
+        winner = am.functions.getWinner(epoch).call()
+
+        return {
+            "committed": committed,
+            "revealed": bid_record[0],
+            "won": bid_record[2],
+            "winner": winner,
+            "bid_amount": bid_record[1],
+            "forfeited": bid_record[3],
+        }
+
     def get_current_bond(self):
         """Get the current bond amount required for bidding."""
         return self.contract.functions.currentBond().call()
