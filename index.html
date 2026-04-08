@@ -1945,42 +1945,62 @@ async function loadAll() {
   // ── TIMELINE SECTION ──
   document.getElementById('tl-epoch').textContent = currentEpochNum;
 
-  // Phase + countdown
+  // Phase + countdown — compute from wall-clock timing, not AuctionManager internal phase.
+  // With v2 auto-advance, the AM phase lags the wall clock (phases advance on interaction).
+  // The wall-clock phase is what matters for the user.
   if (auctionOn && auctionMgr) {
     try {
-      const [phase, startTime, cw, rw, ew] = await Promise.all([
-        auctionMgr.getPhase(epoch), auctionMgr.getStartTime(epoch),
+      const [cw, rw, ew] = await Promise.all([
         auctionMgr.commitWindow(), auctionMgr.revealWindow(), auctionMgr.executionWindow(),
       ]);
-      const phaseNum = Number(phase);
-      const phaseNames = ['IDLE', 'COMMIT', 'REVEAL', 'EXECUTION', 'SETTLED'];
-      const phaseClasses = ['phase-idle', 'phase-bidding', 'phase-bidding', 'phase-execution', 'phase-settled'];
-      document.getElementById('tl-phase').innerHTML = `<span class="badge ${phaseClasses[phaseNum] || 'badge-dim'}" style="font-size:14px;padding:6px 16px;">${phaseNames[phaseNum] || '?'}</span>`;
-
-      const now = Math.floor(Date.now() / 1000), start = Number(startTime);
+      const now = Math.floor(Date.now() / 1000);
       const cwN = Number(cw), rwN = Number(rw), ewN = Number(ew), ed = Number(epochDur);
-      let deadline = 0, lbl = '';
-      if (phaseNum === 1) { deadline = start + cwN; lbl = 'until reveal'; }
-      else if (phaseNum === 2) { deadline = start + cwN + rwN; lbl = 'until execution'; }
-      else if (phaseNum === 3) { deadline = start + cwN + rwN + ewN; lbl = 'until forfeit'; }
-      else if (phaseNum === 0 || phaseNum === 4) {
-        let gateTime = 0;
-        if (phaseNum === 4 && start > 0) gateTime = start + ed;
-        else if (currentEpochNum > 1) { try { const ps = Number(await auctionMgr.getStartTime(currentEpochNum - 1)); if (ps > 0) gateTime = ps + ed; } catch {} }
-        if (gateTime > now) { deadline = gateTime; lbl = 'until bidding opens'; }
-        else { lbl = ''; }
-      }
-      if (deadline > now) {
-        document.getElementById('tl-countdown').textContent = fmtDuration(deadline - now);
-        document.getElementById('tl-countdown-label').textContent = lbl;
-      } else if (lbl) {
-        document.getElementById('tl-countdown').textContent = 'overdue';
-        document.getElementById('tl-countdown-label').textContent = lbl;
+
+      // Compute epoch timing from the anchor
+      const anchor = Number(await fund.timingAnchor());
+      const anchorEp = Number(await fund.anchorEpoch());
+      const epochStart = anchor + (currentEpochNum - anchorEp) * ed;
+      const commitEnd = epochStart + cwN;
+      const revealEnd = commitEnd + rwN;
+      const execEnd = revealEnd + ewN;
+
+      // Determine wall-clock phase and countdown
+      let phaseName, phaseClass, deadline, lbl;
+      if (now < epochStart) {
+        phaseName = 'WAITING'; phaseClass = 'phase-idle';
+        deadline = epochStart; lbl = 'until epoch starts';
+      } else if (now < commitEnd) {
+        phaseName = 'BIDDING'; phaseClass = 'phase-bidding';
+        deadline = commitEnd; lbl = 'until reveal phase';
+      } else if (now < revealEnd) {
+        phaseName = 'REVEAL'; phaseClass = 'phase-bidding';
+        deadline = revealEnd; lbl = 'until execution';
+      } else if (now < execEnd) {
+        phaseName = 'EXECUTION'; phaseClass = 'phase-execution';
+        deadline = execEnd; lbl = 'until epoch ends';
       } else {
-        document.getElementById('tl-countdown').textContent = 'ready';
-        document.getElementById('tl-countdown').style.color = 'var(--green)';
-        document.getElementById('tl-countdown-label').textContent = 'bidding can start';
+        // Past all windows — show time until next epoch
+        const nextEpochStart = epochStart + ed;
+        if (now < nextEpochStart) {
+          phaseName = 'SETTLING'; phaseClass = 'phase-settled';
+          deadline = nextEpochStart; lbl = 'until next epoch';
+        } else {
+          phaseName = 'IDLE'; phaseClass = 'phase-idle';
+          deadline = 0; lbl = '';
+        }
       }
+
+      document.getElementById('tl-phase').innerHTML = `<span class="badge ${phaseClass}" style="font-size:14px;padding:6px 16px;">${phaseName}</span>`;
+
+      const cdEl = document.getElementById('tl-countdown');
+      if (deadline > now) {
+        cdEl.textContent = fmtDuration(deadline - now);
+        cdEl.style.color = 'var(--orange)';
+      } else {
+        cdEl.textContent = 'now';
+        cdEl.style.color = 'var(--green)';
+      }
+      document.getElementById('tl-countdown-label').textContent = lbl;
     } catch {
       document.getElementById('tl-phase').innerHTML = '<span class="badge badge-dim">IDLE</span>';
     }
