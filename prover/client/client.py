@@ -269,6 +269,11 @@ def _handle_execution(chain, config, auction, saved, state_dir, ntfy):
     # BEFORE running TEE inference (the TEE verifies against it).
     sync_phase(chain)
 
+    # Re-read auction state after sync — the seed is now captured.
+    # The original auction dict was read before syncPhase closed the reveal,
+    # so randomness_seed was 0. We need the real seed for TEE inference.
+    auction = chain.get_auction_state()
+
     # Load or run TEE inference
     tee_result = _run_tee_inference(chain, config, auction, saved, state_dir)
 
@@ -287,13 +292,14 @@ def _handle_epoch_over(chain, auction, saved, state_dir, ntfy):
             logger.warning("BOND FORFEITED for epoch %d (committed but missed reveal window)", epoch)
             notify_bond_forfeited(ntfy, epoch, bond / 1e18)
 
-    # Advance to next epoch via syncPhase
+    # Advance past the expired epoch via syncPhase
     if sync_phase(chain):
         clear_state(state_dir)
         new_epoch = chain.contract.functions.currentEpoch().call()
-        logger.info("Advanced to epoch %d", new_epoch)
+        logger.info("Epoch %d expired, advanced to epoch %d", epoch, new_epoch)
         notify_epoch_settled(ntfy, epoch)
-        notify_epoch_started(ntfy, new_epoch)
+        # Don't notify "epoch started" here — the next cron run will handle
+        # opening the new auction if the commit window is open.
     else:
         logger.info("Cannot advance epoch yet")
 
