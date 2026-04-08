@@ -112,8 +112,11 @@ class ChainClient:
     def check_participation(self, epoch):
         """Query chain for our participation status in a given epoch.
 
-        Returns dict with committed, revealed, won, winner, bid_amount, forfeited.
+        Returns dict with committed, revealed, won, winner.
         This is the source of truth — local state is advisory only.
+
+        Uses didReveal() (reads hasRevealed mapping) rather than getBidRecord()
+        because getBidRecord is only populated after the auction settles.
         """
         my_addr = self.account.address
         am = self.am
@@ -123,19 +126,18 @@ class ChainClient:
         committers = am.functions.getCommitters(epoch).call()
         committed = any(Web3.to_checksum_address(c) == my_addr for c in committers)
 
-        # Get our bid record: (revealed, bidAmount, winner, forfeited)
-        bid_record = am.functions.getBidRecord(epoch, my_addr).call()
+        # didReveal reads from the live hasRevealed mapping (works during active auctions)
+        revealed = am.functions.didReveal(epoch, my_addr).call() if committed else False
 
         # Epoch-level winner address
         winner = am.functions.getWinner(epoch).call()
+        won = revealed and Web3.to_checksum_address(winner) == my_addr
 
         return {
             "committed": committed,
-            "revealed": bid_record[0],
-            "won": bid_record[2],
+            "revealed": revealed,
+            "won": won,
             "winner": winner,
-            "bid_amount": bid_record[1],
-            "forfeited": bid_record[3],
         }
 
     def get_current_bond(self):
