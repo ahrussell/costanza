@@ -51,9 +51,16 @@ apt-get update -qq
 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq isc-dhcp-client 2>/dev/null || true
 echo "  dhclient installed."
 
+# Prevent kernel upgrades that break NVIDIA DKMS modules.
+# unattended-upgrades can auto-install a new kernel in the background,
+# but DKMS doesn't rebuild nvidia modules for it. The squashfs then
+# captures the new kernel with missing nvidia modules.
+systemctl stop unattended-upgrades apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+systemctl disable unattended-upgrades apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+apt-mark hold $(dpkg -l | grep linux-image | awk '{print $2}') 2>/dev/null || true
+apt-mark hold $(dpkg -l | grep linux-headers | awk '{print $2}') 2>/dev/null || true
+
 rm -rf /var/log/* /var/cache/apt/* /tmp/* /root/.bash_history /home/*/.bash_history
-# Mark NVIDIA packages as manually installed so autoremove doesn't cascade
-apt-mark manual $(dpkg -l | grep -i nvidia | awk '{print $2}') 2>/dev/null || true
 apt-get remove -y --purge build-essential cmake git 2>/dev/null || true
 apt-get autoremove -y 2>/dev/null || true
 apt-get clean
