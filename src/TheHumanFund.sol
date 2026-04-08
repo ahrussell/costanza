@@ -632,7 +632,7 @@ contract TheHumanFund is ReentrancyGuard {
         if (phase == IAuctionManager.AuctionPhase.SETTLED || phase == IAuctionManager.AuctionPhase.IDLE) {
             // Advance past missed epochs (O(1) — arithmetic, no loop).
             uint256 scheduledStart = _epochStartTime(epoch);
-            if (lastEpochStartTime > 0 && block.timestamp >= scheduledStart + epochDuration) {
+            if (block.timestamp >= scheduledStart + epochDuration) {
                 // The current epoch's auction was stale. Credit missed epochs.
                 uint256 missedCount = (block.timestamp - scheduledStart) / epochDuration;
                 if (phase != IAuctionManager.AuctionPhase.IDLE) {
