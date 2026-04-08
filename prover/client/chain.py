@@ -76,10 +76,10 @@ class ChainClient:
         Returns dict with epoch, contract_phase, winner, bid, bond, seed,
         and timing boundaries (commit_end, reveal_end, exec_end, now).
         """
-        try:
-            epoch = self.contract.functions.projectedEpoch().call()
-        except (ContractLogicError, ContractCustomError):
-            epoch = self.contract.functions.currentEpoch().call()
+        # Use currentEpoch (actual contract state), not projectedEpoch.
+        # The v2 client calls syncPhase() to advance — projectedEpoch() would
+        # return a future epoch that has no auction data in the AuctionManager.
+        epoch = self.contract.functions.currentEpoch().call()
         am = self.am
         phase = am.functions.getPhase(epoch).call()
         winner = am.functions.getWinner(epoch).call()

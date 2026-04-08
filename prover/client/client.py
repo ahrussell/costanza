@@ -145,34 +145,44 @@ def _handle_idle(chain, auction, ntfy):
     epoch = auction["epoch"]
     now = auction["now"]
 
-    # Check if the commit window for the current epoch is reachable.
-    # If start_time is 0, the AM has no auction — we need syncPhase to open one.
-    # But only if the wall-clock says the epoch's commit window should be open.
+    # Check if calling syncPhase would do anything useful.
+    # syncPhase can: (1) advance past stale epochs, (2) open a new auction.
+    # We should call it if:
+    #   - The current epoch is stale (past its full duration) — syncPhase will advance
+    #   - We're within the commit window of the current epoch — syncPhase will open auction
+    # We should NOT call it if:
+    #   - We're between the commit window end and epoch end (nothing to do, wait)
+    #   - The epoch hasn't started yet (too early)
     epoch_start = chain.contract.functions.epochStartTime(epoch).call()
     commit_window = chain.am.functions.commitWindow().call()
     epoch_duration = chain.contract.functions.epochDuration().call()
     commit_end = epoch_start + commit_window
+    epoch_end = epoch_start + epoch_duration
 
     if now < epoch_start:
-        # Epoch hasn't started yet according to wall clock
-        logger.info("Epoch %d starts at %d (%ds from now), waiting",
-                    epoch, epoch_start, epoch_start - now)
-        return
-    if now >= commit_end and now < epoch_start + epoch_duration:
-        # Within the epoch but past the commit window — no point syncing
-        logger.info("Epoch %d commit window closed, waiting for next epoch (%ds)",
-                    epoch, epoch_start + epoch_duration - now)
+        logger.info("Epoch %d starts in %ds, waiting", epoch, epoch_start - now)
         return
 
-    old_epoch = epoch
+    if now >= epoch_end:
+        # Epoch is stale — syncPhase will advance past it (potentially multiple epochs)
+        logger.info("Epoch %d is stale (%ds past), syncing to advance",
+                    epoch, now - epoch_end)
+    elif now >= commit_end:
+        # Within epoch but commit window closed — nothing useful to do
+        logger.info("Epoch %d commit window closed, next epoch in %ds",
+                    epoch, epoch_end - now)
+        return
+    # else: within commit window — syncPhase will open auction
+
     if sync_phase(chain):
         new_epoch = chain.contract.functions.currentEpoch().call()
         new_phase = chain.am.functions.getPhase(new_epoch).call()
-        if new_epoch != old_epoch or new_phase == 1:  # 1 = COMMIT (auction opened)
-            logger.info("syncPhase opened auction for epoch %d", new_epoch)
+        if new_phase == 1:  # 1 = COMMIT — auction was actually opened
+            logger.info("Auction opened for epoch %d", new_epoch)
             notify_epoch_started(ntfy, new_epoch)
         else:
-            logger.info("syncPhase advanced state (epoch %d)", new_epoch)
+            logger.info("syncPhase advanced to epoch %d (phase %d, no auction yet)",
+                       new_epoch, new_phase)
 
 
 def _handle_commit(chain, config, auction, saved, state_dir, ntfy):
