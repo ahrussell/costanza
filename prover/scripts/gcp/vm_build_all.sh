@@ -52,6 +52,8 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y -qq isc-dhcp-client 2>/dev/nul
 echo "  dhclient installed."
 
 rm -rf /var/log/* /var/cache/apt/* /tmp/* /root/.bash_history /home/*/.bash_history
+# Mark NVIDIA packages as manually installed so autoremove doesn't cascade
+apt-mark manual $(dpkg -l | grep -i nvidia | awk '{print $2}') 2>/dev/null || true
 apt-get remove -y --purge build-essential cmake git 2>/dev/null || true
 apt-get autoremove -y 2>/dev/null || true
 apt-get clean
