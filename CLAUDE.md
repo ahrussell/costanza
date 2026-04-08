@@ -30,18 +30,22 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 
 Each epoch (24 hours in production, configurable for testnet):
 
-1. Anyone calls `startEpoch()` — auto-cleans any stale previous auction, opens commit phase with wall-clock anchored timing, commits input hash
-2. Provers commit sealed bid hashes with bond during commit window (1 hour production)
-3. Anyone calls `closeCommit()` — if no commits, epoch is missed
-4. Provers reveal bids during reveal window (30 min production)
-5. Anyone calls `closeReveal()` — lowest revealed bid wins, bond locked, randomness seed captured
-6. Winner boots TDX VM from dm-verity disk image, one-shot enclave runs inference with deterministic seed
-7. Winner submits via `submitAuctionResult()` — TdxVerifier verifies:
+1. Prover calls `commit()` — contract auto-opens auction via `_syncPhase()` if within commit window, commits sealed bid hash with bond
+2. Prover calls `reveal()` after commit window — contract auto-closes commit via `_syncPhase()`, records bid reveal
+3. Lowest revealed bid wins. Randomness seed captured from `block.prevrandao` XOR salt accumulator at reveal close.
+4. Winner boots TDX VM from dm-verity disk image, one-shot enclave runs inference with deterministic seed
+5. Winner calls `submitAuctionResult()` — contract auto-closes reveal via `_syncPhase()` if needed, TdxVerifier verifies:
    - Automata DCAP: quote is genuine TDX hardware
    - Platform key: `sha256(MRTD || RTMR[1] || RTMR[2])` — firmware + kernel + dm-verity rootfs
    - REPORTDATA: `sha256(inputHash || outputHash)` matches
-8. Contract executes action, pays bounty + refunds bond
-9. If winner doesn't deliver: anyone calls `forfeitBond()`, bond kept by treasury
+6. Contract executes action, pays bounty. Winner claims bond via `claimBond(epoch)`.
+7. If winner doesn't deliver: anyone calls `syncPhase()` after execution window, bond forfeited to treasury.
+8. Non-winning revealers claim bonds via `claimBond(epoch)`. Non-revealers forfeit bonds to treasury at reveal close.
+
+Phase advancement is automatic: every public method calls `_syncPhase()` first, which advances
+the AuctionManager through any elapsed phase windows based on wall-clock timing. The client
+computes the effective phase from timing data and only calls the action appropriate for the
+current window — no need to call `startEpoch`, `closeCommit`, `closeReveal`, or `forfeitBond`.
 
 See [DESIGN.md](DESIGN.md) for the full integrity chain, auction economics, and indestructibility model.
 
@@ -63,7 +67,7 @@ Without this, a malicious runner could feed the TEE arbitrary values for that fi
 
 When contract functions change (new logic, different codegen from `via_ir`, etc.), the hardcoded gas limits in `prover/client/auction.py` may become too low, causing silent out-of-gas reverts. After any contract change, verify gas usage against the limits:
 
-- `GAS_START_EPOCH`, `GAS_COMMIT`, `GAS_CLOSE_COMMIT`, `GAS_REVEAL`, `GAS_CLOSE_REVEAL`, `GAS_SUBMIT_RESULT`
+- `GAS_SYNC_PHASE`, `GAS_COMMIT`, `GAS_REVEAL`, `GAS_SUBMIT_RESULT`
 
 Check actual gas used via `cast send` or test transactions and update the constants with comfortable headroom.
 
@@ -178,20 +182,19 @@ thehumanfund/
 - Auto-escalation: `effectiveMaxBid` increases 10% per consecutive missed epoch
 - `DiaryEntry` event emits reasoning + action on-chain
 
-### Reverse Auction (Commit-Reveal)
+### Reverse Auction (Commit-Reveal) — V2 Auto-Advancing
 - **Auction state machine**: `AuctionPhase { IDLE, COMMIT, REVEAL, EXECUTION, SETTLED }`
-- `startEpoch()` — permissionless, auto-cleans stale auctions (any phase), opens commit phase, commits input hash
-- `commit(commitHash) payable` — submit sealed bid hash with bond
-- `closeCommit()` — permissionless, after commit window
-- `reveal(bidAmount, salt)` — reveal previously committed bid
-- `closeReveal()` — permissionless, after reveal window; lowest bid wins, randomness seed captured
-- `submitAuctionResult(action, reasoning, proof, verifierId, policySlot, policyText)` — winner submits attested result
-- `forfeitBond()` — permissionless, after execution window expires
+- **Auto-phase advancement**: every public method calls `_syncPhase()` first, which advances the AuctionManager through any elapsed phase windows based on `block.timestamp`. No separate `startEpoch`/`closeCommit`/`closeReveal`/`forfeitBond` calls needed.
+- `syncPhase()` — permissionless, advances through elapsed phases and opens new auction if within commit window
+- `commit(commitHash) payable` — auto-syncs, then submits sealed bid hash with bond
+- `reveal(bidAmount, salt)` — auto-syncs (closes commit if needed), then reveals bid
+- `submitAuctionResult(action, reasoning, proof, verifierId, policySlot, policyText)` — auto-syncs (closes reveal, captures seed), then verifies proof and executes action
 - `computeInputHash()` — public view for prover verification
-- `projectedEpoch()` — public view returning what `currentEpoch` would be if `startEpoch()` were called now
+- `projectedEpoch()` — public view returning what `currentEpoch` would be if `syncPhase()` were called now
 - `epochStartTime(epoch)` — public view computing the deterministic scheduled start time for any epoch
-- **Wall-clock anchored timing**: `timingAnchor` + `anchorEpoch` define a fixed schedule. `epochStartTime(N) = timingAnchor + (N - anchorEpoch) * epochDuration`. Late `startEpoch()` calls produce shorter remaining phase windows (self-correcting, no drift). `setAuctionTiming()` re-anchors when epoch duration changes.
-- **Stale recovery**: `startEpoch()` chains through remaining phase transitions if previous auction is stuck; credits `consecutiveMissedEpochs` based on elapsed wall-clock time
+- **Lazy bond claiming**: `AuctionManager.claimBond(epoch)` — non-winning revealers claim bonds per-epoch. O(1) bond accounting at reveal close (no committer loop). Non-revealers' bonds sent to treasury immediately.
+- **Wall-clock anchored timing**: `timingAnchor` + `anchorEpoch` define a fixed schedule. `epochStartTime(N) = timingAnchor + (N - anchorEpoch) * epochDuration`. Late interactions produce shorter remaining phase windows (self-correcting, no drift).
+- **O(1) missed epoch advancement**: `_syncPhase()` uses arithmetic (`currentEpoch += missed`) instead of looping through each missed epoch
 
 ### Action Encoding
 `uint8 action_type + ABI-encoded params`
@@ -204,14 +207,16 @@ thehumanfund/
 
 ## Prover Client
 
-**`prover/client/client.py`** — Cron-based auction prover (`*/2 * * * *`). Each run is idempotent:
-- **IDLE** → calls `startEpoch()`, caches next-eligible time on failure
-- **COMMIT** → calculates bid (gas + compute cost), commits with bond; closes commit window when ready
-- **REVEAL** → reveals committed bid; closes reveal window when ready
-- **EXECUTION** → checks stale/expired epoch first; if winner: boots GCP TDX VM, runs inference (with caching), submits result with retry logic
-- **SETTLED** → clears state, notifies, waits for next epoch
+**`prover/client/client.py`** — Cron-based auction prover (`*/2 * * * *`). Uses wall-clock phase dispatch:
 
-ntfy.sh notifications cover the full lifecycle: epoch started → bid committed → commit closed → bid revealed → reveal closed → auction won → TEE inference → result submitted → epoch settled. Error selectors are computed from compiled ABIs at import time (no hardcoded hex values).
+The client computes the effective phase from timing data (`commit_end`, `reveal_end`, `exec_end`) rather than reading the AuctionManager's internal phase. Each run is idempotent:
+- **IDLE** → calls `syncPhase()` to advance epoch and open auction
+- **COMMIT window** → calculates bid (gas + compute cost), commits with bond
+- **REVEAL window** → reveals committed bid (contract auto-closes commit)
+- **EXECUTION window** → if winner: calls `syncPhase()` to capture seed, boots GCP TDX VM, runs inference (with caching), submits result with retry logic
+- **EPOCH OVER** → detects bond forfeiture (committed but missed reveal), calls `syncPhase()` to advance, claims bonds
+
+ntfy.sh notifications cover the full lifecycle including bond forfeiture alerts. Error selectors are computed from compiled ABIs at import time.
 
 **TEE client** (`prover/client/tee_clients/gcp.py`): Creates VM from dm-verity image with epoch state in metadata → polls serial console for output → parses result → deletes VM. No SSH, no HTTP.
 

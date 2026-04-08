@@ -70,8 +70,12 @@ class ChainClient:
             )
         return self._am
 
-    def get_auction_phase(self):
-        """Get current auction state from individual AuctionManager getters."""
+    def get_auction_state(self):
+        """Get current auction state including timing windows for wall-clock phase resolution.
+
+        Returns dict with epoch, contract_phase, winner, bid, bond, seed,
+        and timing boundaries (commit_end, reveal_end, exec_end, now).
+        """
         try:
             epoch = self.contract.functions.projectedEpoch().call()
         except (ContractLogicError, ContractCustomError):
@@ -82,13 +86,27 @@ class ChainClient:
         winning_bid = am.functions.getWinningBid(epoch).call()
         bond_amount = am.functions.getBond(epoch).call()
         seed = am.functions.getRandomnessSeed(epoch).call()
+
+        # Timing data for wall-clock phase resolution
+        start_time = am.functions.getStartTime(epoch).call()
+        commit_window = am.functions.commitWindow().call()
+        reveal_window = am.functions.revealWindow().call()
+        execution_window = am.functions.executionWindow().call()
+        now = self.w3.eth.get_block("latest")["timestamp"]
+
         return {
             "epoch": epoch,
-            "phase": phase,
+            "contract_phase": phase,
             "winner": winner,
             "winning_bid": winning_bid,
             "bond_amount": bond_amount,
             "randomness_seed": seed,
+            # Timing boundaries
+            "start_time": start_time,
+            "commit_end": start_time + commit_window if start_time > 0 else 0,
+            "reveal_end": start_time + commit_window + reveal_window if start_time > 0 else 0,
+            "exec_end": start_time + commit_window + reveal_window + execution_window if start_time > 0 else 0,
+            "now": now,
         }
 
     def get_current_bond(self):
@@ -137,12 +155,45 @@ class ChainClient:
             "next_eligible_time": last_start + duration,
         }
 
-    def get_execution_deadline(self):
-        """Get the block timestamp when the current execution window expires.
+    def sync_phase(self, gas=800_000):
+        """Call syncPhase() on the fund contract to advance through elapsed phases.
 
-        Returns 0 if no auction is active.
+        Returns True if the transaction succeeded.
         """
-        return self.am.functions.executionDeadline().call()
+        receipt = self.send_tx(self.contract.functions.syncPhase(), gas=gas)
+        logger.info("syncPhase() confirmed: gas=%s", receipt.get("gasUsed", "?"))
+        return True
+
+    def claim_bond(self, epoch):
+        """Claim bond refund for a specific epoch from the AuctionManager.
+
+        Returns the receipt, or None if no bond is claimable.
+        """
+        # Check eligibility first to avoid wasting gas
+        if not self.am.functions.didReveal(epoch, self.account.address).call():
+            return None
+        winner = self.am.functions.getWinner(epoch).call()
+        if winner.lower() == self.account.address.lower():
+            return None  # winners get bond via settleExecution
+        if self.am.functions.hasClaimed(epoch, self.account.address).call():
+            return None  # already claimed
+
+        receipt = self.send_tx(self.am.functions.claimBond(epoch), gas=100_000)
+        logger.info("claimBond(%d) confirmed: gas=%s", epoch, receipt.get("gasUsed", "?"))
+        return receipt
+
+    def claim_legacy_bonds(self):
+        """Claim legacy accumulated bonds from the AuctionManager.
+
+        Returns the receipt, or None if no balance.
+        """
+        balance = self.am.functions.claimableBonds(self.account.address).call()
+        if balance == 0:
+            return None
+        receipt = self.send_tx(self.am.functions.claimLegacyBonds(), gas=100_000)
+        logger.info("claimLegacyBonds() confirmed: %d wei, gas=%s",
+                     balance, receipt.get("gasUsed", "?"))
+        return receipt
 
     def send_tx(self, fn, value=0, gas=None):
         """Build, sign, and send a transaction.

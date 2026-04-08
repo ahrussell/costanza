@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""The Human Fund — Auction Runner Client
+"""The Human Fund — Auction Runner Client (v2)
 
-Designed to run as a cron job (e.g., every 5 minutes). Checks the current
-auction phase and takes the appropriate action:
+Designed to run as a cron job (e.g., every 2 minutes). Computes the
+effective auction phase from wall-clock timing and acts accordingly:
 
-  IDLE       -> startEpoch()
-  COMMIT     -> calculate bid, commit (if not already committed)
-  REVEAL     -> reveal bid (if committed but not revealed)
-  EXECUTION  -> if winner, run TEE inference and submit result
-  SETTLED    -> clear state, wait for next epoch
+  COMMIT window  -> calculate bid, commit
+  REVEAL window  -> reveal bid (contract auto-closes commit)
+  EXECUTION      -> if winner, run TEE inference and submit
+  EPOCH OVER     -> detect bond forfeiture, try to advance epoch
+
+The v2 contract auto-advances phases via _syncPhase() on every call,
+so the client never needs to call startEpoch/closeCommit/closeReveal
+explicitly. Bond refunds are lazy via claimBond(epoch).
 
 Usage:
     # Cron entry (every 2 minutes)
@@ -25,14 +28,12 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from web3.exceptions import ContractLogicError, ContractCustomError
-
 from .config import load_config
 from .chain import ChainClient
 from .auction import (
-    start_epoch, commit_bid, close_commit, reveal_bid, close_reveal,
-    submit_result, SubmissionError, MAX_SUBMIT_RETRIES, is_expected_revert,
-    IDLE, COMMIT, REVEAL, EXECUTION, SETTLED, PHASE_NAMES,
+    sync_phase, commit_bid, reveal_bid, submit_result,
+    SubmissionError, MAX_SUBMIT_RETRIES, _match_error, ERROR_SELECTORS,
+    PHASE_NAMES,
 )
 from .bid_strategy import estimate_bid, clamp_bid
 from .state import (
@@ -43,11 +44,44 @@ from .notifier import (
     notify_epoch_started, notify_bid_committed, notify_bid_revealed,
     notify_auction_won, notify_auction_lost, notify_result_submitted,
     notify_error, notify_submission_failed, notify_epoch_abandoned,
-    notify_epoch_settled, notify_execution_expired, notify_cached_submission,
-    notify_commit_closed, notify_reveal_closed,
+    notify_epoch_settled, notify_bond_forfeited, notify_bond_claimed,
+    notify_cached_submission,
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ─── Wall-Clock Phase Resolution ────────────────────────────────────────
+
+def _resolve_phase(auction):
+    """Resolve the effective phase from wall-clock timing.
+
+    Returns one of: 'idle', 'commit', 'reveal', 'execution', 'epoch_over'
+    """
+    start = auction["start_time"]
+    now = auction["now"]
+
+    # No auction active (start_time == 0 means IDLE/SETTLED in AM)
+    if start == 0:
+        return "idle"
+
+    if now < auction["commit_end"]:
+        return "commit"
+    elif now < auction["reveal_end"]:
+        return "reveal"
+    elif now < auction["exec_end"]:
+        return "execution"
+    else:
+        return "epoch_over"
+
+
+# ─── Helpers ────────────────────────────────────────────────────────────
+
+def _parse_eth_usd(raw_price):
+    """Parse ETH/USD price from Chainlink's 8-decimal format."""
+    if raw_price > 1e6:
+        return raw_price / 1e8
+    return 2000.0
 
 
 def get_tee_client(config):
@@ -74,124 +108,203 @@ def get_tee_client(config):
         raise ValueError(f"Unknown TEE client: {config['tee_client']}")
 
 
-def _parse_eth_usd(raw_price):
-    """Parse ETH/USD price from Chainlink's 8-decimal format.
-
-    Chainlink returns prices as integers with 8 decimals (e.g., 200000000000 = $2000).
-    If the value looks like it's in that format (> 1e6), we divide by 1e8.
-    Otherwise fall back to $2000 as a safe default.
-    """
-    if raw_price > 1e6:
-        return raw_price / 1e8
-    return 2000.0
-
-
-def _cache_next_eligible_time(chain, saved, state_dir):
-    """Cache the next eligible epoch start time to avoid hammering startEpoch()."""
+def _try_claim_bonds(chain, ntfy, state_dir):
+    """Try to claim any owed bonds from recent epochs. Best-effort."""
     try:
-        timing = chain.get_epoch_timing()
-        saved["next_eligible_time"] = timing["next_eligible_time"]
+        # Claim legacy bonds (pre-v2 accumulated balance)
+        receipt = chain.claim_legacy_bonds()
+        if receipt:
+            logger.info("Claimed legacy bonds")
+
+        # Claim bonds from recently participated epochs
+        saved = load_state(state_dir)
+        last_epoch = saved.get("last_claimed_epoch", 0)
+        current = chain.contract.functions.currentEpoch().call()
+        for ep in range(max(1, last_epoch + 1), current):
+            receipt = chain.claim_bond(ep)
+            if receipt:
+                bond = chain.am.functions.getBond(ep).call()
+                notify_bond_claimed(ntfy, ep, bond / 1e18)
+                logger.info("Claimed bond for epoch %d", ep)
+        # Track where we left off
+        if current > last_epoch + 1:
+            saved["last_claimed_epoch"] = current - 1
+            save_state(saved, state_dir)
+    except Exception:
+        logger.debug("Bond claim check failed (non-critical)", exc_info=True)
+
+
+# ─── Phase Handlers ─────────────────────────────────────────────────────
+
+def _handle_idle(chain, auction, ntfy):
+    """No auction active or between epochs. Try to advance via syncPhase."""
+    if sync_phase(chain):
+        # Re-read epoch after sync — it may have opened a new auction
+        new_epoch = chain.contract.functions.currentEpoch().call()
+        logger.info("syncPhase advanced to epoch %d", new_epoch)
+        notify_epoch_started(ntfy, new_epoch)
+
+
+def _handle_commit(chain, config, auction, saved, state_dir, ntfy):
+    """Commit window is open. Submit a bid if we haven't already."""
+    epoch = auction["epoch"]
+    if saved.get("committed"):
+        logger.info("Already committed for epoch %d, waiting for reveal window", epoch)
+        return
+
+    gas_price = chain.get_gas_price()
+    max_bid = chain.get_effective_max_bid()
+    eth_usd = _parse_eth_usd(chain.get_eth_usd_price())
+
+    bid = estimate_bid(
+        gas_price, machine_type=config.get("gcp_machine_type", "a3-highgpu-1g"),
+        eth_usd_price=eth_usd, margin=config["bid_margin"],
+    )
+    bid = clamp_bid(bid, max_bid)
+    logger.info("Bid estimate: %.6f ETH (max: %.6f ETH)", bid / 1e18, max_bid / 1e18)
+
+    saved = commit_bid(chain, bid, state_dir=state_dir)
+    notify_bid_committed(ntfy, epoch, bid / 1e18)
+
+
+def _handle_reveal(chain, auction, saved, state_dir, ntfy):
+    """Reveal window is open. Reveal our bid (contract auto-closes commit)."""
+    epoch = auction["epoch"]
+
+    if not saved.get("committed"):
+        logger.info("Didn't commit for epoch %d, nothing to reveal", epoch)
+        return
+
+    if saved.get("revealed"):
+        logger.info("Already revealed for epoch %d, waiting for execution", epoch)
+        return
+
+    if reveal_bid(chain, saved):
+        saved["revealed"] = True
         save_state(saved, state_dir)
-        eligible_dt = datetime.fromtimestamp(timing["next_eligible_time"], tz=timezone.utc)
-        logger.info("Next epoch eligible at %s", eligible_dt.isoformat())
-    except Exception:
-        logger.debug("Could not read epoch timing", exc_info=True)
+        notify_bid_revealed(ntfy, epoch, saved["bid_amount"] / 1e18)
+    else:
+        logger.warning("Reveal failed for epoch %d", epoch)
 
 
-def _handle_stale_epoch(chain, auction, saved, state_dir, ntfy):
-    """Check if the execution window has expired or submission previously failed.
-
-    If stale, attempts to advance to the next epoch.
-    Returns True if the epoch was stale (caller should return).
-    """
+def _handle_execution(chain, config, auction, saved, state_dir, ntfy):
+    """Execution window is open. If we won, run TEE and submit."""
     epoch = auction["epoch"]
+    winner = auction["winner"]
+    zero_addr = "0x" + "0" * 40
 
-    # Check execution deadline
-    try:
-        deadline = chain.get_execution_deadline()
-        now = chain.w3.eth.get_block("latest")["timestamp"]
-        if deadline > 0 and now >= deadline:
-            logger.warning("Execution window expired (deadline=%d, now=%d, %d sec ago). "
-                          "Skipping inference, attempting to advance epoch.",
-                          deadline, now, now - deadline)
-            notify_execution_expired(ntfy, epoch)
-            started = start_epoch(chain)
-            if started:
-                clear_state(state_dir)
-                new_epoch = chain.contract.functions.currentEpoch().call()
-                notify_epoch_started(ntfy, new_epoch)
-            else:
-                _cache_next_eligible_time(chain, saved, state_dir)
-            return True
-    except Exception:
-        logger.debug("Could not read execution deadline, proceeding cautiously", exc_info=True)
+    if winner == zero_addr or winner.lower() != chain.account.address.lower():
+        if winner != zero_addr:
+            logger.info("Lost auction to %s...", winner[:10])
+            if not saved.get("loss_notified"):
+                notify_auction_lost(ntfy, epoch, winner)
+                saved["loss_notified"] = True
+                save_state(saved, state_dir)
+        return
 
-    # Check if we've already given up on this epoch
-    if saved.get("submission_failed"):
-        logger.info("Submission previously failed, attempting to advance past stale epoch")
-        started = start_epoch(chain)
-        if started:
-            clear_state(state_dir)
-            new_epoch = chain.contract.functions.currentEpoch().call()
-            notify_epoch_started(ntfy, new_epoch)
-        else:
-            logger.info("Cannot advance yet (epoch duration not elapsed)")
-        return True
+    # We won!
 
-    return False
-
-
-def _handle_tee_inference(chain, config, auction, saved, state_dir, ntfy):
-    """Load cached TEE result or run fresh inference. Returns tee_result dict."""
-    epoch = auction["epoch"]
+    # Check retry limit
     attempts = saved.get("submission_attempts", 0)
+    if saved.get("submission_failed"):
+        logger.info("Submission previously failed for epoch %d, waiting for epoch to expire", epoch)
+        return
+    if attempts >= MAX_SUBMIT_RETRIES:
+        logger.warning("Max submission retries (%d) exhausted", MAX_SUBMIT_RETRIES)
+        saved["submission_failed"] = True
+        save_state(saved, state_dir)
+        notify_epoch_abandoned(ntfy, epoch, f"Max retries ({MAX_SUBMIT_RETRIES}) exhausted")
+        return
+
+    # Notify win (only once per epoch)
+    if not saved.get("won_notified"):
+        bounty_wei = auction["winning_bid"]
+        logger.info("WE WON the auction! (bounty: %.6f ETH)", bounty_wei / 1e18)
+        notify_auction_won(ntfy, epoch, bounty_wei / 1e18)
+        saved["won_notified"] = True
+        save_state(saved, state_dir)
+
+    # Ensure the reveal phase has been closed (seed captured, input hash bound).
+    # The contract auto-syncs on submitAuctionResult, but we need the input hash
+    # BEFORE running TEE inference (the TEE verifies against it).
+    sync_phase(chain)
+
+    # Load or run TEE inference
+    tee_result = _run_tee_inference(chain, config, auction, saved, state_dir)
+
+    # Submit on-chain
+    _submit_result(chain, config, tee_result, auction, saved, state_dir, ntfy)
+
+
+def _handle_epoch_over(chain, auction, saved, state_dir, ntfy):
+    """All windows have passed. Detect bond forfeiture and advance epoch."""
+    epoch = auction["epoch"]
+
+    # Detect bond forfeiture: we committed but never revealed
+    if saved.get("committed") and not saved.get("revealed"):
+        bond = auction["bond_amount"]
+        if bond > 0:
+            logger.warning("BOND FORFEITED for epoch %d (committed but missed reveal window)", epoch)
+            notify_bond_forfeited(ntfy, epoch, bond / 1e18)
+
+    # Advance to next epoch via syncPhase
+    if sync_phase(chain):
+        clear_state(state_dir)
+        new_epoch = chain.contract.functions.currentEpoch().call()
+        logger.info("Advanced to epoch %d", new_epoch)
+        notify_epoch_settled(ntfy, epoch)
+        notify_epoch_started(ntfy, new_epoch)
+    else:
+        logger.info("Cannot advance epoch yet")
+
+
+# ─── TEE Inference & Submission ─────────────────────────────────────────
+
+def _run_tee_inference(chain, config, auction, saved, state_dir):
+    """Load cached TEE result or run fresh inference."""
+    epoch = auction["epoch"]
 
     # Try cached result first
-    tee_result = None
     if saved.get("tee_completed") and saved.get("tee_result_path"):
         tee_result = load_tee_result(saved["tee_result_path"])
         if tee_result:
             logger.info("Loaded cached TEE result from %s", saved["tee_result_path"])
-            notify_cached_submission(ntfy, epoch, attempts + 1, MAX_SUBMIT_RETRIES)
-        else:
-            logger.warning("Cached TEE result missing/corrupt, re-running inference")
-            saved.pop("tee_completed", None)
-            saved.pop("tee_result_path", None)
+            return tee_result
+        logger.warning("Cached TEE result missing/corrupt, re-running inference")
+        saved.pop("tee_completed", None)
+        saved.pop("tee_result_path", None)
 
-    if tee_result is None:
-        logger.info("Starting TEE inference...")
-        epoch_state = chain.read_contract_state()
-        contract_state = chain.build_contract_state_for_tee(epoch_state)
+    logger.info("Starting TEE inference...")
+    epoch_state = chain.read_contract_state()
+    contract_state = chain.build_contract_state_for_tee(epoch_state)
 
-        prompt_path = Path(config["system_prompt_path"])
-        system_prompt = prompt_path.read_text().strip()
+    prompt_path = Path(config["system_prompt_path"])
+    system_prompt = prompt_path.read_text().strip()
 
-        seed = auction["randomness_seed"]
-        logger.info("Seed: %d", seed)
+    seed = auction["randomness_seed"]
+    logger.info("Seed: %d", seed)
 
-        tee_client = get_tee_client(config)
-        logger.info("Running TEE inference...")
-        tee_result = tee_client.run_epoch(
-            epoch_state=epoch_state,
-            contract_state=contract_state,
-            system_prompt=system_prompt,
-            seed=seed,
-        )
-        logger.info("TEE inference complete (%.1f min)", tee_result.get("vm_minutes", 0))
-        logger.info("Action: %s", tee_result.get("action", {}).get("action", "unknown"))
+    tee_client = get_tee_client(config)
+    tee_result = tee_client.run_epoch(
+        epoch_state=epoch_state,
+        contract_state=contract_state,
+        system_prompt=system_prompt,
+        seed=seed,
+    )
+    logger.info("TEE inference complete (%.1f min)", tee_result.get("vm_minutes", 0))
+    logger.info("Action: %s", tee_result.get("action", {}).get("action", "unknown"))
 
-        # Cache for retry
-        result_path = save_tee_result(tee_result, epoch, state_dir)
-        saved["tee_completed"] = True
-        saved["tee_result_path"] = result_path
-        save_state(saved, state_dir)
-        logger.info("TEE result cached to %s", result_path)
+    # Cache for retry
+    result_path = save_tee_result(tee_result, epoch, state_dir)
+    saved["tee_completed"] = True
+    saved["tee_result_path"] = result_path
+    save_state(saved, state_dir)
 
     return tee_result
 
 
-def _handle_submission(chain, config, tee_result, auction, saved, state_dir, ntfy):
-    """Submit TEE result on-chain. Handles SubmissionError retries."""
+def _submit_result(chain, config, tee_result, auction, saved, state_dir, ntfy):
+    """Submit TEE result on-chain."""
     epoch = auction["epoch"]
     attempts = saved.get("submission_attempts", 0)
 
@@ -224,7 +337,8 @@ def _handle_submission(chain, config, tee_result, auction, saved, state_dir, ntf
             policy_text=policy_text,
         )
         logger.info("Result submitted! tx=%s", receipt['transactionHash'].hex())
-        notify_result_submitted(ntfy, epoch, tee_result.get("action", {}).get("action", "?"))
+        clear_state(state_dir)
+        notify_result_submitted(ntfy, epoch, action_json.get("action", "?"))
     except SubmissionError as e:
         saved["submission_attempts"] = attempts + 1
         if not e.should_retry or saved["submission_attempts"] >= MAX_SUBMIT_RETRIES:
@@ -239,121 +353,44 @@ def _handle_submission(chain, config, tee_result, auction, saved, state_dir, ntf
             notify_submission_failed(ntfy, epoch, e, saved["submission_attempts"], MAX_SUBMIT_RETRIES)
 
 
+# ─── Main Entry Point ───────────────────────────────────────────────────
+
 def run(config):
-    """Main runner logic — check auction phase and act accordingly."""
+    """Main runner logic — resolve wall-clock phase and act accordingly."""
     chain = ChainClient(config["rpc_url"], config["private_key"], config["contract_address"])
     ntfy = config["ntfy_channel"]
     state_dir = config["state_dir"]
 
-    # Get current auction state
-    auction = chain.get_auction_phase()
+    # Get current auction state with timing
+    auction = chain.get_auction_state()
     epoch = auction["epoch"]
-    phase = auction["phase"]
+    contract_phase = auction["contract_phase"]
+    effective_phase = _resolve_phase(auction)
 
-    winner = auction['winner']
-    zero_addr = '0x' + '0' * 40
-    if winner != zero_addr:
-        logger.info("Epoch %d | Phase: %s | Winner: %s...", epoch, PHASE_NAMES.get(phase, phase), winner[:10])
-    else:
-        logger.info("Epoch %d | Phase: %s", epoch, PHASE_NAMES.get(phase, phase))
+    logger.info("Epoch %d | Contract: %s | Clock: %s",
+                epoch, PHASE_NAMES.get(contract_phase, str(contract_phase)), effective_phase)
 
     # Load saved state
     saved = load_state(state_dir, current_epoch=epoch)
 
-    if phase == IDLE:
-        # Skip futile startEpoch() calls when we know the next epoch isn't eligible yet
-        next_eligible = saved.get("next_eligible_time")
-        if next_eligible and time.time() < next_eligible:
-            eligible_dt = datetime.fromtimestamp(next_eligible, tz=timezone.utc)
-            logger.info("Next epoch not eligible until %s, skipping", eligible_dt.isoformat())
-            return
+    # Try to claim any owed bonds (cheap, best-effort)
+    _try_claim_bonds(chain, ntfy, state_dir)
 
-        started = start_epoch(chain)
-        if started:
-            notify_epoch_started(ntfy, epoch)
-        else:
-            _cache_next_eligible_time(chain, saved, state_dir)
+    # Dispatch based on wall-clock phase
+    if effective_phase == "idle":
+        _handle_idle(chain, auction, ntfy)
 
-    elif phase == COMMIT:
-        if not saved.get("committed"):
-            gas_price = chain.get_gas_price()
-            max_bid = chain.get_effective_max_bid()
-            eth_usd = _parse_eth_usd(chain.get_eth_usd_price())
+    elif effective_phase == "commit":
+        _handle_commit(chain, config, auction, saved, state_dir, ntfy)
 
-            bid = estimate_bid(
-                gas_price, machine_type=config.get("gcp_machine_type", "a3-highgpu-1g"),
-                eth_usd_price=eth_usd, margin=config["bid_margin"],
-            )
-            bid = clamp_bid(bid, max_bid)
-            logger.info("Bid estimate: %.6f ETH (max: %.6f ETH)", bid / 1e18, max_bid / 1e18)
+    elif effective_phase == "reveal":
+        _handle_reveal(chain, auction, saved, state_dir, ntfy)
 
-            try:
-                saved = commit_bid(chain, bid, state_dir=state_dir)
-                notify_bid_committed(ntfy, epoch, bid / 1e18)
-            except (ContractLogicError, ContractCustomError) as e:
-                if is_expected_revert(str(e)):
-                    logger.info("Commit window expired, closing commit phase")
-                    if close_commit(chain):
-                        notify_commit_closed(ntfy, epoch)
-                else:
-                    raise
-        else:
-            logger.info("Already committed, waiting for commit window to close")
-            if close_commit(chain):
-                notify_commit_closed(ntfy, epoch)
+    elif effective_phase == "execution":
+        _handle_execution(chain, config, auction, saved, state_dir, ntfy)
 
-    elif phase == REVEAL:
-        if saved.get("committed") and not saved.get("revealed"):
-            if reveal_bid(chain, saved):
-                saved["revealed"] = True
-                save_state(saved, state_dir)
-                notify_bid_revealed(ntfy, epoch, saved["bid_amount"] / 1e18)
-        elif not saved.get("committed"):
-            logger.info("Didn't commit this epoch, skipping reveal")
-        else:
-            logger.info("Already revealed, waiting for reveal window to close")
-            if close_reveal(chain):
-                notify_reveal_closed(ntfy, epoch)
-
-    elif phase == EXECUTION:
-        winner = auction["winner"]
-        if winner.lower() != chain.account.address.lower():
-            logger.info("Lost auction to %s...", winner[:10])
-            notify_auction_lost(ntfy, epoch, winner)
-            return
-
-        # We won — check for stale/expired epoch first
-        if _handle_stale_epoch(chain, auction, saved, state_dir, ntfy):
-            return
-
-        # Check retry limit
-        attempts = saved.get("submission_attempts", 0)
-        if attempts >= MAX_SUBMIT_RETRIES:
-            logger.warning("Max submission retries (%d) exhausted, giving up", MAX_SUBMIT_RETRIES)
-            saved["submission_failed"] = True
-            save_state(saved, state_dir)
-            notify_epoch_abandoned(ntfy, epoch, f"Max retries ({MAX_SUBMIT_RETRIES}) exhausted")
-            return
-
-        # Notify win (only once per epoch)
-        if not saved.get("won_notified"):
-            bounty_wei = auction["winning_bid"]
-            logger.info("WE WON the auction! (bounty: %.6f ETH)", bounty_wei / 1e18)
-            notify_auction_won(ntfy, epoch, bounty_wei / 1e18)
-            saved["won_notified"] = True
-            save_state(saved, state_dir)
-
-        # Run or load TEE inference, then submit
-        tee_result = _handle_tee_inference(chain, config, auction, saved, state_dir, ntfy)
-        _handle_submission(chain, config, tee_result, auction, saved, state_dir, ntfy)
-
-    elif phase == SETTLED:
-        clear_state(state_dir)
-        logger.info("Epoch settled, state cleared")
-        notify_epoch_settled(ntfy, epoch)
-
-    else:
-        logger.warning("Unknown phase: %s", phase)
+    elif effective_phase == "epoch_over":
+        _handle_epoch_over(chain, auction, saved, state_dir, ntfy)
 
 
 def main():
@@ -378,8 +415,6 @@ def main():
         run(config)
     except Exception as e:
         logger.error("Runner failed: %s", e, exc_info=True)
-        # Try to give a human-readable error message
-        from .auction import _match_error, ERROR_SELECTORS
         error_name = _match_error(str(e))
         if error_name:
             msg = f"Contract error: {error_name} — {str(e)[:200]}"

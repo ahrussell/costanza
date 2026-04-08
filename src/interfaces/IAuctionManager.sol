@@ -5,6 +5,9 @@ pragma solidity ^0.8.20;
 /// @notice Interface for the auction state machine that manages commit-reveal auctions.
 ///         Handles phases, bids, bonds, timing, and winner selection.
 ///         Does NOT know about epoch numbering, treasury state, or verification.
+///
+///         Phase advancement is automatic via syncPhase() — the fund contract calls it
+///         before every action. Bond refunds are lazy via claimBond(epoch).
 interface IAuctionManager {
     // ─── Enums ──────────────────────────────────────────────────────────
 
@@ -19,49 +22,47 @@ interface IAuctionManager {
         bool forfeited;     // true if the winner forfeited (didn't submit result)
     }
 
-    // ─── State Transitions (onlyFund) ───────────────────────────────────
+    // ─── Auction Setup & Sync (onlyFund) ────────────────────────────────
 
-    /// @notice Open a new auction. IDLE → COMMIT.
+    /// @notice Open a new auction. IDLE/SETTLED → COMMIT.
     /// @param epoch The epoch identifier (opaque to the AM).
     /// @param bond The bond amount each committer must stake.
     /// @param startTime Wall-clock scheduled start time for this auction's phase windows.
     function openAuction(uint256 epoch, uint256 bond, uint256 startTime) external;
 
+    /// @notice Advance the auction through any elapsed phase windows.
+    ///         Called by the fund contract before every action.
+    /// @return phase The phase AFTER advancement.
+    /// @return advanced True if any phase transition occurred.
+    function syncPhase(uint256 epoch) external returns (AuctionPhase phase, bool advanced);
+
+    // ─── Prover Actions (onlyFund, forwarded from provers) ──────────────
+
     /// @notice Record a sealed bid commitment. Must be called with bond ETH attached.
     function commit(uint256 epoch, address runner, bytes32 commitHash) external payable;
-
-    /// @notice Close the commit phase. COMMIT → REVEAL (or SETTLED if no commits).
-    /// @return commitCount Number of commits received.
-    function closeCommitPhase(uint256 epoch) external returns (uint256 commitCount);
 
     /// @notice Record a bid reveal. Verifies commitment hash and tracks lowest bidder.
     function recordReveal(uint256 epoch, address runner, uint256 bidAmount, bytes32 salt) external;
 
-    /// @notice Close the reveal phase. REVEAL → EXECUTION (or SETTLED if no reveals).
-    ///         Refunds bonds to non-winning revealers.
-    /// @return winner Address of the lowest bidder.
-    /// @return winningBid The winning bid amount in wei.
-    /// @return revealCount Number of valid reveals.
-    function closeRevealPhase(uint256 epoch) external returns (address winner, uint256 winningBid, uint256 revealCount);
-
     /// @notice Settle a successful execution. EXECUTION → SETTLED.
     ///         Validates caller is the winner and within the execution window.
-    ///         Refunds bond to the winner. Stores historical bid records.
-    /// @param epoch The epoch identifier.
-    /// @param caller The address attempting to settle (must be the winner).
+    ///         Winner's bond becomes claimable.
     function settleExecution(uint256 epoch, address caller) external;
 
-    /// @notice Forfeit the winner's bond. EXECUTION → SETTLED.
-    ///         Validates the execution window has expired.
-    ///         Sends forfeited bond to the fund. Stores historical bid records.
-    /// @param epoch The epoch identifier.
-    function forfeitExecution(uint256 epoch) external;
+    // ─── Configuration (onlyFund) ───────────────────────────────────────
 
     /// @notice Update auction timing parameters.
     function setTiming(uint256 _commitWindow, uint256 _revealWindow, uint256 _executionWindow) external;
 
-    /// @notice Claim accumulated bond refunds (pull-based).
-    function claimBond() external;
+    // ─── Bond Claims (anyone) ───────────────────────────────────────────
+
+    /// @notice Claim bond refund for a specific epoch.
+    ///         Eligible: non-winning revealers. Winners use settleExecution.
+    function claimBond(uint256 epoch) external;
+
+    /// @notice Claim the legacy accumulated bond balance (for backward compatibility
+    ///         with any bonds credited before the lazy-claim migration).
+    function claimLegacyBonds() external;
 
     // ─── Views ──────────────────────────────────────────────────────────
 
@@ -79,4 +80,5 @@ interface IAuctionManager {
     function revealWindow() external view returns (uint256);
     function executionWindow() external view returns (uint256);
     function executionDeadline() external view returns (uint256);
+    function pendingBondRefunds() external view returns (uint256);
 }

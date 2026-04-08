@@ -119,3 +119,13 @@ def notify_epoch_abandoned(channel, epoch, reason):
     notify(channel, f"Epoch {epoch} abandoned",
            f"Giving up: {_sanitize(str(reason)[:300])}",
            priority="urgent", tags=["rotating_light"])
+
+def notify_bond_forfeited(channel, epoch, bond_eth):
+    notify(channel, f"Bond forfeited! (epoch {epoch})",
+           f"Missed reveal window — {bond_eth:.6f} ETH bond lost.",
+           priority="urgent", tags=["money_with_wings"])
+
+def notify_bond_claimed(channel, epoch, amount_eth):
+    notify(channel, f"Bond claimed (epoch {epoch})",
+           f"Recovered {amount_eth:.6f} ETH from epoch {epoch}.",
+           tags=["moneybag"])
