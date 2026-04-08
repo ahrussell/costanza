@@ -576,62 +576,101 @@ contract TheHumanFund is ReentrancyGuard {
         return timingAnchor + (epoch - anchorEpoch) * epochDuration;
     }
 
-    /// @notice Open the auction for the current epoch. Anyone can call this.
-    ///         Auto-cleans a stale auction stuck in any phase (COMMIT, REVEAL, or EXECUTION)
-    ///         and credits the correct number of missed epochs based on elapsed wall-clock time.
-    function startEpoch() external {
-        _requireNotSunset();
+    // ─── Phase Sync ────────────────────────────────────────────────────
 
+    /// @notice Advance the contract through any elapsed epoch/phase boundaries.
+    ///         Anyone can call — permissionless state advancement. Replaces
+    ///         startEpoch(), closeCommit(), closeReveal(), and forfeitBond().
+    function syncPhase() external {
+        _requireNotSunset();
+        _syncPhase();
+    }
+
+    /// @dev Core phase synchronization. Called before every prover action.
+    ///      1. Advances the AuctionManager through elapsed phase windows (step by step).
+    ///      2. Handles fund-level side effects between each AM transition.
+    ///      3. Advances past missed epochs (O(1) arithmetic, no loop).
+    ///      4. Opens a new auction if within the current epoch's commit window.
+    function _syncPhase() internal {
         IAuctionManager am = auctionManager;
         uint256 epoch = currentEpoch;
-
-        // Auto-clean a stale auction if needed — chain through whatever phase it's stuck in.
-        // The stale auction is for the current epoch (started but never completed).
-        // All AM timing guards pass trivially when the auction is stale (enough time has elapsed).
         IAuctionManager.AuctionPhase phase = am.getPhase(epoch);
 
-        if (phase == IAuctionManager.AuctionPhase.COMMIT) {
-            uint256 commitCount = am.closeCommitPhase(epoch);
-            if (commitCount > 0) phase = IAuctionManager.AuctionPhase.REVEAL;
-        }
-
-        if (phase == IAuctionManager.AuctionPhase.REVEAL) {
-            (, , uint256 revealCount) = am.closeRevealPhase(epoch);
-            if (revealCount > 0) phase = IAuctionManager.AuctionPhase.EXECUTION;
-        }
-
-        if (phase == IAuctionManager.AuctionPhase.EXECUTION) {
-            address forfeitedRunner = am.getWinner(epoch);
-            uint256 forfeitedBond = am.getBond(epoch);
-            am.forfeitExecution(epoch);
-            emit BondForfeited(epoch, forfeitedRunner, forfeitedBond);
-        }
-
-        // Credit missed epochs based on elapsed wall-clock time
+        // Advance the AM step by step so we can handle side effects between transitions.
+        // Each am.syncPhase() call chains through all elapsed windows, so we handle
+        // the side effects by checking what the AM's state is AFTER sync, not trying
+        // to intercept each individual transition.
         if (phase != IAuctionManager.AuctionPhase.IDLE && phase != IAuctionManager.AuctionPhase.SETTLED) {
-            uint256 missedCount = 1;
-            if (lastEpochStartTime > 0) {
-                uint256 elapsed = (block.timestamp - _epochStartTime(epoch)) / epochDuration;
-                if (elapsed > missedCount) missedCount = elapsed;
+            (phase, ) = am.syncPhase(epoch);
+
+            // If the AM transitioned past REVEAL (seed was captured), bind the input hash.
+            // We can detect this by checking: seed is non-zero but epochInputHashes not yet set.
+            uint256 seed = am.getRandomnessSeed(epoch);
+            if (seed != 0 && epochInputHashes[epoch] == bytes32(0)) {
+                epochInputHashes[epoch] = keccak256(abi.encodePacked(
+                    epochBaseInputHashes[epoch],
+                    seed
+                ));
+                emit RevealClosed(epoch, am.getWinner(epoch), am.getWinningBid(epoch));
             }
-            uint256 newMissed = consecutiveMissedEpochs + missedCount;
-            if (newMissed > MAX_MISSED_EPOCHS) newMissed = MAX_MISSED_EPOCHS;
-            consecutiveMissedEpochs = newMissed;
-            currentEpoch += missedCount;
-            currentEpochInflow = 0;
-            currentEpochDonationCount = 0;
-            currentEpochCommissions = 0;
-            epoch = currentEpoch;
+
+            // If the AM reached SETTLED and the epoch wasn't successfully executed,
+            // it was forfeited. Check by seeing if the epoch record was written.
+            if (phase == IAuctionManager.AuctionPhase.SETTLED && !epochs[epoch].executed) {
+                // Could be: no commits, no reveals, or winner didn't submit.
+                // Only emit forfeit event if there was a winner (someone won but didn't deliver).
+                address winner = am.getWinner(epoch);
+                if (winner != address(0)) {
+                    if (consecutiveMissedEpochs < MAX_MISSED_EPOCHS) consecutiveMissedEpochs += 1;
+                    emit BondForfeited(epoch, winner, am.getBond(epoch));
+                }
+            }
         }
 
-        // Enforce epoch pacing: wall-clock time must have reached this epoch's scheduled start.
-        if (lastEpochStartTime > 0 && block.timestamp < _epochStartTime(epoch)) revert TimingError();
+        // If the auction for the current epoch is now SETTLED (completed or missed),
+        // advance past any missed epochs and try to open a new one.
+        if (phase == IAuctionManager.AuctionPhase.SETTLED || phase == IAuctionManager.AuctionPhase.IDLE) {
+            // Advance past missed epochs (O(1) — arithmetic, no loop).
+            uint256 scheduledStart = _epochStartTime(epoch);
+            if (lastEpochStartTime > 0 && block.timestamp >= scheduledStart + epochDuration) {
+                // The current epoch's auction was stale. Credit missed epochs.
+                uint256 missedCount = (block.timestamp - scheduledStart) / epochDuration;
+                if (phase != IAuctionManager.AuctionPhase.IDLE) {
+                    // Only count as missed if there was actually an auction for this epoch
+                    uint256 newMissed = consecutiveMissedEpochs + missedCount;
+                    if (newMissed > MAX_MISSED_EPOCHS) newMissed = MAX_MISSED_EPOCHS;
+                    consecutiveMissedEpochs = newMissed;
+                }
+                currentEpoch += missedCount;
+                epoch = currentEpoch;
+                currentEpochInflow = 0;
+                currentEpochDonationCount = 0;
+                currentEpochCommissions = 0;
+            } else if (phase == IAuctionManager.AuctionPhase.SETTLED) {
+                // Auction settled normally (not stale) — advance one epoch.
+                // Don't increment missed: the epoch completed (either executed or forfeited).
+                // Note: forfeit already incremented missed in the EXECUTION→SETTLED case above.
+                currentEpoch += 1;
+                epoch = currentEpoch;
+                currentEpochInflow = 0;
+                currentEpochDonationCount = 0;
+                currentEpochCommissions = 0;
+            }
 
+            // Try to open a new auction for the current epoch.
+            scheduledStart = _epochStartTime(epoch);
+            if (block.timestamp >= scheduledStart && block.timestamp < scheduledStart + am.commitWindow()) {
+                _openAuction(epoch, scheduledStart);
+            }
+        }
+    }
+
+    /// @dev Open an auction for the given epoch. Snapshots price, computes input hash.
+    function _openAuction(uint256 epoch, uint256 scheduledStart) internal {
         _snapshotEthUsdPrice();
 
         uint256 bond = currentBond();
-        uint256 scheduledStart = _epochStartTime(epoch);
-        am.openAuction(epoch, bond, scheduledStart);
+        auctionManager.openAuction(epoch, bond, scheduledStart);
         lastEpochStartTime = scheduledStart;
 
         bytes32 baseInputHash = _computeInputHash();
@@ -640,9 +679,13 @@ contract TheHumanFund is ReentrancyGuard {
         emit AuctionOpened(epoch, baseInputHash, effectiveMaxBid(), bond);
     }
 
+    // ─── Prover Actions (auto-sync before each) ─────────────────────────
+
     /// @notice Submit a sealed bid commitment for the current epoch.
+    ///         Auto-syncs phase first (opens auction if needed).
     function commit(bytes32 commitHash) external payable {
         _requireNotSunset();
+        _syncPhase();
 
         uint256 epoch = currentEpoch;
         uint256 bond = auctionManager.getBond(epoch);
@@ -661,45 +704,18 @@ contract TheHumanFund is ReentrancyGuard {
         emit BidCommitted(epoch, msg.sender);
     }
 
-    /// @notice Close the commit phase. Anyone can call after commit window expires.
-    function closeCommit() external {
-
-        uint256 commitCount = auctionManager.closeCommitPhase(currentEpoch);
-        if (commitCount == 0) {
-            _advanceEpochMissed();
-        }
-    }
-
     /// @notice Reveal a previously committed bid.
+    ///         Auto-syncs phase first (closes commit window if needed).
     function reveal(uint256 bidAmount, bytes32 salt) external {
+        _syncPhase();
 
         if (bidAmount == 0 || bidAmount > effectiveMaxBid()) revert InvalidParams();
         auctionManager.recordReveal(currentEpoch, msg.sender, bidAmount, salt);
         emit BidRevealed(currentEpoch, msg.sender, bidAmount);
     }
 
-    /// @notice Close the reveal phase. Anyone can call after reveal window.
-    function closeReveal() external {
-
-        uint256 epoch = currentEpoch;
-        (address winner, uint256 winningBid, uint256 revealCount) = auctionManager.closeRevealPhase(epoch);
-
-        if (revealCount == 0) {
-            _advanceEpochMissed();
-            return;
-        }
-
-        // Bind randomness to the input hash
-        uint256 seed = auctionManager.getRandomnessSeed(epoch);
-        epochInputHashes[epoch] = keccak256(abi.encodePacked(
-            epochBaseInputHashes[epoch],
-            seed
-        ));
-
-        emit RevealClosed(epoch, winner, winningBid);
-    }
-
     /// @notice Submit the auction result (winner only).
+    ///         Auto-syncs phase first (closes reveal window, captures seed, binds input hash).
     function submitAuctionResult(
         bytes calldata action,
         bytes calldata reasoning,
@@ -708,11 +724,12 @@ contract TheHumanFund is ReentrancyGuard {
         int8 policySlot,
         string calldata policyText
     ) external payable nonReentrant {
+        _syncPhase();
 
         uint256 epoch = currentEpoch;
 
         // Settle auction — AM validates phase, caller==winner, and timing.
-        // Refunds bond to the winner.
+        // Winner's bond becomes claimable.
         auctionManager.settleExecution(epoch, msg.sender);
 
         // Verify proof and pay bounty (scoped to reduce stack depth)
@@ -737,30 +754,6 @@ contract TheHumanFund is ReentrancyGuard {
 
         _applyPolicyUpdate(policySlot, policyText);
         _recordAndExecute(epoch, action, reasoning, bountyAmount);
-    }
-
-    /// @notice Forfeit the winner's bond after the execution window expires.
-    function forfeitBond() external nonReentrant {
-
-        uint256 epoch = currentEpoch;
-        IAuctionManager am = auctionManager;
-
-        // AM validates phase and timing
-        address forfeitedRunner = am.getWinner(epoch);
-        uint256 forfeitedBond = am.getBond(epoch);
-        am.forfeitExecution(epoch);
-        _advanceEpochMissed();
-
-        emit BondForfeited(epoch, forfeitedRunner, forfeitedBond);
-    }
-
-    /// @dev Advance epoch on a missed/forfeited epoch.
-    function _advanceEpochMissed() internal {
-        if (consecutiveMissedEpochs < MAX_MISSED_EPOCHS) consecutiveMissedEpochs += 1;
-        currentEpoch += 1;
-        currentEpochInflow = 0;
-        currentEpochDonationCount = 0;
-        currentEpochCommissions = 0;
     }
 
     // ─── Internal: Price Snapshot ───────────────────────────────────────
@@ -1141,22 +1134,15 @@ contract TheHumanFund is ReentrancyGuard {
 
 
     /// @notice Projected epoch number accounting for elapsed wall-clock time.
-    /// Returns what currentEpoch would be if startEpoch() were called now.
+    /// Returns what currentEpoch would be if syncPhase() were called now.
     /// Use this instead of currentEpoch() for display when the contract may be idle.
     function projectedEpoch() external view returns (uint256) {
         if (timingAnchor == 0 || epochDuration == 0) return currentEpoch;
         uint256 scheduledStart = _epochStartTime(currentEpoch);
-        if (block.timestamp < scheduledStart) return currentEpoch;
+        if (block.timestamp < scheduledStart + epochDuration) return currentEpoch;
 
-        // Only project forward if there's a stale auction (not IDLE/SETTLED)
-        IAuctionManager.AuctionPhase phase = auctionManager.getPhase(currentEpoch);
-        if (phase == IAuctionManager.AuctionPhase.IDLE || phase == IAuctionManager.AuctionPhase.SETTLED) {
-            return currentEpoch;
-        }
-
-        // Mirrors startEpoch() missed-epoch logic: currentEpoch += max(1, elapsed)
+        // Mirrors _syncPhase() O(1) epoch advancement
         uint256 elapsed = (block.timestamp - scheduledStart) / epochDuration;
-        if (elapsed == 0) return currentEpoch;
         return currentEpoch + elapsed;
     }
 

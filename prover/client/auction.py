@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
-"""Auction state machine — idempotent handlers for each auction phase.
+"""Auction actions — commit, reveal, submit, sync.
 
-Designed for cron: each function checks the current state before acting,
-so calling the same function multiple times is safe.
+With the v2 contract, phase advancement is automatic (via syncPhase).
+The client only needs to call the action appropriate for the current
+wall-clock phase. Each action auto-syncs the contract state first.
 """
 
 import logging
 import secrets
 
+from web3 import Web3
 from web3.exceptions import ContractLogicError, ContractCustomError
 
 from .chain import ChainClient, build_error_selector_map
-from .state import load as load_state, save as save_state, clear as clear_state
-from .bid_strategy import estimate_bid, clamp_bid
+from .state import save as save_state
 
 logger = logging.getLogger(__name__)
 
@@ -27,18 +28,15 @@ PHASE_NAMES = {IDLE: "IDLE", COMMIT: "COMMIT", REVEAL: "REVEAL",
                EXECUTION: "EXECUTION", SETTLED: "SETTLED"}
 
 # Gas limits for auction transactions
-GAS_START_EPOCH = 800_000
-GAS_COMMIT = 200_000
-GAS_CLOSE_COMMIT = 300_000
-GAS_REVEAL = 200_000
-GAS_CLOSE_REVEAL = 500_000
-GAS_SUBMIT_RESULT = 15_000_000  # DCAP verification is expensive
+GAS_SYNC_PHASE = 800_000       # syncPhase may chain through multiple transitions
+GAS_COMMIT = 800_000           # commit auto-syncs (may open auction)
+GAS_REVEAL = 500_000           # reveal auto-syncs (may close commit)
+GAS_SUBMIT_RESULT = 15_000_000 # DCAP verification is expensive; auto-syncs (may close reveal)
+GAS_CLAIM_BOND = 100_000
 
 MAX_SUBMIT_RETRIES = 2  # Max submission attempts before giving up on an epoch
 
 # Build error selector map from contract ABIs at import time.
-# Selectors are deterministic (keccak256 of error signatures) and
-# never change unless the Solidity error definitions change.
 ERROR_SELECTORS = build_error_selector_map("TheHumanFund", "AuctionManager")
 
 # Map error names to submission categories
@@ -62,10 +60,7 @@ class SubmissionError(Exception):
 
 
 def _match_error(err_str):
-    """Match an error string against known error selectors and names.
-
-    Returns the error name if found, None otherwise.
-    """
+    """Match an error string against known error selectors and names."""
     for selector, name in ERROR_SELECTORS.items():
         if selector in err_str or name in err_str:
             return name
@@ -78,7 +73,6 @@ def classify_submit_error(err):
     Returns (category, should_retry, message).
     """
     err_str = str(err)
-
     error_name = _match_error(err_str)
     if error_name and error_name in _ERROR_CATEGORIES:
         return _ERROR_CATEGORIES[error_name]
@@ -96,22 +90,17 @@ def is_expected_revert(err: str) -> bool:
     return error_name is not None and error_name in _EXPECTED_ERRORS
 
 
-def start_epoch(chain: ChainClient):
-    """Start a new epoch. Idempotent — catches 'already started' revert."""
+def sync_phase(chain: ChainClient):
+    """Call syncPhase() on the contract to advance through elapsed phases.
+
+    Returns True if successful, False on expected revert, raises on unexpected error.
+    """
     try:
-        receipt = chain.send_tx(chain.contract.functions.startEpoch(), gas=GAS_START_EPOCH)
-        logger.info("startEpoch() confirmed: gas=%s", receipt.get("gasUsed", "?"))
+        chain.sync_phase(gas=GAS_SYNC_PHASE)
         return True
-    except RuntimeError as e:
-        logger.error("startEpoch() reverted on-chain: %s", e)
-        return False
-    except (ContractLogicError, ContractCustomError) as e:
-        err = str(e)
-        if "already" in err.lower() or "AlreadyDone" in err:
-            logger.info("Epoch already started (OK)")
-            return True
-        if is_expected_revert(err):
-            logger.info("startEpoch() not ready yet — %s", err[:80])
+    except (ContractLogicError, ContractCustomError, RuntimeError) as e:
+        if isinstance(e, RuntimeError) or is_expected_revert(str(e)):
+            logger.info("syncPhase() no-op or not ready — %s", str(e)[:80])
             return False
         raise
 
@@ -119,16 +108,13 @@ def start_epoch(chain: ChainClient):
 def commit_bid(chain: ChainClient, bid_wei: int, state_dir=None):
     """Generate salt, compute commit hash, submit bid with bond.
 
-    Returns the saved state dict.
+    The contract's commit() calls _syncPhase() first, which opens the
+    auction if needed. Returns the saved state dict.
     """
     salt = "0x" + secrets.token_hex(32)
     salt_bytes = bytes.fromhex(salt[2:])
 
-    # Compute commit hash: keccak256(abi.encodePacked(bidAmount, salt))
-    from web3 import Web3
-    commit_hash = Web3.keccak(
-        bid_wei.to_bytes(32, "big") + salt_bytes
-    )
+    commit_hash = Web3.keccak(bid_wei.to_bytes(32, "big") + salt_bytes)
 
     bond = chain.get_current_bond()
     epoch = chain.contract.functions.currentEpoch().call()
@@ -151,21 +137,12 @@ def commit_bid(chain: ChainClient, bid_wei: int, state_dir=None):
     return state
 
 
-def close_commit(chain: ChainClient):
-    """Close the commit phase. Idempotent — any revert means 'not ready yet'."""
-    try:
-        chain.send_tx(chain.contract.functions.closeCommit(), gas=GAS_CLOSE_COMMIT)
-        logger.info("closeCommit() submitted")
-        return True
-    except (ContractLogicError, ContractCustomError, RuntimeError) as e:
-        if isinstance(e, RuntimeError) or is_expected_revert(str(e)):
-            logger.info("closeCommit() not ready yet — %s", str(e)[:80])
-            return False
-        raise
-
-
 def reveal_bid(chain: ChainClient, state: dict):
-    """Reveal a previously committed bid. Idempotent — any revert means window passed."""
+    """Reveal a previously committed bid.
+
+    The contract's reveal() calls _syncPhase() first, which closes
+    the commit window if needed. Returns True on success.
+    """
     bid_amount = state["bid_amount"]
     salt = bytes.fromhex(state["commit_salt"][2:])
 
@@ -178,27 +155,17 @@ def reveal_bid(chain: ChainClient, state: dict):
         return True
     except (ContractLogicError, ContractCustomError, RuntimeError) as e:
         if isinstance(e, RuntimeError) or is_expected_revert(str(e)):
-            logger.info("reveal() not ready or already done — %s", str(e)[:80])
-            return False
-        raise
-
-
-def close_reveal(chain: ChainClient):
-    """Close the reveal phase. Idempotent — any revert means 'not ready yet'."""
-    try:
-        chain.send_tx(chain.contract.functions.closeReveal(), gas=GAS_CLOSE_REVEAL)
-        logger.info("closeReveal() submitted")
-        return True
-    except (ContractLogicError, ContractCustomError, RuntimeError) as e:
-        if isinstance(e, RuntimeError) or is_expected_revert(str(e)):
-            logger.info("closeReveal() not ready yet — %s", str(e)[:80])
+            logger.info("reveal() not ready or window passed — %s", str(e)[:80])
             return False
         raise
 
 
 def submit_result(chain: ChainClient, action_bytes: bytes, reasoning: bytes,
-                  proof: bytes, verifier_id=1, policy_slot=-1, policy_text=""):
+                  proof: bytes, verifier_id=2, policy_slot=-1, policy_text=""):
     """Submit auction result with attestation proof.
+
+    The contract's submitAuctionResult() calls _syncPhase() first,
+    which closes the reveal window and captures the seed if needed.
 
     Raises:
         SubmissionError: On classified contract revert (with category and should_retry).
