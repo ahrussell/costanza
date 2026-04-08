@@ -12,12 +12,14 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 
 ## Current Status
 
-- **Contract**: `0x69716cd7836f4d5c573b309c32a7a8e93484e719` (Base Sepolia)
-- **AuctionManager**: `0x6fd985c7ee2ef558a1fa3f388fd1c110f8e4d4d9`
-- **TdxVerifier**: `0x1749e5132b3b12c63cbc5c419aab1623ba4cd7c7`
+- **Contract**: `0x25f8b02F1B7cc337C2576Ff7616fbBCf7F3E9571` (Base Sepolia)
+- **AuctionManager**: `0x3d7543f965A5043d97f8A6049a83878C12f43459`
+- **TdxVerifier**: `0x6a48147303d74B67048e0AA9D7E6fF4308B80B7B`
+- **InvestmentManager**: `0x9ab39e80379BBb8eFdd039eefa5A9A46Ed44261A`
+- **WorldView**: `0x14DDc8ccb2258322c70D7e902987AA57B01B48f5`
 - **Deployer**: `0xffea30B0DbDAd460B9b6293fb51a059129fCCdAf`
-- **182 tests pass** (core + auction + TDX verifier + investment + worldview + messages + cross-stack hash)
-- GPU image key (a3-highgpu-1g, H100): `0x548fcaab...` — approved (v9)
+- **176 tests pass** (core + auction + TDX verifier + investment + worldview + messages)
+- GPU image key: pending new dm-verity image build (v10)
 - GCP TDX FMSPC `00806f050000` registered in Automata DCAP Dashboard
 - H100 on-demand quota is 0; all GPU VMs use `--provisioning-model=SPOT`
 - **Remaining**: extended testnet run, mainnet deployment
