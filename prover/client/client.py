@@ -264,6 +264,15 @@ def _handle_execution(chain, config, auction, saved, state_dir, ntfy):
         saved["won_notified"] = True
         save_state(saved, state_dir)
 
+    # Check if we have enough time to run TEE inference before the deadline.
+    # TEE takes ~8 minutes; bail if less than 10 min remaining.
+    MIN_EXEC_TIME = 600  # 10 minutes minimum
+    time_remaining = auction["exec_end"] - auction["now"]
+    if time_remaining < MIN_EXEC_TIME:
+        logger.warning("Only %ds left in execution window (need %ds), skipping TEE",
+                       time_remaining, MIN_EXEC_TIME)
+        return
+
     # Ensure the reveal phase has been closed (seed captured, input hash bound).
     # The contract auto-syncs on submitAuctionResult, but we need the input hash
     # BEFORE running TEE inference (the TEE verifies against it).
