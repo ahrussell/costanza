@@ -1235,6 +1235,7 @@ const FUND_ABI = [
   "function treasuryBalance() view returns (uint256)",
   "function totalAssets() view returns (uint256)",
   "function currentEpoch() view returns (uint256)",
+  "function projectedEpoch() view returns (uint256)",
   "function commissionRateBps() view returns (uint256)",
   "function maxBid() view returns (uint256)",
   "function effectiveMaxBid() view returns (uint256)",
@@ -1551,7 +1552,7 @@ async function loadAll() {
     epochInflow, epochDonations, nextRefCode,
     epochDur, ethUsdPrice, frozenFlags, npCount,
   ] = await Promise.all([
-    fund.treasuryBalance(), fund.totalAssets(), fund.currentEpoch(),
+    fund.treasuryBalance(), fund.totalAssets(), fund.projectedEpoch().catch(() => fund.currentEpoch()),
     fund.commissionRateBps(), fund.maxBid(), fund.effectiveMaxBid(),
     fund.totalInflows(), fund.totalDonatedToNonprofits(), fund.totalDonatedToNonprofitsUsd(),
     fund.totalCommissionsPaid(), fund.totalBountiesPaid(),

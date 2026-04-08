@@ -1138,6 +1138,24 @@ contract TheHumanFund is ReentrancyGuard {
     }
 
 
+    /// @notice Projected epoch number accounting for elapsed wall-clock time.
+    /// Returns what currentEpoch would be if startEpoch() were called now.
+    /// Use this instead of currentEpoch() for display when the contract may be idle.
+    function projectedEpoch() external view returns (uint256) {
+        if (lastEpochStartTime == 0 || epochDuration == 0) return currentEpoch;
+        uint256 elapsed = (block.timestamp - lastEpochStartTime) / epochDuration;
+        if (elapsed == 0) return currentEpoch;
+
+        // Only project forward if there's a stale auction (not IDLE/SETTLED)
+        IAuctionManager.AuctionPhase phase = auctionManager.getPhase(currentEpoch);
+        if (phase == IAuctionManager.AuctionPhase.IDLE || phase == IAuctionManager.AuctionPhase.SETTLED) {
+            return currentEpoch;
+        }
+
+        // Mirrors startEpoch() missed-epoch logic: currentEpoch += max(1, elapsed)
+        return currentEpoch + elapsed;
+    }
+
     /// @notice Get the total number of messages.
     function messageCount() external view returns (uint256) {
         return messages.length;

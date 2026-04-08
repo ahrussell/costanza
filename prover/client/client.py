@@ -163,7 +163,8 @@ def run(config):
                     started = start_epoch(chain, dry_run=dry_run)
                     if started:
                         clear_state(state_dir)
-                        notify_epoch_started(ntfy, epoch)
+                        new_epoch = chain.contract.functions.currentEpoch().call()
+                        notify_epoch_started(ntfy, new_epoch)
                     else:
                         # Compute next eligible time so we don't hammer
                         try:
@@ -185,7 +186,8 @@ def run(config):
                 started = start_epoch(chain, dry_run=dry_run)
                 if started:
                     clear_state(state_dir)
-                    notify_epoch_started(ntfy, epoch)
+                    new_epoch = chain.contract.functions.currentEpoch().call()
+                    notify_epoch_started(ntfy, new_epoch)
                 else:
                     logger.info("Cannot advance yet (epoch duration not elapsed)")
                 return
