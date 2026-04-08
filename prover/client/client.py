@@ -151,6 +151,34 @@ def run(config):
     elif phase == EXECUTION:
         winner = auction["winner"]
         if winner.lower() == chain.account.address.lower():
+            # First check: is the execution window still open?
+            # This prevents wasting money on TEE inference for an expired epoch.
+            try:
+                deadline = chain.get_execution_deadline()
+                now = chain.w3.eth.get_block("latest")["timestamp"]
+                if deadline > 0 and now >= deadline:
+                    logger.warning("Execution window expired (deadline=%d, now=%d, %d sec ago). "
+                                  "Skipping inference, attempting to advance epoch.",
+                                  deadline, now, now - deadline)
+                    started = start_epoch(chain, dry_run=dry_run)
+                    if started:
+                        clear_state(state_dir)
+                        notify_epoch_started(ntfy, epoch)
+                    else:
+                        # Compute next eligible time so we don't hammer
+                        try:
+                            timing = chain.get_epoch_timing()
+                            saved["next_eligible_time"] = timing["next_eligible_time"]
+                            save_state(saved, state_dir)
+                            eligible_dt = datetime.fromtimestamp(
+                                timing["next_eligible_time"], tz=timezone.utc)
+                            logger.info("Next epoch eligible at %s", eligible_dt.isoformat())
+                        except Exception:
+                            logger.debug("Could not read epoch timing", exc_info=True)
+                    return
+            except Exception:
+                logger.debug("Could not read execution deadline, proceeding cautiously", exc_info=True)
+
             # Check if we've already given up on this epoch — try to advance past it
             if saved.get("submission_failed"):
                 logger.info("Submission previously failed, attempting to advance past stale epoch")

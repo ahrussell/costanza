@@ -111,6 +111,13 @@ class ChainClient:
             "next_eligible_time": last_start + duration,
         }
 
+    def get_execution_deadline(self):
+        """Get the block timestamp when the current execution window expires.
+
+        Returns 0 if no auction is active.
+        """
+        return self.am.functions.executionDeadline().call()
+
     def send_tx(self, fn, value=0, gas=None):
         """Build, sign, and send a transaction.
 
