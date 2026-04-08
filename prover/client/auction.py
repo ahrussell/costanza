@@ -152,20 +152,20 @@ def commit_bid(chain: ChainClient, bid_wei: int, state_dir=None):
 
 
 def close_commit(chain: ChainClient):
-    """Close the commit phase. Idempotent."""
+    """Close the commit phase. Idempotent — any revert means 'not ready yet'."""
     try:
         chain.send_tx(chain.contract.functions.closeCommit(), gas=GAS_CLOSE_COMMIT)
         logger.info("closeCommit() submitted")
         return True
-    except (ContractLogicError, ContractCustomError) as e:
-        if is_expected_revert(str(e)):
+    except (ContractLogicError, ContractCustomError, RuntimeError) as e:
+        if isinstance(e, RuntimeError) or is_expected_revert(str(e)):
             logger.info("closeCommit() not ready yet — %s", str(e)[:80])
             return False
         raise
 
 
 def reveal_bid(chain: ChainClient, state: dict):
-    """Reveal a previously committed bid."""
+    """Reveal a previously committed bid. Idempotent — any revert means window passed."""
     bid_amount = state["bid_amount"]
     salt = bytes.fromhex(state["commit_salt"][2:])
 
@@ -176,21 +176,21 @@ def reveal_bid(chain: ChainClient, state: dict):
         )
         logger.info("Bid revealed: %.6f ETH", bid_amount / 1e18)
         return True
-    except (ContractLogicError, ContractCustomError) as e:
-        if is_expected_revert(str(e)):
+    except (ContractLogicError, ContractCustomError, RuntimeError) as e:
+        if isinstance(e, RuntimeError) or is_expected_revert(str(e)):
             logger.info("reveal() not ready or already done — %s", str(e)[:80])
             return False
         raise
 
 
 def close_reveal(chain: ChainClient):
-    """Close the reveal phase. Idempotent."""
+    """Close the reveal phase. Idempotent — any revert means 'not ready yet'."""
     try:
         chain.send_tx(chain.contract.functions.closeReveal(), gas=GAS_CLOSE_REVEAL)
         logger.info("closeReveal() submitted")
         return True
-    except (ContractLogicError, ContractCustomError) as e:
-        if is_expected_revert(str(e)):
+    except (ContractLogicError, ContractCustomError, RuntimeError) as e:
+        if isinstance(e, RuntimeError) or is_expected_revert(str(e)):
             logger.info("closeReveal() not ready yet — %s", str(e)[:80])
             return False
         raise
