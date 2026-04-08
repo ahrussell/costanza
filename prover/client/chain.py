@@ -49,7 +49,10 @@ class ChainClient:
 
     def get_auction_phase(self):
         """Get current auction state from individual AuctionManager getters."""
-        epoch = self.contract.functions.currentEpoch().call()
+        try:
+            epoch = self.contract.functions.projectedEpoch().call()
+        except Exception:
+            epoch = self.contract.functions.currentEpoch().call()
         am = self.am
         phase = am.functions.getPhase(epoch).call()
         winner = am.functions.getWinner(epoch).call()
