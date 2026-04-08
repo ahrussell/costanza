@@ -61,8 +61,8 @@ Examples:
         "verbose": parsed.verbose,
     }
 
-    # Verifier ID: 2 = TdxVerifier (dm-verity)
-    config["verifier_id"] = int(os.environ.get("VERIFIER_ID", "2"))
+    # Verifier ID: 1 = TdxVerifier (registered on current Base Sepolia contract)
+    config["verifier_id"] = int(os.environ.get("VERIFIER_ID", "1"))
 
     # Validate required fields
     missing = []
