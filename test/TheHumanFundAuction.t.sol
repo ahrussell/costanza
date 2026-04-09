@@ -891,6 +891,72 @@ contract TheHumanFundAuctionTest is Test {
 
     // ─── Fuzz Tests ────────────────────────────────────────────────────
 
+    function test_equalBids_firstRevealerWins() public {
+        fund.syncPhase();
+        uint256 epoch = fund.currentEpoch();
+        uint256 bond = fund.currentBond();
+        uint256 bidAmount = 0.005 ether;
+
+        // Both commit with the same bid amount
+        vm.prank(runner1);
+        fund.commit{value: bond}(_commitHash(bidAmount, bytes32("salt1")));
+        vm.prank(runner2);
+        fund.commit{value: bond}(_commitHash(bidAmount, bytes32("salt2")));
+
+        vm.warp(block.timestamp + COMMIT_WIN);
+
+        // runner1 reveals first
+        vm.prank(runner1);
+        fund.reveal(bidAmount, bytes32("salt1"));
+
+        // runner2 reveals second with same bid
+        vm.prank(runner2);
+        fund.reveal(bidAmount, bytes32("salt2"));
+
+        vm.warp(block.timestamp + REVEAL_WIN);
+        fund.syncPhase();
+
+        // First revealer should win (strict less-than comparison)
+        assertEq(am.getWinner(epoch), runner1);
+        assertEq(am.getWinningBid(epoch), bidAmount);
+    }
+
+    function test_loser_claimsBond_afterReveal() public {
+        fund.syncPhase();
+        uint256 epoch = fund.currentEpoch();
+        uint256 bond = fund.currentBond();
+
+        // runner1 bids high, runner2 bids low (wins)
+        vm.prank(runner1);
+        fund.commit{value: bond}(_commitHash(0.008 ether, bytes32("s1")));
+        vm.prank(runner2);
+        fund.commit{value: bond}(_commitHash(0.003 ether, bytes32("s2")));
+
+        vm.warp(block.timestamp + COMMIT_WIN);
+
+        vm.prank(runner1);
+        fund.reveal(0.008 ether, bytes32("s1"));
+        vm.prank(runner2);
+        fund.reveal(0.003 ether, bytes32("s2"));
+
+        vm.warp(block.timestamp + REVEAL_WIN);
+        fund.syncPhase(); // closes reveal
+
+        // runner2 wins
+        assertEq(am.getWinner(epoch), runner2);
+
+        // runner1 (loser) claims bond
+        uint256 balBefore = runner1.balance;
+        vm.prank(runner1);
+        am.claimBond(epoch);
+        assertEq(runner1.balance, balBefore + bond);
+
+        // runner1 can't double-claim
+        vm.prank(runner1);
+        vm.expectRevert();
+        am.claimBond(epoch);
+    }
+
     function testFuzz_bondEscalation_neverOverflows(uint8 misses) public {
         // Skip epochs to build up consecutiveMissedEpochs
         uint256 n = bound(misses, 0, 50);
