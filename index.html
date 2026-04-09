@@ -824,6 +824,7 @@
   <div class="container">
     <div class="nav-brand">Costanza <span>/ The Human Fund</span></div>
     <div class="nav-controls">
+      <button class="nav-select" style="background:none;border:none;cursor:pointer;font-size:13px;padding:4px 12px;border-radius:4px;transition:var(--transition);" onclick="openModal('donate')" title="Donate to The Human Fund">Donate</button>
       <a href="https://github.com/ahrussell/costanza" class="nav-select" style="text-decoration:none; display:flex; align-items:center; gap:6px;" target="_blank">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="opacity:0.7;">
           <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v 3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
@@ -918,11 +919,6 @@
     <div class="form-group">
       <label class="form-label">Amount (ETH)</label>
       <input class="form-input" id="donate-amount" type="number" min="0.0001" step="0.001" placeholder="0.01">
-    </div>
-    <div class="form-group">
-      <label class="form-label">Referral code <span style="font-weight:400;text-transform:none;letter-spacing:0;">(optional)</span></label>
-      <input class="form-input" id="donate-refcode" type="number" min="0" placeholder="0">
-      <div class="form-hint">Enter a referral code ID to give someone a commission.</div>
     </div>
     <button class="wallet-btn" id="donate-btn" onclick="handleDonate()">Connect wallet to donate</button>
     <div class="form-status" id="donate-status"></div>
@@ -1272,6 +1268,7 @@ function cv(name) {
 const CONTRACT_ADDRESS = '0xc7fd334b9cdd7e5eb97eef05a704511a630374ed';
 const RPC_URL = 'https://sepolia.base.org';
 const EXPLORER = 'https://sepolia.basescan.org';
+const REFERRAL_CODE = '0'; // TODO: hardcode referral code
 
 // ═══════════════════════════════════════════════════════
 // ABI
@@ -1496,7 +1493,6 @@ async function handleDonate() {
     updateWalletRows();
 
     const amountStr = document.getElementById('donate-amount').value;
-    const refCode = document.getElementById('donate-refcode').value || '0';
     if (!amountStr || parseFloat(amountStr) <= 0) {
       setStatus(statusId, 'Enter a valid ETH amount.', 'error');
       return;
@@ -1504,7 +1500,7 @@ async function handleDonate() {
 
     setStatus(statusId, 'Confirm the transaction in your wallet...', 'info');
     const fundWrite = new ethers.Contract(CONTRACT_ADDRESS, FUND_ABI, walletSigner);
-    const tx = await fundWrite.donate(BigInt(refCode), {
+    const tx = await fundWrite.donate(BigInt(REFERRAL_CODE), {
       value: ethers.parseEther(amountStr),
     });
     setStatus(statusId, 'Transaction submitted. Waiting for confirmation...', 'info');
