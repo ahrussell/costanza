@@ -309,12 +309,14 @@ def _handle_execution(chain, config, auction, saved, participation, state_dir, n
         saved["won_notified"] = True
         save_state(saved, state_dir)
 
-    # Check if we have enough time to run TEE inference
-    MIN_EXEC_TIME = 600  # 10 minutes minimum
+    # Check if we have enough time. Cached results only need a few seconds
+    # to resubmit; fresh inference needs ~10 minutes for VM boot + inference.
+    has_cached_result = saved.get("tee_completed") and saved.get("tee_result_path")
+    MIN_EXEC_TIME = 60 if has_cached_result else 600
     time_remaining = auction["exec_end"] - auction["now"]
     if time_remaining < MIN_EXEC_TIME:
-        logger.warning("Only %ds left in execution window (need %ds), skipping TEE",
-                       time_remaining, MIN_EXEC_TIME)
+        logger.warning("Only %ds left in execution window (need %ds, cached=%s), skipping",
+                       time_remaining, MIN_EXEC_TIME, bool(has_cached_result))
         return
 
     # Sync phase to capture seed (REVEAL → EXECUTION transition)
@@ -325,7 +327,7 @@ def _handle_execution(chain, config, auction, saved, participation, state_dir, n
     logger.info("Post-sync: epoch=%d, phase=%d, seed=%d",
                 auction["epoch"], auction["contract_phase"], auction["randomness_seed"])
 
-    # Run TEE inference
+    # Run TEE inference (loads cached result if available)
     tee_result = _run_tee_inference(chain, config, auction, saved, state_dir)
 
     # Submit on-chain
