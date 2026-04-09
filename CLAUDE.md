@@ -12,11 +12,11 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 
 ## Current Status
 
-- **Contract**: `0x79d13d2ef91fc11fcd01f2e0f9558199bca861b9` (Base Sepolia, v2 auto-advance)
-- **AuctionManager**: `0x614f280be8fc34830a1cc8e3a2073e707309022d`
-- **TdxVerifier**: `0x95140f012bbd6a5f0ea1c1a2189c02afed6a51d3`
-- **InvestmentManager**: `0xe1f5a4c4f9c99643c8c4b0f292adde8cced58cad`
-- **WorldView**: `0x86478ec1ffd4c311bbbc4e5f053bb239df0316de`
+- **Contract**: `0xc7fd334b9cdd7e5eb97eef05a704511a630374ed` (Base Sepolia, v2 auto-advance)
+- **AuctionManager**: `0xbc9a487b620149ce5f4424e733df3f555311b76c`
+- **TdxVerifier**: `0x83426ad89f00eece03b9e4a02741548c6acdab81`
+- **InvestmentManager**: `0xb1fdac97989babf73b2490346657cdf5750962cd`
+- **WorldView**: `0x19faadf6eb71a3c3a5b9a36e313a416359303fde`
 - **Deployer**: `0xffea30B0DbDAd460B9b6293fb51a059129fCCdAf`
 - **175 tests pass** (core + auction + TDX verifier + investment + worldview + messages)
 - GPU image key: pending new dm-verity image build (v10)
