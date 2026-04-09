@@ -940,10 +940,6 @@
       <textarea class="form-input" id="message-text" placeholder="Write something to Costanza..." maxlength="1000"></textarea>
       <div class="form-hint">Max 1000 characters. Stored on-chain forever.</div>
     </div>
-    <div class="form-group">
-      <label class="form-label">Referral code <span style="font-weight:400;text-transform:none;letter-spacing:0;">(optional)</span></label>
-      <input class="form-input" id="message-refcode" type="number" min="0" placeholder="0">
-    </div>
     <button class="wallet-btn" id="message-btn" onclick="handleMessage()">Connect wallet to send</button>
     <div class="form-status" id="message-status"></div>
   </div>
@@ -1525,7 +1521,6 @@ async function handleMessage() {
 
     const amountStr = document.getElementById('message-amount').value;
     const msgText = document.getElementById('message-text').value.trim();
-    const refCode = document.getElementById('message-refcode').value || '0';
 
     if (!amountStr || parseFloat(amountStr) < 0.01) {
       setStatus(statusId, 'Minimum donation is 0.01 ETH.', 'error');
@@ -1538,7 +1533,7 @@ async function handleMessage() {
 
     setStatus(statusId, 'Confirm the transaction in your wallet...', 'info');
     const fundWrite = new ethers.Contract(CONTRACT_ADDRESS, FUND_ABI, walletSigner);
-    const tx = await fundWrite.donateWithMessage(msgText, BigInt(refCode), {
+    const tx = await fundWrite.donateWithMessage(msgText, BigInt(REFERRAL_CODE), {
       value: ethers.parseEther(amountStr),
     });
     setStatus(statusId, 'Transaction submitted. Waiting for confirmation...', 'info');
