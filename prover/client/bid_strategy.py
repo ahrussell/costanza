@@ -34,28 +34,40 @@ CPU_INFERENCE_MINUTES = 25  # ~22 min inference + overhead
 
 
 def estimate_bid(gas_price_wei, machine_type="a3-highgpu-1g", eth_usd_price=2000.0,
-                 margin=1.5):
+                 margin=1.5, observed_costs=None):
     """Estimate the minimum profitable bid.
+
+    If observed_costs is provided (from cost_tracker.get_average_costs()),
+    uses real averages for gas and VM time instead of hardcoded estimates.
 
     Args:
         gas_price_wei: Current gas price in wei.
         machine_type: GCP machine type (determines hourly rate and timing).
         eth_usd_price: Current ETH/USD price for converting compute costs.
         margin: Multiplier over estimated cost (default 1.5x).
+        observed_costs: Optional dict with avg_gas_used, avg_vm_minutes from
+            the rolling cost tracker. If provided and sufficient, overrides
+            hardcoded estimates.
 
     Returns:
         Bid amount in wei.
     """
+    # Use observed data if available, otherwise fall back to hardcoded estimates
+    if observed_costs:
+        gas_estimate = int(observed_costs["avg_gas_used"])
+        total_minutes = observed_costs["avg_vm_minutes"]
+    else:
+        gas_estimate = SUBMIT_GAS
+        if "highgpu" in machine_type or "h100" in machine_type.lower():
+            total_minutes = GPU_BOOT_MINUTES + GPU_INFERENCE_MINUTES
+        else:
+            total_minutes = CPU_BOOT_MINUTES + CPU_INFERENCE_MINUTES
+
     # Gas cost
-    gas_cost_wei = SUBMIT_GAS * gas_price_wei
+    gas_cost_wei = gas_estimate * gas_price_wei
 
     # Compute cost
-    hourly_rate = GCP_HOURLY_RATES.get(machine_type, 35.0)
-    if "highgpu" in machine_type or "h100" in machine_type.lower():
-        total_minutes = GPU_BOOT_MINUTES + GPU_INFERENCE_MINUTES
-    else:
-        total_minutes = CPU_BOOT_MINUTES + CPU_INFERENCE_MINUTES
-
+    hourly_rate = GCP_HOURLY_RATES.get(machine_type, 11.74)
     compute_cost_usd = hourly_rate * (total_minutes / 60)
     compute_cost_eth = compute_cost_usd / eth_usd_price
     compute_cost_wei = int(compute_cost_eth * 1e18)

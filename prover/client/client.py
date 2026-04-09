@@ -36,6 +36,7 @@ from .auction import (
     PHASE_NAMES,
 )
 from .bid_strategy import estimate_bid, clamp_bid
+from .cost_tracker import record_epoch_cost, get_average_costs
 from .state import (
     load as load_state, save as save_state, clear as clear_state,
     save_tee_result, load_tee_result,
@@ -209,9 +210,16 @@ def _handle_commit(chain, config, auction, saved, participation, state_dir, ntfy
     max_bid = chain.get_effective_max_bid()
     eth_usd = _parse_eth_usd(chain.get_eth_usd_price())
 
+    # Use observed costs if we have enough history
+    observed = get_average_costs(state_dir)
+    if observed:
+        logger.info("Using observed costs: gas=%d, vm=%.1f min (%d epochs)",
+                    observed["avg_gas_used"], observed["avg_vm_minutes"], observed["num_epochs"])
+
     bid = estimate_bid(
         gas_price, machine_type=config.get("gcp_machine_type", "a3-highgpu-1g"),
         eth_usd_price=eth_usd, margin=config["bid_margin"],
+        observed_costs=observed,
     )
     bid = clamp_bid(bid, max_bid)
     logger.info("Bid estimate: %.6f ETH (max: %.6f ETH)", bid / 1e18, max_bid / 1e18)
@@ -419,6 +427,14 @@ def _submit_result(chain, config, tee_result, auction, saved, state_dir, ntfy):
             policy_text=policy_text,
         )
         logger.info("Result submitted! tx=%s", receipt['transactionHash'].hex())
+
+        # Record actual costs for rolling average bid estimation
+        gas_used = receipt.get("gasUsed", 0)
+        gas_price = receipt.get("effectiveGasPrice", chain.get_gas_price())
+        vm_minutes = tee_result.get("vm_minutes", 0)
+        record_epoch_cost(state_dir, epoch, gas_used, gas_price, vm_minutes)
+        logger.info("Recorded cost: gas=%d, vm=%.1f min", gas_used, vm_minutes)
+
         clear_state(state_dir)
         notify_result_submitted(ntfy, epoch, action_json.get("action", "?"))
     except SubmissionError as e:
