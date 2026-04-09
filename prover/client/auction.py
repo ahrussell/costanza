@@ -81,6 +81,11 @@ def classify_submit_error(err):
     if "execution reverted" in err_str and "'0x'" in err_str:
         return ("bare_revert", True, "DCAP verification bare revert (transient)")
 
+    # On-chain reverts with high gas usage (>1M) are likely DCAP verification failures.
+    # These are transient (Automata infrastructure on Base Sepolia) — worth retrying.
+    if "Transaction reverted on-chain" in err_str:
+        return ("dcap_revert", True, f"On-chain revert (likely DCAP): {err_str[:200]}")
+
     return ("unknown", False, f"Unknown submission error: {err_str[:200]}")
 
 
