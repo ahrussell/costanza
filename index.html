@@ -1574,8 +1574,10 @@ async function loadAll() {
   const currentEpochNum = Number(epoch);
 
   // ── DIARY ENTRIES (all executed epochs) ──
+  // Start from currentEpochNum (not -1): with v2 auto-advance, currentEpoch may
+  // still point to the just-executed epoch before syncPhase advances it.
   diaryEntries = [];
-  for (let e = currentEpochNum - 1; e >= 1; e--) {
+  for (let e = currentEpochNum; e >= 1; e--) {
     try {
       const rec = await fund.getEpochRecord(e);
       if (rec.executed) {
@@ -1816,7 +1818,7 @@ async function loadAll() {
   // Age & Lifespan card
   let ageHtml = `
     <div class="stat-row"><span class="stat-label">Age</span><span class="stat-value">${ageDays > 0 ? ageDays + ' days' : '1 day'}</span></div>
-    <div class="stat-row"><span class="stat-label">Epochs completed</span><span class="stat-value accent">${currentEpochNum - 1}</span></div>
+    <div class="stat-row"><span class="stat-label">Epochs completed</span><span class="stat-value accent">${diaryEntries.length}</span></div>
     <div class="stat-row"><span class="stat-label">Epoch duration</span><span class="stat-value">${fmtDuration(Number(epochDur))}</span></div>
   `;
   if (diaryEntries.length > 0) {
@@ -1943,11 +1945,13 @@ async function loadAll() {
   document.getElementById('autonomy-perms').innerHTML = permHtml;
 
   // ── TIMELINE SECTION ──
-  document.getElementById('tl-epoch').textContent = currentEpochNum;
+  // Use projectedEpoch for the timeline — it shows the next actionable epoch.
+  // After a successful submission, currentEpoch stays at the executed epoch until
+  // syncPhase advances it, but the user wants to see the upcoming epoch.
+  const timelineEpoch = currentEpochNum;
+  document.getElementById('tl-epoch').textContent = timelineEpoch;
 
   // Phase + countdown — compute from wall-clock timing, not AuctionManager internal phase.
-  // With v2 auto-advance, the AM phase lags the wall clock (phases advance on interaction).
-  // The wall-clock phase is what matters for the user.
   if (auctionOn && auctionMgr) {
     try {
       const [cw, rw, ew] = await Promise.all([
@@ -1956,10 +1960,22 @@ async function loadAll() {
       const now = Math.floor(Date.now() / 1000);
       const cwN = Number(cw), rwN = Number(rw), ewN = Number(ew), ed = Number(epochDur);
 
-      // Compute epoch timing from the anchor
+      // Compute epoch timing from the anchor.
+      // Use projectedEpoch for timing — if epoch N was just executed but currentEpoch
+      // hasn't advanced, we want the timing of epoch N+1 (the next one).
       const anchor = Number(await fund.timingAnchor());
       const anchorEp = Number(await fund.anchorEpoch());
-      const epochStart = anchor + (currentEpochNum - anchorEp) * ed;
+
+      // Determine which epoch to show timing for: if the current epoch is already
+      // executed, show the next epoch's timing. Otherwise show the current epoch.
+      let displayEpoch = currentEpochNum;
+      try {
+        const rec = await fund.getEpochRecord(currentEpochNum);
+        if (rec.executed) displayEpoch = currentEpochNum + 1;
+      } catch {}
+      document.getElementById('tl-epoch').textContent = displayEpoch;
+
+      const epochStart = anchor + (displayEpoch - anchorEp) * ed;
       const commitEnd = epochStart + cwN;
       const revealEnd = commitEnd + rwN;
       const execEnd = revealEnd + ewN;
