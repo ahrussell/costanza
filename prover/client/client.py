@@ -264,6 +264,12 @@ def _handle_execution(chain, config, auction, saved, participation, state_dir, n
     """Execution window is open."""
     epoch = auction["epoch"]
 
+    # If the auction is already settled (we already submitted, or epoch was forfeited),
+    # there's nothing to do — _syncPhase will advance the epoch when appropriate.
+    if auction["contract_phase"] == 4:  # SETTLED
+        logger.info("Epoch %d already settled, waiting for next epoch", epoch)
+        return
+
     # Case 1: No winner at all (nobody committed/revealed)
     if participation["winner"] == ZERO_ADDR:
         logger.info("No winner for epoch %d, advancing past stale epoch", epoch)
