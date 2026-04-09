@@ -254,4 +254,50 @@ contract MessagesTest is Test {
         assertEq(fund.messageCount(), 0);
         assertEq(fund.treasuryBalance(), 5.001 ether);
     }
+
+    // ─── Fuzz Tests ────────────────────────────────────────────────────
+
+    function testFuzz_messageTruncation(uint256 len) public {
+        len = bound(len, 1, 1000);
+
+        // Build a string of length `len`
+        bytes memory msgBytes = new bytes(len);
+        for (uint256 i = 0; i < len; i++) {
+            msgBytes[i] = bytes1(uint8(65 + (i % 26))); // A-Z repeating
+        }
+        string memory msg_ = string(msgBytes);
+
+        vm.deal(donor1, 1 ether);
+        vm.prank(donor1);
+        fund.donateWithMessage{value: 0.01 ether}(0, msg_);
+
+        // Stored message should be at most 280 bytes
+        (,, string[] memory texts,) = fund.getUnreadMessages();
+        assertEq(texts.length, 1);
+        assertLe(bytes(texts[0]).length, 280);
+
+        if (len <= 280) {
+            assertEq(bytes(texts[0]).length, len);
+        } else {
+            assertEq(bytes(texts[0]).length, 280);
+        }
+    }
+
+    function testFuzz_messageDonation_belowMinimum_reverts(uint256 amount) public {
+        amount = bound(amount, 0.001 ether, 0.01 ether - 1);
+        vm.deal(donor1, amount);
+        vm.prank(donor1);
+        vm.expectRevert(TheHumanFund.InvalidParams.selector);
+        fund.donateWithMessage{value: amount}(0, "Hello");
+    }
+
+    function testFuzz_messageDonation_validAmount(uint256 amount) public {
+        amount = bound(amount, 0.01 ether, 1 ether);
+        vm.deal(donor1, amount);
+        vm.prank(donor1);
+        fund.donateWithMessage{value: amount}(0, "Fuzz test");
+
+        assertEq(fund.messageCount(), 1);
+        assertEq(fund.treasuryBalance(), 5 ether + amount);
+    }
 }

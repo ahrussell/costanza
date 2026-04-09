@@ -888,4 +888,92 @@ contract TheHumanFundAuctionTest is Test {
         assertEq(fund.currentEpoch(), 2);
         assertGt(address(fund).balance, treasuryBefore); // forfeited bond
     }
+
+    // ─── Fuzz Tests ────────────────────────────────────────────────────
+
+    function testFuzz_bondEscalation_neverOverflows(uint8 misses) public {
+        // Skip epochs to build up consecutiveMissedEpochs
+        uint256 n = bound(misses, 0, 50);
+        for (uint256 i = 0; i < n; i++) {
+            fund.skipEpoch();
+        }
+        assertEq(fund.consecutiveMissedEpochs(), n > 50 ? 50 : n);
+
+        uint256 bond = fund.currentBond();
+        uint256 maxBid = fund.effectiveMaxBid();
+
+        // Bond should never exceed effectiveMaxBid
+        assertLe(bond, maxBid);
+        // effectiveMaxBid should never exceed 2% of treasury
+        uint256 hardCap = (address(fund).balance * 200) / 10000;
+        assertLe(maxBid, hardCap);
+        // Bond should always be >= BASE_BOND
+        assertGe(bond, 0.001 ether);
+    }
+
+    function testFuzz_bidReveal_aboveMaxBid_reverts(uint256 bidAmount) public {
+        uint256 maxBid = fund.effectiveMaxBid();
+        bidAmount = bound(bidAmount, maxBid + 1, 100 ether);
+
+        fund.syncPhase();
+        uint256 bond = fund.currentBond();
+        bytes32 salt = bytes32("fuzz_salt");
+
+        vm.prank(runner1);
+        fund.commit{value: bond}(_commitHash(bidAmount, salt));
+
+        vm.warp(block.timestamp + COMMIT_WIN);
+
+        vm.prank(runner1);
+        vm.expectRevert(); // InvalidBid or similar
+        fund.reveal(bidAmount, salt);
+    }
+
+    function testFuzz_bidReveal_validRange(uint256 bidAmount) public {
+        uint256 maxBid = fund.effectiveMaxBid();
+        bidAmount = bound(bidAmount, 1, maxBid);
+
+        fund.syncPhase();
+        uint256 bond = fund.currentBond();
+        bytes32 salt = bytes32("fuzz_valid");
+
+        vm.prank(runner1);
+        fund.commit{value: bond}(_commitHash(bidAmount, salt));
+
+        vm.warp(block.timestamp + COMMIT_WIN);
+
+        vm.prank(runner1);
+        fund.reveal(bidAmount, salt);
+
+        // Verify the reveal was recorded
+        assertTrue(am.didReveal(fund.currentEpoch(), runner1));
+    }
+
+    function testFuzz_epochArithmetic_O1advancement(uint8 missedCount) public {
+        // Test that missing N epochs advances correctly in O(1)
+        uint256 n = bound(missedCount, 1, 50);
+        uint256 startEpoch = fund.currentEpoch();
+
+        // Warp past N full epoch durations
+        vm.warp(block.timestamp + EPOCH_DUR * n);
+        fund.syncPhase();
+
+        uint256 endEpoch = fund.currentEpoch();
+        // Should have advanced by at least n epochs (may be n+1 if auction opens)
+        assertGe(endEpoch, startEpoch + n);
+    }
+
+    function testFuzz_commitHash_preimage(uint256 bidAmount, bytes32 salt) public {
+        // Verify commit hash is deterministic and matches reveal
+        bidAmount = bound(bidAmount, 1, 10 ether);
+        bytes32 hash = _commitHash(bidAmount, salt);
+
+        // Same inputs produce same hash
+        assertEq(hash, keccak256(abi.encodePacked(bidAmount, salt)));
+
+        // Different bid produces different hash
+        if (bidAmount > 1) {
+            assertNotEq(hash, _commitHash(bidAmount - 1, salt));
+        }
+    }
 }

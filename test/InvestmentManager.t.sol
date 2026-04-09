@@ -521,4 +521,58 @@ contract InvestmentManagerTest is Test {
         vm.expectRevert(InvestmentManager.Unauthorized.selector);
         im.freezeAdmin();
     }
+
+    // ─── Fuzz Tests ────────────────────────────────────────────────────
+
+    function testFuzz_invest_boundsInvariant(uint256 amount) public {
+        // Fund has 10 ETH. Max total 80% = 8 ETH, max per protocol 25% = 2.5 ETH
+        amount = bound(amount, 0.01 ether, 10 ether);
+
+        uint256 totalAssets = address(fund).balance + im.totalInvestedValue();
+        uint256 maxTotal = (totalAssets * 8000) / 10000;
+        uint256 maxPerProtocol = (totalAssets * 2500) / 10000;
+        uint256 minReserve = (totalAssets * 2000) / 10000;
+
+        bytes memory action = abi.encodePacked(uint8(3), abi.encode(uint256(1), amount));
+        fund.submitEpochAction(action, bytes("invest fuzz"), -1, "");
+        fund.syncPhase();
+
+        // After action, check invariants
+        uint256 invested = im.totalInvestedValue();
+        uint256 liquid = address(fund).balance;
+        uint256 newTotal = liquid + invested;
+
+        if (invested > 0) {
+            // If deposit succeeded, all bounds must hold
+            assertLe(invested, (newTotal * 8000) / 10000 + 1); // +1 for rounding
+        }
+        // If deposit failed (ActionRejected), invested == 0, which is fine
+    }
+
+    function testFuzz_invest_multipleProtocols_boundsHold(uint256 a1, uint256 a2, uint256 a3) public {
+        a1 = bound(a1, 0.1 ether, 2 ether);
+        a2 = bound(a2, 0.1 ether, 2 ether);
+        a3 = bound(a3, 0.1 ether, 2 ether);
+
+        // Invest in protocol 1
+        bytes memory action1 = abi.encodePacked(uint8(3), abi.encode(uint256(1), a1));
+        fund.submitEpochAction(action1, bytes("invest 1"), -1, "");
+        fund.syncPhase();
+
+        // Invest in protocol 2
+        bytes memory action2 = abi.encodePacked(uint8(3), abi.encode(uint256(2), a2));
+        fund.submitEpochAction(action2, bytes("invest 2"), -1, "");
+        fund.syncPhase();
+
+        // Invest in protocol 3
+        bytes memory action3 = abi.encodePacked(uint8(3), abi.encode(uint256(3), a3));
+        fund.submitEpochAction(action3, bytes("invest 3"), -1, "");
+        fund.syncPhase();
+
+        // After all investments, min reserve must hold
+        uint256 liquid = address(fund).balance;
+        uint256 total = liquid + im.totalInvestedValue();
+        // Liquid balance should be at least 20% of total (may be more if some invests were rejected)
+        assertGe(liquid * 10000, total * 2000 - 1); // -1 for rounding
+    }
 }

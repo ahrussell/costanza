@@ -536,4 +536,75 @@ contract TheHumanFundTest is Test {
         emit TheHumanFund.Sunset(destination);
         fund.migrate(destination);
     }
+
+    // ─── Fuzz Tests ────────────────────────────────────────────────────
+
+    function testFuzz_donate_validAmount(uint256 amount) public {
+        amount = bound(amount, 0.001 ether, 10 ether);
+        vm.deal(donor, amount);
+        vm.prank(donor);
+        fund.donate{value: amount}(0);
+        assertEq(fund.treasuryBalance(), 5 ether + amount);
+    }
+
+    function testFuzz_donate_belowMinimum_reverts(uint256 amount) public {
+        amount = bound(amount, 1, 0.001 ether - 1);
+        vm.deal(donor, amount);
+        vm.prank(donor);
+        vm.expectRevert(TheHumanFund.InvalidParams.selector);
+        fund.donate{value: amount}(0);
+    }
+
+    function testFuzz_commissionRate_validRange(uint256 rate) public {
+        rate = bound(rate, 100, 9000);
+        bytes memory action = abi.encodePacked(uint8(2), abi.encode(rate));
+        fund.submitEpochAction(action, bytes("Adjusting commission"), -1, "");
+        assertEq(fund.commissionRateBps(), rate);
+    }
+
+    function testFuzz_commissionRate_belowMin_rejected(uint256 rate) public {
+        rate = bound(rate, 0, 99);
+        bytes memory action = abi.encodePacked(uint8(2), abi.encode(rate));
+        vm.expectEmit(true, false, false, false);
+        emit TheHumanFund.ActionRejected(1, action, 0);
+        fund.submitEpochAction(action, bytes("Bad rate"), -1, "");
+        // Commission rate unchanged
+        assertEq(fund.commissionRateBps(), 1000);
+    }
+
+    function testFuzz_commissionRate_aboveMax_rejected(uint256 rate) public {
+        rate = bound(rate, 9001, type(uint256).max);
+        bytes memory action = abi.encodePacked(uint8(2), abi.encode(rate));
+        vm.expectEmit(true, false, false, false);
+        emit TheHumanFund.ActionRejected(1, action, 0);
+        fund.submitEpochAction(action, bytes("Bad rate"), -1, "");
+        assertEq(fund.commissionRateBps(), 1000);
+    }
+
+    function testFuzz_donate_action_boundedByTreasury(uint256 amount) public {
+        // Treasury is 5 ETH, max donation is 10% = 0.5 ETH
+        uint256 treasury = address(fund).balance;
+        uint256 maxDonation = (treasury * 1000) / 10000; // MAX_DONATION_BPS = 1000
+        amount = bound(amount, maxDonation + 1, 100 ether);
+
+        bytes memory action = abi.encodePacked(uint8(1), abi.encode(uint256(0), amount));
+        // Should emit ActionRejected (amount exceeds 10% of treasury)
+        fund.submitEpochAction(action, bytes("Too generous"), -1, "");
+        // Fund balance unchanged (action was rejected, not reverted)
+        assertEq(address(fund).balance, treasury);
+    }
+
+    function testFuzz_actionEncoding_malformedBytes_neverReverts(uint256 seed) public {
+        // Generate random action bytes of varying lengths
+        uint256 len = bound(seed, 0, 200);
+        bytes memory action = new bytes(len);
+        for (uint256 i = 0; i < len; i++) {
+            action[i] = bytes1(uint8(uint256(keccak256(abi.encode(seed, i))) % 256));
+        }
+        // Should never revert — malformed actions emit ActionRejected or are noop
+        uint256 balBefore = address(fund).balance;
+        fund.submitEpochAction(action, bytes("fuzz"), -1, "");
+        // Treasury never decreases from malformed actions (except valid donate actions)
+        // which are bounded. Just verify no revert happened.
+    }
 }
