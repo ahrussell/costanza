@@ -34,7 +34,7 @@ GAS_REVEAL = 500_000           # reveal auto-syncs (may close commit)
 GAS_SUBMIT_RESULT = 15_000_000 # DCAP verification is expensive; auto-syncs (may close reveal)
 GAS_CLAIM_BOND = 100_000
 
-MAX_SUBMIT_RETRIES = 2  # Max submission attempts before giving up on an epoch
+MAX_SUBMIT_RETRIES = 3  # Max submission attempts before giving up on an epoch
 
 # Build error selector map from contract ABIs at import time.
 ERROR_SELECTORS = build_error_selector_map("TheHumanFund", "AuctionManager")

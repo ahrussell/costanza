@@ -53,6 +53,19 @@ logger = logging.getLogger(__name__)
 
 ZERO_ADDR = "0x" + "0" * 40
 
+# Retry schedule: (strategy, min_seconds_remaining) per attempt index.
+# "use_cached" resubmits the same TEE result (different tx, same quote).
+# "rerun_tee" discards the cached result and boots a fresh TDX VM for a
+#   new attestation quote (same deterministic output, different DCAP nonce).
+USE_CACHED = "use_cached"
+RERUN_TEE = "rerun_tee"
+
+RETRY_SCHEDULE = [
+    (RERUN_TEE,  600),   # Attempt 0: initial TEE run (10 min)
+    (USE_CACHED,  60),   # Attempt 1: quick resubmit — DCAP might be transient
+    (RERUN_TEE,  600),   # Attempt 2: fresh quote — in case the quote itself is bad
+]
+
 
 # ─── Wall-Clock Phase Resolution ────────────────────────────────────────
 
@@ -309,15 +322,23 @@ def _handle_execution(chain, config, auction, saved, participation, state_dir, n
         saved["won_notified"] = True
         save_state(saved, state_dir)
 
-    # Check if we have enough time. Cached results only need a few seconds
-    # to resubmit; fresh inference needs ~10 minutes for VM boot + inference.
-    has_cached_result = saved.get("tee_completed") and saved.get("tee_result_path")
-    MIN_EXEC_TIME = 60 if has_cached_result else 600
+    # Determine retry strategy for this attempt
+    strategy, min_time = RETRY_SCHEDULE[min(attempts, len(RETRY_SCHEDULE) - 1)]
     time_remaining = auction["exec_end"] - auction["now"]
-    if time_remaining < MIN_EXEC_TIME:
-        logger.warning("Only %ds left in execution window (need %ds, cached=%s), skipping",
-                       time_remaining, MIN_EXEC_TIME, bool(has_cached_result))
+
+    if time_remaining < min_time:
+        logger.warning("Only %ds left in execution window (need %ds for %s), skipping",
+                       time_remaining, min_time, strategy)
         return
+
+    # If strategy says rerun TEE, discard cached result so we get a fresh
+    # attestation quote (same deterministic output, different DCAP nonce).
+    if strategy == RERUN_TEE and attempts > 0:
+        if saved.get("tee_completed"):
+            logger.info("Discarding cached TEE result for fresh attestation quote (attempt %d)", attempts)
+            saved.pop("tee_completed", None)
+            saved.pop("tee_result_path", None)
+            save_state(saved, state_dir)
 
     # Sync phase to capture seed (REVEAL → EXECUTION transition)
     sync_phase(chain)
@@ -327,7 +348,7 @@ def _handle_execution(chain, config, auction, saved, participation, state_dir, n
     logger.info("Post-sync: epoch=%d, phase=%d, seed=%d",
                 auction["epoch"], auction["contract_phase"], auction["randomness_seed"])
 
-    # Run TEE inference (loads cached result if available)
+    # Run TEE inference (loads cached result if available, runs fresh otherwise)
     tee_result = _run_tee_inference(chain, config, auction, saved, state_dir)
 
     # Submit on-chain
