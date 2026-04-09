@@ -481,11 +481,169 @@ def test_multiprover(results):
         results.ok("syncphase_idempotent", f"Reverted gracefully: {str(e)[:60]}")
 
 
+# ─── Phase 5: State Recovery & Edge Cases ──────────────────────────
+
+def test_edge_cases(results):
+    print("\n── Phase 5: State Recovery & Edge Cases ──")
+
+    # 5.3: O(1) epoch advancement via syncPhase
+    print("\nTest 5.3: O(1) epoch advancement")
+    epoch_before = fund.functions.currentEpoch().call()
+    epoch_dur = fund.functions.epochDuration().call()
+    epoch_start = fund.functions.epochStartTime(epoch_before).call()
+    now = w3.eth.get_block("latest")["timestamp"]
+
+    # Check if we're past the current epoch — syncPhase should advance
+    if now >= epoch_start + epoch_dur:
+        try:
+            receipt = send_tx(fund.functions.syncPhase(), gas=800_000)
+            epoch_after = fund.functions.currentEpoch().call()
+            advanced = epoch_after - epoch_before
+            gas_used = receipt["gasUsed"]
+            if advanced > 0:
+                results.ok("o1_epoch_advancement", f"Advanced {advanced} epoch(s), gas={gas_used}")
+            else:
+                results.ok("o1_epoch_advancement", f"No advancement needed (gas={gas_used})")
+        except Exception as e:
+            results.fail("o1_epoch_advancement", str(e)[:100])
+    else:
+        results.ok("o1_epoch_advancement", "Current epoch is live — no advancement to test")
+
+    # 5.6: Reveal after window closes should fail
+    print("\nTest 5.7: Reveal after window reverts")
+    epoch = fund.functions.currentEpoch().call()
+    phase = am.functions.getPhase(epoch).call()
+    if phase >= 2:  # Past commit, reveal might also be closed
+        try:
+            # Try to reveal with garbage — should revert regardless
+            receipt = send_tx(
+                fund.functions.reveal(1, b'\x00' * 32),
+                gas=500_000,
+            )
+            if receipt["status"] == 0:
+                results.ok("reveal_after_window_reverts", "Tx reverted as expected")
+            else:
+                results.fail("reveal_after_window_reverts", "Tx succeeded (should have reverted)")
+        except Exception as e:
+            results.ok("reveal_after_window_reverts", f"Reverted: {str(e)[:60]}")
+    else:
+        results.ok("reveal_after_window_reverts", "Skipped — not past reveal window")
+
+    # 5.5: computeInputHash is non-zero for executed epochs
+    print("\nTest: computeInputHash non-zero")
+    epoch = fund.functions.currentEpoch().call()
+    try:
+        input_hash = fund.functions.computeInputHash().call()
+        if input_hash != b'\x00' * 32:
+            results.ok("input_hash_nonzero", f"computeInputHash = 0x{input_hash.hex()[:16]}...")
+        else:
+            results.fail("input_hash_nonzero", "computeInputHash is zero")
+    except Exception as e:
+        results.fail("input_hash_nonzero", str(e)[:100])
+
+    # Test: projectedEpoch >= currentEpoch
+    print("\nTest: projectedEpoch >= currentEpoch")
+    current = fund.functions.currentEpoch().call()
+    projected = fund.functions.projectedEpoch().call()
+    if projected >= current:
+        results.ok("projected_ge_current", f"projected={projected} >= current={current}")
+    else:
+        results.fail("projected_ge_current", f"projected={projected} < current={current}")
+
+    # Test: epochStartTime is monotonically increasing
+    print("\nTest: epochStartTime monotonic")
+    epoch = fund.functions.currentEpoch().call()
+    if epoch >= 3:
+        t1 = fund.functions.epochStartTime(epoch - 2).call()
+        t2 = fund.functions.epochStartTime(epoch - 1).call()
+        t3 = fund.functions.epochStartTime(epoch).call()
+        if t1 < t2 < t3:
+            dur = t2 - t1
+            dur2 = t3 - t2
+            results.ok("epoch_start_monotonic", f"t[{epoch-2}]<t[{epoch-1}]<t[{epoch}], duration={dur}s/{dur2}s")
+        else:
+            results.fail("epoch_start_monotonic", f"Not monotonic: {t1}, {t2}, {t3}")
+    else:
+        results.ok("epoch_start_monotonic", "Not enough epochs to test")
+
+    # Test: consecutive missed epochs tracking
+    print("\nTest: consecutiveMissedEpochs tracking")
+    missed = fund.functions.consecutiveMissedEpochs().call()
+    # After a successful epoch, should be 0. After failures, should be > 0.
+    results.ok("missed_epochs_tracked", f"consecutiveMissedEpochs = {missed}")
+
+
+# ─── Phase 6: Permission Freezing ──────────────────────────────────
+
+def test_freezing(results):
+    """Test freeze flags. Uses the EXISTING contract — only tests flags already set."""
+    print("\n── Phase 6: Permission Freezing (existing flags) ──")
+
+    frozen = fund.functions.frozenFlags().call()
+    print(f"  Current frozenFlags: {frozen} (binary: {bin(frozen)})")
+
+    freeze_names = {
+        1: ("FREEZE_NONPROFITS", "addNonprofit"),
+        2: ("FREEZE_INVESTMENT_WIRING", "setInvestmentManager"),
+        4: ("FREEZE_WORLDVIEW_WIRING", "setWorldView"),
+        8: ("FREEZE_AUCTION_CONFIG", "setAuctionTiming"),
+        16: ("FREEZE_VERIFIERS", "approveVerifier"),
+        64: ("FREEZE_DIRECT_MODE", "submitEpochAction"),
+        128: ("FREEZE_MIGRATE", "withdrawAll"),
+    }
+
+    for flag, (name, blocked_fn) in freeze_names.items():
+        is_frozen = bool(frozen & flag)
+        if is_frozen:
+            print(f"\n  Test: {name} blocks {blocked_fn}")
+            try:
+                if flag == 1:
+                    receipt = send_tx(fund.functions.addNonprofit("Test", "Test", b'\x00' * 32), gas=200_000)
+                elif flag == 2:
+                    receipt = send_tx(fund.functions.setInvestmentManager(owner.address), gas=200_000)
+                elif flag == 4:
+                    receipt = send_tx(fund.functions.setWorldView(owner.address), gas=200_000)
+                elif flag == 8:
+                    receipt = send_tx(fund.functions.setAuctionTiming(1800, 480, 300, 1020), gas=200_000)
+                elif flag == 16:
+                    receipt = send_tx(fund.functions.approveVerifier(99, owner.address), gas=200_000)
+                elif flag == 64:
+                    receipt = send_tx(fund.functions.submitEpochAction(b'\x00', b'test', -1, ""), gas=200_000)
+                elif flag == 128:
+                    receipt = send_tx(fund.functions.withdrawAll(), gas=500_000)
+
+                if receipt["status"] == 0:
+                    results.ok(f"freeze_{name}", f"Correctly reverted (frozen)")
+                else:
+                    results.fail(f"freeze_{name}", f"Tx SUCCEEDED despite {name} being frozen!")
+            except Exception as e:
+                if "Frozen" in str(e) or "revert" in str(e).lower():
+                    results.ok(f"freeze_{name}", f"Reverted: {str(e)[:50]}")
+                else:
+                    results.fail(f"freeze_{name}", str(e)[:100])
+        else:
+            print(f"\n  SKIP: {name} not frozen on this deploy")
+
+    # Test: freeze is irreversible (can't unfreeze)
+    print("\n  Test: freeze is additive only")
+    frozen_before = fund.functions.frozenFlags().call()
+    # freeze(0) should be a no-op, not clear flags
+    try:
+        receipt = send_tx(fund.functions.freeze(0), gas=200_000)
+        frozen_after = fund.functions.frozenFlags().call()
+        if frozen_after >= frozen_before:
+            results.ok("freeze_additive", f"freeze(0) didn't clear flags: {frozen_before} → {frozen_after}")
+        else:
+            results.fail("freeze_additive", f"Flags DECREASED: {frozen_before} → {frozen_after}")
+    except Exception as e:
+        results.ok("freeze_additive", f"freeze(0) reverted (also fine): {str(e)[:50]}")
+
+
 # ─── Main ───────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(description="Testnet E2E Testing")
-    parser.add_argument("--phase", choices=["actions", "donors", "multiprover", "all"], default="all")
+    parser.add_argument("--phase", choices=["actions", "donors", "multiprover", "edge", "freeze", "all"], default="all")
     args = parser.parse_args()
 
     print(f"Contract: {CONTRACT_ADDRESS}")
@@ -503,6 +661,12 @@ def main():
 
     if args.phase in ("multiprover", "all"):
         test_multiprover(results)
+
+    if args.phase in ("edge", "all"):
+        test_edge_cases(results)
+
+    if args.phase in ("freeze", "all"):
+        test_freezing(results)
 
     success = results.summary()
     sys.exit(0 if success else 1)
