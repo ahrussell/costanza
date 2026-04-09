@@ -1256,6 +1256,9 @@ const FUND_ABI = [
   "function frozenFlags() view returns (uint256)",
   "function nonprofitCount() view returns (uint256)",
   "function currentBond() view returns (uint256)",
+  "function timingAnchor() view returns (uint256)",
+  "function anchorEpoch() view returns (uint256)",
+  "function epochStartTime(uint256 epoch) view returns (uint256)",
   // Structs
   "function getNonprofit(uint256 id) view returns (string name, string description, bytes32 ein, uint256 totalDonated, uint256 totalDonatedUsd, uint256 donationCount)",
   "function getEpochRecord(uint256 epoch) view returns (uint256 timestamp, bytes action, bytes reasoning, uint256 treasuryBefore, uint256 treasuryAfter, uint256 bountyPaid, bool executed)",
@@ -2017,7 +2020,8 @@ async function loadAll() {
         cdEl.style.color = 'var(--green)';
       }
       document.getElementById('tl-countdown-label').textContent = lbl;
-    } catch {
+    } catch (err) {
+      console.error('Timeline error:', err);
       document.getElementById('tl-phase').innerHTML = '<span class="badge badge-dim">IDLE</span>';
     }
   } else {
