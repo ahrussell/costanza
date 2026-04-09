@@ -1361,6 +1361,7 @@ const AUCTION_ABI = [
   "function executionDeadline() view returns (uint256)",
   "function currentAuctionEpoch() view returns (uint256)",
   "function getBidRecord(uint256 epoch, address runner) view returns (bool revealed, uint256 bidAmount, bool winner, bool forfeited)",
+  "function didReveal(uint256 epoch, address runner) view returns (bool)",
   "function pendingBondRefunds() view returns (uint256)",
 ];
 
@@ -2418,26 +2419,42 @@ async function loadAll() {
       if (bidCount === 0) {
         document.getElementById('tl-bids').innerHTML = '<div style="font-family:var(--mono);font-size:20px;font-weight:600;">0</div><div style="font-size:11px;color:var(--text-dim);">No bids this epoch</div>';
       } else {
-        // Get revealed bids for each committer
-        const bidPromises = committers.map(addr => auctionMgr.getBidRecord(epoch, addr).catch(() => null));
-        const bidRecords = await Promise.all(bidPromises);
-        const revealedBids = [];
+        // Get reveal status and winner info for each committer
+        const [didRevealResults, winner, winningBid] = await Promise.all([
+          Promise.all(committers.map(addr => auctionMgr.didReveal(epoch, addr).catch(() => false))),
+          auctionMgr.getWinner(epoch).catch(() => null),
+          auctionMgr.getWinningBid(epoch).catch(() => null),
+        ]);
+        const winnerAddr = winner && winner !== '0x0000000000000000000000000000000000000000' ? winner.toLowerCase() : null;
+        const allBids = [];
         for (let i = 0; i < committers.length; i++) {
-          if (bidRecords[i] && bidRecords[i].revealed) {
-            revealedBids.push({ addr: committers[i], amount: bidRecords[i].bidAmount });
-          }
+          const revealed = didRevealResults[i];
+          const isWinner = winnerAddr && committers[i].toLowerCase() === winnerAddr;
+          // Show bid amount only for the winner (only amount available pre-settlement)
+          const amount = isWinner && winningBid ? winningBid : null;
+          allBids.push({ addr: committers[i], revealed, amount, isWinner });
         }
-        revealedBids.sort((a, b) => (a.amount < b.amount ? -1 : a.amount > b.amount ? 1 : 0));
+        // Sort: revealed bids first (ascending), then unrevealed
+        allBids.sort((a, b) => {
+          if (a.revealed && b.revealed) return a.amount < b.amount ? -1 : a.amount > b.amount ? 1 : 0;
+          if (a.revealed) return -1;
+          if (b.revealed) return 1;
+          return 0;
+        });
         let bHtml = `<div style="font-family:var(--mono);font-size:20px;font-weight:600;margin-bottom:8px;">${bidCount}</div>`;
-        if (revealedBids.length > 0) {
-          const showBids = revealedBids.slice(0, 5);
-          for (const b of showBids) {
-            bHtml += `<div class="stat-row"><span class="stat-label">${fmtAddr(b.addr)}</span><span class="stat-value">${fmtEth(b.amount)}</span></div>`;
+        const showBids = allBids.slice(0, 5);
+        for (const b of showBids) {
+          let valHtml;
+          if (!b.revealed) {
+            valHtml = `<span class="stat-value" style="color:var(--text-dim);" title="Did not reveal">🔒</span>`;
+          } else if (b.amount !== null) {
+            valHtml = `<span class="stat-value">${fmtEth(b.amount)}</span>`;
+          } else {
+            valHtml = `<span class="stat-value" style="color:var(--text-success,#22c55e);" title="Revealed">✓</span>`;
           }
-          if (revealedBids.length > 5) bHtml += `<div style="font-size:11px;color:var(--text-dim);">+ ${revealedBids.length - 5} more</div>`;
-        } else {
-          bHtml += '<div style="font-size:11px;color:var(--text-dim);">Bids not yet revealed</div>';
+          bHtml += `<div class="stat-row"><span class="stat-label">${fmtAddr(b.addr)}</span>${valHtml}</div>`;
         }
+        if (allBids.length > 5) bHtml += `<div style="font-size:11px;color:var(--text-dim);">+ ${allBids.length - 5} more</div>`;
         document.getElementById('tl-bids').innerHTML = bHtml;
       }
     } catch {
