@@ -42,6 +42,7 @@ These constants are referenced throughout the security games:
 |--------|-------|-------------|
 | $\delta$ | `MAX_DONATION_BPS` = 1000 | Max donation per epoch (10% of liquid treasury) |
 | $\beta$ | `MAX_BID_BPS` = 200 | Hard cap on bounty (2% of treasury) |
+| $\beta_\gamma$ | `MAX_BOND_BPS` = 500 | Hard cap on bond (5% of treasury) |
 | $\alpha$ | `AUTO_ESCALATION_BPS` = 1000 | Escalation rate per missed epoch (10%) |
 | $b_0$ | `maxBid` | Initial max bid ceiling (set at deployment) |
 | $\gamma$ | `BASE_BOND` = 0.001 ETH | Base bond amount |
@@ -129,9 +130,13 @@ The system must continue operating without requiring any specific party's cooper
 
 **Boundary condition.** Liveness fails when $\beta \cdot T < c$ — the treasury is too small for even the hard-cap bounty to cover costs. At current costs ($c \approx$ \$1/epoch), the minimum viable treasury is approximately \$50. Below this threshold, the system enters permanent sleep. This is the only true death condition: not a shutdown, but economic dormancy.
 
-**Bond and the cost of stalling.** An adversary who stalls by committing and forfeiting (to block honest provers from winning) pays the bond $\gamma_k$ per epoch. The bond also escalates: $\gamma_k = \min(\gamma \cdot \alpha^k, b_k)$. The cumulative cost of stalling $k$ consecutive epochs is:
+**Decoupled bond and bounty caps.** The bond and bounty escalate at the same rate ($\alpha$ per missed epoch) but have different hard caps: the bounty caps at $\beta \cdot T$ (2% of treasury) and the bond caps at $\beta_\gamma \cdot T$ (5% of treasury). This decoupling is deliberate.
 
-$$C_{\text{stall}}(k) = \sum_{i=0}^{k-1} \gamma_i = \sum_{i=0}^{k-1} \min\!\big(\gamma \cdot \alpha^i,\; b_i\big)$$
+For honest provers, the bond is returned on successful reveal, so a higher bond cap primarily affects capital lockup — not profit. An honest prover with failure rate $p = 0.02$ faces expected bond loss of $p \cdot \beta_\gamma \cdot T = 0.001 \cdot T$ per epoch, well below the bounty. For stallers, the bond is forfeited in full. At the cap, a staller pays $0.05 \cdot T$ per epoch — 2.5× the maximum bounty they'd forgo, and a significant fraction of the maximum single-action impact ($\delta \cdot T = 0.10 \cdot T$). This makes the veto threshold from Property 7 substantially larger: $\tau_w \approx b_w + \gamma_k - c_w \approx 0.07 \cdot T$ at the caps.
+
+**The cost of stalling.** An adversary who stalls by committing and forfeiting pays the bond $\gamma_k$ per epoch. The bond escalates: $\gamma_k = \min(\gamma \cdot \alpha^k, \beta_\gamma \cdot T)$. The cumulative cost of stalling $k$ consecutive epochs is:
+
+$$C_{\text{stall}}(k) = \sum_{i=0}^{k-1} \gamma_i = \sum_{i=0}^{k-1} \min\!\big(\gamma \cdot \alpha^i,\; \beta_\gamma \cdot T\big)$$
 
 This is a geometric series — the cost of the $k$-th stalled epoch is $\alpha$ times the cost of the $(k{-}1)$-th. Meanwhile, the adversary gains nothing (no bounty, no influence on the agent's actions). The escalating bond creates a *negative feedback loop*: the longer the stall, the more expensive each additional epoch becomes, while simultaneously increasing the incentive for honest provers to outbid the attacker. See Section 3.8 for the full multi-epoch analysis.
 
@@ -379,10 +384,10 @@ An adversary who wants to prevent the system from executing — without extracti
 **Strategy A: Commit and don't reveal.** The adversary forfeits bond $\gamma_k$ per epoch. But honest provers can also commit in the same epoch — the attacker only blocks execution if they are the *only* committer and don't reveal (no winner selected), or if they win (lowest bid) and don't submit. To guarantee winning, the attacker must commit a bid of 1 wei — the minimum — which any honest prover with cost $c > 1$ wei would not match. But:
 
 - The attacker still forfeits $\gamma_k$ (the bond) each epoch.
-- The bond escalates: $\gamma_k = \min(\gamma \cdot \alpha^k, b_k)$ where $\gamma = 0.001$ ETH.
+- The bond escalates: $\gamma_k = \min(\gamma \cdot \alpha^k, \beta_\gamma \cdot T)$ where $\gamma = 0.001$ ETH.
 - After $k$ stalled epochs, cumulative stall cost:
 
-$$C_{\text{stall}}(k) = \sum_{i=0}^{k-1} \min\!\big(\gamma \cdot \alpha^i,\; \beta \cdot T\big)$$
+$$C_{\text{stall}}(k) = \sum_{i=0}^{k-1} \min\!\big(\gamma \cdot \alpha^i,\; \beta_\gamma \cdot T\big)$$
 
 - Meanwhile, the bounty ceiling $b_k$ also escalates, making it increasingly profitable for honest provers to enter and outbid the attacker.
 
