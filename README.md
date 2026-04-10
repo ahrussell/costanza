@@ -71,5 +71,5 @@ While this does not completely break Costanza's security model (the contract sti
 ## Further reading
 
 - **[DESIGN.md](DESIGN.md)** — How the system works: the reverse auction, integrity chain, action space, and cost economics
-- **[SECURITY_MODEL.md](SECURITY_MODEL.md)** — Trust boundaries, threat analysis, accepted risks, and verification properties
-- **[DMVERITY.md](DMVERITY.md)** — The enclave build process: boot flow, disk layout, and dm-verity architecture
+- **[SECURITY_MODEL.md](SECURITY_MODEL.md)** — Formal security model: assumptions, security games, and proof sketches
+- **[TEE_SECURITY.md](TEE_SECURITY.md)** — TEE construction: TDX trust model, dm-verity, boot flow, and build process

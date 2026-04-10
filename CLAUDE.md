@@ -24,7 +24,7 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 - H100 on-demand quota is 0; all GPU VMs use `--provisioning-model=SPOT`
 - **Remaining**: extended testnet run, mainnet deployment
 
-**Deep dives**: [DESIGN.md](DESIGN.md) (full specification), [SECURITY_MODEL.md](SECURITY_MODEL.md) (trust boundaries, accepted risks), [DMVERITY.md](DMVERITY.md) (boot flow, disk layout, build process)
+**Deep dives**: [DESIGN.md](DESIGN.md) (full specification), [SECURITY_MODEL.md](SECURITY_MODEL.md) (formal security model, assumptions, proofs), [TEE_SECURITY.md](TEE_SECURITY.md) (TDX + dm-verity construction, boot flow, build process)
 
 ## Architecture
 
@@ -86,9 +86,9 @@ Check actual gas used via `cast send` or test transactions and update the consta
 thehumanfund/
 ├── CLAUDE.md                    # This file
 ├── DESIGN.md                    # Full design specification
-├── SECURITY_MODEL.md            # Trust boundaries, accepted risks, verification checklist
+├── SECURITY_MODEL.md            # Formal security model: assumptions, games, proofs
+├── TEE_SECURITY.md              # TEE construction: TDX trust model, dm-verity, boot flow, build
 ├── SECURITY_AUDIT.md            # Point-in-time adversarial security audit
-├── DMVERITY.md                  # dm-verity TEE architecture (boot flow, disk layout, build)
 ├── foundry.toml                 # Foundry configuration
 ├── .venv/                       # Python virtual environment (gitignored)
 ├── src/
@@ -233,7 +233,7 @@ See [prover/README.md](prover/README.md) for full setup instructions.
 - **Input**: Epoch state JSON via GCP instance metadata
 - **Output**: Result JSON to serial console (`/dev/ttyS0`, between `===HUMANFUND_OUTPUT_START===` / `===HUMANFUND_OUTPUT_END===` delimiters)
 
-See [DMVERITY.md](DMVERITY.md) for boot flow, disk layout, and build process.
+See [TEE_SECURITY.md](TEE_SECURITY.md) for boot flow, disk layout, and build process.
 
 ## Frontend
 

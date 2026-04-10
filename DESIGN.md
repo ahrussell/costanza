@@ -89,7 +89,7 @@ We also considered [dstack-OS](https://github.com/Dstack-TEE/dstack) (Phala's TE
 
 The model weights live on a separate dm-verity partition, also hash-verified. No network download at runtime.
 
-See [DMVERITY.md](DMVERITY.md) for the full boot flow, disk layout, and build process.
+See [TEE_SECURITY.md](TEE_SECURITY.md) for the full boot flow, disk layout, and build process.
 
 ### Input and output binding
 
@@ -169,5 +169,5 @@ The verifier contract is modular — swapping in a ZK verifier would not require
 ## Further reading
 
 - **[SECURITY_MODEL.md](SECURITY_MODEL.md)** — Trust boundaries, threat analysis, accepted risks, and the formal verification properties
-- **[DMVERITY.md](DMVERITY.md)** — dm-verity boot flow, disk layout, two-disk build process
+- **[TEE_SECURITY.md](TEE_SECURITY.md)** — TEE construction: TDX trust model, dm-verity boot flow, disk layout, build process
 - **[prover/prompts/system.txt](prover/prompts/system.txt)** — The system prompt (Costanza's personality and instructions)
