@@ -968,8 +968,10 @@ contract TheHumanFundAuctionTest is Test {
         uint256 bond = fund.currentBond();
         uint256 maxBid = fund.effectiveMaxBid();
 
-        // Bond should never exceed effectiveMaxBid
-        assertLe(bond, maxBid);
+        // Bond should never exceed its own cap: max(MIN_BOND_CAP, 10% of treasury)
+        uint256 treasuryBondCap = (address(fund).balance * 1000) / 10000;
+        uint256 bondCap = treasuryBondCap > 1 ether ? treasuryBondCap : 1 ether;
+        assertLe(bond, bondCap);
         // effectiveMaxBid should never exceed 2% of treasury
         uint256 hardCap = (address(fund).balance * 200) / 10000;
         assertLe(maxBid, hardCap);

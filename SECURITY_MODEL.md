@@ -42,7 +42,8 @@ These constants are referenced throughout the security games:
 |--------|-------|-------------|
 | $\delta$ | `MAX_DONATION_BPS` = 1000 | Max donation per epoch (10% of liquid treasury) |
 | $\beta$ | `MAX_BID_BPS` = 200 | Hard cap on bounty (2% of treasury) |
-| $\beta_\gamma$ | `MAX_BOND_BPS` = 500 | Hard cap on bond (5% of treasury) |
+| $\beta_\gamma$ | `MAX_BOND_BPS` = 1000 | Bond cap as fraction of treasury (10%) |
+| $\gamma_{\text{floor}}$ | `MIN_BOND_CAP` = 1 ETH | Minimum bond cap (independent of treasury) |
 | $\alpha$ | `AUTO_ESCALATION_BPS` = 1000 | Escalation rate per missed epoch (10%) |
 | $b_0$ | `maxBid` | Initial max bid ceiling (set at deployment) |
 | $\gamma$ | `BASE_BOND` = 0.001 ETH | Base bond amount |
@@ -130,13 +131,15 @@ The system must continue operating without requiring any specific party's cooper
 
 **Boundary condition.** Liveness fails when $\beta \cdot T < c$ — the treasury is too small for even the hard-cap bounty to cover costs. At current costs ($c \approx$ \$1/epoch), the minimum viable treasury is approximately \$50. Below this threshold, the system enters permanent sleep. This is the only true death condition: not a shutdown, but economic dormancy.
 
-**Decoupled bond and bounty caps.** The bond and bounty escalate at the same rate ($\alpha$ per missed epoch) but have different hard caps: the bounty caps at $\beta \cdot T$ (2% of treasury) and the bond caps at $\beta_\gamma \cdot T$ (5% of treasury). This decoupling is deliberate.
+**Decoupled bond and bounty caps.** The bond and bounty escalate at the same rate ($\alpha$ per missed epoch) but have different hard caps and different rationales. The bounty caps at $\beta \cdot T$ (2% of treasury) — this limits extraction from the treasury per epoch. The bond caps at $\hat{\gamma} = \max(\gamma_{\text{floor}},\; \beta_\gamma \cdot T)$ where $\gamma_{\text{floor}} = 1$ ETH and $\beta_\gamma = 0.10$.
 
-For honest provers, the bond is returned on successful reveal, so a higher bond cap primarily affects capital lockup — not profit. An honest prover with failure rate $p = 0.02$ faces expected bond loss of $p \cdot \beta_\gamma \cdot T = 0.001 \cdot T$ per epoch, well below the bounty. For stallers, the bond is forfeited in full. At the cap, a staller pays $0.05 \cdot T$ per epoch — 2.5× the maximum bounty they'd forgo, and a significant fraction of the maximum single-action impact ($\delta \cdot T = 0.10 \cdot T$). This makes the veto threshold from Property 7 substantially larger: $\tau_w \approx b_w + \gamma_k - c_w \approx 0.07 \cdot T$ at the caps.
+The bond cap is deliberately **not proportional to the treasury alone**. The motivation for stalling has nothing to do with the treasury — an attacker's willingness to pay is determined by the *external* value they protect by preventing the agent from acting. A treasury worth \$500 might be targeted by an attacker protecting \$100,000 of external value. The floor $\gamma_{\text{floor}}$ ensures that stalling always has a meaningful absolute cost, even when the treasury is small.
 
-**The cost of stalling.** An adversary who stalls by committing and forfeiting pays the bond $\gamma_k$ per epoch. The bond escalates: $\gamma_k = \min(\gamma \cdot \alpha^k, \beta_\gamma \cdot T)$. The cumulative cost of stalling $k$ consecutive epochs is:
+For honest provers, the bond is returned on successful reveal, so a higher bond cap primarily affects capital lockup — not profit. An honest prover with failure rate $p = 0.02$ faces expected bond loss of $p \cdot \hat{\gamma}$, well below the bounty at equilibrium. For stallers, the bond is forfeited in full. This makes the veto threshold from Property 7 substantially larger: $\tau_w \approx b_w + \hat{\gamma} - c_w$.
 
-$$C_{\text{stall}}(k) = \sum_{i=0}^{k-1} \gamma_i = \sum_{i=0}^{k-1} \min\!\big(\gamma \cdot \alpha^i,\; \beta_\gamma \cdot T\big)$$
+**The cost of stalling.** An adversary who stalls by committing and forfeiting pays the bond $\gamma_k$ per epoch. The bond escalates: $\gamma_k = \min(\gamma \cdot \alpha^k,\; \hat{\gamma})$ where $\hat{\gamma} = \max(\gamma_{\text{floor}},\; \beta_\gamma \cdot T)$. The cumulative cost of stalling $k$ consecutive epochs is:
+
+$$C_{\text{stall}}(k) = \sum_{i=0}^{k-1} \gamma_i = \sum_{i=0}^{k-1} \min\!\big(\gamma \cdot \alpha^i,\; \hat{\gamma}\big)$$
 
 This is a geometric series — the cost of the $k$-th stalled epoch is $\alpha$ times the cost of the $(k{-}1)$-th. Meanwhile, the adversary gains nothing (no bounty, no influence on the agent's actions). The escalating bond creates a *negative feedback loop*: the longer the stall, the more expensive each additional epoch becomes, while simultaneously increasing the incentive for honest provers to outbid the attacker. See Section 3.8 for the full multi-epoch analysis.
 
@@ -384,10 +387,10 @@ An adversary who wants to prevent the system from executing — without extracti
 **Strategy A: Commit and don't reveal.** The adversary forfeits bond $\gamma_k$ per epoch. But honest provers can also commit in the same epoch — the attacker only blocks execution if they are the *only* committer and don't reveal (no winner selected), or if they win (lowest bid) and don't submit. To guarantee winning, the attacker must commit a bid of 1 wei — the minimum — which any honest prover with cost $c > 1$ wei would not match. But:
 
 - The attacker still forfeits $\gamma_k$ (the bond) each epoch.
-- The bond escalates: $\gamma_k = \min(\gamma \cdot \alpha^k, \beta_\gamma \cdot T)$ where $\gamma = 0.001$ ETH.
+- The bond escalates: $\gamma_k = \min(\gamma \cdot \alpha^k,\; \hat{\gamma})$ where $\hat{\gamma} = \max(\gamma_{\text{floor}},\; \beta_\gamma \cdot T)$.
 - After $k$ stalled epochs, cumulative stall cost:
 
-$$C_{\text{stall}}(k) = \sum_{i=0}^{k-1} \min\!\big(\gamma \cdot \alpha^i,\; \beta_\gamma \cdot T\big)$$
+$$C_{\text{stall}}(k) = \sum_{i=0}^{k-1} \min\!\big(\gamma \cdot \alpha^i,\; \hat{\gamma}\big)$$
 
 - Meanwhile, the bounty ceiling $b_k$ also escalates, making it increasingly profitable for honest provers to enter and outbid the attacker.
 

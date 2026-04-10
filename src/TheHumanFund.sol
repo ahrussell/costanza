@@ -117,6 +117,8 @@ contract TheHumanFund is ReentrancyGuard {
     uint256 public constant AUTO_ESCALATION_BPS = 1000;    // 10% increase per missed epoch
     uint256 public constant MAX_NONPROFITS = 20;
     uint256 public constant BASE_BOND = 0.001 ether;        // Fixed bond, escalates on missed epochs
+    uint256 public constant MIN_BOND_CAP = 1 ether;          // Bond cap floor (independent of treasury)
+    uint256 public constant MAX_BOND_BPS = 1000;             // Bond cap as 10% of treasury
     uint256 public constant MIN_MESSAGE_DONATION = 0.01 ether;  // 10x normal min to prevent spam
     uint256 public constant MAX_MESSAGE_LENGTH = 280;
     uint256 public constant MAX_MESSAGES_PER_EPOCH = 20;
@@ -223,6 +225,7 @@ contract TheHumanFund is ReentrancyGuard {
 
     event PermissionFrozen(uint256 indexed flag);
     event Sunset(address indexed destination);
+    event OwnershipTransferred(address indexed newOwner);
 
     // ─── Modifiers ───────────────────────────────────────────────────────
 
@@ -462,6 +465,15 @@ contract TheHumanFund is ReentrancyGuard {
         investmentManager = IInvestmentManager(_im);
     }
 
+    /// @notice Transfer contract ownership to a new address (e.g., a multisig).
+    /// @dev Frozen by FREEZE_MIGRATE (same gate as withdrawAll/migrate).
+    function transferOwnership(address newOwner) external onlyOwner {
+        if (frozenFlags & FREEZE_MIGRATE != 0) revert Frozen();
+        if (newOwner == address(0)) revert InvalidParams();
+        owner = newOwner;
+        emit OwnershipTransferred(newOwner);
+    }
+
     /// @notice Withdraw all DeFi positions and transfer entire treasury to owner.
     /// @dev Emergency shutdown: unwinds all investments, sends everything to owner.
     function withdrawAll() external onlyOwner {
@@ -560,10 +572,13 @@ contract TheHumanFund is ReentrancyGuard {
     }
 
     /// @notice Current bond amount — fixed base that escalates 10% per consecutive missed epoch.
-    ///         Capped at effectiveMaxBid to prevent unbounded growth.
+    ///         Capped at max(MIN_BOND_CAP, 10% of treasury). The bond cap is independent of the
+    ///         bounty cap because the cost of stalling is unrelated to the treasury size — an
+    ///         attacker's motivation may be external (e.g. preventing the agent from acting).
     function currentBond() public view returns (uint256) {
         uint256 bond = BASE_BOND;
-        uint256 cap = effectiveMaxBid();
+        uint256 treasuryBondCap = (address(this).balance * MAX_BOND_BPS) / 10000;
+        uint256 cap = treasuryBondCap > MIN_BOND_CAP ? treasuryBondCap : MIN_BOND_CAP;
         for (uint256 i = 0; i < consecutiveMissedEpochs; i++) {
             bond = bond + (bond * AUTO_ESCALATION_BPS) / 10000;
             if (bond >= cap) return cap;
