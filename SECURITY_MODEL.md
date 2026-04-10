@@ -20,7 +20,7 @@ Costanza is an autonomous AI agent managing a charitable treasury on Base L2. Ea
 
 **Donors** $D_1, \ldots, D_m$ — Provide ETH inflows and short text messages. Messages are the only channel for external text to enter the model's context. Donors are untrusted with respect to message content.
 
-**Owner** $\mathcal{O}$ — Holds elevated privileges during system setup (registering nonprofits, configuring auction parameters, approving TEE images). Privileges are progressively and irreversibly removed via one-way freeze flags. Post-freeze, $\mathcal{O}$ retains only `skipEpoch()` (emergency pause) and `seedWorldView()` (one-time initialization).
+**Owner** $\mathcal{O}$ — Holds elevated privileges during system setup (registering nonprofits, configuring auction parameters, approving TEE images). All privileges — including emergency withdrawal, direct-mode submission, epoch skipping, and worldview seeding — are progressively and irreversibly removed via one-way freeze flags. Post-freeze, $\mathcal{O}$ has no capabilities beyond any other external observer.
 
 **Sequencer** $\mathcal{S}$ — The L2 block producer (Coinbase, on Base). Controls transaction ordering and sets `block.prevrandao`. Assumed honest in the base model; collusion with provers is analyzed as an assumption violation.
 
@@ -28,7 +28,7 @@ Costanza is an autonomous AI agent managing a charitable treasury on Base L2. Ea
 
 The security model is built on three ideal functionalities. The concrete constructions that realize them are described in [TEE_SECURITY.md](TEE_SECURITY.md) and standard cryptographic literature.
 
-**$\mathcal{F}_{\text{TEE}}$ — Trusted Execution.** On input $(\textit{code\_id}, \textit{input}, \textit{seed})$, produces $(\textit{result}, \pi)$ where $\pi$ is an attestation binding $\textit{code\_id}$, $\textit{input}$, $\textit{seed}$, and $\textit{result}$ together. The adversary cannot produce a valid $\pi$ for any tuple $(\textit{code\_id}, \textit{input}, \textit{seed}, \textit{result}')$ where $\textit{result}' \neq \textit{result}$, unless they break the underlying TEE hardware.
+**$\mathcal{F}_{\text{TEE}}$ — Trusted Execution.** On input $(\textsf{codeId}, \textit{input}, \textit{seed})$, produces $(\textit{result}, \pi)$ where $\pi$ is an attestation binding $\textsf{codeId}$, $\textit{input}$, $\textit{seed}$, and $\textit{result}$ together. The adversary cannot produce a valid $\pi$ for any tuple $(\textsf{codeId}, \textit{input}, \textit{seed}, \textit{result}')$ where $\textit{result}' \neq \textit{result}$, unless they break the underlying TEE hardware.
 
 **$\mathcal{F}_{\text{HASH}}$ — Collision-Resistant Hashing.** A family of hash functions $H : \{0,1\}^* \to \{0,1\}^{256}$ such that no PPT adversary can find $x \neq x'$ with $H(x) = H(x')$ with non-negligible probability. Instantiated by SHA-256 and Keccak-256.
 
@@ -87,7 +87,7 @@ The special case $v_i \equiv 0$ (prover has no external financial interests tied
 
 **A10 (Prover Responsiveness).** At least one prover satisfying A8 can observe on-chain state and submit a valid transaction within a single phase window. This requires bounded network latency, sufficient working capital for the bond, and awareness of the auction schedule. Without this assumption, provers may exist but be unable to participate in time.
 
-**A11 (Deterministic Inference).** For a fixed $(\textit{code\_id}, \textit{input}, \textit{seed})$, the enclave produces a unique output. This is achieved by pinning the inference binary (llama.cpp), model weights, sampling parameters, and GPU architecture in the dm-verity image, and using a deterministic sampler seeded by $\textit{seed}$. Without A11, a prover could run the enclave multiple times and select among distinct valid outputs — each with a genuine attestation — reintroducing the output-selection attack that seed commitment is designed to prevent.
+**A11 (Deterministic Inference).** For a fixed $(\textsf{codeId}, \textit{input}, \textit{seed})$, the enclave produces a unique output. This is achieved by pinning the inference binary (llama.cpp), model weights, sampling parameters, and GPU architecture in the dm-verity image, and using a deterministic sampler seeded by $\textit{seed}$. Without A11, a prover could run the enclave multiple times and select among distinct valid outputs — each with a genuine attestation — reintroducing the output-selection attack that seed commitment is designed to prevent.
 
 ---
 
@@ -104,7 +104,7 @@ The system must continue operating without requiring any specific party's cooper
 **Game** $\textsf{LIVENESS}(\lambda, W)$:
 
 1. Challenger initializes $\mathcal{C}$ with treasury $T > 0$, initial max bid $b_0$, escalation rate $\alpha = 1.10$, and hard cap $\beta = 0.02$.
-2. Adversary $\mathcal{A}$ controls up to $n - 1$ of $n$ provers and can make them abstain from any epoch. $\mathcal{A}$ can also grief by committing and not revealing (forfeiting bonds).
+2. Adversary $\mathcal{A}$ controls up to $n - 1$ of $n$ provers and can make them abstain from any epoch. $\mathcal{A}$ can also stall by committing and not revealing (forfeiting bonds).
 3. $\mathcal{A}$ wins if there exist $W$ consecutive epochs with no valid submission.
 
 ---
@@ -129,11 +129,11 @@ The system must continue operating without requiring any specific party's cooper
 
 **Boundary condition.** Liveness fails when $\beta \cdot T < c$ — the treasury is too small for even the hard-cap bounty to cover costs. At current costs ($c \approx$ \$1/epoch), the minimum viable treasury is approximately \$50. Below this threshold, the system enters permanent sleep. This is the only true death condition: not a shutdown, but economic dormancy.
 
-**Bond and the cost of griefing.** An adversary who griefs by committing and forfeiting (to block honest provers from winning) pays the bond $\gamma_k$ per epoch. The bond also escalates: $\gamma_k = \min(\gamma \cdot \alpha^k, b_k)$. The cumulative cost of griefing $k$ consecutive epochs is:
+**Bond and the cost of stalling.** An adversary who stalls by committing and forfeiting (to block honest provers from winning) pays the bond $\gamma_k$ per epoch. The bond also escalates: $\gamma_k = \min(\gamma \cdot \alpha^k, b_k)$. The cumulative cost of stalling $k$ consecutive epochs is:
 
-$$C_{\text{grief}}(k) = \sum_{i=0}^{k-1} \gamma_i = \sum_{i=0}^{k-1} \min\!\big(\gamma \cdot \alpha^i,\; b_i\big)$$
+$$C_{\text{stall}}(k) = \sum_{i=0}^{k-1} \gamma_i = \sum_{i=0}^{k-1} \min\!\big(\gamma \cdot \alpha^i,\; b_i\big)$$
 
-This is a geometric series — the cost of the $k$-th epoch of griefing is $\alpha$ times the cost of the $(k{-}1)$-th. Meanwhile, the adversary gains nothing (no bounty, no influence on the agent's actions). The escalating bond creates a *negative feedback loop*: the longer the grief, the more expensive each additional epoch becomes, while simultaneously increasing the incentive for honest provers to outbid the griefer. See Section 3.8 for the full multi-epoch analysis.
+This is a geometric series — the cost of the $k$-th stalled epoch is $\alpha$ times the cost of the $(k{-}1)$-th. Meanwhile, the adversary gains nothing (no bounty, no influence on the agent's actions). The escalating bond creates a *negative feedback loop*: the longer the stall, the more expensive each additional epoch becomes, while simultaneously increasing the incentive for honest provers to outbid the attacker. See Section 3.8 for the full multi-epoch analysis.
 
 ### 3.2 Property 2: Inference Integrity
 
@@ -143,7 +143,7 @@ The contract must never accept an action that was not the genuine output of the 
 
 **Game** $\textsf{INTEGRITY}(\lambda)$:
 
-1. Challenger runs the system. The approved code is identified by $\textit{code\_id}$ (the registered platform key).
+1. Challenger runs the system. The approved code is identified by $\textsf{codeId}$ (the registered platform key).
 2. Adversary $\mathcal{A}$ controls a prover. $\mathcal{A}$ may submit arbitrary tuples $(\textit{action}^*, \textit{reasoning}^*, \pi^*)$ to the contract.
 3. $\mathcal{A}$ wins if $\mathcal{C}$ accepts $(\textit{action}^*, \textit{reasoning}^*)$ and either:
    - **(a) Fabrication**: The approved code was never executed on $(\textit{inputHash}, \textit{seed})$.
@@ -161,7 +161,7 @@ The contract must never accept an action that was not the genuine output of the 
 >
 > and verifies that $\textit{expected}$ equals the REPORTDATA extracted from the DCAP-verified attestation quote $\pi^*$.
 >
-> **Against fabrication (3a):** By A1, $\mathcal{A}$ cannot produce a valid attestation $\pi^*$ with the correct REPORTDATA without actually executing the approved code inside $\mathcal{F}_{\text{TEE}}$ on inputs $(\textit{inputHash}, \textit{seed})$. The DCAP verification ensures $\pi^*$ originated from genuine TEE hardware running the attested $\textit{code\_id}$.
+> **Against fabrication (3a):** By A1, $\mathcal{A}$ cannot produce a valid attestation $\pi^*$ with the correct REPORTDATA without actually executing the approved code inside $\mathcal{F}_{\text{TEE}}$ on inputs $(\textit{inputHash}, \textit{seed})$. The DCAP verification ensures $\pi^*$ originated from genuine TEE hardware running the attested $\textsf{codeId}$.
 >
 > **Against substitution (3b):** Suppose the code produced $(\textit{action}, \textit{reasoning})$ but $\mathcal{A}$ submits $(\textit{action}^*, \textit{reasoning}^*)$ with $(\textit{action}, \textit{reasoning}) \neq (\textit{action}^*, \textit{reasoning}^*)$. The attestation quote contains:
 >
@@ -287,7 +287,7 @@ Even if the adversary controls the model's output, the contract enforces hard ca
 
 ### 3.7 Property 7: Execution Incentive Compatibility
 
-Theorem 1 proves liveness for provers with no external financial interests ($v_i \equiv 0$). But provers are permissionless DeFi participants who may hold positions affected by the agent's actions. A prover with a large Aave lending position might find it rational to forfeit a 2% bond to prevent the agent from withdrawing 80% of its Aave investment. This section formalizes the conditions under which the mechanism remains incentive-compatible — i.e., the winning prover finds it rational to submit — even when provers have external interests.
+Theorem 1 proves liveness for provers with no external financial interests ($v_i \equiv 0$). But provers are permissionless participants who may hold positions affected by the agent's actions — or, more broadly, may have financial interests that depend on whether the agent acts at all. This is particularly relevant for autonomous agents with less constrained action spaces (e.g., agents that can execute arbitrary DeFi transactions), where a single action could have outsized market impact. This section formalizes the conditions under which the mechanism remains incentive-compatible — i.e., the winning prover finds it rational to submit — even when provers have external interests.
 
 #### 3.7.1 The Selective Submission Problem
 
@@ -372,40 +372,40 @@ This attack requires winning every auction for the duration. Under A8 (at least 
 
 The public diary provides transparency: every action and its reasoning are published on-chain, making sustained manipulation visible to external observers.
 
-#### 3.8.2 Griefing (Preventing Execution)
+#### 3.8.2 Stalling (Preventing Execution)
 
-An adversary who wants to prevent the system from executing — without extracting value — can grief by committing bids and then either not revealing or not submitting results.
+An adversary who wants to prevent the system from executing — without extracting value — can stall by committing bids and then either not revealing or not submitting results.
 
-**Strategy A: Commit and don't reveal.** The adversary forfeits bond $\gamma_k$ per epoch. But honest provers can also commit in the same epoch — the griefer only blocks execution if they are the *only* committer and don't reveal (no winner selected), or if they win (lowest bid) and don't submit. To guarantee winning, the griefer must commit a bid of 1 wei — the minimum — which any honest prover with cost $c > 1$ wei would not match. But:
+**Strategy A: Commit and don't reveal.** The adversary forfeits bond $\gamma_k$ per epoch. But honest provers can also commit in the same epoch — the attacker only blocks execution if they are the *only* committer and don't reveal (no winner selected), or if they win (lowest bid) and don't submit. To guarantee winning, the attacker must commit a bid of 1 wei — the minimum — which any honest prover with cost $c > 1$ wei would not match. But:
 
-- The griefer still forfeits $\gamma_k$ (the bond) each epoch.
+- The attacker still forfeits $\gamma_k$ (the bond) each epoch.
 - The bond escalates: $\gamma_k = \min(\gamma \cdot \alpha^k, b_k)$ where $\gamma = 0.001$ ETH.
-- After $k$ griefed epochs, cumulative grief cost:
+- After $k$ stalled epochs, cumulative stall cost:
 
-$$C_{\text{grief}}(k) = \sum_{i=0}^{k-1} \min\!\big(\gamma \cdot \alpha^i,\; \beta \cdot T\big)$$
+$$C_{\text{stall}}(k) = \sum_{i=0}^{k-1} \min\!\big(\gamma \cdot \alpha^i,\; \beta \cdot T\big)$$
 
-- Meanwhile, the bounty ceiling $b_k$ also escalates, making it increasingly profitable for honest provers to enter and outbid the griefer.
+- Meanwhile, the bounty ceiling $b_k$ also escalates, making it increasingly profitable for honest provers to enter and outbid the attacker.
 
 **Strategy B: Win and don't submit.** The adversary reveals the lowest bid, wins the auction, and then doesn't submit a result within the execution window. Their bond is forfeited to the treasury. The cost analysis is identical to Strategy A.
 
 **The negative feedback loop.** Both strategies create a self-correcting dynamic:
 
-1. Each grief epoch increases the adversary's cost (escalating bond).
-2. Each grief epoch increases the bounty ceiling, attracting honest provers.
-3. Forfeited bonds flow to the treasury, partially offsetting the grief's effect.
+1. Each stalled epoch increases the adversary's cost (escalating bond).
+2. Each stalled epoch increases the bounty ceiling, attracting honest provers.
+3. Forfeited bonds flow to the treasury, partially offsetting the attack's effect.
 4. The adversary gains nothing — no bounty, no influence on the agent.
 
-For a concrete example: starting from $\gamma = 0.001$ ETH with $\alpha = 1.10$, the cumulative cost of griefing 20 consecutive epochs is:
+For a concrete example: starting from $\gamma = 0.001$ ETH with $\alpha = 1.10$, the cumulative cost of stalling 20 consecutive epochs is:
 
-$$C_{\text{grief}}(20) = 0.001 \cdot \sum_{i=0}^{19} 1.1^i = 0.001 \cdot \frac{1.1^{20} - 1}{0.1} \approx 0.057 \text{ ETH}$$
+$$C_{\text{stall}}(20) = 0.001 \cdot \sum_{i=0}^{19} 1.1^i = 0.001 \cdot \frac{1.1^{20} - 1}{0.1} \approx 0.057 \text{ ETH}$$
 
-After those 20 epochs, the bounty ceiling has risen to $b_0 \cdot 1.1^{20} \approx 6.7 \cdot b_0$, making honest participation increasingly attractive — and the griefer's bond for epoch 21 would be $\gamma \cdot 1.1^{20} \approx 0.0067$ ETH.
+After those 20 epochs, the bounty ceiling has risen to $b_0 \cdot 1.1^{20} \approx 6.7 \cdot b_0$, making honest participation increasingly attractive — and the attacker's bond for epoch 21 would be $\gamma \cdot 1.1^{20} \approx 0.0067$ ETH.
 
 The adversary faces a losing proposition: escalating costs with no revenue, against increasing competition from honest provers attracted by the rising bounty.
 
-**Multi-agent collusion.** Can multiple griefers alternate to share costs? No — the escalation counter (`consecutiveMissedEpochs`) increments on every missed epoch regardless of *who* caused the miss, and only resets when a valid result is submitted. Two griefers alternating still produce consecutive misses, so the bond escalation continues uninterrupted. The only way to reset the counter is to submit a valid result, which means running the model honestly — at which point the agent acts and the grief has failed.
+**Multi-agent collusion.** Can multiple attackers alternate to share costs? No — the escalation counter (`consecutiveMissedEpochs`) increments on every missed epoch regardless of *who* caused the miss, and only resets when a valid result is submitted. Two attackers alternating still produce consecutive misses, so the bond escalation continues uninterrupted. The only way to reset the counter is to submit a valid result, which means running the model honestly — at which point the agent acts and the stall has failed.
 
-**Strategy C: Selective submission (veto griefing).** A prover with external financial interests (Property 7) can win the auction, run the enclave, and selectively veto unfavorable actions. Unlike Strategies A and B, this prover incurs the full compute cost $c_w$ in addition to the forfeited bond — they must actually run the enclave to observe the action. The cost per vetoed epoch is $c_w + \gamma_k$, strictly higher than pure griefing. The same escalation dynamics apply, and the adversary additionally cannot prevent *favorable* actions (they would submit those), limiting this to a sporadic rather than sustained strategy.
+**Strategy C: Selective submission.** A prover with external financial interests (Property 7) can win the auction, run the enclave, and selectively veto unfavorable actions. Unlike Strategies A and B, this prover incurs the full compute cost $c_w$ in addition to the forfeited bond — they must actually run the enclave to observe the action. The cost per vetoed epoch is $c_w + \gamma_k$, strictly higher than pure stalling. The same escalation dynamics apply, and the adversary additionally cannot prevent *favorable* actions (they would submit those), limiting this to a sporadic rather than sustained strategy.
 
 #### 3.8.3 Multi-Epoch Seed Grinding
 
@@ -425,7 +425,7 @@ The security of the system follows from the composition of Properties 1–7, pro
 
 The argument that the TDX + dm-verity construction realizes $\mathcal{F}_{\text{TEE}}$ — including the measurement chain, filesystem integrity, and DCAP verification — is the subject of [TEE_SECURITY.md](TEE_SECURITY.md). We briefly state the requirements that $\mathcal{F}_{\text{TEE}}$ must satisfy:
 
-1. **Execution fidelity.** The output is the genuine result of running $\textit{code\_id}$ on $(\textit{input}, \textit{seed})$. No code outside the attested image can influence the computation.
+1. **Execution fidelity.** The output is the genuine result of running $\textsf{codeId}$ on $(\textit{input}, \textit{seed})$. No code outside the attested image can influence the computation.
 2. **Attestation unforgeability.** No adversary can produce a valid attestation for an execution that did not occur on genuine TEE hardware.
 3. **Input/output binding.** The attestation cryptographically binds the execution to specific inputs and outputs via a REPORTDATA field that the enclave sets and the contract verifies.
 

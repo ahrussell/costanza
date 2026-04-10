@@ -10,7 +10,7 @@ The [Security Model](SECURITY_MODEL.md) proves that the system is secure given a
 
 $\mathcal{F}_{\text{TEE}}$ must provide:
 
-1. **Execution fidelity.** On input $(\textit{code\_id}, \textit{input}, \textit{seed})$, the output is the genuine result of running the identified code on those inputs. No external software can alter the computation.
+1. **Execution fidelity.** On input $(\textsf{codeId}, \textit{input}, \textit{seed})$, the output is the genuine result of running the identified code on those inputs. No external software can alter the computation.
 
 2. **Attestation unforgeability.** No adversary who controls the prover's software stack — but not the TEE hardware — can produce a valid attestation $\pi$ for an execution that did not occur.
 
@@ -34,7 +34,7 @@ Intel Trust Domain Extensions (TDX) is a hardware-based confidential computing t
 | RTMR[2] | Bootloader | Kernel + kernel command line |
 | RTMR[3] | OS/application | Application-layer measurements (unused in our construction) |
 
-Each register is a hash accumulator: $\text{RTMR}[i] = H(\text{RTMR}[i] \;\|\; \text{new\_measurement})$. Once extended, values cannot be rolled back.
+Each register is a hash accumulator: $\text{RTMR}[i] = H(\text{RTMR}[i] \;\|\; \text{newMeasurement})$. Once extended, values cannot be rolled back.
 
 **REPORTDATA.** A 64-byte field that the TD can set to an arbitrary value when requesting an attestation quote. We use the low 32 bytes for $\text{SHA256}(\textit{inputHash} \;\|\; \textit{outputHash})$; the high 32 bytes are zero.
 
