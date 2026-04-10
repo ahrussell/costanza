@@ -10,7 +10,7 @@ The [Security Model](SECURITY_MODEL.md) proves that the system is secure given a
 
 $\mathcal{F}_{\text{TEE}}$ must provide:
 
-1. **Execution fidelity.** On input $(\textsf{codeId}, \textit{input}, \textit{seed})$, the output is the genuine result of running the identified code on those inputs. No external software can alter the computation.
+1. **Execution fidelity.** On input $(\mathsf{codeId}, \textit{input}, \textit{seed})$, the output is the genuine result of running the identified code on those inputs. No external software can alter the computation.
 
 2. **Attestation unforgeability.** No adversary who controls the prover's software stack — but not the TEE hardware — can produce a valid attestation $\pi$ for an execution that did not occur.
 

@@ -28,7 +28,7 @@ Costanza is an autonomous AI agent managing a charitable treasury on Base L2. Ea
 
 The security model is built on three ideal functionalities. The concrete constructions that realize them are described in [TEE_SECURITY.md](TEE_SECURITY.md) and standard cryptographic literature.
 
-**$\mathcal{F}_{\text{TEE}}$ — Trusted Execution.** On input $(\textsf{codeId}, \textit{input}, \textit{seed})$, produces $(\textit{result}, \pi)$ where $\pi$ is an attestation binding $\textsf{codeId}$, $\textit{input}$, $\textit{seed}$, and $\textit{result}$ together. The adversary cannot produce a valid $\pi$ for any tuple $(\textsf{codeId}, \textit{input}, \textit{seed}, \textit{result}')$ where $\textit{result}' \neq \textit{result}$, unless they break the underlying TEE hardware.
+**$\mathcal{F}_{\text{TEE}}$ — Trusted Execution.** On input $(\mathsf{codeId}, \textit{input}, \textit{seed})$, produces $(\textit{result}, \pi)$ where $\pi$ is an attestation binding $\mathsf{codeId}$, $\textit{input}$, $\textit{seed}$, and $\textit{result}$ together. The adversary cannot produce a valid $\pi$ for any tuple $(\mathsf{codeId}, \textit{input}, \textit{seed}, \textit{result}')$ where $\textit{result}' \neq \textit{result}$, unless they break the underlying TEE hardware.
 
 **$\mathcal{F}_{\text{HASH}}$ — Collision-Resistant Hashing.** A family of hash functions $H : \{0,1\}^* \to \{0,1\}^{256}$ such that no PPT adversary can find $x \neq x'$ with $H(x) = H(x')$ with non-negligible probability. Instantiated by SHA-256 and Keccak-256.
 
@@ -87,7 +87,7 @@ The special case $v_i \equiv 0$ (prover has no external financial interests tied
 
 **A10 (Prover Responsiveness).** At least one prover satisfying A8 can observe on-chain state and submit a valid transaction within a single phase window. This requires bounded network latency, sufficient working capital for the bond, and awareness of the auction schedule. Without this assumption, provers may exist but be unable to participate in time.
 
-**A11 (Deterministic Inference).** For a fixed $(\textsf{codeId}, \textit{input}, \textit{seed})$, the enclave produces a unique output. This is achieved by pinning the inference binary (llama.cpp), model weights, sampling parameters, and GPU architecture in the dm-verity image, and using a deterministic sampler seeded by $\textit{seed}$. Without A11, a prover could run the enclave multiple times and select among distinct valid outputs — each with a genuine attestation — reintroducing the output-selection attack that seed commitment is designed to prevent.
+**A11 (Deterministic Inference).** For a fixed $(\mathsf{codeId}, \textit{input}, \textit{seed})$, the enclave produces a unique output. This is achieved by pinning the inference binary (llama.cpp), model weights, sampling parameters, and GPU architecture in the dm-verity image, and using a deterministic sampler seeded by $\textit{seed}$. Without A11, a prover could run the enclave multiple times and select among distinct valid outputs — each with a genuine attestation — reintroducing the output-selection attack that seed commitment is designed to prevent.
 
 ---
 
@@ -101,7 +101,7 @@ The system must continue operating without requiring any specific party's cooper
 
 ---
 
-**Game** $\textsf{LIVENESS}(\lambda, W)$:
+**Game** $\mathsf{LIVENESS}(\lambda, W)$:
 
 1. Challenger initializes $\mathcal{C}$ with treasury $T > 0$, initial max bid $b_0$, escalation rate $\alpha = 1.10$, and hard cap $\beta = 0.02$.
 2. Adversary $\mathcal{A}$ controls up to $n - 1$ of $n$ provers and can make them abstain from any epoch. $\mathcal{A}$ can also stall by committing and not revealing (forfeiting bonds).
@@ -141,9 +141,9 @@ The contract must never accept an action that was not the genuine output of the 
 
 ---
 
-**Game** $\textsf{INTEGRITY}(\lambda)$:
+**Game** $\mathsf{INTEGRITY}(\lambda)$:
 
-1. Challenger runs the system. The approved code is identified by $\textsf{codeId}$ (the registered platform key).
+1. Challenger runs the system. The approved code is identified by $\mathsf{codeId}$ (the registered platform key).
 2. Adversary $\mathcal{A}$ controls a prover. $\mathcal{A}$ may submit arbitrary tuples $(\textit{action}^*, \textit{reasoning}^*, \pi^*)$ to the contract.
 3. $\mathcal{A}$ wins if $\mathcal{C}$ accepts $(\textit{action}^*, \textit{reasoning}^*)$ and either:
    - **(a) Fabrication**: The approved code was never executed on $(\textit{inputHash}, \textit{seed})$.
@@ -151,7 +151,7 @@ The contract must never accept an action that was not the genuine output of the 
 
 ---
 
-**Theorem 2 (Inference Integrity).** *Under A1 (TEE integrity) and A2 (collision resistance), no PPT adversary wins $\textsf{INTEGRITY}(\lambda)$ with non-negligible probability.*
+**Theorem 2 (Inference Integrity).** *Under A1 (TEE integrity) and A2 (collision resistance), no PPT adversary wins $\mathsf{INTEGRITY}(\lambda)$ with non-negligible probability.*
 
 > *Proof sketch.* The contract computes:
 >
@@ -161,7 +161,7 @@ The contract must never accept an action that was not the genuine output of the 
 >
 > and verifies that $\textit{expected}$ equals the REPORTDATA extracted from the DCAP-verified attestation quote $\pi^*$.
 >
-> **Against fabrication (3a):** By A1, $\mathcal{A}$ cannot produce a valid attestation $\pi^*$ with the correct REPORTDATA without actually executing the approved code inside $\mathcal{F}_{\text{TEE}}$ on inputs $(\textit{inputHash}, \textit{seed})$. The DCAP verification ensures $\pi^*$ originated from genuine TEE hardware running the attested $\textsf{codeId}$.
+> **Against fabrication (3a):** By A1, $\mathcal{A}$ cannot produce a valid attestation $\pi^*$ with the correct REPORTDATA without actually executing the approved code inside $\mathcal{F}_{\text{TEE}}$ on inputs $(\textit{inputHash}, \textit{seed})$. The DCAP verification ensures $\pi^*$ originated from genuine TEE hardware running the attested $\mathsf{codeId}$.
 >
 > **Against substitution (3b):** Suppose the code produced $(\textit{action}, \textit{reasoning})$ but $\mathcal{A}$ submits $(\textit{action}^*, \textit{reasoning}^*)$ with $(\textit{action}, \textit{reasoning}) \neq (\textit{action}^*, \textit{reasoning}^*)$. The attestation quote contains:
 >
@@ -181,7 +181,7 @@ The input hash has a two-level structure. Some fields are committed directly (tr
 
 ---
 
-**Game** $\textsf{INPUT\text{-}BINDING}(\lambda)$:
+**Game** $\mathsf{INPUT\text{-}BINDING}(\lambda)$:
 
 1. The contract commits $\textit{inputHash}_k$ for epoch $k$, derived deterministically from on-chain state.
 2. Adversary $\mathcal{A}$ (a prover) provides epoch state $S^*$ to the enclave.
@@ -189,7 +189,7 @@ The input hash has a two-level structure. Some fields are committed directly (tr
 
 ---
 
-**Theorem 3 (Input Binding).** *Under A1 and A2, no PPT adversary wins $\textsf{INPUT\text{-}BINDING}(\lambda)$ with non-negligible probability.*
+**Theorem 3 (Input Binding).** *Under A1 and A2, no PPT adversary wins $\mathsf{INPUT\text{-}BINDING}(\lambda)$ with non-negligible probability.*
 
 > *Proof sketch.* The enclave independently computes $\textit{inputHash}' = H(S^*)$ from the prover-provided state. It sets:
 >
@@ -209,7 +209,7 @@ LLM inference with temperature $> 0$ is non-deterministic absent a fixed seed. T
 
 ---
 
-**Game** $\textsf{SEED\text{-}PREDICT}(\lambda)$:
+**Game** $\mathsf{SEED\text{-}PREDICT}(\lambda)$:
 
 1. Provers commit bids during the commit window $[t_0, t_1]$.
 2. The seed $s$ is captured as `block.prevrandao` at time $t_2 > t_1$ (the REVEAL $\to$ EXECUTION transition).
@@ -239,7 +239,7 @@ The commit-reveal auction must ensure that no participant learns another's bid b
 
 ---
 
-**Game** $\textsf{BID\text{-}PRIVACY}(\lambda)$:
+**Game** $\mathsf{BID\text{-}PRIVACY}(\lambda)$:
 
 1. Prover $P_1$ commits bid $b_1$ with salt $r_1$: commitment $c_1 = H(b_1 \| r_1)$.
 2. Adversary $\mathcal{A}$ (another prover) observes $c_1$ on-chain.
@@ -261,7 +261,7 @@ Even if the adversary controls the model's output, the contract enforces hard ca
 
 ---
 
-**Game** $\textsf{EXTRACTION}(\lambda)$:
+**Game** $\mathsf{EXTRACTION}(\lambda)$:
 
 1. Treasury has value $T$ at the start of epoch $k$.
 2. Adversary $\mathcal{A}$ controls the model output: $\mathcal{A}$ may choose any valid action within the action space.
@@ -301,7 +301,7 @@ This creates an *option*: the prover pays the entry cost (bond + compute) and re
 
 ---
 
-**Game** $\textsf{INCENTIVE\text{-}COMPAT}(\lambda)$:
+**Game** $\mathsf{INCENTIVE\text{-}COMPAT}(\lambda)$:
 
 1. Prover $P_w$ wins the auction for epoch $k$ with bid $b_w$ and bond $\gamma_k$. $P_w$ has external utility function $v_w : \mathcal{A} \to \mathbb{R}$ over the action space.
 2. $P_w$ runs the enclave, observes $action_k$.
@@ -425,7 +425,7 @@ The security of the system follows from the composition of Properties 1–7, pro
 
 The argument that the TDX + dm-verity construction realizes $\mathcal{F}_{\text{TEE}}$ — including the measurement chain, filesystem integrity, and DCAP verification — is the subject of [TEE_SECURITY.md](TEE_SECURITY.md). We briefly state the requirements that $\mathcal{F}_{\text{TEE}}$ must satisfy:
 
-1. **Execution fidelity.** The output is the genuine result of running $\textsf{codeId}$ on $(\textit{input}, \textit{seed})$. No code outside the attested image can influence the computation.
+1. **Execution fidelity.** The output is the genuine result of running $\mathsf{codeId}$ on $(\textit{input}, \textit{seed})$. No code outside the attested image can influence the computation.
 2. **Attestation unforgeability.** No adversary can produce a valid attestation for an execution that did not occur on genuine TEE hardware.
 3. **Input/output binding.** The attestation cryptographically binds the execution to specific inputs and outputs via a REPORTDATA field that the enclave sets and the contract verifies.
 
@@ -503,13 +503,13 @@ The following are known limitations, reframed as scenarios where specific assump
 
 | Game | Adversary Power | Wins If | Assumptions | Theorem |
 |------|----------------|---------|-------------|---------|
-| $\textsf{LIVENESS}$ | Controls $n{-}1$ provers | $W$ consecutive missed epochs | A7 ($v_i{=}0$), A8, A10 | Thm 1 |
-| $\textsf{INTEGRITY}$ | Controls a prover | Contract accepts fabricated/substituted output | A1, A2 | Thm 2 |
-| $\textsf{INPUT\text{-}BINDING}$ | Controls a prover | Contract accepts result from wrong inputs | A1, A2 | Thm 3 |
-| $\textsf{SEED\text{-}PREDICT}$ | Controls a prover | Predicts seed at commit time | A9, A11 | Thm 4 |
-| $\textsf{BID\text{-}PRIVACY}$ | Another prover | Learns bid before reveal | A4 | Thm 5 |
-| $\textsf{EXTRACTION}$ | Controls model output | Extracts $> 12\%$ of treasury per epoch | (none) | Thm 6 |
-| $\textsf{INCENTIVE\text{-}COMPAT}$ | Prover with external interests | Rationally vetoes, causing missed epoch | A7, A8, A10 | Thm 7 |
+| $\mathsf{LIVENESS}$ | Controls $n{-}1$ provers | $W$ consecutive missed epochs | A7 ($v_i{=}0$), A8, A10 | Thm 1 |
+| $\mathsf{INTEGRITY}$ | Controls a prover | Contract accepts fabricated/substituted output | A1, A2 | Thm 2 |
+| $\mathsf{INPUT\text{-}BINDING}$ | Controls a prover | Contract accepts result from wrong inputs | A1, A2 | Thm 3 |
+| $\mathsf{SEED\text{-}PREDICT}$ | Controls a prover | Predicts seed at commit time | A9, A11 | Thm 4 |
+| $\mathsf{BID\text{-}PRIVACY}$ | Another prover | Learns bid before reveal | A4 | Thm 5 |
+| $\mathsf{EXTRACTION}$ | Controls model output | Extracts $> 12\%$ of treasury per epoch | (none) | Thm 6 |
+| $\mathsf{INCENTIVE\text{-}COMPAT}$ | Prover with external interests | Rationally vetoes, causing missed epoch | A7, A8, A10 | Thm 7 |
 
 ---
 
