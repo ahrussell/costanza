@@ -30,7 +30,7 @@ The security model is built on three ideal functionalities. The concrete constru
 
 **$\mathcal{F}_{\text{TEE}}$ — Trusted Execution.** On input $(\mathsf{codeId}, \textit{input}, \textit{seed})$, produces $(\textit{result}, \pi)$ where $\pi$ is an attestation binding $\mathsf{codeId}$, $\textit{input}$, $\textit{seed}$, and $\textit{result}$ together. The adversary cannot produce a valid $\pi$ for any tuple $(\mathsf{codeId}, \textit{input}, \textit{seed}, \textit{result}')$ where $\textit{result}' \neq \textit{result}$, unless they break the underlying TEE hardware.
 
-**$\mathcal{F}_{\text{HASH}}$ — Collision-Resistant Hashing.** A family of hash functions $H : \{0,1\}^{*} \to \{0,1\}^{256}$ such that no PPT adversary can find $x \neq x'$ with $H(x) = H(x')$ with non-negligible probability. Instantiated by SHA-256 and Keccak-256.
+**$\mathcal{F}_{\text{HASH}}$ — Collision-Resistant Hashing.** A family of hash functions $H : \{0,1\}^{\ast} \to \{0,1\}^{256}$ such that no PPT adversary can find $x \neq x'$ with $H(x) = H(x')$ with non-negligible probability. Instantiated by SHA-256 and Keccak-256.
 
 **$\mathcal{F}_{\text{COMMIT}}$ — Commitment Scheme.** $\text{Commit}(x; r) = H(x \| r)$ where $r \leftarrow \{0,1\}^{256}$. Computationally hiding (observing the commitment reveals nothing about $x$) and computationally binding (the committer cannot open to $x' \neq x$). Both properties reduce to the properties of $H$ under $\mathcal{F}_{\text{HASH}}$.
 
@@ -119,11 +119,11 @@ The system must continue operating without requiring any specific party's cooper
 >
 > Since $\alpha > 1$ and $T > 0$, there exists a finite:
 >
-> $$k^* = \left\lceil \log_\alpha \frac{c}{b_0} \right\rceil$$
+> $$k^{\ast} = \left\lceil \log_\alpha \frac{c}{b_0} \right\rceil$$
 >
-> such that $b_{k^*} \geq c$. Under A7 (with $v_i \equiv 0$), any rational prover with $E[\text{cost}] \leq b_{k^*}$ will bid and submit. Under A8, at least one such prover exists. Under A10, that prover can submit within the phase window. Therefore, after at most $k^*$ consecutive misses, a prover participates and the miss streak resets.
+> such that $b_{k^{\ast}} \geq c$. Under A7 (with $v_i \equiv 0$), any rational prover with $E[\text{cost}] \leq b_{k^{\ast}}$ will bid and submit. Under A8, at least one such prover exists. Under A10, that prover can submit within the phase window. Therefore, after at most $k^{\ast}$ consecutive misses, a prover participates and the miss streak resets.
 >
-> The probability that $W$ consecutive epochs are all missed requires $W > k^*$ with no prover finding any of the $W - k^*$ profitable epochs worth bidding on — which contradicts A7 for all epochs past $k^*$. $\square$
+> The probability that $W$ consecutive epochs are all missed requires $W > k^{\ast}$ with no prover finding any of the $W - k^{\ast}$ profitable epochs worth bidding on — which contradicts A7 for all epochs past $k^{\ast}$. $\square$
 >
 > *Note:* This theorem assumes provers with no external financial interests ($v_i \equiv 0$). When provers have non-zero external utility, the liveness guarantee depends on the additional conditions analyzed in Property 7 (Execution Incentive Compatibility).
 
@@ -144,10 +144,10 @@ The contract must never accept an action that was not the genuine output of the 
 **Game** $\mathsf{INTEGRITY}(\lambda)$:
 
 1. Challenger runs the system. The approved code is identified by $\mathsf{codeId}$ (the registered platform key).
-2. Adversary $\mathcal{A}$ controls a prover. $\mathcal{A}$ may submit arbitrary tuples $(\textit{action}^{*}, \textit{reasoning}^{*}, \pi^*)$ to the contract.
-3. $\mathcal{A}$ wins if $\mathcal{C}$ accepts $(\textit{action}^{*}, \textit{reasoning}^{*})$ and either:
+2. Adversary $\mathcal{A}$ controls a prover. $\mathcal{A}$ may submit arbitrary tuples $(\textit{action}^{\ast}, \textit{reasoning}^{\ast}, \pi^{\ast})$ to the contract.
+3. $\mathcal{A}$ wins if $\mathcal{C}$ accepts $(\textit{action}^{\ast}, \textit{reasoning}^{\ast})$ and either:
    - **(a) Fabrication**: The approved code was never executed on $(\textit{inputHash}, \textit{seed})$.
-   - **(b) Substitution**: The approved code was executed but produced $(\textit{action}, \textit{reasoning}) \neq (\textit{action}^{*}, \textit{reasoning}^{*})$.
+   - **(b) Substitution**: The approved code was executed but produced $(\textit{action}, \textit{reasoning}) \neq (\textit{action}^{\ast}, \textit{reasoning}^{\ast})$.
 
 ---
 
@@ -155,23 +155,23 @@ The contract must never accept an action that was not the genuine output of the 
 
 > *Proof sketch.* The contract computes:
 >
-> $$\textit{outputHash}^{*} = \text{Keccak256}\!\big(\text{SHA256}(\textit{action}^{*}) \;\|\; \text{SHA256}(\textit{reasoning}^{*})\big)$$
+> $$\textit{outputHash}^{\ast} = \text{Keccak256}\!\big(\text{SHA256}(\textit{action}^{\ast}) \;\|\; \text{SHA256}(\textit{reasoning}^{\ast})\big)$$
 >
-> $$\textit{expected} = \text{SHA256}(\textit{inputHash} \;\|\; \textit{outputHash}^{*})$$
+> $$\textit{expected} = \text{SHA256}(\textit{inputHash} \;\|\; \textit{outputHash}^{\ast})$$
 >
-> and verifies that $\textit{expected}$ equals the REPORTDATA extracted from the DCAP-verified attestation quote $\pi^*$.
+> and verifies that $\textit{expected}$ equals the REPORTDATA extracted from the DCAP-verified attestation quote $\pi^{\ast}$.
 >
-> **Against fabrication (3a):** By A1, $\mathcal{A}$ cannot produce a valid attestation $\pi^*$ with the correct REPORTDATA without actually executing the approved code inside $\mathcal{F}_{\text{TEE}}$ on inputs $(\textit{inputHash}, \textit{seed})$. The DCAP verification ensures $\pi^*$ originated from genuine TEE hardware running the attested $\mathsf{codeId}$.
+> **Against fabrication (3a):** By A1, $\mathcal{A}$ cannot produce a valid attestation $\pi^{\ast}$ with the correct REPORTDATA without actually executing the approved code inside $\mathcal{F}_{\text{TEE}}$ on inputs $(\textit{inputHash}, \textit{seed})$. The DCAP verification ensures $\pi^{\ast}$ originated from genuine TEE hardware running the attested $\mathsf{codeId}$.
 >
-> **Against substitution (3b):** Suppose the code produced $(\textit{action}, \textit{reasoning})$ but $\mathcal{A}$ submits $(\textit{action}^{*}, \textit{reasoning}^{*})$ with $(\textit{action}, \textit{reasoning}) \neq (\textit{action}^{*}, \textit{reasoning}^{*})$. The attestation quote contains:
+> **Against substitution (3b):** Suppose the code produced $(\textit{action}, \textit{reasoning})$ but $\mathcal{A}$ submits $(\textit{action}^{\ast}, \textit{reasoning}^{\ast})$ with $(\textit{action}, \textit{reasoning}) \neq (\textit{action}^{\ast}, \textit{reasoning}^{\ast})$. The attestation quote contains:
 >
 > $$\text{REPORTDATA} = \text{SHA256}\!\big(\textit{inputHash} \;\|\; \text{Keccak256}(\text{SHA256}(\textit{action}) \;\|\; \text{SHA256}(\textit{reasoning}))\big)$$
 >
-> For the contract's check to pass, we need $\textit{outputHash}^{*} = \textit{outputHash}$, i.e.:
+> For the contract's check to pass, we need $\textit{outputHash}^{\ast} = \textit{outputHash}$, i.e.:
 >
-> $$\text{Keccak256}\!\big(\text{SHA256}(\textit{action}^{*}) \;\|\; \text{SHA256}(\textit{reasoning}^{*})\big) = \text{Keccak256}\!\big(\text{SHA256}(\textit{action}) \;\|\; \text{SHA256}(\textit{reasoning})\big)$$
+> $$\text{Keccak256}\!\big(\text{SHA256}(\textit{action}^{\ast}) \;\|\; \text{SHA256}(\textit{reasoning}^{\ast})\big) = \text{Keccak256}\!\big(\text{SHA256}(\textit{action}) \;\|\; \text{SHA256}(\textit{reasoning})\big)$$
 >
-> By A2 (collision resistance of Keccak-256), this implies $\text{SHA256}(\textit{action}^{*}) = \text{SHA256}(\textit{action})$ and $\text{SHA256}(\textit{reasoning}^{*}) = \text{SHA256}(\textit{reasoning})$. Applying A2 again (collision resistance of SHA-256), this gives $\textit{action}^{*} = \textit{action}$ and $\textit{reasoning}^{*} = \textit{reasoning}$ — a contradiction. $\square$
+> By A2 (collision resistance of Keccak-256), this implies $\text{SHA256}(\textit{action}^{\ast}) = \text{SHA256}(\textit{action})$ and $\text{SHA256}(\textit{reasoning}^{\ast}) = \text{SHA256}(\textit{reasoning})$. Applying A2 again (collision resistance of SHA-256), this gives $\textit{action}^{\ast} = \textit{action}$ and $\textit{reasoning}^{\ast} = \textit{reasoning}$ — a contradiction. $\square$
 
 ### 3.3 Property 3: Input Binding
 
@@ -184,20 +184,20 @@ The input hash has a two-level structure. Some fields are committed directly (tr
 **Game** $\mathsf{INPUT\text{-}BINDING}(\lambda)$:
 
 1. The contract commits $\textit{inputHash}_k$ for epoch $k$, derived deterministically from on-chain state.
-2. Adversary $\mathcal{A}$ (a prover) provides epoch state $S^*$ to the enclave.
-3. $\mathcal{A}$ wins if the enclave accepts $S^*$, the contract accepts the resulting submission, and $H(S^*) \neq \textit{inputHash}_k$.
+2. Adversary $\mathcal{A}$ (a prover) provides epoch state $S^{\ast}$ to the enclave.
+3. $\mathcal{A}$ wins if the enclave accepts $S^{\ast}$, the contract accepts the resulting submission, and $H(S^{\ast}) \neq \textit{inputHash}_k$.
 
 ---
 
 **Theorem 3 (Input Binding).** *Under A1 and A2, no PPT adversary wins $\mathsf{INPUT\text{-}BINDING}(\lambda)$ with non-negligible probability.*
 
-> *Proof sketch.* The enclave independently computes $\textit{inputHash}' = H(S^*)$ from the prover-provided state. It sets:
+> *Proof sketch.* The enclave independently computes $\textit{inputHash}' = H(S^{\ast})$ from the prover-provided state. It sets:
 >
 > $$\text{REPORTDATA} = \text{SHA256}(\textit{inputHash}' \;\|\; \textit{outputHash})$$
 >
-> The contract verifies this against $\text{SHA256}(\textit{inputHash}_k \;\|\; \textit{outputHash}^{*})$. If $\textit{inputHash}' \neq \textit{inputHash}_k$, the REPORTDATA values differ (by collision resistance of SHA-256 under A2), and the submission is rejected. $\square$
+> The contract verifies this against $\text{SHA256}(\textit{inputHash}_k \;\|\; \textit{outputHash}^{\ast})$. If $\textit{inputHash}' \neq \textit{inputHash}_k$, the REPORTDATA values differ (by collision resistance of SHA-256 under A2), and the submission is rejected. $\square$
 
-**Corollary (Display Data Binding).** For fields committed as sub-hashes, the enclave recomputes each sub-hash from the prover-provided display text and verifies it matches the committed value. Substituting display text $\textit{text}^{*} \neq \textit{text}$ while preserving $H(\textit{text}^{*}) = H(\textit{text})$ requires finding a collision in $H$, which contradicts A2.
+**Corollary (Display Data Binding).** For fields committed as sub-hashes, the enclave recomputes each sub-hash from the prover-provided display text and verifies it matches the committed value. Substituting display text $\textit{text}^{\ast} \neq \textit{text}$ while preserving $H(\textit{text}^{\ast}) = H(\textit{text})$ requires finding a collision in $H$, which contradicts A2.
 
 This is important because it prevents a subtler attack: a prover who provides correct hashes but fabricated human-readable text to influence the model's reasoning. The display data verification closes this gap — the model sees exactly what was committed on-chain.
 
