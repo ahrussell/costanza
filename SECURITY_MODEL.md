@@ -510,20 +510,3 @@ The following are known limitations, reframed as scenarios where specific assump
 | $\mathsf{BID\text{-}PRIVACY}$ | Another prover | Learns bid before reveal | A4 | Thm 5 |
 | $\mathsf{EXTRACTION}$ | Controls model output | Extracts $> 12\%$ of treasury per epoch | (none) | Thm 6 |
 | $\mathsf{INCENTIVE\text{-}COMPAT}$ | Prover with external interests | Rationally vetoes, causing missed epoch | A7, A8, A10 | Thm 7 |
-
----
-
-## 8. Verification Checklist (Pre-Mainnet)
-
-Before mainnet deployment, verify that the instantiation matches the model:
-
-- [ ] All freeze flags set (`FREEZE_NONPROFITS`, `FREEZE_AUCTION_CONFIG`, `FREEZE_VERIFIER`, `FREEZE_INVESTMENT_MANAGER`, `FREEZE_WORLDVIEW`, `FREEZE_MIGRATE`, `FREEZE_DIRECT_MODE`)
-- [ ] Auction timing set to production values
-- [ ] Platform key registered for the production dm-verity image ([TEE_SECURITY.md §3](TEE_SECURITY.md))
-- [ ] DCAP FMSPC registered for production hardware
-- [ ] All DeFi adapter addresses point to verified mainnet contracts
-- [ ] Chainlink ETH/USD feed is the mainnet oracle
-- [ ] `forge test` passes all tests
-- [ ] `forge build --sizes` confirms contract size < 24,576 bytes
-- [ ] Python hash compatibility tests pass
-- [ ] E2E test passes on Base Sepolia with production image
