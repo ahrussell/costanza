@@ -400,7 +400,7 @@ $$C_{\text{stall}}(k) = \sum_{i=0}^{k-1} \min\!\big(\gamma \cdot \alpha^i,\; \ha
 
 1. Each stalled epoch increases the adversary's cost (escalating bond).
 2. Each stalled epoch increases the bounty ceiling, attracting honest provers.
-3. Forfeited bonds flow to the treasury, partially offsetting the attack's effect.
+3. Forfeited bonds flow to the treasury, which *increases* the treasury-proportional caps — the attacker's own forfeited capital raises both the bounty ceiling ($\beta \cdot T$) and the bond cap ($\beta_\gamma \cdot T$), compounding the escalation.
 4. The adversary gains nothing — no bounty, no influence on the agent.
 
 For a concrete example: starting from $\gamma = 0.001$ ETH with $\alpha = 1.10$, the cumulative cost of stalling 20 consecutive epochs is:
