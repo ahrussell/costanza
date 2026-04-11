@@ -12,14 +12,14 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 
 ## Current Status
 
-- **Contract**: `0xc7fd334b9cdd7e5eb97eef05a704511a630374ed` (Base Sepolia, v2 auto-advance)
-- **AuctionManager**: `0xbc9a487b620149ce5f4424e733df3f555311b76c`
-- **TdxVerifier**: `0x83426ad89f00eece03b9e4a02741548c6acdab81`
-- **InvestmentManager**: `0xb1fdac97989babf73b2490346657cdf5750962cd`
-- **WorldView**: `0x19faadf6eb71a3c3a5b9a36e313a416359303fde`
+- **Contract**: `0x327bC74b1f9Ff4675a1D55e4e9bff2d0C7bcE445` (Base Sepolia, v2 auto-advance)
+- **AuctionManager**: `0x1589f527966FE23805324ED62a0F6720D8380bD5`
+- **TdxVerifier**: `0xaF515393710B18410A4c2464Ce05c1c35a037218`
+- **InvestmentManager**: `0x36F70a3447213Eae729D4cc1fa47132f67Ee13bC`
+- **WorldView**: `0x4F76848696D47530B592C3b0bD901554788c4886`
 - **Deployer**: `0xffea30B0DbDAd460B9b6293fb51a059129fCCdAf`
-- **175 tests pass** (core + auction + TDX verifier + investment + worldview + messages)
-- GPU image key: pending new dm-verity image build (v10)
+- **204 tests pass** (core + auction + TDX verifier + investment + worldview + messages)
+- GPU image: `humanfund-dmverity-hardened-v10`, key: `0x923d500553d9e10a8f864eade2029df0471c7cd4f90b888e7749f0dc3fca1eca`
 - GCP TDX FMSPC `00806f050000` registered in Automata DCAP Dashboard
 - H100 on-demand quota is 0; all GPU VMs use `--provisioning-model=SPOT`
 - **Remaining**: extended testnet run, mainnet deployment

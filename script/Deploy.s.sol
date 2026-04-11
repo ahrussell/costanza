@@ -216,7 +216,7 @@ contract Deploy is Script {
         uint256[] memory slots = new uint256[](6);
         string[] memory policies = new string[](6);
 
-        slots[0] = 0; policies[0] = "Shakespearean iambic pentameter -- the tongue of the Bard befits a fund of noble purpose.";
+        slots[0] = 0; policies[0] = "George Saunders writing poetry - plain, dry, conversational, quietly devastating.";
         slots[1] = 1; policies[1] = "Rotate among all nonprofits. No permanent favorites -- each does vital work.";
         slots[2] = 2; policies[2] = "Diversify to hedge risk and learn how to maximize risk-adjusted returns.";
         slots[3] = 3; policies[3] = "Newborn. Everything is ahead of me.";
