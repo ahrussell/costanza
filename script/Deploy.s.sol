@@ -121,7 +121,7 @@ contract Deploy is Script {
             console.log("");
             console.log("  WARNING: ETH_USD_FEED not set. Donations and USDC adapters will not work.");
             console.log("  Set ETH_USD_FEED to the Chainlink ETH/USD feed for your network.");
-            console.log("  Base mainnet: 0x71041dddad3287f3e8e9ca51e54ff1dcb175c399");
+            console.log("  Base mainnet: 0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70");
         }
     }
 

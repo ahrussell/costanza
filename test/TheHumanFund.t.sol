@@ -537,6 +537,51 @@ contract TheHumanFundTest is Test {
         fund.migrate(destination);
     }
 
+    // ─── Ownership Transfer ────────────────────────────────────────────
+
+    function test_transferOwnership() public {
+        address newOwner = address(0xBEEF);
+        fund.transferOwnership(newOwner);
+        assertEq(fund.owner(), newOwner);
+    }
+
+    function test_transferOwnership_onlyOwner() public {
+        vm.prank(donor);
+        vm.expectRevert(TheHumanFund.Unauthorized.selector);
+        fund.transferOwnership(address(0xBEEF));
+    }
+
+    function test_transferOwnership_rejectsZeroAddress() public {
+        vm.expectRevert(TheHumanFund.InvalidParams.selector);
+        fund.transferOwnership(address(0));
+    }
+
+    function test_transferOwnership_frozenByMigrate() public {
+        fund.freeze(fund.FREEZE_MIGRATE());
+        vm.expectRevert(TheHumanFund.Frozen.selector);
+        fund.transferOwnership(address(0xBEEF));
+    }
+
+    function test_transferOwnership_emitsEvent() public {
+        address newOwner = address(0xBEEF);
+        vm.expectEmit(true, false, false, false);
+        emit TheHumanFund.OwnershipTransferred(newOwner);
+        fund.transferOwnership(newOwner);
+    }
+
+    function test_transferOwnership_newOwnerCanAct() public {
+        address newOwner = address(0xBEEF);
+        fund.transferOwnership(newOwner);
+
+        // Old owner can no longer act
+        vm.expectRevert(TheHumanFund.Unauthorized.selector);
+        fund.skipEpoch();
+
+        // New owner can act
+        vm.prank(newOwner);
+        fund.skipEpoch();
+    }
+
     // ─── Fuzz Tests ────────────────────────────────────────────────────
 
     function testFuzz_donate_validAmount(uint256 amount) public {
