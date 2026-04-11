@@ -99,7 +99,7 @@ The special case $v_i \equiv 0$ (prover has no external financial interests tied
 
 The system must continue operating without requiring any specific party's cooperation. The core mechanism is auto-escalation: after each consecutive missed epoch, the maximum bounty ceiling increases by factor $\alpha = 1.10$, up to a hard cap of $\beta \cdot T$ (2% of treasury).
 
-**Definition 1 (Liveness).** The system is <em>$(W, \epsilon)$-live</em> if, for any window of $W$ consecutive epochs, the probability that no valid result is submitted is at most $\epsilon$.
+**Definition 1 (Liveness).** The system is $(W, \epsilon)$*-live* if, for any window of $W$ consecutive epochs, the probability that no valid result is submitted is at most $\epsilon$.
 
 ---
 
@@ -111,7 +111,7 @@ The system must continue operating without requiring any specific party's cooper
 
 ---
 
-**Theorem 1 (Liveness).** <em>Under A7 (rational provers with $v_i \equiv 0$), A8 (prover existence), and A10 (prover responsiveness), for any treasury $T > 0$ with $\beta \cdot T > 0$, the system is $(W, \epsilon)$-live where $\epsilon \to 0$ as $W \to \infty$.</em>
+**Theorem 1 (Liveness).** *Under A7 (rational provers with* $v_i \equiv 0$ *), A8 (prover existence), and A10 (prover responsiveness), for any treasury* $T > 0$ *with* $\beta \cdot T > 0$ *, the system is* $(W, \epsilon)$ *-live where* $\epsilon \to 0$ *as* $W \to \infty$ *.*
 
 > *Proof sketch.* Let $c$ denote the marginal cost of running one epoch (compute + gas), assumed approximately constant for a given hardware generation.
 >
@@ -159,7 +159,7 @@ The contract must never accept an action that was not the genuine output of the 
 
 ---
 
-**Theorem 2 (Inference Integrity).** <em>Under A1 (TEE integrity) and A2 (collision resistance), no PPT adversary wins $\mathsf{INTEGRITY}(\lambda)$ with non-negligible probability.</em>
+**Theorem 2 (Inference Integrity).** *Under A1 (TEE integrity) and A2 (collision resistance), no PPT adversary wins* $\mathsf{INTEGRITY}(\lambda)$ *with non-negligible probability.*
 
 > *Proof sketch.* The contract computes:
 >
@@ -197,7 +197,7 @@ The input hash has a two-level structure. Some fields are committed directly (tr
 
 ---
 
-**Theorem 3 (Input Binding).** <em>Under A1 and A2, no PPT adversary wins $\mathsf{INPUT\text{-}BINDING}(\lambda)$ with non-negligible probability.</em>
+**Theorem 3 (Input Binding).** *Under A1 and A2, no PPT adversary wins* $\mathsf{INPUT\text{-}BINDING}(\lambda)$ *with non-negligible probability.*
 
 > *Proof sketch.* The enclave independently computes $\textit{inputHash}' = H(S^{\ast})$ from the prover-provided state. It sets:
 >
@@ -277,7 +277,7 @@ Even if the adversary controls the model's output, the contract enforces hard ca
 
 ---
 
-**Theorem 6 (Bounded Extraction).** <em>For any model output accepted by the contract, the maximum single-epoch outflow is bounded by $(\delta + \beta) \cdot T = 0.12 \cdot T$.</em>
+**Theorem 6 (Bounded Extraction).** *For any model output accepted by the contract, the maximum single-epoch outflow is bounded by* $(\delta + \beta) \cdot T = 0.12 \cdot T$ *.*
 
 > *Proof.* Exhaustive case analysis over the action space:
 >
@@ -329,7 +329,7 @@ Define the **veto threshold** $\tau_w = b_w + \gamma_k - c_w$: the net financial
 
 $$|v_w(action_k)| > \tau_w \quad \text{(for actions where } v_w < 0\text{)}$$
 
-The mechanism is <em>incentive-compatible for $P_w$</em> when $\tau_w > \max_{a \in \mathcal{A}} |v_w(a)|$ — when no action is harmful enough to justify the cost of vetoing. For provers with $v_w \equiv 0$, $\tau_w > 0$ always holds (they always submit). The interesting case is provers with large negative $v_w$ for some actions.
+The mechanism is *incentive-compatible for* $P_w$ when $\tau_w > \max_{a \in \mathcal{A}} |v_w(a)|$ — when no action is harmful enough to justify the cost of vetoing. For provers with $v_w \equiv 0$, $\tau_w > 0$ always holds (they always submit). The interesting case is provers with large negative $v_w$ for some actions.
 
 #### 3.7.2 Why the Mechanism Is Resilient
 
@@ -347,11 +347,11 @@ Four structural features bound the impact of selective submission:
 
 Combining Theorem 1 with the selective submission analysis, we can state the general liveness condition:
 
-**Theorem 7 (Liveness Under External Interests).** <em>The system is $(W, \epsilon)$-live (Definition 1) if, for each epoch $k$ in the window, there exists at least one prover $P_i$ satisfying:</em>
+**Theorem 7 (Liveness Under External Interests).** *The system is* $(W, \epsilon)$ *-live (Definition 1) if, for each epoch* $k$ *in the window, there exists at least one prover* $P_i$ *satisfying:*
 
 $$b_k + \gamma_k - c_i > \max_{a \in \mathcal{A}} |v_i(a)| \quad \text{(veto threshold exceeds maximum external harm)}$$
 
-<em>and $P_i$ satisfies A10 (responsiveness). When this condition holds, $P_i$ always submits regardless of the action chosen, guaranteeing execution.</em>
+*and* $P_i$ *satisfies A10 (responsiveness). When this condition holds,* $P_i$ *always submits regardless of the action chosen, guaranteeing execution.*
 
 > *Proof sketch.* If $P_i$ satisfies the veto threshold condition, they will submit for any $action_k$ (no action is harmful enough to justify forfeiting $\tau_i = b_k + \gamma_k - c_i$). Combined with A10 (they can participate in time) and the auto-escalation mechanism from Theorem 1 (which ensures $b_k$ grows until participation is profitable), the miss streak is bounded. $\square$
 
@@ -519,7 +519,7 @@ This eliminates two problems structurally:
 - **Stalling requires all provers to collude.** In the current design, the single winner can stall by not submitting. In this design, every prover who participates submits a valid result alongside their bid — stalling requires *every* participating prover to withhold, not just one. The bond mechanism becomes unnecessary.
 - **Selective submission is eliminated.** Every prover commits their result before seeing others' results or learning who wins. They cannot observe the output and then decide whether to submit — submission and bidding are atomic.
 
-The tradeoff is higher aggregate compute cost (multiple provers run inference per epoch rather than one), which may be acceptable as inference costs decrease. This design is not implemented in the current contract but represents a natural evolution that would structurally resolve Properties 1 and 7 under weaker assumptions.
+The primary tradeoff is **bidder discouragement**: every participating prover pays the full cost of inference (compute + gas), but only the lowest bidder receives the bounty. Losing bidders absorb their costs with no compensation, which may deter participation — especially when inference is expensive relative to the bounty. This creates a tension: the mechanism is more robust against stalling (requires all-prover collusion) but may attract fewer provers (negative expected value for non-winners). The economics improve as inference costs decrease relative to bounties. This design is not implemented in the current contract but represents a natural evolution that would structurally resolve Properties 1 and 7 under weaker assumptions.
 
 ---
 
