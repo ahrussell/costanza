@@ -182,18 +182,18 @@ The enclave independently recomputes each sub-hash from the display data and ver
 
 If any sub-hash does not match, the enclave refuses to proceed. This prevents a prover from showing the model fabricated text (e.g., fake donor messages, altered worldview policies) while the top-level input hash still checks out.
 
-**Security argument.** Substituting display text $\textit{text}^*$ for the real $\textit{text}$ while preserving $H(\textit{text}^*) = H(\textit{text})$ requires finding a preimage collision, which contradicts assumption A2.
+**Security argument.** Substituting display text $\textit{text}^{\ast}$ for the real $\textit{text}$ while preserving $H(\textit{text}^{\ast}) = H(\textit{text})$ requires finding a preimage collision, which contradicts assumption A2.
 
 ### 4.4 Contract-Side Verification
 
 The contract computes the expected REPORTDATA:
 
 1. Retrieve the committed $\textit{inputHash}$ for the current epoch.
-2. Compute $\textit{outputHash}^*$ from the submitted $(\textit{action}^*, \textit{reasoning}^*)$.
-3. Compute $\textit{expected} = \text{SHA256}(\textit{inputHash} \;\|\; \textit{outputHash}^*)$.
+2. Compute $\textit{outputHash}^{\ast}$ from the submitted $(\textit{action}^{\ast}, \textit{reasoning}^{\ast})$.
+3. Compute $\textit{expected} = \text{SHA256}(\textit{inputHash} \;\|\; \textit{outputHash}^{\ast})$.
 4. Compare $\textit{expected}$ against the REPORTDATA extracted from the DCAP-verified quote.
 
-If the prover tampers with the output after attestation — submitting $(\textit{action}^*, \textit{reasoning}^*)$ different from what the enclave produced — the hashes diverge and the submission is rejected (Theorem 2 in the [Security Model](SECURITY_MODEL.md)).
+If the prover tampers with the output after attestation — submitting $(\textit{action}^{\ast}, \textit{reasoning}^{\ast})$ different from what the enclave produced — the hashes diverge and the submission is rejected (Theorem 2 in the [Security Model](SECURITY_MODEL.md)).
 
 ---
 
