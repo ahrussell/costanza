@@ -891,7 +891,7 @@
               <span class="epoch-tag" id="hero-diary-epoch"></span>
               <span id="hero-diary-badge"></span>
             </div>
-            <button class="hero-diary-toggle" id="hero-diary-toggle" onclick="toggleHeroDiary()">+</button>
+            <button class="hero-diary-toggle" id="hero-diary-toggle" onclick="openDiaryViewer()">+</button>
           </div>
           <div class="hero-diary-body collapsed" id="hero-diary-body">
             <div class="loading">Loading</div>
@@ -2278,6 +2278,7 @@ async function loadAll() {
           <span style="font-size:11px;color:var(--text-dim);">${fmtTime(latest.timestamp)}</span>
         </div>
         <div class="diary-preview-text">${escapeHtml(latest.reasoning)}</div>
+        <button onclick="openDiaryViewer()" style="margin-top:10px;padding:5px 12px;font-size:11px;font-family:var(--mono);background:transparent;border:1px solid var(--border);border-radius:var(--radius-xs);color:var(--text-secondary);cursor:pointer;" onmouseover="this.style.borderColor='var(--accent)';this.style.color='var(--accent)'" onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--text-secondary)'">Read entry &rarr;</button>
       </div>
     `;
   } else {
