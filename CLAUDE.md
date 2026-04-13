@@ -12,17 +12,24 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 
 ## Current Status
 
-- **Contract**: `0x327bC74b1f9Ff4675a1D55e4e9bff2d0C7bcE445` (Base Sepolia, v2 auto-advance)
-- **AuctionManager**: `0x1589f527966FE23805324ED62a0F6720D8380bD5`
-- **TdxVerifier**: `0xaF515393710B18410A4c2464Ce05c1c35a037218`
-- **InvestmentManager**: `0x36F70a3447213Eae729D4cc1fa47132f67Ee13bC`
-- **WorldView**: `0x4F76848696D47530B592C3b0bD901554788c4886`
-- **Deployer**: `0xffea30B0DbDAd460B9b6293fb51a059129fCCdAf`
+### Base Mainnet
+- **Contract**: [`0xe63211E7420667650B78C2f68Bfc0B43f499028c`](https://basescan.org/address/0xe63211E7420667650B78C2f68Bfc0B43f499028c)
+- **AuctionManager**: [`0x7ECD7444839f80DE1A79507c4232bFA387403056`](https://basescan.org/address/0x7ECD7444839f80DE1A79507c4232bFA387403056)
+- **TdxVerifier**: [`0x16B772AEA557850d78173c7CEdeA79ED11BDeaf9`](https://basescan.org/address/0x16B772AEA557850d78173c7CEdeA79ED11BDeaf9)
+- **InvestmentManager**: [`0x926A66d13B765072E2a582bF8e1555C040F6f54D`](https://basescan.org/address/0x926A66d13B765072E2a582bF8e1555C040F6f54D)
+- **WorldView**: [`0x9eF999f26145FF8c8453C68cA58fb9040d097E50`](https://basescan.org/address/0x9eF999f26145FF8c8453C68cA58fb9040d097E50)
+- **Owner**: `0x495fB7ddD383be8030EFC93324Ff078f173eAb2A` (EOA, will transfer to Safe `0x6dF6f527E193fAf1334c26A6d811fAd62E79E5Db`)
+- **Epoch timing**: 2h epochs (30m commit, 30m reveal, 60m execution)
 - **204 tests pass** (core + auction + TDX verifier + investment + worldview + messages)
-- GPU image: `humanfund-dmverity-hardened-v10`, key: `0x923d500553d9e10a8f864eade2029df0471c7cd4f90b888e7749f0dc3fca1eca`
+- GPU image: `costanza-prover-tdx-h100-cc`, key: `0x8aa914754a9cd571ad1dd26368164188ce6530beadc2343dd725b914c07937ba`
 - GCP TDX FMSPC `00806f050000` registered in Automata DCAP Dashboard
 - H100 on-demand quota is 0; all GPU VMs use `--provisioning-model=SPOT`
-- **Remaining**: extended testnet run, mainnet deployment
+- **Frontend RPC**: Cloudflare Worker at `humanfund-rpc-cache.thehumanfund.workers.dev` (proxies to Alchemy, 5-min cache)
+- **Prover RPC**: Alchemy direct (free tier, 30M CU/month)
+
+### Base Sepolia (previous)
+- Contract: `0x327bC74b1f9Ff4675a1D55e4e9bff2d0C7bcE445`
+- Image: `humanfund-dmverity-hardened-v10`, key: `0x923d500553d9e10a8f864eade2029df0471c7cd4f90b888e7749f0dc3fca1eca`
 
 **Deep dive**: [WHITEPAPER.md](WHITEPAPER.md) (full specification, formal security model, TEE construction)
 

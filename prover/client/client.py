@@ -457,12 +457,12 @@ def _submit_result(chain, config, tee_result, auction, saved, state_dir, ntfy):
         )
         logger.info("Result submitted! tx=%s", receipt['transactionHash'].hex())
 
-        # Record actual costs for rolling average bid estimation
+        # Record actual costs — success=True means bounty was paid
         gas_used = receipt.get("gasUsed", 0)
         gas_price = receipt.get("effectiveGasPrice", chain.get_gas_price())
         vm_minutes = tee_result.get("vm_minutes", 0)
-        record_epoch_cost(state_dir, epoch, gas_used, gas_price, vm_minutes)
-        logger.info("Recorded cost: gas=%d, vm=%.1f min", gas_used, vm_minutes)
+        record_epoch_cost(state_dir, epoch, gas_used, gas_price, vm_minutes, success=True)
+        logger.info("Recorded cost (success): gas=%d, vm=%.1f min", gas_used, vm_minutes)
 
         clear_state(state_dir)
         notify_result_submitted(ntfy, epoch, action_json.get("action", "?"))
@@ -473,6 +473,9 @@ def _submit_result(chain, config, tee_result, auction, saved, state_dir, ntfy):
             save_state(saved, state_dir)
             logger.error("Submission permanently failed [%s]: %s", e.category, e)
             notify_epoch_abandoned(ntfy, epoch, f"{e.category}: {e}")
+            # Record failed run cost (VM was booted, compute was spent)
+            vm_minutes = tee_result.get("vm_minutes", 0)
+            record_epoch_cost(state_dir, epoch, 0, 0, vm_minutes, success=False)
         else:
             save_state(saved, state_dir)
             logger.warning("Submission failed [%s], will retry (%d/%d): %s",

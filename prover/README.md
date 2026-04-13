@@ -26,7 +26,7 @@ The prover client runs on **any Linux machine** — it only needs Python, a clou
 | **AuctionManager** | [`0x97B63f48457f2A29A7db3ac8C4ffe648Ba2D2B60`](https://basescan.org/address/0x97B63f48457f2A29A7db3ac8C4ffe648Ba2D2B60) |
 | **Chain** | Base Mainnet (8453) |
 | **RPC** | `https://mainnet.base.org` |
-| **Production image** | `costanza-prover-tdx-h100-cc` ([GCP public image](https://console.cloud.google.com/compute/imagesDetail/projects/the-human-fund/global/images/costanza-prover-tdx-h100-cc)) |
+| **Production image** | `costanza-prover-tdx-h100-cc` (build from source — see below) |
 
 To run as a prover, you can either build the image yourself (see below) or use the canonical public image above. Both produce the same platform key because dm-verity ensures byte-identical rootfs hashes.
 
@@ -84,21 +84,22 @@ pip install web3 pycryptodome eth_abi requests
 forge build  # Generate ABIs
 ```
 
-### 2. Build a dm-verity Image (or use the canonical one)
+### 2. Build the dm-verity Image
 
-The inference VM boots from a dm-verity sealed disk image containing the inference server, model weights, and enclave code. If the fund owner publishes the canonical image name, you can skip this step.
-
-To build your own:
+The inference VM boots from a dm-verity sealed disk image containing the inference server, model weights, and enclave code. **The build is reproducible** — any prover who builds from the same git tag gets a byte-identical rootfs, which means the same platform key (`sha256(MRTD || RTMR[1] || RTMR[2])`). You don't need a copy of the fund owner's image; just build from source and the existing on-chain key will match.
 
 ```bash
-# Build base image (once — installs drivers, inference server, model)
+# Build base image (once — installs NVIDIA drivers, llama-server, model weights ~42.5GB)
+# Takes ~15 minutes. Only redo when llama.cpp, NVIDIA driver, or Ubuntu changes.
 bash prover/scripts/gcp/build_base_image.sh
 
-# Build dm-verity sealed image (each time enclave code changes)
+# Build dm-verity sealed image from the base (~30-40 minutes)
 bash prover/scripts/gcp/build_full_dmverity_image.sh \
   --base-image humanfund-base-gpu-llama-b5270 \
   --name costanza-prover-tdx-h100-cc
 ```
+
+After building, verify your image matches the registered on-chain key before bidding (step 3 below).
 
 ### 3. Register and Verify Measurements
 

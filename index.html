@@ -923,6 +923,7 @@
       <input class="form-input" id="donate-amount" type="number" min="0.0001" step="0.001" placeholder="0.01">
     </div>
     <button class="wallet-btn" id="donate-btn" onclick="handleDonate()">Connect wallet to donate</button>
+    <p class="referral-note" style="font-size:11px;color:var(--text-secondary);margin-top:10px;line-height:1.5;">Costanza's creator earns a <span class="commission-pct"></span>% referral commission on this donation. <a href="#" onclick="event.preventDefault();document.getElementById('modal-donate').classList.remove('open');openModal('earn');" style="color:var(--accent);">Mint your own referral code</a> to earn commissions too.</p>
     <div class="form-status" id="donate-status"></div>
   </div>
 </div>
@@ -943,6 +944,7 @@
       <div class="form-hint">Max 1000 characters. Stored on-chain forever.</div>
     </div>
     <button class="wallet-btn" id="message-btn" onclick="handleMessage()">Connect wallet to send</button>
+    <p class="referral-note" style="font-size:11px;color:var(--text-secondary);margin-top:10px;line-height:1.5;">Costanza's creator earns a <span class="commission-pct"></span>% referral commission on this donation. <a href="#" onclick="event.preventDefault();document.getElementById('modal-message').classList.remove('open');openModal('earn');" style="color:var(--accent);">Mint your own referral code</a> to earn commissions too.</p>
     <div class="form-status" id="message-status"></div>
   </div>
 </div>
@@ -1263,10 +1265,11 @@ function cv(name) {
 // CONFIG
 // ═══════════════════════════════════════════════════════
 
-const CONTRACT_ADDRESS = '0x93fdcba6d97BBF47449a465bf33ede5b6a5b49B4';
-const RPC_URL = 'https://mainnet.base.org';
+const CONTRACT_ADDRESS = '0xe63211E7420667650B78C2f68Bfc0B43f499028c';
+const RPC_URL = 'https://humanfund-rpc-cache.thehumanfund.workers.dev';
 const EXPLORER = 'https://basescan.org';
-const REFERRAL_CODE = '0'; // TODO: hardcode referral code
+const DEPLOY_BLOCK = 44657528;
+const REFERRAL_CODE = '1';
 
 // ═══════════════════════════════════════════════════════
 // ABI
@@ -1377,6 +1380,7 @@ let allEvents = [];
 let walletProvider = null; // ethers BrowserProvider
 let walletSigner = null;
 let walletAddress = null;
+let currentCommissionPct = '10'; // updated from contract each refresh
 
 const BASE_CHAIN_ID = 84532; // Base Sepolia
 
@@ -1928,8 +1932,7 @@ async function loadAll() {
   let diaryEventsByEpoch = {};
   try {
     const currentBlock = await provider.getBlockNumber();
-    const fromBlock = Math.max(0, currentBlock - 100000);
-    const diaryLogs = await fund.queryFilter(fund.filters.DiaryEntry(), fromBlock, currentBlock);
+    const diaryLogs = await fund.queryFilter(fund.filters.DiaryEntry(), DEPLOY_BLOCK, currentBlock);
     for (const log of diaryLogs) {
       diaryEventsByEpoch[Number(log.args[0])] = log.transactionHash;
     }
@@ -2071,6 +2074,8 @@ async function loadAll() {
   // Inflows
   document.getElementById('inflow-total').textContent = fmtEth(inflows);
   document.getElementById('inflow-commission').textContent = `${(Number(commRate) / 100).toFixed(1)}%`;
+  currentCommissionPct = (Number(commRate) / 100).toFixed(1);
+  document.querySelectorAll('.commission-pct').forEach(el => el.textContent = currentCommissionPct);
   document.getElementById('inflow-commissions-paid').textContent = fmtEth(commPaid);
 
   // Inflow chart — derive per-epoch inflows from treasury changes + bounties + donations
@@ -2465,7 +2470,6 @@ async function loadAll() {
 async function loadEvents() {
   try {
     const currentBlock = await provider.getBlockNumber();
-    const fromBlock = Math.max(0, currentBlock - 9000);
     const eventDefs = [
       { filter: 'DiaryEntry', badge: 'badge-accent' },
       { filter: 'DonationReceived', badge: 'badge-green' },
@@ -2484,7 +2488,7 @@ async function loadEvents() {
     allEvents = [];
     for (const def of eventDefs) {
       try {
-        const logs = await fund.queryFilter(fund.filters[def.filter](), fromBlock, currentBlock);
+        const logs = await fund.queryFilter(fund.filters[def.filter](), DEPLOY_BLOCK, currentBlock);
         for (const log of logs) {
           let detail = '';
           try {
@@ -2550,7 +2554,7 @@ async function refresh() {
 
 async function init() {
   try {
-    provider = new ethers.JsonRpcProvider(RPC_URL);
+    provider = new ethers.JsonRpcProvider(RPC_URL, undefined, { batchMaxCount: 1 });
     fund = new ethers.Contract(CONTRACT_ADDRESS, FUND_ABI, provider);
 
     document.getElementById('contract-link').textContent = fmtAddr(CONTRACT_ADDRESS);

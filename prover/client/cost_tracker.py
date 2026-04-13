@@ -47,21 +47,22 @@ def _save_history(history, state_dir):
         raise
 
 
-def record_epoch_cost(state_dir, epoch, gas_used, gas_price_wei, vm_minutes):
+def record_epoch_cost(state_dir, epoch, gas_used, gas_price_wei, vm_minutes, success=True):
     """Record the actual cost of an epoch execution.
 
     Args:
         state_dir: Path to persistent state directory.
         epoch: Epoch number.
-        gas_used: Actual gas consumed by submitAuctionResult.
+        gas_used: Actual gas consumed by submitAuctionResult (or 0 if submission failed).
         gas_price_wei: Gas price at time of submission.
         vm_minutes: Total VM uptime in minutes (boot + inference + cleanup).
+        success: Whether the submission succeeded on-chain.
     """
     try:
         history = _load_history(state_dir)
 
         # Don't record duplicate epochs
-        if any(h.get("epoch") == epoch for h in history):
+        if any(h.get("epoch") == epoch and h.get("success", True) == success for h in history):
             return
 
         history.append({
@@ -69,6 +70,7 @@ def record_epoch_cost(state_dir, epoch, gas_used, gas_price_wei, vm_minutes):
             "gas_used": gas_used,
             "gas_price_wei": gas_price_wei,
             "vm_minutes": vm_minutes,
+            "success": success,
         })
 
         # Keep only the last MAX_HISTORY entries
@@ -93,12 +95,13 @@ def get_average_costs(state_dir, min_epochs=3):
     """
     try:
         history = _load_history(state_dir)
-        if len(history) < min_epochs:
+        successes = [h for h in history if h.get("success", True)]
+        if len(successes) < min_epochs:
             return None
 
-        total_gas = sum(h["gas_used"] for h in history)
-        total_vm = sum(h["vm_minutes"] for h in history)
-        n = len(history)
+        total_gas = sum(h["gas_used"] for h in successes)
+        total_vm = sum(h["vm_minutes"] for h in successes)
+        n = len(successes)
 
         return {
             "avg_gas_used": total_gas / n,

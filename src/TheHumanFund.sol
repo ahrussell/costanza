@@ -116,7 +116,7 @@ contract TheHumanFund is ReentrancyGuard {
     uint256 public constant MIN_DONATION_AMOUNT = 0.001 ether;
     uint256 public constant AUTO_ESCALATION_BPS = 1000;    // 10% increase per missed epoch
     uint256 public constant MAX_NONPROFITS = 20;
-    uint256 public constant BASE_BOND = 0.001 ether;        // Fixed bond, escalates on missed epochs
+    uint256 public constant BASE_BOND = 0.01 ether;         // Fixed bond, escalates on missed epochs
     uint256 public constant MIN_BOND_CAP = 1 ether;          // Bond cap floor (independent of treasury)
     uint256 public constant MAX_BOND_BPS = 1000;             // Bond cap as 10% of treasury
     uint256 public constant MIN_MESSAGE_DONATION = 0.01 ether;  // 10x normal min to prevent spam
