@@ -34,7 +34,7 @@ Costanza's brain is secured by [Intel TDX](https://www.intel.com/content/www/us/
 
 The prover reconstructs inputs from on-chain state, and the contract verifies that the attested output corresponds to the committed inputs. The prover cannot feed the model different inputs, substitute a different output, or re-roll inference (the randomness seed is derived from `block.prevrandao`, committed before execution begins).
 
-**Read more in [SECURITY_MODEL.md](SECURITY_MODEL.md).**
+**Read more in [WHITEPAPER.md](WHITEPAPER.md).**
 
 ### Untrusted inputs
 
@@ -70,6 +70,4 @@ While this does not completely break Costanza's security model (the contract sti
 
 ## Further reading
 
-- **[DESIGN.md](DESIGN.md)** — How the system works: the reverse auction, integrity chain, action space, and cost economics
-- **[SECURITY_MODEL.md](SECURITY_MODEL.md)** — Formal security model: assumptions, security games, and proof sketches
-- **[TEE_SECURITY.md](TEE_SECURITY.md)** — TEE construction: TDX trust model, dm-verity, boot flow, and build process
+- **[WHITEPAPER.md](WHITEPAPER.md)** — Full specification: system design, formal security model, TEE construction, and proof sketches

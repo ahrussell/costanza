@@ -24,7 +24,7 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 - H100 on-demand quota is 0; all GPU VMs use `--provisioning-model=SPOT`
 - **Remaining**: extended testnet run, mainnet deployment
 
-**Deep dives**: [DESIGN.md](DESIGN.md) (full specification), [SECURITY_MODEL.md](SECURITY_MODEL.md) (formal security model, assumptions, proofs), [TEE_SECURITY.md](TEE_SECURITY.md) (TDX + dm-verity construction, boot flow, build process)
+**Deep dive**: [WHITEPAPER.md](WHITEPAPER.md) (full specification, formal security model, TEE construction)
 
 ## Architecture
 
@@ -47,7 +47,7 @@ the AuctionManager through any elapsed phase windows based on wall-clock timing.
 computes the effective phase from timing data and only calls the action appropriate for the
 current window — no need to call `startEpoch`, `closeCommit`, `closeReveal`, or `forfeitBond`.
 
-See [DESIGN.md](DESIGN.md) for the full integrity chain, auction economics, and indestructibility model.
+See [WHITEPAPER.md](WHITEPAPER.md) for the full integrity chain, auction economics, and indestructibility model.
 
 ## Key Development Rules
 
@@ -85,9 +85,7 @@ Check actual gas used via `cast send` or test transactions and update the consta
 ```
 thehumanfund/
 ├── CLAUDE.md                    # This file
-├── DESIGN.md                    # Full design specification
-├── SECURITY_MODEL.md            # Formal security model: assumptions, games, proofs
-├── TEE_SECURITY.md              # TEE construction: TDX trust model, dm-verity, boot flow, build
+├── WHITEPAPER.md                # Full specification, security model, TEE construction
 ├── SECURITY_AUDIT.md            # Point-in-time adversarial security audit
 ├── foundry.toml                 # Foundry configuration
 ├── .venv/                       # Python virtual environment (gitignored)
@@ -233,7 +231,7 @@ See [prover/README.md](prover/README.md) for full setup instructions.
 - **Input**: Epoch state JSON via GCP instance metadata
 - **Output**: Result JSON to serial console (`/dev/ttyS0`, between `===HUMANFUND_OUTPUT_START===` / `===HUMANFUND_OUTPUT_END===` delimiters)
 
-See [TEE_SECURITY.md](TEE_SECURITY.md) for boot flow, disk layout, and build process.
+See [WHITEPAPER.md](WHITEPAPER.md) Section 6 for boot flow, disk layout, and build process.
 
 ## Frontend
 

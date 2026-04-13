@@ -270,7 +270,7 @@ The prover always deletes the VM in a `finally` block to avoid orphaned VMs.
 
 ## Security Model
 
-See [SECURITY_MODEL.md](../SECURITY_MODEL.md) for the full trust model, accepted risks, and attestation architecture.
+See [WHITEPAPER.md](../WHITEPAPER.md) for the full trust model, accepted risks, and attestation architecture.
 
 Key properties:
 - **Input integrity**: The TEE independently computes the input hash and verifies all display data matches opaque hashes. Fake data is rejected.
