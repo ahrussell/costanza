@@ -64,7 +64,7 @@ def create_measurement_vm(image, project, zone):
         f"--machine-type=a3-highgpu-1g "
         f"--image={image} "
         f"--confidential-compute-type=TDX "
-        f"--boot-disk-size=200GB "
+        f"--boot-disk-size=300GB "
         f"--maintenance-policy=TERMINATE "
         f"--provisioning-model=SPOT "
         f"--instance-termination-action=DELETE "
