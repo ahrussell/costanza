@@ -941,6 +941,7 @@ The prover's only influence on the enclave is the initial epoch state (provided 
 - **No code modification**: All code paths are on dm-verity. Any attempt to modify code returns I/O errors.
 - **No prompt modification**: The system prompt is on dm-verity. The prover cannot substitute a different prompt.
 - **No model modification**: Model weights are on a separate dm-verity partition. The enclave also verifies the model's SHA-256 hash at startup.
+- **No GPU memory tampering**: The NVIDIA drivers baked into the dm-verity image enforce Confidential Computing mode (`nvidia-smi conf-compute -srs 1`), which is set by a systemd service at boot before the enclave starts. In CC mode, GPU memory is encrypted and integrity-protected by the hardware — the host OS and VMM cannot read or modify GPU memory contents. This extends the TDX trust boundary to include GPU computation, preventing a prover from intercepting or altering model weights or intermediate activations in GPU memory.
 - **Input is hash-verified**: The enclave independently recomputes the input hash and includes it in REPORTDATA. Fabricated inputs produce a different hash, which fails the contract's check.
 
 The remaining attack surface is:
