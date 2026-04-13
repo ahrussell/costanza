@@ -1316,7 +1316,7 @@ const FUND_ABI = [
   "function auctionManager() view returns (address)",
   // User-facing write functions
   "function donate(uint256 referralCode) payable",
-  "function donateWithMessage(string calldata message, uint256 referralCode) payable",
+  "function donateWithMessage(uint256 referralCode, string calldata message) payable",
   "function mintReferralCode() returns (uint256)",
   // For calldata decoding of worldview updates
   "function submitAuctionResult(bytes calldata action, bytes calldata reasoning, bytes calldata proof, uint256 verifierId, uint256 policySlot, string calldata policyText)",
@@ -1539,7 +1539,7 @@ async function handleMessage() {
 
     setStatus(statusId, 'Confirm the transaction in your wallet...', 'info');
     const fundWrite = new ethers.Contract(CONTRACT_ADDRESS, FUND_ABI, walletSigner);
-    const tx = await fundWrite.donateWithMessage(msgText, BigInt(REFERRAL_CODE), {
+    const tx = await fundWrite.donateWithMessage(BigInt(REFERRAL_CODE), msgText, {
       value: ethers.parseEther(amountStr),
     });
     setStatus(statusId, 'Transaction submitted. Waiting for confirmation...', 'info');
