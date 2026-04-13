@@ -1044,4 +1044,176 @@ contract TheHumanFundAuctionTest is Test {
             assertNotEq(hash, _commitHash(bidAmount - 1, salt));
         }
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Group: Epoch Snapshot — drift isolation
+    // ═══════════════════════════════════════════════════════════════════════
+
+    function test_snapshot_valuesMatchAtAuctionOpen() public {
+        fund.syncPhase(); // opens auction for epoch 1
+        TheHumanFund.EpochSnapshot memory snap = fund.getEpochSnapshot(1);
+
+        assertEq(snap.balance, address(fund).balance);
+        assertEq(snap.totalInflows, fund.totalInflows());
+        assertEq(snap.currentEpochInflow, fund.currentEpochInflow());
+        assertEq(snap.currentEpochDonationCount, fund.currentEpochDonationCount());
+        assertEq(snap.messageHead, fund.messageHead());
+    }
+
+    function test_snapshot_donationDoesNotChangeBaseInputHash() public {
+        fund.syncPhase(); // opens auction for epoch 1
+        bytes32 hashBefore = fund.epochBaseInputHashes(1);
+
+        // Donate after auction open
+        vm.deal(address(0xDEAD), 1 ether);
+        vm.prank(address(0xDEAD));
+        fund.donate{value: 0.1 ether}(0);
+
+        // baseInputHash must not have changed
+        assertEq(fund.epochBaseInputHashes(1), hashBefore);
+    }
+
+    function test_snapshot_messageDoesNotChangeBaseInputHash() public {
+        fund.syncPhase(); // opens auction for epoch 1
+        bytes32 hashBefore = fund.epochBaseInputHashes(1);
+
+        // Send message after auction open
+        vm.deal(address(0xDEAD), 1 ether);
+        vm.prank(address(0xDEAD));
+        fund.donateWithMessage{value: 0.05 ether}(0, "hello after auction open");
+
+        // baseInputHash must not have changed
+        assertEq(fund.epochBaseInputHashes(1), hashBefore);
+    }
+
+    function test_snapshot_messageBoundariesFrozen() public {
+        // Send a message BEFORE auction open
+        vm.deal(address(0xDEAD), 2 ether);
+        vm.prank(address(0xDEAD));
+        fund.donateWithMessage{value: 0.05 ether}(0, "before auction");
+
+        fund.syncPhase(); // opens auction for epoch 1
+        TheHumanFund.EpochSnapshot memory snap = fund.getEpochSnapshot(1);
+
+        // Snapshot should record 1 message
+        assertEq(snap.messageCount, 1);
+        assertEq(snap.messageHead, 0);
+
+        // Send another message AFTER auction open
+        vm.prank(address(0xDEAD));
+        fund.donateWithMessage{value: 0.05 ether}(0, "after auction");
+
+        // Snapshot should still show 1 message (frozen at auction open)
+        TheHumanFund.EpochSnapshot memory snapAfter = fund.getEpochSnapshot(1);
+        assertEq(snapAfter.messageCount, 1);
+        assertEq(snapAfter.messageHead, 0);
+    }
+
+    function test_snapshot_scalarsFrozenAfterDonation() public {
+        fund.syncPhase(); // opens auction for epoch 1
+        TheHumanFund.EpochSnapshot memory snapBefore = fund.getEpochSnapshot(1);
+
+        // Donate after auction open — changes live state but not snapshot
+        vm.deal(address(0xDEAD), 1 ether);
+        vm.prank(address(0xDEAD));
+        fund.donate{value: 0.5 ether}(0);
+
+        TheHumanFund.EpochSnapshot memory snapAfter = fund.getEpochSnapshot(1);
+
+        // Snapshot values must be identical
+        assertEq(snapAfter.balance, snapBefore.balance);
+        assertEq(snapAfter.totalInflows, snapBefore.totalInflows);
+        assertEq(snapAfter.currentEpochInflow, snapBefore.currentEpochInflow);
+        assertEq(snapAfter.currentEpochDonationCount, snapBefore.currentEpochDonationCount);
+
+        // But live state has changed
+        assertGt(address(fund).balance, snapAfter.balance);
+    }
+
+    function test_snapshot_multiEpoch_independentSnapshots() public {
+        // Epoch 1: open auction, donate, complete epoch
+        fund.syncPhase();
+        TheHumanFund.EpochSnapshot memory snap1 = fund.getEpochSnapshot(1);
+
+        vm.deal(address(0xDEAD), 5 ether);
+        vm.prank(address(0xDEAD));
+        fund.donate{value: 0.5 ether}(0);
+
+        _runAuctionTo(runner1, 0.005 ether, bytes32("s1"));
+        _submitAttestedResult(runner1, 1);
+
+        // Warp to epoch 2's scheduled start so syncPhase opens the next auction
+        vm.warp(fund.epochStartTime(2));
+        fund.syncPhase(); // advances to epoch 2, opens auction
+        TheHumanFund.EpochSnapshot memory snap2 = fund.getEpochSnapshot(2);
+
+        // Epoch 2 snapshot should differ from epoch 1 (donation + bounty changed state)
+        assertGt(snap2.totalInflows, snap1.totalInflows);
+
+        // Epoch 1 snapshot should be unchanged (frozen)
+        TheHumanFund.EpochSnapshot memory snap1After = fund.getEpochSnapshot(1);
+        assertEq(snap1After.balance, snap1.balance);
+        assertEq(snap1After.totalInflows, snap1.totalInflows);
+    }
+
+    function test_snapshot_multiEpoch_messagesAdvanceCorrectly() public {
+        // Send message before epoch 1
+        vm.deal(address(0xDEAD), 5 ether);
+        vm.prank(address(0xDEAD));
+        fund.donateWithMessage{value: 0.05 ether}(0, "msg for epoch 1");
+
+        // Epoch 1: auction open, snapshot should see 1 message
+        _runAuctionTo(runner1, 0.005 ether, bytes32("s1"));
+        TheHumanFund.EpochSnapshot memory snap1 = fund.getEpochSnapshot(1);
+        assertEq(snap1.messageCount, 1);
+        assertEq(snap1.messageHead, 0);
+
+        // Execute epoch 1 — messageHead advances past the processed message
+        _submitAttestedResult(runner1, 1);
+
+        // Send another message before epoch 2
+        vm.prank(address(0xDEAD));
+        fund.donateWithMessage{value: 0.05 ether}(0, "msg for epoch 2");
+
+        // Warp to epoch 2's scheduled start
+        vm.warp(fund.epochStartTime(2));
+        fund.syncPhase();
+        TheHumanFund.EpochSnapshot memory snap2 = fund.getEpochSnapshot(2);
+
+        // Epoch 2 snapshot: messageHead should have advanced, new message visible
+        assertEq(snap2.messageHead, 1); // epoch 1 consumed message 0
+        assertEq(snap2.messageCount, 2); // 2 total messages, head=1 means 1 unread
+    }
+
+    function test_snapshot_multiEpoch_donationBetweenEpochs() public {
+        // Epoch 1
+        _runAuctionTo(runner1, 0.005 ether, bytes32("s1"));
+        TheHumanFund.EpochSnapshot memory snap1 = fund.getEpochSnapshot(1);
+        _submitAttestedResult(runner1, 1);
+
+        // Donate between epochs (after epoch 1 execution, before epoch 2 auction open)
+        vm.deal(address(0xDEAD), 5 ether);
+        vm.prank(address(0xDEAD));
+        fund.donate{value: 1 ether}(0);
+
+        // Warp to epoch 2's scheduled start
+        vm.warp(fund.epochStartTime(2));
+        fund.syncPhase();
+        TheHumanFund.EpochSnapshot memory snap2 = fund.getEpochSnapshot(2);
+
+        // Epoch 2 snapshot should include the donation in its balance
+        // (donation happened before auction open, so it's part of the frozen state)
+        assertGt(snap2.balance, snap1.balance);
+
+        // Donate AFTER epoch 2 auction open
+        vm.prank(address(0xDEAD));
+        fund.donate{value: 0.5 ether}(0);
+
+        // Epoch 2 snapshot should NOT have changed
+        TheHumanFund.EpochSnapshot memory snap2After = fund.getEpochSnapshot(2);
+        assertEq(snap2After.balance, snap2.balance);
+
+        // But live balance should be higher
+        assertGt(address(fund).balance, snap2.balance);
+    }
 }

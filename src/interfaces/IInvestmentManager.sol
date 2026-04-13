@@ -26,4 +26,8 @@ interface IInvestmentManager {
 
     /// @notice Number of registered protocols.
     function protocolCount() external view returns (uint256);
+
+    /// @notice Get the current value of a position (from adapter.balance()).
+    /// @param protocolId The protocol ID (1-indexed).
+    function getProtocolValue(uint256 protocolId) external view returns (uint256);
 }

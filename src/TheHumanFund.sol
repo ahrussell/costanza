@@ -63,6 +63,26 @@ contract TheHumanFund is ReentrancyGuard {
         uint256 epoch;         // epoch when the message was received
     }
 
+    /// @dev Frozen state snapshot taken at auction open. Records values that can
+    ///      drift between auction open and execution (due to donations, messages,
+    ///      or DeFi yield accrual). The prover reads these to reproduce the exact
+    ///      state the input hash was computed from.
+    struct EpochSnapshot {
+        // Scalar values that drift due to donations arriving after auction open
+        uint256 balance;
+        uint256 totalInflows;
+        uint256 currentEpochInflow;
+        uint256 currentEpochDonationCount;
+        // Message queue boundaries at auction open
+        uint256 messageHead;
+        uint256 messageCount;
+        // Investment position currentValues at auction open (drift with DeFi yields).
+        // Indexed 1..investmentProtocolCount, matching InvestmentManager.
+        // depositedEth and shares don't drift (only changed by execute actions).
+        uint256 investmentProtocolCount;
+        uint256[21] investmentCurrentValues;  // 1-indexed, [0] unused, max 20 protocols
+    }
+
     // ─── Events ──────────────────────────────────────────────────────────
 
     event DiaryEntry(
@@ -188,6 +208,9 @@ contract TheHumanFund is ReentrancyGuard {
 
     // Base input hashes (pre-seed) — extended with randomness seed at closeAuction()
     mapping(uint256 => bytes32) public epochBaseInputHashes;
+
+    // Frozen state snapshots — taken at auction open so provers can reproduce the input hash
+    mapping(uint256 => EpochSnapshot) internal _epochSnapshots;
 
     // Per-epoch content hashes — cached at settlement for cheap history verification
     mapping(uint256 => bytes32) public epochContentHashes;
@@ -682,13 +705,33 @@ contract TheHumanFund is ReentrancyGuard {
         }
     }
 
-    /// @dev Open an auction for the given epoch. Snapshots price, computes input hash.
+    /// @dev Open an auction for the given epoch. Snapshots price and drifting state,
+    ///      then computes input hash (which reads the same live state at this instant).
     function _openAuction(uint256 epoch, uint256 scheduledStart) internal {
         _snapshotEthUsdPrice();
 
         uint256 bond = currentBond();
         auctionManager.openAuction(epoch, bond, scheduledStart);
         lastEpochStartTime = scheduledStart;
+
+        // Freeze drifting state into snapshot so the prover can reproduce the input hash.
+        // At this instant, live state == snapshot values, so _computeInputHash() is consistent.
+        EpochSnapshot storage snap = _epochSnapshots[epoch];
+        snap.balance = address(this).balance;
+        snap.totalInflows = totalInflows;
+        snap.currentEpochInflow = currentEpochInflow;
+        snap.currentEpochDonationCount = currentEpochDonationCount;
+        snap.messageHead = messageHead;
+        snap.messageCount = messages.length;
+
+        // Snapshot investment currentValues (drift with DeFi yields between blocks)
+        if (address(investmentManager) != address(0)) {
+            uint256 pCount = investmentManager.protocolCount();
+            snap.investmentProtocolCount = pCount;
+            for (uint256 i = 1; i <= pCount; i++) {
+                snap.investmentCurrentValues[i] = investmentManager.getProtocolValue(i);
+            }
+        }
 
         bytes32 baseInputHash = _computeInputHash();
         epochBaseInputHashes[epoch] = baseInputHash;
@@ -1112,8 +1155,17 @@ contract TheHumanFund is ReentrancyGuard {
 
     /// @notice Compute the epoch input hash from current contract state.
     /// @dev Public view for runners to verify their input matches.
+    ///      Note: after auction open, live state may drift due to donations/messages/yields.
+    ///      Use getEpochSnapshot() to read the frozen values that the input hash was computed from.
     function computeInputHash() external view returns (bytes32) {
         return _computeInputHash();
+    }
+
+    /// @notice Get the frozen state snapshot for an epoch.
+    /// @dev Populated at auction open. Contains drifting values (balance, inflows, messages,
+    ///      investment positions) frozen at the instant the input hash was computed.
+    function getEpochSnapshot(uint256 epoch) external view returns (EpochSnapshot memory) {
+        return _epochSnapshots[epoch];
     }
 
     /// @notice Get the current treasury balance (liquid ETH only).

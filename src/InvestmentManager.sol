@@ -320,6 +320,13 @@ contract InvestmentManager is IInvestmentManager, ReentrancyGuard {
         return keccak256(abi.encodePacked(packed, protocolCount, totalInvestedValue()));
     }
 
+    /// @notice Get the current value of a position (from adapter.balance()).
+    function getProtocolValue(uint256 protocolId) external view override returns (uint256) {
+        Position storage pos = positions[protocolId];
+        ProtocolInfo storage proto = protocols[protocolId];
+        return (pos.shares > 0 && proto.exists) ? proto.adapter.balance() : 0;
+    }
+
     /// @notice Get position details for a protocol.
     function getPosition(uint256 protocolId) external view returns (
         uint256 depositedEth,
