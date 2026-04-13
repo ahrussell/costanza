@@ -21,14 +21,14 @@ The prover client runs on **any Linux machine** — it only needs Python, a clou
 
 | | Address / Value |
 |---|---|
-| **TheHumanFund** | [`0x93fdcba6d97BBF47449a465bf33ede5b6a5b49B4`](https://basescan.org/address/0x93fdcba6d97BBF47449a465bf33ede5b6a5b49B4) |
-| **TdxVerifier** | [`0xF4B1492824FB189f6738af36523C1C21339e1e74`](https://basescan.org/address/0xF4B1492824FB189f6738af36523C1C21339e1e74) |
-| **AuctionManager** | [`0x97B63f48457f2A29A7db3ac8C4ffe648Ba2D2B60`](https://basescan.org/address/0x97B63f48457f2A29A7db3ac8C4ffe648Ba2D2B60) |
+| **TheHumanFund** | [`0xe9a4737feE728Bf14e0c4C87Ef25c2ab70D1296B`](https://basescan.org/address/0xe9a4737feE728Bf14e0c4C87Ef25c2ab70D1296B) |
+| **TdxVerifier** | [`0xe4ABE74977348Bb3aE3def3d5FE82B278aEe091d`](https://basescan.org/address/0xe4ABE74977348Bb3aE3def3d5FE82B278aEe091d) |
+| **AuctionManager** | [`0x5bafaAfF78EB2cc99925d8feEC692a87F5b1632c`](https://basescan.org/address/0x5bafaAfF78EB2cc99925d8feEC692a87F5b1632c) |
 | **Chain** | Base Mainnet (8453) |
 | **RPC** | `https://mainnet.base.org` |
-| **Production image** | `costanza-prover-tdx-h100-cc` (build from source — see below) |
+| **Production image** | `humanfund-dmverity-hardened-v10` (build from source — see below) |
 
-To run as a prover, you can either build the image yourself (see below) or use the canonical public image above. Both produce the same platform key because dm-verity ensures byte-identical rootfs hashes.
+To run as a prover, you can build the image yourself (see below). Both builds produce the same platform key because dm-verity ensures byte-identical rootfs hashes.
 
 ### TEE Platform Support
 
@@ -38,7 +38,6 @@ The system is designed to be platform-agnostic. The TdxVerifier contract can app
 |----------|--------|-------------|-------|
 | **GCP TDX** (H100) | Production | `a3-highgpu-1g` | Reference implementation. Intel TDX via GCP Confidential VMs. |
 | **dstack** | Planned | Various | Container-based TEE. Would need a DstackVerifier contract. |
-| **AWS Nitro** | Future | Various | Would need a NitroVerifier contract. |
 
 The initial approved platform measurement is for GCP TDX on `a3-highgpu-1g` (NVIDIA H100). Additional platforms can be supported by deploying new verifier contracts and registering their measurements.
 
@@ -279,37 +278,3 @@ Key properties:
 - **Code integrity**: dm-verity ensures the rootfs is immutable. Any modification causes I/O errors at the kernel level.
 - **Deterministic inference**: The randomness seed (from `block.prevrandao`) makes inference reproducible.
 
-## Directory Structure
-
-```
-prover/
-├── README              # This file
-├── client/             # Prover client (auction bidding + VM orchestration)
-│   ├── client.py       # Main entry point
-│   ├── auction.py      # Auction state machine
-│   ├── chain.py        # Contract interaction
-│   ├── config.py       # Configuration (env vars + CLI)
-│   ├── epoch_state.py  # Contract state reading for TEE
-│   ├── bid_strategy.py # Bid calculation
-│   ├── state.py        # Persistent state
-│   ├── notifier.py     # ntfy.sh notifications
-│   └── tee_clients/    # TEE VM management
-│       ├── base.py     # Abstract interface
-│       └── gcp.py      # GCP TDX implementation
-├── enclave/            # TEE enclave code (baked into dm-verity rootfs)
-│   ├── enclave_runner.py   # One-shot entry point
-│   ├── inference.py        # Two-pass llama-server calls
-│   ├── input_hash.py       # Input hash verification
-│   ├── action_encoder.py   # Action → contract bytes
-│   ├── attestation.py      # TDX quote generation
-│   ├── prompt_builder.py   # System prompt + epoch context
-│   └── model_config.py     # Pinned model SHA-256
-├── prompts/
-│   └── system_v6.txt   # System prompt (committed on-chain)
-└── scripts/
-    ├── build_base_image.sh          # Build base VM image
-    ├── build_full_dmverity_image.sh # Build sealed dm-verity image
-    ├── register_image.py            # Register platform key on-chain (serial console, no SSH)
-    ├── verify_measurements.py       # Verify measurements match on-chain (serial console, no SSH)
-    └── e2e_test.py                  # Full end-to-end test
-```
