@@ -73,7 +73,7 @@ class GCPTEEClient(TEEClient):
                 f"--machine-type={self.machine_type} "
                 f"--image={self.image} "
                 f"--confidential-compute-type=TDX "
-                f"--boot-disk-size=300GB "
+                f"--boot-disk-size=200GB "
                 f"--maintenance-policy=TERMINATE "
                 f"--provisioning-model=SPOT "
                 f"--instance-termination-action=DELETE "
