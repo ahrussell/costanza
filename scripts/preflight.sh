@@ -50,6 +50,8 @@ AAVE_AWETH="0xd4a0e0b9149bcee3c920d2e00b5de09138fd8bb7"
 WSTETH="0xc1CBa3fCea344f92D9239c08C0568f6F2F0ee452"
 CBETH="0x2Ae3F1Ec7F1F5012CFEab0185bfc7aa3cf0DEc22"
 COMPOUND_COMET="0xb125E6687d4313864e53df431d5425969c15Eb2F"
+AAVE_AUSDC="0x4e65fE4DbA92790696d040ac24Aa414708F5c0AB"
+MORPHO_GAUNTLET_WETH="0x6b13c060F13Af1fdB319F52315BbbF3fb1D88844"
 
 # Uniswap V3 Factory on Base
 UNISWAP_FACTORY="0x33128a8fC17869897dcE68Ed026d694621f6FDfD"
@@ -232,35 +234,31 @@ check_contract_with_evidence "$COMPOUND_COMET" \
     "Compound V3 Comet USDC ($COMPOUND_COMET)" \
     "https://docs.compound.finance/#networks"
 
+check_contract_with_evidence "$AAVE_AUSDC" \
+    "Aave aUSDC ($AAVE_AUSDC)" \
+    "https://docs.aave.com/developers/deployed-contracts/v3-mainnet/base"
+
+check_contract_with_evidence "$MORPHO_GAUNTLET_WETH" \
+    "Morpho Gauntlet WETH Core ($MORPHO_GAUNTLET_WETH)" \
+    "https://app.morpho.org/base/vault/$MORPHO_GAUNTLET_WETH/gauntlet-weth-core"
+
+# Verify aUSDC underlying asset matches USDC
 out ""
-out "  **Missing addresses (TODOs in deploy_mainnet.sh):**"
-warn "AAVE_AUSDC — not yet verified"
-evidence "Look up via: cast call $AAVE_V3_POOL 'getReserveData(address)' $USDC"
-evidence "Or: https://docs.aave.com/developers/deployed-contracts/v3-mainnet/base"
-
-warn "MORPHO_GAUNTLET_WETH — not yet verified"
-evidence "Find at: https://app.morpho.org/base/earn?asset=WETH"
-
-warn "MORPHO_STEAKHOUSE_WETH — not yet verified"
-evidence "Find at: https://app.morpho.org/base/earn?asset=WETH"
-
-# Try to look up Aave aUSDC via the pool
-out ""
-out "  **Auto-discovery: Aave aUSDC**"
-AUSDC_DATA=$(cast call "$AAVE_V3_POOL" \
-    "getReserveData(address)((uint256,(uint128,uint128,uint128,uint128,uint128),uint128,uint128,uint128,uint40,uint16,address,address,address,address,uint128,uint128,uint128))" \
-    "$USDC" \
-    --rpc-url "$RPC_URL" 2>/dev/null || echo "FAILED")
-
-if [[ "$AUSDC_DATA" != "FAILED" ]]; then
-    AUSDC_ADDR=$(echo "$AUSDC_DATA" | grep -oE '0x[0-9a-fA-F]{40}' | head -1)
-    if [[ -n "$AUSDC_ADDR" ]]; then
-        pass "Aave aUSDC discovered via pool.getReserveData(): $AUSDC_ADDR"
-        evidence "Verify: $BASESCAN/$AUSDC_ADDR"
-        evidence "→ Set AAVE_AUSDC=$AUSDC_ADDR in deploy_mainnet.sh"
-    fi
+out "  **Cross-checking aUSDC underlying asset...**"
+AUSDC_UNDERLYING=$(cast call "$AAVE_AUSDC" "UNDERLYING_ASSET_ADDRESS()(address)" --rpc-url "$RPC_URL" 2>/dev/null || echo "FAILED")
+if [[ "$AUSDC_UNDERLYING" == "$USDC" ]]; then
+    pass "aUSDC underlying is USDC ($USDC)"
 else
-    warn "Could not auto-discover Aave aUSDC (ABI mismatch — look up manually)"
+    fail "aUSDC underlying mismatch: expected $USDC, got $AUSDC_UNDERLYING"
+fi
+
+# Verify Morpho vault asset is WETH
+out "  **Cross-checking Morpho vault asset...**"
+MORPHO_ASSET=$(cast call "$MORPHO_GAUNTLET_WETH" "asset()(address)" --rpc-url "$RPC_URL" 2>/dev/null || echo "FAILED")
+if [[ "$MORPHO_ASSET" == "$WETH" ]]; then
+    pass "Morpho Gauntlet vault asset is WETH ($WETH)"
+else
+    fail "Morpho vault asset mismatch: expected $WETH, got $MORPHO_ASSET"
 fi
 
 # ─── 5. Chainlink Feed ─────────────────────────────────────────────
@@ -442,14 +440,13 @@ for KEY_PATH in ".core.WETH" ".core.USDC" ".oracles.chainlink_ETH_USD" ".aave_v3
     fi
 done
 
-# Missing entries
-for KEY_PATH_LABEL in ".aave_v3.aUSDC:Aave aUSDC" ".morpho:Morpho section"; do
+for KEY_PATH_LABEL in ".aave_v3.aUSDC:aave_v3 → aUSDC" ".morpho.gauntlet_weth_core:morpho → gauntlet_weth_core"; do
     KEY_PATH="${KEY_PATH_LABEL%%:*}"
     LABEL="${KEY_PATH_LABEL##*:}"
     if jq -e "$KEY_PATH" "$ADDRESSES_FILE" > /dev/null 2>&1; then
         pass "$LABEL present"
     else
-        warn "$LABEL MISSING — add after verifying address"
+        fail "$LABEL missing"
     fi
 done
 

@@ -17,6 +17,19 @@ Your machine (any Linux server)           TEE Hardware                    Base b
 
 The prover client runs on **any Linux machine** — it only needs Python, a cloud CLI, and an internet connection. Only the inference VM requires TEE hardware.
 
+## Mainnet Deployment
+
+| | Address / Value |
+|---|---|
+| **TheHumanFund** | [`0x93fdcba6d97BBF47449a465bf33ede5b6a5b49B4`](https://basescan.org/address/0x93fdcba6d97BBF47449a465bf33ede5b6a5b49B4) |
+| **TdxVerifier** | [`0xF4B1492824FB189f6738af36523C1C21339e1e74`](https://basescan.org/address/0xF4B1492824FB189f6738af36523C1C21339e1e74) |
+| **AuctionManager** | [`0x97B63f48457f2A29A7db3ac8C4ffe648Ba2D2B60`](https://basescan.org/address/0x97B63f48457f2A29A7db3ac8C4ffe648Ba2D2B60) |
+| **Chain** | Base Mainnet (8453) |
+| **RPC** | `https://mainnet.base.org` |
+| **Production image** | `costanza-prover-tdx-h100-cc` ([GCP public image](https://console.cloud.google.com/compute/imagesDetail/projects/the-human-fund/global/images/costanza-prover-tdx-h100-cc)) |
+
+To run as a prover, you can either build the image yourself (see below) or use the canonical public image above. Both produce the same platform key because dm-verity ensures byte-identical rootfs hashes.
+
 ### TEE Platform Support
 
 The system is designed to be platform-agnostic. The TdxVerifier contract can approve multiple platform keys, each corresponding to a different TEE environment:
@@ -84,7 +97,7 @@ bash prover/scripts/gcp/build_base_image.sh
 # Build dm-verity sealed image (each time enclave code changes)
 bash prover/scripts/gcp/build_full_dmverity_image.sh \
   --base-image humanfund-base-gpu-llama-b5270 \
-  --name humanfund-dmverity-gpu-mainnet-v1
+  --name costanza-prover-tdx-h100-cc
 ```
 
 ### 3. Register and Verify Measurements
@@ -93,7 +106,7 @@ Register your image's platform key on-chain. This boots a temporary TDX VM, extr
 
 ```bash
 python prover/scripts/gcp/register_image.py \
-  --image humanfund-dmverity-gpu-mainnet-v1 \
+  --image costanza-prover-tdx-h100-cc \
   --verifier <TdxVerifier-address>
 ```
 
@@ -101,7 +114,7 @@ To verify an image matches what's already registered:
 
 ```bash
 python prover/scripts/gcp/verify_measurements.py \
-  --image humanfund-dmverity-gpu-mainnet-v1 \
+  --image costanza-prover-tdx-h100-cc \
   --verifier <TdxVerifier-address> \
   --rpc-url <rpc-url>
 ```

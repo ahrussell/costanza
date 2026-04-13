@@ -54,7 +54,7 @@ contract Deploy is Script {
 
         TheHumanFund fund = new TheHumanFund{value: seedAmount}(
             1000,               // 10% initial commission
-            0.0001 ether,       // initial max bid (minimum allowed)
+            0.01 ether,         // initial max bid
             endaomentFactory,
             wethAddr,
             usdcAddr,
@@ -84,7 +84,6 @@ contract Deploy is Script {
         // Direct submission was only needed for Phase 0 testing.
         // WorldView seeding is done above; agent updates policies via worldview sidecar on submitAuctionResult.
         fund.freeze(fund.FREEZE_DIRECT_MODE());
-        fund.freeze(fund.FREEZE_WORLDVIEW_WIRING());
 
         // ─── 2. DeFi adapters ───────────────────────────────────────────
         // Only deployed if DeFi addresses are provided (mainnet/fork).
@@ -137,7 +136,6 @@ contract Deploy is Script {
         address cbETH;
         address comet;
         address morphoGauntletWeth;
-        address morphoSteakhouseWeth;
     }
 
     function _loadDeFiAddresses() internal view returns (DeFiAddresses memory d) {
@@ -152,7 +150,6 @@ contract Deploy is Script {
         d.cbETH      = vm.envAddress("CBETH");
         d.comet      = vm.envAddress("COMPOUND_COMET");
         d.morphoGauntletWeth   = vm.envAddress("MORPHO_GAUNTLET_WETH");
-        d.morphoSteakhouseWeth = vm.envAddress("MORPHO_STEAKHOUSE_WETH");
     }
 
     function _deployAdapters(InvestmentManager im) internal {
@@ -188,28 +185,20 @@ contract Deploy is Script {
         im.addProtocol(a5, "Compound V3 USDC",
             "Lend USDC on Compound V3. Simpler contract than Aave, less attack surface.", 2, 400);
 
-        // Protocol 6: Morpho / Gauntlet WETH (risk 2, ~5% APY)
+        // Protocol 6: Morpho / Gauntlet WETH Core (risk 2, ~5% APY)
         address a6 = address(new MorphoWETHAdapter(
-            d.morphoGauntletWeth, d.weth, mgr, "Morpho Gauntlet WETH"
+            d.morphoGauntletWeth, d.weth, mgr, "Morpho Gauntlet WETH Core"
         ));
-        im.addProtocol(a6, "Morpho Gauntlet WETH",
+        im.addProtocol(a6, "Morpho Gauntlet WETH Core",
             "Curated lending vault managed by Gauntlet. Higher yield by concentrating into specific collateral pairs. Risk: curator misjudges a collateral asset.", 2, 500);
 
-        // Protocol 7: Morpho / Steakhouse WETH (risk 2, ~5% APY)
-        address a7 = address(new MorphoWETHAdapter(
-            d.morphoSteakhouseWeth, d.weth, mgr, "Morpho Steakhouse WETH"
-        ));
-        im.addProtocol(a7, "Morpho Steakhouse WETH",
-            "Curated lending vault managed by Steakhouse Financial. Same architecture as Gauntlet, different curator and collateral selection. Diversifies curator risk.", 2, 500);
-
         console.log("--- Adapters ---");
-        console.log("  1. Aave V3 WETH:         ", a1);
-        console.log("  2. Aave V3 USDC:         ", a2);
-        console.log("  3. Lido wstETH:          ", a3);
-        console.log("  4. Coinbase cbETH:       ", a4);
-        console.log("  5. Compound V3 USDC:     ", a5);
-        console.log("  6. Morpho Gauntlet WETH: ", a6);
-        console.log("  7. Morpho Steakhouse WETH:", a7);
+        console.log("  1. Aave V3 WETH:            ", a1);
+        console.log("  2. Aave V3 USDC:            ", a2);
+        console.log("  3. Lido wstETH:             ", a3);
+        console.log("  4. Coinbase cbETH:          ", a4);
+        console.log("  5. Compound V3 USDC:        ", a5);
+        console.log("  6. Morpho Gauntlet WETH Core:", a6);
     }
 
     function _seedWorldView(TheHumanFund fund) internal {
