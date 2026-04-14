@@ -132,7 +132,7 @@ contract TheHumanFund is ReentrancyGuard {
     uint256 public constant MIN_COMMISSION_BPS = 100;      // 1%
     uint256 public constant MAX_COMMISSION_BPS = 9000;     // 90%
     uint256 public constant MIN_MAX_BID = 0.0001 ether;
-    uint256 public constant MAX_BID_BPS = 200;             // 2% of treasury
+    uint256 public constant MAX_BID_BPS = 200;             // 2% of treasury (effectiveMaxBid floor when treasury is large)
     uint256 public constant MIN_DONATION_AMOUNT = 0.001 ether;
     uint256 public constant AUTO_ESCALATION_BPS = 1000;    // 10% increase per missed epoch
     uint256 public constant MAX_NONPROFITS = 20;
@@ -1138,19 +1138,36 @@ contract TheHumanFund is ReentrancyGuard {
 
     /// @notice Get the effective max bid ceiling (with auto-escalation for missed epochs).
     function effectiveMaxBid() public view returns (uint256) {
-        if (consecutiveMissedEpochs == 0) return maxBid;
+        // Uniform cap logic — applied regardless of missed-epoch count.
+        //
+        // The cap protects the treasury from being drained by a single bid while
+        // respecting the owner-configured maxBid when the treasury is small:
+        //
+        //   - If maxBid >= 50% of treasury, the treasury is too small relative to
+        //     maxBid. Cap at 50% of treasury as a hard treasury-preservation limit.
+        //   - Otherwise (normal case), cap = max(2% of treasury, maxBid). This
+        //     respects the owner's maxBid floor but allows escalation to grow up
+        //     to 2% of treasury for large treasuries.
+        uint256 treasury = address(this).balance;
+        uint256 halfCap = treasury / 2;
 
-        // Cap at 2% of treasury — compute early to bound the loop
-        uint256 hardCap = (address(this).balance * MAX_BID_BPS) / 10000;
-
-        // 10% compounding escalation per missed epoch
-        uint256 escalated = maxBid;
-        for (uint256 i = 0; i < consecutiveMissedEpochs; i++) {
-            escalated = escalated + (escalated * AUTO_ESCALATION_BPS) / 10000;
-            if (escalated >= hardCap) return hardCap;
+        uint256 cap;
+        if (maxBid >= halfCap) {
+            cap = halfCap;
+        } else {
+            uint256 twoPercent = (treasury * MAX_BID_BPS) / 10000;
+            cap = twoPercent > maxBid ? twoPercent : maxBid;
         }
 
-        return escalated;
+        uint256 effective = maxBid > cap ? cap : maxBid;
+        if (consecutiveMissedEpochs == 0) return effective;
+
+        // 10% compounding escalation per missed epoch, bounded by cap.
+        for (uint256 i = 0; i < consecutiveMissedEpochs; i++) {
+            effective = effective + (effective * AUTO_ESCALATION_BPS) / 10000;
+            if (effective >= cap) return cap;
+        }
+        return effective;
     }
 
     /// @notice Compute the epoch input hash from current contract state.

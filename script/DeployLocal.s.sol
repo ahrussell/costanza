@@ -95,7 +95,7 @@ contract DeployLocal is Script {
         console.log("Timing: 30s epoch, 10s bid window, 15s exec window");
         console.log("Auction: enabled");
         console.log("");
-        console.log("NOTE: Mock DCAP at", address(mockDcap), "but Automata constant is 0xaDdeC7e85c2182202b66E331f2a4A0bBB2cEEa1F");
+        console.log("NOTE: Mock DCAP at", address(mockDcap), "but Automata constant is 0x95175096a9B74165BE0ac84260cc14Fc1c0EF5FF");
         console.log("For local testing, use --unlocked to etch mock code at the constant address");
 
         vm.stopBroadcast();

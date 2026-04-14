@@ -783,12 +783,27 @@ In a Docker-based architecture, RTMR[3] would measure the container image digest
 
 When a prover submits an auction result, the `TdxVerifier` contract performs three checks:
 
-**Step 1: DCAP Quote Verification** (~10–12M gas). The contract calls the [Automata DCAP verifier](https://docs.ata.network/) at `0xaDdeC7e85c2182202b66E331f2a4A0bBB2cEEa1F` to confirm:
+**Step 1: DCAP Quote Verification** (~10–12M gas). The contract calls the [Automata DCAP verifier](https://docs.ata.network/) **v1.0** at `0x95175096a9B74165BE0ac84260cc14Fc1c0EF5FF` to confirm:
 - The TDX quote is genuine (Intel certificate chain, valid signature).
 - The TCB (Trusted Computing Base) level is acceptable.
 - The quote has not been tampered with.
 
 The verifier returns the decoded quote body containing all measurement registers and REPORTDATA.
+
+**Why v1.0 instead of v1.1?** Automata offers two versions of their DCAP attestation contracts:
+
+- **v1.0** at `0x95175096a9B74165BE0ac84260cc14Fc1c0EF5FF` reads Intel collateral from *permissionless base DAOs* (`AutomataFmspcTcbDao`, `AutomataEnclaveIdentityDao`). Anyone can push Intel-signed TCB info and QE identity to these DAOs by calling `upsert*` functions — the DAO validates Intel's signature internally, so trust flows from Intel's CA, not from the submitter.
+- **v1.1** at `0xaDdeC7e85c2182202b66E331f2a4A0bBB2cEEa1F` reads from *versioned DAOs* that require an `ATTESTER_ROLE` granted by Automata. v1.1 adds TCB-evaluation pinning for multi-operator AVS use cases where nodes must agree on the exact same ruleset, but for a single-operator agent like Costanza, the pinning is unnecessary and the permissioning creates a commercial dependency on Automata running mainnet keepers ($299/mo for their Developer tier).
+
+We use v1.0 because it aligns with the indestructibility thesis: Costanza's on-chain liveness depends only on Intel publishing TCB data (unavoidable — hardware root of trust) and someone running a keeper script to push that data to the on-chain PCCS. The keeper is a ~50-line Python script, anyone can run it, and keeper operations cost ~$1 per month in gas. If Automata stops maintaining their Base mainnet collateral (as we observed: SGX populated but TDX empty on Base mainnet despite both being populated on Automata Mainnet), Costanza is unaffected — we run our own keeper.
+
+**Keeper responsibility.** Intel TCB info is signed with an `issueDate` and a `nextUpdate` timestamp, typically 30 days apart. The DCAP verifier rejects collateral where `block.timestamp > nextUpdate`. To avoid liveness failures, a keeper must push fresh collateral before each expiration. The keeper:
+
+1. Polls Intel PCS (`api.trustedservices.intel.com/tdx/certification/v4/tcb?fmspc=<fmspc>` and `/qe/identity`) on a schedule
+2. Compares against on-chain state via view functions
+3. Submits `upsertFmspcTcb` and `upsertEnclaveIdentity` calls when stale
+
+The keeper is currently operated by the project owner but is designed to be permissionless: anyone can run it, the writes succeed regardless of sender identity, and a future iteration could bond a small bounty into the contract to self-incentivize third-party keepers. Missed updates cause a ~30 day grace period followed by pause (not destruction) of auction execution until a keeper catches up.
 
 **Step 2: Platform Key Check.** The contract extracts MRTD, RTMR[1], and RTMR[2] from the decoded quote, computes $\textit{platformKey} = \text{SHA256}(\text{MRTD} \;\|\; \text{RTMR}[1] \;\|\; \text{RTMR}[2])$, and checks it against the approved registry.
 

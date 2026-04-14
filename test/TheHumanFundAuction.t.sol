@@ -57,7 +57,7 @@ contract TheHumanFundAuctionTest is Test {
 
         mockDcap = new AuctionMockDcapVerifier();
         verifier = new TdxVerifier(address(fund));
-        vm.etch(address(0xaDdeC7e85c2182202b66E331f2a4A0bBB2cEEa1F), address(mockDcap).code);
+        vm.etch(address(0x95175096a9B74165BE0ac84260cc14Fc1c0EF5FF), address(mockDcap).code);
 
         bytes32 imageKey = sha256(abi.encodePacked(TEST_MRTD, TEST_RTMR1, TEST_RTMR2));
         verifier.approveImage(imageKey);
@@ -121,7 +121,7 @@ contract TheHumanFundAuctionTest is Test {
         bytes32 outputHash = keccak256(abi.encodePacked(sha256(action), sha256(reasoning)));
         bytes32 expectedReportData = sha256(abi.encodePacked(inputHash, outputHash));
 
-        AuctionMockDcapVerifier etchedMock = AuctionMockDcapVerifier(0xaDdeC7e85c2182202b66E331f2a4A0bBB2cEEa1F);
+        AuctionMockDcapVerifier etchedMock = AuctionMockDcapVerifier(0x95175096a9B74165BE0ac84260cc14Fc1c0EF5FF);
         etchedMock.setOutput(_buildDcapOutput(expectedReportData));
         etchedMock.setShouldSucceed(true);
 
@@ -720,7 +720,7 @@ contract TheHumanFundAuctionTest is Test {
     function test_attestation_mismatch_reverts() public {
         _runAuctionTo(runner1, 0.005 ether, bytes32("s1"));
 
-        AuctionMockDcapVerifier etchedMock = AuctionMockDcapVerifier(0xaDdeC7e85c2182202b66E331f2a4A0bBB2cEEa1F);
+        AuctionMockDcapVerifier etchedMock = AuctionMockDcapVerifier(0x95175096a9B74165BE0ac84260cc14Fc1c0EF5FF);
         etchedMock.setOutput(_buildDcapOutput(bytes32(uint256(0xdeadbeef))));
         etchedMock.setShouldSucceed(true);
 
@@ -1215,5 +1215,63 @@ contract TheHumanFundAuctionTest is Test {
 
         // But live balance should be higher
         assertGt(address(fund).balance, snap2.balance);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Group: Message Queue Preservation on Failed Auctions
+    // ═══════════════════════════════════════════════════════════════════════
+    //
+    // Critical invariant: messageHead only advances on successful submission
+    // (_recordAndExecute). Failed auctions, forfeited bonds, and missed epochs
+    // must NOT drop messages from the queue. A donor who pays 0.05+ ETH for
+    // a message is guaranteed that Costanza will see it in the next successful
+    // epoch, not the next attempted epoch.
+
+    function test_message_survives_forfeited_auction() public {
+        // Donor sends a message BEFORE the auction opens
+        vm.deal(address(0xDEAD), 1 ether);
+        vm.prank(address(0xDEAD));
+        fund.donateWithMessage{value: 0.05 ether}(0, "important message");
+        assertEq(fund.messageCount(), 1);
+        assertEq(fund.messageHead(), 0);
+
+        // Runner commits and reveals (full auction flow)
+        _runAuctionTo(runner1, 0.005 ether, bytes32("s1"));
+
+        // Runner WINS but fails to submit within the execution window
+        vm.warp(block.timestamp + EXEC_WIN);
+        fund.syncPhase(); // forfeits bond, advances to SETTLED
+
+        // Message queue must be unchanged — messageHead was never advanced
+        assertEq(fund.messageHead(), 0, "messageHead preserved after forfeit");
+        assertEq(fund.messageCount(), 1, "message still in queue");
+
+        // Unread messages still shows the message
+        (address[] memory senders,,, ) = fund.getUnreadMessages();
+        assertEq(senders.length, 1);
+        assertEq(senders[0], address(0xDEAD));
+    }
+
+    function test_message_consumed_after_successful_epoch_following_forfeit() public {
+        // Scenario: message sent → auction 1 forfeited → auction 2 succeeds.
+        // Message should be consumed in auction 2, not lost.
+        vm.deal(address(0xDEAD), 1 ether);
+        vm.prank(address(0xDEAD));
+        fund.donateWithMessage{value: 0.05 ether}(0, "persistent message");
+        assertEq(fund.messageHead(), 0);
+
+        // Epoch 1 forfeits
+        _runAuctionTo(runner1, 0.005 ether, bytes32("s1"));
+        vm.warp(block.timestamp + EXEC_WIN);
+        fund.syncPhase();
+        assertEq(fund.messageHead(), 0, "messageHead unchanged after forfeit");
+
+        // Advance to epoch 2's scheduled start and run a successful auction
+        vm.warp(fund.epochStartTime(2));
+        _runAuctionTo(runner1, 0.005 ether, bytes32("s2"));
+        _submitAttestedResult(runner1, 2);
+
+        // Now the message should be consumed
+        assertEq(fund.messageHead(), 1, "message consumed on successful epoch 2");
     }
 }

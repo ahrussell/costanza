@@ -246,6 +246,70 @@ contract MessagesTest is Test {
 
     // ─── Regular donate still works without message ──────────────────────
 
+    // ─── Message Queue Preservation Across Failed/Missed Epochs ─────────
+    //
+    // messageHead only advances inside _recordAndExecute (successful submission),
+    // NOT on failed auctions or missed epochs. These tests lock in that behavior:
+    // messages are never dropped, they just wait for the next successful epoch.
+
+    function test_message_survives_missed_epoch() public {
+        // Send a message in epoch 1
+        vm.deal(donor1, 1 ether);
+        vm.prank(donor1);
+        fund.donateWithMessage{value: 0.01 ether}(0, "waiting in line");
+        assertEq(fund.messageCount(), 1);
+        assertEq(fund.messageHead(), 0);
+
+        // "Miss" epoch 1 by advancing to epoch 2 via skipEpoch (no _recordAndExecute).
+        // skipEpoch must not advance messageHead.
+        fund.skipEpoch();
+        assertEq(fund.currentEpoch(), 2);
+        assertEq(fund.messageHead(), 0, "messageHead should NOT advance on skip");
+
+        // Message is still unread
+        (address[] memory senders,,,) = fund.getUnreadMessages();
+        assertEq(senders.length, 1);
+        assertEq(senders[0], donor1);
+
+        // Now epoch 2 executes successfully — head advances
+        bytes memory noopAction = bytes(hex"00");
+        fund.submitEpochAction(noopAction, "reasoning", -1, "");
+        assertEq(fund.messageHead(), 1, "messageHead advances after successful epoch");
+
+        (senders,,,) = fund.getUnreadMessages();
+        assertEq(senders.length, 0, "no unread messages after successful epoch");
+    }
+
+    function test_message_survives_many_missed_epochs() public {
+        // Send a message
+        vm.deal(donor1, 1 ether);
+        vm.prank(donor1);
+        fund.donateWithMessage{value: 0.01 ether}(0, "patient donor");
+        assertEq(fund.messageCount(), 1);
+
+        // Skip 5 epochs in a row — message should still be in the queue
+        for (uint256 i = 0; i < 5; i++) {
+            fund.skipEpoch();
+        }
+        assertEq(fund.currentEpoch(), 6);
+        assertEq(fund.messageHead(), 0, "messageHead preserved across 5 missed epochs");
+
+        // Send another message between missed epochs
+        vm.prank(donor1);
+        fund.donateWithMessage{value: 0.01 ether}(0, "late arrival");
+        assertEq(fund.messageCount(), 2);
+
+        // Epoch 6 executes — both messages should be visible to the TEE
+        (address[] memory senders,,, uint256[] memory epochs) = fund.getUnreadMessages();
+        assertEq(senders.length, 2);
+        assertEq(epochs[0], 1, "first message tagged with epoch 1 (when sent)");
+        assertEq(epochs[1], 6, "second message tagged with epoch 6 (when sent)");
+
+        bytes memory noopAction = bytes(hex"00");
+        fund.submitEpochAction(noopAction, "reasoning", -1, "");
+        assertEq(fund.messageHead(), 2, "both messages consumed after successful epoch");
+    }
+
     function test_regular_donate_no_message() public {
         vm.deal(donor1, 1 ether);
         vm.prank(donor1);

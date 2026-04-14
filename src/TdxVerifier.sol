@@ -38,9 +38,15 @@ contract TdxVerifier is IProofVerifier {
 
     // ─── Constants ───────────────────────────────────────────────────────
 
-    /// @dev Automata DCAP attestation verifier (same address on all chains via CREATE2)
+    /// @dev Automata DCAP attestation verifier v1.0 (same address on all chains via CREATE2).
+    ///      We intentionally use v1.0 instead of v1.1 because v1.0 reads from the
+    ///      permissionless base PCCS DAOs (AutomataFmspcTcbDao, AutomataEnclaveIdentityDao),
+    ///      which any keeper can update with Intel-signed collateral. v1.1 uses versioned
+    ///      DAOs that require ATTESTER_ROLE — appropriate for multi-operator AVS use cases,
+    ///      but unnecessary for a single-operator agent and creates a vendor dependency on
+    ///      Automata running mainnet keepers. See WHITEPAPER.md TEE section for details.
     IAutomataDcapAttestation public constant DCAP_VERIFIER =
-        IAutomataDcapAttestation(0xaDdeC7e85c2182202b66E331f2a4A0bBB2cEEa1F);
+        IAutomataDcapAttestation(0x95175096a9B74165BE0ac84260cc14Fc1c0EF5FF);
 
     /// @dev Byte offsets in the Automata DCAP output for TD10ReportBody fields
     uint256 private constant MRTD_OFFSET = 147;
