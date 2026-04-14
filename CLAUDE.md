@@ -13,11 +13,11 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 ## Current Status
 
 ### Base Mainnet
-- **Contract**: [`0xE1Ff438B1C0Bf0C61d6EfF439C2A9eB1dDcb71e5`](https://basescan.org/address/0xE1Ff438B1C0Bf0C61d6EfF439C2A9eB1dDcb71e5)
-- **AuctionManager**: [`0x3157cD7Ef8B41f8FF97461eE43ebD23062A4F9BF`](https://basescan.org/address/0x3157cD7Ef8B41f8FF97461eE43ebD23062A4F9BF)
-- **TdxVerifier**: [`0x83D6029b39802caAd7302C60320F1C5a25FdD16b`](https://basescan.org/address/0x83D6029b39802caAd7302C60320F1C5a25FdD16b)
-- **InvestmentManager**: [`0xA102d70D9c688ac3736320feb44dD1dCc839aFf4`](https://basescan.org/address/0xA102d70D9c688ac3736320feb44dD1dCc839aFf4)
-- **WorldView**: [`0xf5faCC9B034F0e7716E6622A6b25C6DD4957ADe3`](https://basescan.org/address/0xf5faCC9B034F0e7716E6622A6b25C6DD4957ADe3)
+- **Contract**: [`0xeE98b474000a2B350FfcBA8F02889d5047B8DFca`](https://basescan.org/address/0xeE98b474000a2B350FfcBA8F02889d5047B8DFca)
+- **AuctionManager**: [`0x03a6955f296C927FF71c91cf1Fd9D4F4c71c034c`](https://basescan.org/address/0x03a6955f296C927FF71c91cf1Fd9D4F4c71c034c)
+- **TdxVerifier**: [`0x1dfE62A7FCD128E302bd300D754b001Baf63A57D`](https://basescan.org/address/0x1dfE62A7FCD128E302bd300D754b001Baf63A57D)
+- **InvestmentManager**: [`0xD5C58523723F9ba367202A0e29c80358807b02D3`](https://basescan.org/address/0xD5C58523723F9ba367202A0e29c80358807b02D3)
+- **WorldView**: [`0x1370f47C7Ae6f6edF850bfF74c86BF591D7Ad3ae`](https://basescan.org/address/0x1370f47C7Ae6f6edF850bfF74c86BF591D7Ad3ae)
 - **Owner**: `0x495fB7ddD383be8030EFC93324Ff078f173eAb2A` (EOA, will transfer to Safe `0x6dF6f527E193fAf1334c26A6d811fAd62E79E5Db`)
 - **Epoch timing**: 90-min epochs (20m commit, 20m reveal, 50m execution)
 - **222 tests pass** (core + auction + TDX verifier + investment + worldview + messages + cross-stack)
@@ -28,7 +28,8 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 - **Prover RPC**: Alchemy direct (free tier, 30M CU/month)
 
 ### Base Mainnet (previous)
-- Contract: `0x908cf9974fd2EcE9D3a50644EDcAF90c88E57C10` — withdrawAll'd on 2026-04-14 before redeploy
+- Contract: `0xE1Ff438B1C0Bf0C61d6EfF439C2A9eB1dDcb71e5` — withdrawAll'd on 2026-04-14 before redeploy (epoch 1 forfeited due to epochDuration drift; fixed in EpochSnapshot)
+- Contract: `0x908cf9974fd2EcE9D3a50644EDcAF90c88E57C10` — first mainnet v2, withdrawAll'd on 2026-04-14
 - Image: `humanfund-dmverity-hardened-v10` (deleted), key: `0x923d500553d9e10a8f864eade2029df0471c7cd4f90b888e7749f0dc3fca1eca`
 
 **Deep dive**: [WHITEPAPER.md](WHITEPAPER.md) (full specification, formal security model, TEE construction)
