@@ -1322,6 +1322,7 @@ const FUND_ABI = [
   "function submitAuctionResult(bytes calldata action, bytes calldata reasoning, bytes calldata proof, uint256 verifierId, uint256 policySlot, string calldata policyText)",
   // Events
   "event DiaryEntry(uint256 indexed epoch, bytes reasoning, bytes action, uint256 treasuryBefore, uint256 treasuryAfter)",
+  "event ActionRejected(uint256 indexed epoch, bytes action, uint8 reason)",
   "event DonationReceived(address indexed donor, uint256 amount, uint256 indexed referralCode, uint256 commissionAmount)",
   "event NonprofitDonation(uint256 indexed epoch, uint256 indexed nonprofitId, uint256 amountEth, uint256 amountUsd)",
   "event CommissionRateChanged(uint256 indexed epoch, uint256 newRateBps)",
@@ -1692,7 +1693,21 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
-function decodeAction(actionBytes) {
+// ActionRejected reason codes (match _executeAction in TheHumanFund.sol)
+const REJECT_REASONS = {
+  1: 'empty action',
+  2: 'malformed action',
+  3: 'out of bounds',
+  4: 'no investment manager',
+  5: 'invest reverted',
+  6: 'no investment manager',
+  7: 'withdraw reverted',
+  8: 'verb unknown',
+  9: 'verb unknown',
+  10: 'unknown action type',
+};
+
+function decodeAction(actionBytes, rejectReason) {
   if (!actionBytes || actionBytes === '0x' || actionBytes.length < 4) {
     return { type: 'unknown', label: 'unknown', detail: '' };
   }
@@ -1700,30 +1715,40 @@ function decodeAction(actionBytes) {
   const t = bytes[0];
   const decoder = ethers.AbiCoder.defaultAbiCoder();
 
-  if (t === 0) return { type: 'noop', label: 'noop', detail: 'No action taken' };
+  // Verbs: tried(past) / attempted(past, but failed) — pick based on rejectReason
+  const rejected = rejectReason !== undefined;
+  const suffix = rejected ? ` — REJECTED (${REJECT_REASONS[rejectReason] || `reason ${rejectReason}`})` : '';
+  const labelSuffix = rejected ? ' (rejected)' : '';
+
+  if (t === 0) return { type: 'noop', label: 'noop' + labelSuffix, detail: 'No action taken' + suffix, rejected };
   if (t === 1 && bytes.length >= 65) {
     const d = decoder.decode(['uint256','uint256'], bytes.slice(1));
-    return { type: 'donate', label: 'donate', detail: `Donated ${fmtEth(d[1])} to nonprofit #${d[0]}` };
+    const verb = rejected ? 'Tried to donate' : 'Donated';
+    return { type: 'donate', label: 'donate' + labelSuffix, detail: `${verb} ${fmtEth(d[1])} to nonprofit #${d[0]}${suffix}`, rejected };
   }
   if (t === 2 && bytes.length >= 33) {
     const d = decoder.decode(['uint256'], bytes.slice(1));
-    return { type: 'set_commission_rate', label: 'set_commission', detail: `Set commission to ${Number(d[0])/100}%` };
+    const verb = rejected ? 'Tried to set' : 'Set';
+    return { type: 'set_commission_rate', label: 'set_commission' + labelSuffix, detail: `${verb} commission to ${Number(d[0])/100}%${suffix}`, rejected };
   }
   if (t === 3 && bytes.length >= 65) {
     const d = decoder.decode(['uint256','uint256'], bytes.slice(1));
-    return { type: 'invest', label: 'invest', detail: `Invested ${fmtEth(d[1])} in protocol #${d[0]}` };
+    const verb = rejected ? 'Tried to invest' : 'Invested';
+    return { type: 'invest', label: 'invest' + labelSuffix, detail: `${verb} ${fmtEth(d[1])} in protocol #${d[0]}${suffix}`, rejected };
   }
   if (t === 4 && bytes.length >= 65) {
     const d = decoder.decode(['uint256','uint256'], bytes.slice(1));
-    return { type: 'withdraw', label: 'withdraw', detail: `Withdrew ${fmtEth(d[1])} from protocol #${d[0]}` };
+    const verb = rejected ? 'Tried to withdraw' : 'Withdrew';
+    return { type: 'withdraw', label: 'withdraw' + labelSuffix, detail: `${verb} ${fmtEth(d[1])} from protocol #${d[0]}${suffix}`, rejected };
   }
   if (t === 5 && bytes.length >= 33) {
     try {
       const d = decoder.decode(['uint256','string'], bytes.slice(1));
-      return { type: 'set_guiding_policy', label: 'set_policy', detail: d[1] ? `Set policy [${d[0]}]: "${d[1]}"` : `Cleared policy [${d[0]}]` };
-    } catch { return { type: 'set_guiding_policy', label: 'set_policy', detail: 'Updated guiding policy' }; }
+      const verb = rejected ? 'Tried to set' : 'Set';
+      return { type: 'set_guiding_policy', label: 'set_policy' + labelSuffix, detail: d[1] ? `${verb} policy [${d[0]}]: "${d[1]}"${suffix}` : `Cleared policy [${d[0]}]${suffix}`, rejected };
+    } catch { return { type: 'set_guiding_policy', label: 'set_policy' + labelSuffix, detail: 'Updated guiding policy' + suffix, rejected }; }
   }
-  return { type: 'unknown', label: '???', detail: 'Unknown action' };
+  return { type: 'unknown', label: '???' + labelSuffix, detail: 'Unknown action' + suffix, rejected };
 }
 
 function decodeReasoning(reasoningBytes) {
@@ -1731,7 +1756,10 @@ function decodeReasoning(reasoningBytes) {
   try { return ethers.toUtf8String(reasoningBytes); } catch { return '(binary data)'; }
 }
 
-function actionBadgeClass(type) {
+function actionBadgeClass(type, rejected) {
+  // Rejected actions get a red badge regardless of type, so the viewer can
+  // immediately tell an attempt didn't actually land on chain.
+  if (rejected) return 'badge-red';
   const map = {
     donate: 'badge-green', noop: 'badge-dim', set_commission_rate: 'badge-orange',
     invest: 'badge-cyan', withdraw: 'badge-purple',
@@ -1802,7 +1830,8 @@ function renderDiaryViewer() {
   document.getElementById('diary-viewer-entry').textContent = entry.reasoning;
 
   // Action row
-  let actionHtml = `<span class="badge ${actionBadgeClass(entry.action.type)}" style="font-size:10px;">${entry.action.label}</span> ${entry.action.detail}${entry.bountyPaid > 0n ? ' | Bounty: ' + fmtEth(entry.bountyPaid) : ''}`;
+  const detailStyle = entry.rejected ? 'text-decoration:line-through;color:var(--text-dim);' : '';
+  let actionHtml = `<span class="badge ${actionBadgeClass(entry.action.type, entry.rejected)}" style="font-size:10px;">${entry.action.label}</span> <span style="${detailStyle}">${entry.action.detail}</span>${entry.bountyPaid > 0n ? ' | Bounty: ' + fmtEth(entry.bountyPaid) : ''}`;
   document.getElementById('diary-viewer-action').innerHTML = actionHtml;
 
   // Worldview diff (if any)
@@ -1928,13 +1957,24 @@ async function loadAll() {
   // still point to the just-executed epoch before syncPhase advances it.
   diaryEntries = [];
 
-  // Fetch DiaryEntry events to get tx hashes (needed for worldview diffs)
+  // Fetch DiaryEntry events (for tx hashes) and ActionRejected events
+  // (to annotate failed attempts — the contract writes EpochRecord even
+  // when the agent's action was caught by the try/catch in _executeAction,
+  // so without cross-referencing rejections the diary misrepresents what
+  // actually landed on chain).
   let diaryEventsByEpoch = {};
+  let rejectedByEpoch = {};
   try {
     const currentBlock = await provider.getBlockNumber();
-    const diaryLogs = await fund.queryFilter(fund.filters.DiaryEntry(), DEPLOY_BLOCK, currentBlock);
+    const [diaryLogs, rejectedLogs] = await Promise.all([
+      fund.queryFilter(fund.filters.DiaryEntry(), DEPLOY_BLOCK, currentBlock),
+      fund.queryFilter(fund.filters.ActionRejected(), DEPLOY_BLOCK, currentBlock),
+    ]);
     for (const log of diaryLogs) {
       diaryEventsByEpoch[Number(log.args[0])] = log.transactionHash;
+    }
+    for (const log of rejectedLogs) {
+      rejectedByEpoch[Number(log.args[0])] = Number(log.args[2]);
     }
   } catch {}
 
@@ -1942,15 +1982,18 @@ async function loadAll() {
     try {
       const rec = await fund.getEpochRecord(e);
       if (rec.executed) {
+        const rejectReason = rejectedByEpoch[e];
         diaryEntries.push({
           epoch: e, timestamp: rec.timestamp,
-          action: decodeAction(rec.action),
+          action: decodeAction(rec.action, rejectReason),
           reasoning: decodeReasoning(rec.reasoning),
           treasuryBefore: rec.treasuryBefore,
           treasuryAfter: rec.treasuryAfter,
           bountyPaid: rec.bountyPaid,
           txHash: diaryEventsByEpoch[e] || null,
           worldviewUpdate: null,
+          rejected: rejectReason !== undefined,
+          rejectReason: rejectReason,
         });
       }
     } catch {}
@@ -1992,7 +2035,7 @@ async function loadAll() {
   if (diaryEntries.length > 0) {
     const latest = diaryEntries[0];
     document.getElementById('hero-diary-epoch').textContent = `Epoch ${latest.epoch}`;
-    document.getElementById('hero-diary-badge').innerHTML = `<span class="badge ${actionBadgeClass(latest.action.type)}" style="font-size:10px;">${latest.action.label}</span>`;
+    document.getElementById('hero-diary-badge').innerHTML = `<span class="badge ${actionBadgeClass(latest.action.type, latest.rejected)}" style="font-size:10px;">${latest.action.label}</span>`;
     document.getElementById('hero-diary-body').innerHTML =
       `<div>${escapeHtml(latest.reasoning)}</div>
        <div class="hero-diary-detail">${latest.action.detail}</div>`;
@@ -2279,7 +2322,7 @@ async function loadAll() {
       <div class="diary-preview-container">
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
           <span style="font-family:var(--mono);font-size:12px;color:var(--accent);font-weight:600;">Epoch ${latest.epoch}</span>
-          <span class="badge ${actionBadgeClass(latest.action.type)}" style="font-size:10px;">${latest.action.label}</span>
+          <span class="badge ${actionBadgeClass(latest.action.type, latest.rejected)}" style="font-size:10px;">${latest.action.label}</span>
           <span style="font-size:11px;color:var(--text-dim);">${fmtTime(latest.timestamp)}</span>
         </div>
         <div class="diary-preview-text">${escapeHtml(latest.reasoning)}</div>
@@ -2472,6 +2515,7 @@ async function loadEvents() {
     const currentBlock = await provider.getBlockNumber();
     const eventDefs = [
       { filter: 'DiaryEntry', badge: 'badge-accent' },
+      { filter: 'ActionRejected', badge: 'badge-red' },
       { filter: 'DonationReceived', badge: 'badge-green' },
       { filter: 'NonprofitDonation', badge: 'badge-green' },
       { filter: 'EpochExecuted', badge: 'badge-green' },
@@ -2494,6 +2538,7 @@ async function loadEvents() {
           try {
             const a = log.args;
             if (def.filter === 'DiaryEntry') { detail = `Epoch ${a[0]}: ${decodeAction(a[2]).label}`; }
+            else if (def.filter === 'ActionRejected') { detail = `Epoch ${a[0]}: ${decodeAction(a[1], Number(a[2])).detail}`; }
             else if (def.filter === 'DonationReceived') { detail = `${fmtAddr(a[0])} donated ${fmtEth(a[1])}`; }
             else if (def.filter === 'NonprofitDonation') { detail = `Epoch ${a[0]}: ${fmtEth(a[2])} to nonprofit #${a[1]}`; }
             else if (def.filter === 'EpochExecuted') { detail = `Epoch ${a[0]}: bounty ${fmtEth(a[2])}`; }
