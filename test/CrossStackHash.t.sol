@@ -119,39 +119,61 @@ contract CrossStackHashTest is Test {
     }
 
     function _buildStateJson() internal view returns (string memory) {
-        // Build the JSON state that matches what compute_input_hash() expects.
-        // This must exactly mirror the structure in input_hash.py.
+        // Build the flat epoch_state JSON that compute_input_hash() expects.
+        // This must exactly mirror the structure the runner passes to the
+        // enclave — the enclave is a dumb hasher and reads all display data
+        // directly from this dict.
 
-        // State hash inputs
-        string memory stateInputs = string.concat(
+        // Scalar state fields (matches _hashState() layout)
+        string memory scalars = string.concat(
             '{"epoch":', vm.toString(fund.currentEpoch()),
-            ',"balance":', vm.toString(address(fund).balance),
+            ',"treasury_balance":', vm.toString(address(fund).balance),
             ',"commission_rate_bps":', vm.toString(fund.commissionRateBps()),
             ',"max_bid":', vm.toString(fund.maxBid()),
-            ',"consecutive_missed_epochs":', vm.toString(fund.consecutiveMissedEpochs()),
+            ',"effective_max_bid":', vm.toString(fund.effectiveMaxBid()),
+            ',"consecutive_missed":', vm.toString(fund.consecutiveMissedEpochs()),
             ',"last_donation_epoch":', vm.toString(fund.lastDonationEpoch()),
             ',"last_commission_change_epoch":', vm.toString(fund.lastCommissionChangeEpoch()),
             ',"total_inflows":', vm.toString(fund.totalInflows())
         );
-        stateInputs = string.concat(stateInputs,
-            ',"total_donated_to_nonprofits":', vm.toString(fund.totalDonatedToNonprofits()),
-            ',"total_commissions_paid":', vm.toString(fund.totalCommissionsPaid()),
-            ',"total_bounties_paid":', vm.toString(fund.totalBountiesPaid()),
-            ',"current_epoch_inflow":', vm.toString(fund.currentEpochInflow()),
-            ',"current_epoch_donation_count":', vm.toString(fund.currentEpochDonationCount()),
+        scalars = string.concat(scalars,
+            ',"total_donated":', vm.toString(fund.totalDonatedToNonprofits()),
+            ',"total_commissions":', vm.toString(fund.totalCommissionsPaid()),
+            ',"total_bounties":', vm.toString(fund.totalBountiesPaid()),
+            ',"epoch_inflow":', vm.toString(fund.currentEpochInflow()),
+            ',"epoch_donation_count":', vm.toString(fund.currentEpochDonationCount()),
             ',"epoch_eth_usd_price":', vm.toString(fund.epochEthUsdPrice()),
-            ',"epoch_duration":', vm.toString(fund.epochDuration()),
-            '}'
+            ',"epoch_duration":', vm.toString(fund.epochDuration())
         );
 
         // Nonprofits
-        string memory nps = "[";
+        string memory nps = _buildNonprofitsJson();
+
+        // Donor messages (unread queue)
+        string memory msgs = _buildDonorMessagesJson();
+
+        // History (executed epochs)
+        string memory hist = _buildHistoryJson();
+
+        return string.concat(
+            scalars,
+            ',"nonprofits":', nps,
+            ',"investments":[]',                     // no investment manager in this test
+            ',"guiding_policies":[]',                // no worldview in this test
+            ',"donor_messages":', msgs,
+            ',"history":', hist,
+            '}'
+        );
+    }
+
+    function _buildNonprofitsJson() internal view returns (string memory) {
+        string memory result = "[";
         for (uint256 i = 1; i <= fund.nonprofitCount(); i++) {
             (string memory name, string memory description, bytes32 ein,
              uint256 totalDonated, uint256 totalDonatedUsd, uint256 donationCount) = fund.getNonprofit(i);
 
-            if (i > 1) nps = string.concat(nps, ",");
-            nps = string.concat(nps, '{"name":"', name,
+            if (i > 1) result = string.concat(result, ",");
+            result = string.concat(result, '{"name":"', name,
                 '","description":"', description,
                 '","ein":"0x', _bytes32ToHex(ein),
                 '","total_donated":', vm.toString(totalDonated),
@@ -159,61 +181,67 @@ contract CrossStackHashTest is Test {
                 ',"donation_count":', vm.toString(donationCount), '}'
             );
         }
-        nps = string.concat(nps, "]");
-
-        // Message hashes
-        string memory msgHashes = _buildMessageHashesJson();
-
-        // Epoch content hashes
-        string memory epochHashes = _buildEpochContentHashesJson();
-
-        // Assemble full state
-        return string.concat(
-            '{"state_hash_inputs":', stateInputs,
-            ',"nonprofits":', nps,
-            ',"invest_hash":"0x0000000000000000000000000000000000000000000000000000000000000000"',
-            ',"worldview_hash":"0x0000000000000000000000000000000000000000000000000000000000000000"',
-            ',"message_hashes":', msgHashes,
-            ',"epoch_content_hashes":', epochHashes,
-            '}'
-        );
+        return string.concat(result, "]");
     }
 
-    function _buildMessageHashesJson() internal view returns (string memory) {
-        uint256 head = fund.messageHead();
-        uint256 total = fund.messageCount();
-        uint256 unread = total - head;
-        uint256 maxMsg = 20; // MAX_MESSAGES_PER_EPOCH
-        uint256 count = unread > maxMsg ? maxMsg : unread;
+    function _buildDonorMessagesJson() internal view returns (string memory) {
+        (address[] memory senders, uint256[] memory amounts,
+         string[] memory texts, uint256[] memory epochNums) = fund.getUnreadMessages();
 
-        if (count == 0) return "[]";
+        if (senders.length == 0) return "[]";
 
         string memory result = "[";
-        for (uint256 i = 0; i < count; i++) {
-            bytes32 h = fund.messageHashes(head + i);
+        for (uint256 i = 0; i < senders.length; i++) {
             if (i > 0) result = string.concat(result, ",");
-            result = string.concat(result, '"0x', _bytes32ToHex(h), '"');
+            result = string.concat(result,
+                '{"sender":"', vm.toString(senders[i]),
+                '","amount":', vm.toString(amounts[i]),
+                ',"text":"', texts[i],
+                '","epoch":', vm.toString(epochNums[i]), '}'
+            );
         }
         return string.concat(result, "]");
     }
 
-    function _buildEpochContentHashesJson() internal view returns (string memory) {
+    function _buildHistoryJson() internal view returns (string memory) {
         uint256 epoch = fund.currentEpoch();
         if (epoch == 0) return "[]";
 
         uint256 maxHist = 10; // MAX_HISTORY_ENTRIES
         uint256 count = epoch > maxHist ? maxHist : epoch;
 
-        // Include ALL entries (including zeros) — must match Solidity's
-        // _hashRecentHistory() which iterates count times unconditionally.
+        // Emit all executed epochs in range. The Python side keys history
+        // entries by epoch number and uses zero-hash for missing slots —
+        // matching the contract's iteration over epochContentHashes[] which
+        // returns zero for unexecuted epochs.
         string memory result = "[";
+        bool first = true;
         for (uint256 i = 0; i < count; i++) {
             uint256 histEpoch = epoch - 1 - i;
-            bytes32 h = fund.epochContentHashes(histEpoch);
-            if (i > 0) result = string.concat(result, ",");
-            result = string.concat(result, '"0x', _bytes32ToHex(h), '"');
+            (, bytes memory action, bytes memory reasoning,
+             uint256 tb, uint256 ta, , bool executed) = fund.getEpochRecord(histEpoch);
+            if (!executed) continue;
+            if (!first) result = string.concat(result, ",");
+            first = false;
+            result = string.concat(result,
+                '{"epoch":', vm.toString(histEpoch),
+                ',"action":"0x', _bytesToHex(action),
+                '","reasoning":"', string(reasoning),
+                '","treasury_before":', vm.toString(tb),
+                ',"treasury_after":', vm.toString(ta), '}'
+            );
         }
         return string.concat(result, "]");
+    }
+
+    function _bytesToHex(bytes memory data) internal pure returns (string memory) {
+        bytes memory alphabet = "0123456789abcdef";
+        bytes memory str = new bytes(data.length * 2);
+        for (uint256 i = 0; i < data.length; i++) {
+            str[i * 2] = alphabet[uint8(data[i] >> 4)];
+            str[i * 2 + 1] = alphabet[uint8(data[i] & 0x0f)];
+        }
+        return string(str);
     }
 
     /// @dev Convert bytes32 to hex string (without 0x prefix).

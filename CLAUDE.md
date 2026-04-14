@@ -13,23 +13,23 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 ## Current Status
 
 ### Base Mainnet
-- **Contract**: [`0xe63211E7420667650B78C2f68Bfc0B43f499028c`](https://basescan.org/address/0xe63211E7420667650B78C2f68Bfc0B43f499028c)
-- **AuctionManager**: [`0x7ECD7444839f80DE1A79507c4232bFA387403056`](https://basescan.org/address/0x7ECD7444839f80DE1A79507c4232bFA387403056)
-- **TdxVerifier**: [`0x16B772AEA557850d78173c7CEdeA79ED11BDeaf9`](https://basescan.org/address/0x16B772AEA557850d78173c7CEdeA79ED11BDeaf9)
-- **InvestmentManager**: [`0x926A66d13B765072E2a582bF8e1555C040F6f54D`](https://basescan.org/address/0x926A66d13B765072E2a582bF8e1555C040F6f54D)
-- **WorldView**: [`0x9eF999f26145FF8c8453C68cA58fb9040d097E50`](https://basescan.org/address/0x9eF999f26145FF8c8453C68cA58fb9040d097E50)
+- **Contract**: [`0xe1Ff438b1C0bf0c61d6eff439C2a9eb1DDCb71e5`](https://basescan.org/address/0xe1Ff438b1C0bf0c61d6eff439C2a9eb1DDCb71e5)
+- **AuctionManager**: [`0x3157cD7Ef8B41f8FF97461eE43ebD23062A4F9BF`](https://basescan.org/address/0x3157cD7Ef8B41f8FF97461eE43ebD23062A4F9BF)
+- **TdxVerifier**: [`0x83D6029b39802caAd7302C60320F1C5a25FdD16b`](https://basescan.org/address/0x83D6029b39802caAd7302C60320F1C5a25FdD16b)
+- **InvestmentManager**: [`0xA102d70D9c688ac3736320feb44dD1dCc839aFf4`](https://basescan.org/address/0xA102d70D9c688ac3736320feb44dD1dCc839aFf4)
+- **WorldView**: [`0xf5faCC9B034F0e7716E6622A6b25C6DD4957ADe3`](https://basescan.org/address/0xf5faCC9B034F0e7716E6622A6b25C6DD4957ADe3)
 - **Owner**: `0x495fB7ddD383be8030EFC93324Ff078f173eAb2A` (EOA, will transfer to Safe `0x6dF6f527E193fAf1334c26A6d811fAd62E79E5Db`)
-- **Epoch timing**: 2h epochs (30m commit, 30m reveal, 60m execution)
-- **204 tests pass** (core + auction + TDX verifier + investment + worldview + messages)
-- GPU image: `costanza-prover-tdx-h100-cc`, key: `0x8aa914754a9cd571ad1dd26368164188ce6530beadc2343dd725b914c07937ba`
+- **Epoch timing**: 90-min epochs (20m commit, 20m reveal, 50m execution)
+- **222 tests pass** (core + auction + TDX verifier + investment + worldview + messages + cross-stack)
+- GPU image: `humanfund-dmverity-hardened-v11`, key: `0xf23661d5f5a506472feb7c5fff267eb0b0d80caf5a87c0c831292e1f4809d614`
 - GCP TDX FMSPC `00806f050000` registered in Automata DCAP Dashboard
 - H100 on-demand quota is 0; all GPU VMs use `--provisioning-model=SPOT`
 - **Frontend RPC**: Cloudflare Worker at `humanfund-rpc-cache.thehumanfund.workers.dev` (proxies to Alchemy, 5-min cache)
 - **Prover RPC**: Alchemy direct (free tier, 30M CU/month)
 
-### Base Sepolia (previous)
-- Contract: `0x327bC74b1f9Ff4675a1D55e4e9bff2d0C7bcE445`
-- Image: `humanfund-dmverity-hardened-v10`, key: `0x923d500553d9e10a8f864eade2029df0471c7cd4f90b888e7749f0dc3fca1eca`
+### Base Mainnet (previous)
+- Contract: `0x908cf9974fd2EcE9D3a50644EDcAF90c88E57C10` — withdrawAll'd on 2026-04-14 before redeploy
+- Image: `humanfund-dmverity-hardened-v10` (deleted), key: `0x923d500553d9e10a8f864eade2029df0471c7cd4f90b888e7749f0dc3fca1eca`
 
 **Deep dive**: [WHITEPAPER.md](WHITEPAPER.md) (full specification, formal security model, TEE construction)
 

@@ -36,6 +36,10 @@ contract CbETHAdapter is IProtocolAdapter {
         weth = IWETH(_weth);
         swapRouter = _swapRouter;
         manager = _manager;
+
+        // Pre-approve router for max spending (safe: only manager moves funds).
+        IWETH(_weth).approve(_swapRouter, type(uint256).max);
+        ICbETH(_cbETH).approve(_swapRouter, type(uint256).max);
     }
 
     modifier onlyManager() {
@@ -43,68 +47,68 @@ contract CbETHAdapter is IProtocolAdapter {
         _;
     }
 
-    /// @notice Deposit ETH: swap to cbETH via DEX.
+    /// @notice Deposit ETH: wrap to WETH, swap to cbETH via Uniswap V3 SwapRouter02.
     function deposit() external payable override onlyManager returns (uint256 shares) {
         if (msg.value == 0) revert ZeroAmount();
 
+        // Wrap ETH -> WETH (SwapRouter02 doesn't auto-wrap).
+        weth.deposit{value: msg.value}();
+
         uint256 balBefore = cbETH.balanceOf(address(this));
 
-        // Swap ETH -> cbETH via Uniswap V3
         // cbETH is worth more than ETH, so fewer cbETH tokens expected per ETH.
         // Use exchange rate to compute correct minimum: ETH / exchangeRate = cbETH
         uint256 minCbEth = (msg.value * 1e18 / cbETH.exchangeRate()) * MIN_OUTPUT_BPS / 10000;
+
+        // SwapRouter02 uses a 7-field struct (no deadline).
         bytes memory swapData = abi.encodeWithSignature(
-            "exactInputSingle((address,address,uint24,address,uint256,uint256,uint256,uint160))",
-            address(0x4200000000000000000000000000000000000006), // WETH on Base
+            "exactInputSingle((address,address,uint24,address,uint256,uint256,uint160))",
+            address(weth),
             address(cbETH),
             uint24(500),    // 0.05% fee tier (ETH/cbETH pair)
             address(this),
-            block.timestamp + 300, // deadline: 5-minute buffer
             msg.value,
-            minCbEth,       // slippage floor in cbETH terms
+            minCbEth,
             uint160(0)
         );
-        (bool success, ) = swapRouter.call{value: msg.value}(swapData);
+        (bool success, ) = swapRouter.call(swapData);
         if (!success) revert SwapFailed();
 
         shares = cbETH.balanceOf(address(this)) - balBefore;
         if (shares == 0) revert NoTokensReceived();
     }
 
-    /// @notice Withdraw: swap cbETH back to ETH via DEX.
+    /// @notice Withdraw: swap cbETH back to WETH, unwrap, send ETH to manager.
     function withdraw(uint256 shares) external override onlyManager returns (uint256 ethAmount) {
         if (shares == 0) revert ZeroAmount();
 
         uint256 cbBal = cbETH.balanceOf(address(this));
         if (shares > cbBal) shares = cbBal;
 
-        cbETH.approve(swapRouter, shares);
-
-        uint256 ethBefore = address(this).balance;
-
-        // Use exchange rate for slippage floor: cbETH is worth more than ETH
+        // Use exchange rate for slippage floor: cbETH is worth more than ETH.
         uint256 ethValue = (shares * cbETH.exchangeRate()) / 1e18;
+
+        uint256 wethBefore = weth.balanceOf(address(this));
+
         bytes memory swapData = abi.encodeWithSignature(
-            "exactInputSingle((address,address,uint24,address,uint256,uint256,uint256,uint160))",
+            "exactInputSingle((address,address,uint24,address,uint256,uint256,uint160))",
             address(cbETH),
-            address(0x4200000000000000000000000000000000000006),
+            address(weth),
             uint24(500),
             address(this),
-            block.timestamp + 300, // deadline: 5-minute buffer
             shares,
-            (ethValue * MIN_OUTPUT_BPS) / 10000, // slippage floor in ETH terms
+            (ethValue * MIN_OUTPUT_BPS) / 10000,
             uint160(0)
         );
         (bool success, ) = swapRouter.call(swapData);
         if (!success) revert SwapFailed();
 
-        // Unwrap WETH received from swap (router returns WETH, not ETH)
-        uint256 wethBal = weth.balanceOf(address(this));
-        if (wethBal > 0) {
-            weth.withdraw(wethBal);
-        }
+        uint256 wethReceived = weth.balanceOf(address(this)) - wethBefore;
+        if (wethReceived == 0) revert NoTokensReceived();
 
-        ethAmount = address(this).balance - ethBefore;
+        // Unwrap WETH -> ETH, forward to manager.
+        weth.withdraw(wethReceived);
+        ethAmount = wethReceived;
         (bool sent, ) = msg.sender.call{value: ethAmount}("");
         if (!sent) revert TransferFailed();
     }

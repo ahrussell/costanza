@@ -272,11 +272,12 @@ def _decode_action_display(action_bytes):
 
 
 def build_epoch_context(state, seed=None):
-    """Build the epoch context string from contract state.
+    """Build the epoch context string from the flat epoch state.
 
-    This runs inside the TEE, building the prompt deterministically from
-    the hash-verified contract_state. The seed (from block.prevrandao)
-    is used for datamarking marker generation.
+    Runs inside the TEE. The state dict is the same flat dict that was just
+    hashed into the input hash — every field in here is covered by that
+    hash, so any runner tampering is caught by on-chain verification. The
+    seed (from block.prevrandao) is used for datamarking marker generation.
 
     Layout (for 48K context target):
       1. Current state + vitals + lifespan

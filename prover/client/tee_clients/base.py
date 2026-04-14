@@ -13,18 +13,16 @@ from abc import ABC, abstractmethod
 
 class TEEClient(ABC):
     @abstractmethod
-    def run_epoch(self, epoch_state: dict, contract_state: dict,
-                  system_prompt: str, seed: int) -> dict:
+    def run_epoch(self, epoch_state: dict, system_prompt: str, seed: int) -> dict:
         """Run inference for one epoch inside a TEE.
 
         Args:
-            epoch_state: Full flat epoch state (from read_contract_state).
-                The TEE derives contract_state from this for hash verification,
-                then feeds it to build_epoch_context() for prompt construction.
-                All data shown to the model is transitively verified via inputHash.
-            contract_state: Structured contract state for input hash verification.
-                Kept for backward compatibility / debugging. The TEE prefers
-                epoch_state when available.
+            epoch_state: Flat epoch state (from read_contract_state +
+                apply_snapshot_overrides). The enclave hashes this directly
+                to produce the input hash; the contract verifies by hash
+                equality against epochInputHashes[epoch]. No separate
+                "contract_state" sidechannel — if the runner lies about any
+                field, the hash won't match and submitAuctionResult reverts.
             system_prompt: System prompt text (on dm-verity rootfs, verified via image key).
             seed: Randomness seed from block.prevrandao.
 

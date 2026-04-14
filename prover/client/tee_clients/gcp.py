@@ -161,33 +161,21 @@ class GCPTEEClient(TEEClient):
                 logger.warning("Failed to delete VM: %s", e)
             self.vm_name = None
 
-    def run_epoch(self, epoch_state, contract_state, system_prompt, seed):
+    def run_epoch(self, epoch_state, system_prompt, seed):
         """Run inference inside a fresh GCP TDX VM.
 
         Input is passed via GCP instance metadata.
         Output is read from the serial console.
 
-        The enclave builds epoch_context deterministically from epoch_state
-        inside the TEE. It derives contract_state from epoch_state for hash
-        verification, ensuring all data shown to the model is transitively
-        verified via inputHash.
+        The enclave builds the model prompt from `epoch_state` and hashes
+        every display field into an input hash. The contract verifies by
+        hash equality against epochInputHashes[epoch]. No separate
+        "opaque hashes" sidechannel — the enclave re-derives every leaf.
 
         Returns the enclave result dict with an added `vm_minutes` field.
         """
-        # Build the epoch data that the enclave will read.
-        # epoch_state: full flat state — TEE derives hash inputs + builds prompt.
-        # Merge epoch_content_hashes and message_hashes from contract_state into the
-        # flat epoch_state so derive_contract_state() can include them in the input hash.
-        epoch_state_with_hashes = {
-            **epoch_state,
-            "invest_hash": contract_state.get("invest_hash", "0x" + "00" * 32),
-            "worldview_hash": contract_state.get("worldview_hash", "0x" + "00" * 32),
-            "epoch_content_hashes": contract_state.get("epoch_content_hashes", []),
-            "message_hashes": contract_state.get("message_hashes", []),
-        }
         epoch_data = {
-            "epoch_state": epoch_state_with_hashes,
-            "contract_state": contract_state,
+            "epoch_state": epoch_state,
             "seed": seed,
         }
         epoch_state_json = json.dumps(epoch_data)

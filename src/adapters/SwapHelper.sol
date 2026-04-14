@@ -13,13 +13,17 @@ interface IERC20 {
 }
 
 /// @notice Minimal Uniswap V3 SwapRouter02 interface.
+/// @notice Uniswap V3 SwapRouter02 interface (Base mainnet at 0x2626664c...).
+/// @dev SwapRouter02 dropped the `deadline` field when it added multicall
+///      support — deadlines are now enforced via a separate `checkDeadline`
+///      multicall step. Do NOT add `deadline` back here or exactInputSingle
+///      will revert on an unknown-selector mismatch.
 interface ISwapRouter {
     struct ExactInputSingleParams {
         address tokenIn;
         address tokenOut;
         uint24 fee;
         address recipient;
-        uint256 deadline;
         uint256 amountIn;
         uint256 amountOutMinimum;
         uint160 sqrtPriceLimitX96;
@@ -74,7 +78,6 @@ abstract contract SwapHelper {
                 tokenOut: address(usdc),
                 fee: swapFee,
                 recipient: address(this),
-                deadline: block.timestamp + 300,
                 amountIn: ethAmount,
                 amountOutMinimum: minOut,
                 sqrtPriceLimitX96: 0
@@ -95,7 +98,6 @@ abstract contract SwapHelper {
                 tokenOut: address(weth),
                 fee: swapFee,
                 recipient: address(this),
-                deadline: block.timestamp + 300,
                 amountIn: usdcAmount,
                 amountOutMinimum: minOut,
                 sqrtPriceLimitX96: 0

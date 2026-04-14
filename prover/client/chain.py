@@ -144,6 +144,29 @@ class ChainClient:
         """Get the current bond amount required for bidding."""
         return self.contract.functions.currentBond().call()
 
+    def get_my_bid_record(self, epoch):
+        """Read this runner's bid record for an epoch from on-chain history.
+
+        Returns the BidRecord struct (revealed, bidAmount, winner, forfeited)
+        or None if no record exists. Only populated AFTER the auction settles
+        (i.e. after reveal closes for non-winners, or after submission for
+        winners). Use this to recover bid_amount when local state was wiped
+        but we know from chain that we participated.
+        """
+        try:
+            rec = self.am.functions.getBidRecord(epoch, self.account.address).call()
+            # rec = (revealed, bidAmount, winner, forfeited)
+            if not rec[0] and rec[1] == 0:
+                return None
+            return {
+                "revealed": rec[0],
+                "bid_amount": rec[1],
+                "winner": rec[2],
+                "forfeited": rec[3],
+            }
+        except Exception:
+            return None
+
     def get_effective_max_bid(self):
         """Get the current effective max bid ceiling."""
         return self.contract.functions.effectiveMaxBid().call()
@@ -168,10 +191,17 @@ class ChainClient:
         from .epoch_state import read_contract_state
         return read_contract_state(self.contract, self.w3)
 
-    def build_contract_state_for_tee(self, state):
-        """Build structured contract state for TEE input hash verification."""
-        from .epoch_state import build_contract_state_for_tee
-        return build_contract_state_for_tee(self.contract, self.w3, state)
+    def apply_snapshot_overrides(self, state):
+        """Overlay the frozen EpochSnapshot onto the flat epoch_state in place.
+
+        After auction open, fields like treasury balance, inflows, message
+        queue bounds, investment current values, and effective_max_bid drift.
+        The contract froze them at auction open; the enclave will hash the
+        frozen values. This shim just overwrites the drifting fields with
+        the snapshot values so the enclave sees what the contract hashed.
+        """
+        from .epoch_state import apply_snapshot_overrides
+        return apply_snapshot_overrides(self.contract, self.w3, state)
 
     def get_epoch_timing(self):
         """Read epoch timing from contract.
