@@ -76,6 +76,11 @@ contract TheHumanFund is ReentrancyGuard {
         // Message queue boundaries at auction open
         uint256 messageHead;
         uint256 messageCount;
+        // effectiveMaxBid frozen at auction open (depends on live balance, so
+        // it drifts after donations). Included in _hashState() so the enclave
+        // hashes a single authoritative value instead of re-deriving a formula
+        // that can diverge from Solidity.
+        uint256 effectiveMaxBid;
         // Investment position currentValues at auction open (drift with DeFi yields).
         // Indexed 1..investmentProtocolCount, matching InvestmentManager.
         // depositedEth and shares don't drift (only changed by execute actions).
@@ -625,19 +630,21 @@ contract TheHumanFund is ReentrancyGuard {
     }
 
     /// @dev Core phase synchronization. Called before every prover action.
-    ///      1. Advances the AuctionManager through elapsed phase windows (step by step).
-    ///      2. Handles fund-level side effects between each AM transition.
-    ///      3. Advances past missed epochs (O(1) arithmetic, no loop).
-    ///      4. Opens a new auction if within the current epoch's commit window.
+    ///      Three independent steps, each safe to run in isolation:
+    ///        A. Drain the in-flight auction to a terminal state and handle
+    ///           per-epoch side effects (seed binding, forfeit credit).
+    ///        B. Arithmetically advance currentEpoch past any fully elapsed
+    ///           epochs (O(1), no loop).
+    ///        C. Open a fresh auction for the current epoch IFF the AM is in
+    ///           a clean terminal state and we are inside the commit window.
+    ///      The steps are decoupled so a stuck step never traps the others;
+    ///      repeated calls converge regardless of where execution left off.
     function _syncPhase() internal {
         IAuctionManager am = auctionManager;
         uint256 epoch = currentEpoch;
         IAuctionManager.AuctionPhase phase = am.getPhase(epoch);
 
-        // Advance the AM step by step so we can handle side effects between transitions.
-        // Each am.syncPhase() call chains through all elapsed windows, so we handle
-        // the side effects by checking what the AM's state is AFTER sync, not trying
-        // to intercept each individual transition.
+        // ─── Step A: drain the in-flight auction ────────────────────────
         if (phase != IAuctionManager.AuctionPhase.IDLE && phase != IAuctionManager.AuctionPhase.SETTLED) {
             (phase, ) = am.syncPhase(epoch);
 
@@ -652,56 +659,82 @@ contract TheHumanFund is ReentrancyGuard {
                 emit RevealClosed(epoch, am.getWinner(epoch), am.getWinningBid(epoch));
             }
 
-            // If the AM reached SETTLED and the epoch wasn't successfully executed,
-            // it was forfeited. Check by seeing if the epoch record was written.
+            // Emit forfeit event if AM reached SETTLED with a winner who never
+            // submitted. Note: missed-epoch credit is handled in Step B below
+            // (folded into missedCount, or as a +1 in the in-window elif) to
+            // avoid double-counting when both Step A and a multi-epoch skip
+            // would otherwise both bump consecutiveMissedEpochs for epoch 1.
             if (phase == IAuctionManager.AuctionPhase.SETTLED && !epochs[epoch].executed) {
-                // Could be: no commits, no reveals, or winner didn't submit.
-                // Only emit forfeit event if there was a winner (someone won but didn't deliver).
                 address winner = am.getWinner(epoch);
                 if (winner != address(0)) {
-                    if (consecutiveMissedEpochs < MAX_MISSED_EPOCHS) consecutiveMissedEpochs += 1;
                     emit BondForfeited(epoch, winner, am.getBond(epoch));
                 }
             }
         }
 
-        // If the current epoch is done (SETTLED, IDLE, or already executed),
-        // advance past any missed epochs and try to open a new one.
+        // ─── Step B: arithmetic advance through elapsed epochs ──────────
+        // This step runs unconditionally. It is safe even when Step A was
+        // skipped (pristine IDLE epoch that fully elapsed) because it only
+        // looks at wall-clock vs scheduledStart, not at AM state.
         bool epochDone = (phase == IAuctionManager.AuctionPhase.SETTLED)
             || (phase == IAuctionManager.AuctionPhase.IDLE)
             || epochs[epoch].executed;
 
         if (epochDone) {
-            // Advance past missed epochs (O(1) — arithmetic, no loop).
             uint256 scheduledStart = _epochStartTime(epoch);
             if (block.timestamp >= scheduledStart + epochDuration) {
-                // The current epoch's auction was stale. Credit missed epochs.
+                // Whole epoch(s) have elapsed since this epoch started.
                 uint256 missedCount = (block.timestamp - scheduledStart) / epochDuration;
+
+                // Credit consecutive-missed escalation for elapsed epochs that
+                // had an auction opened (whether or not anyone bid) and that
+                // weren't successfully executed. A pristine IDLE epoch (no
+                // auction ever opened) doesn't count — there was nothing to
+                // miss — but an opened-then-empty epoch does, because the
+                // escalation raises effectiveMaxBid to attract bidders next
+                // time.
                 if (phase != IAuctionManager.AuctionPhase.IDLE && !epochs[epoch].executed) {
-                    // Only count as missed if there was an auction that wasn't executed
                     uint256 newMissed = consecutiveMissedEpochs + missedCount;
                     if (newMissed > MAX_MISSED_EPOCHS) newMissed = MAX_MISSED_EPOCHS;
                     consecutiveMissedEpochs = newMissed;
                 }
+
                 currentEpoch += missedCount;
                 epoch = currentEpoch;
                 currentEpochInflow = 0;
                 currentEpochDonationCount = 0;
                 currentEpochCommissions = 0;
             } else if (phase == IAuctionManager.AuctionPhase.SETTLED || epochs[epoch].executed) {
-                // Epoch completed normally — advance one epoch.
+                // Epoch completed in-window (settled with no commits, settled
+                // with a forfeited winner, or successfully executed). Credit a
+                // missed epoch if a winner failed to deliver, then advance.
+                if (phase != IAuctionManager.AuctionPhase.IDLE && !epochs[epoch].executed) {
+                    if (consecutiveMissedEpochs < MAX_MISSED_EPOCHS) {
+                        consecutiveMissedEpochs += 1;
+                    }
+                }
                 currentEpoch += 1;
                 epoch = currentEpoch;
                 currentEpochInflow = 0;
                 currentEpochDonationCount = 0;
                 currentEpochCommissions = 0;
             }
+        }
 
-            // Try to open a new auction for the current epoch.
-            scheduledStart = _epochStartTime(epoch);
-            if (block.timestamp >= scheduledStart && block.timestamp < scheduledStart + am.commitWindow()) {
-                _openAuction(epoch, scheduledStart);
-            }
+        // ─── Step C: open a fresh auction if conditions are right ───────
+        // Guarded by AM phase so we never collide with an in-flight auction
+        // that survived Step A (which can happen if AM.syncPhase couldn't
+        // fully drain — e.g. partially elapsed windows).
+        uint256 newScheduledStart = _epochStartTime(epoch);
+        IAuctionManager.AuctionPhase amPhase = am.getPhase(epoch);
+        bool amReady =
+            amPhase == IAuctionManager.AuctionPhase.IDLE ||
+            amPhase == IAuctionManager.AuctionPhase.SETTLED;
+        bool inCommitWindow =
+            block.timestamp >= newScheduledStart &&
+            block.timestamp < newScheduledStart + am.commitWindow();
+        if (amReady && inCommitWindow) {
+            _openAuction(epoch, newScheduledStart);
         }
     }
 
@@ -723,6 +756,7 @@ contract TheHumanFund is ReentrancyGuard {
         snap.currentEpochDonationCount = currentEpochDonationCount;
         snap.messageHead = messageHead;
         snap.messageCount = messages.length;
+        snap.effectiveMaxBid = effectiveMaxBid();
 
         // Snapshot investment currentValues (drift with DeFi yields between blocks)
         if (address(investmentManager) != address(0)) {
@@ -983,13 +1017,14 @@ contract TheHumanFund is ReentrancyGuard {
         uint256 minUsdc = _minUsdcForDonation(amount);
         if (minUsdc == 0) return false; // Oracle unavailable — reject donation rather than swap unprotected
 
-        // Swap ETH → USDC via Uniswap V3 (low-level call to include deadline without struct bloat)
+        // Swap ETH → USDC via Uniswap V3 SwapRouter02 (7-field struct, no deadline —
+        // SwapRouter02 dropped the deadline field when it added multicall support).
         weth.deposit{value: amount}();
         weth.approve(swapRouter, amount);
         (bool swapOk, bytes memory swapRet) = swapRouter.call(abi.encodeWithSignature(
-            "exactInputSingle((address,address,uint24,address,uint256,uint256,uint256,uint160))",
+            "exactInputSingle((address,address,uint24,address,uint256,uint256,uint160))",
             address(weth), usdc, uint24(500), address(this),
-            block.timestamp + 300, amount, minUsdc, uint160(0)
+            amount, minUsdc, uint160(0)
         ));
         if (!swapOk) return false;
         uint256 usdcAmount = abi.decode(swapRet, (uint256));
@@ -1069,13 +1104,19 @@ contract TheHumanFund is ReentrancyGuard {
     }
 
     /// @dev Hash current state variables (all cheap SLOADs).
-    ///      Split into two halves to avoid stack-too-deep with 15 fields.
+    ///      Split into two halves to avoid stack-too-deep.
+    ///      effectiveMaxBid() is read live — at auction-open time (when
+    ///      _computeInputHash runs) it equals snap.effectiveMaxBid, which
+    ///      is what the prover passes to the enclave afterward. Binding it
+    ///      directly here eliminates any need for the enclave to re-derive
+    ///      the escalation formula.
     function _hashState() internal view returns (bytes32) {
         bytes32 h1 = keccak256(abi.encode(
             currentEpoch,
             address(this).balance,
             commissionRateBps,
             maxBid,
+            effectiveMaxBid(),
             consecutiveMissedEpochs,
             lastDonationEpoch,
             lastCommissionChangeEpoch,

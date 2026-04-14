@@ -41,6 +41,7 @@ contract MainnetForkTest is Test {
     address constant USDC              = 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913;
     address constant SWAP_ROUTER       = 0x2626664c2603336E57B271c5C0b26F421741e481;
     address constant ETH_USD_FEED      = 0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70;
+    address constant WSTETH_RATE_FEED  = 0xB88BAc61a4Ca37C43a3725912B1f472c9A5bc061;
     address constant DCAP_VERIFIER     = 0x95175096a9B74165BE0ac84260cc14Fc1c0EF5FF;
 
     // DeFi protocols
@@ -136,7 +137,7 @@ contract MainnetForkTest is Test {
         );
         im.addProtocol(address(a2), "Aave V3 USDC", "Swap ETH->USDC, lend on Aave", 2, 500);
 
-        WstETHAdapter a3 = new WstETHAdapter(WSTETH, SWAP_ROUTER, address(im));
+        WstETHAdapter a3 = new WstETHAdapter(WSTETH, WETH, SWAP_ROUTER, WSTETH_RATE_FEED, address(im));
         im.addProtocol(address(a3), "Lido wstETH", "Stake ETH via Lido", 1, 350);
 
         CbETHAdapter a4 = new CbETHAdapter(CBETH, WETH, SWAP_ROUTER, address(im));

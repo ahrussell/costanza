@@ -129,3 +129,9 @@ def notify_bond_claimed(channel, epoch, amount_eth):
     notify(channel, f"Bond claimed (epoch {epoch})",
            f"Recovered {amount_eth:.6f} ETH from epoch {epoch}.",
            tags=["moneybag"])
+
+def notify_low_balance(channel, epoch, balance_eth, required_eth):
+    notify(channel, f"Runner balance too low (epoch {epoch})",
+           f"Balance {balance_eth:.6f} ETH < required {required_eth:.6f} ETH "
+           f"(bond + commit gas headroom). Top up the runner wallet.",
+           priority="urgent", tags=["fuelpump"])

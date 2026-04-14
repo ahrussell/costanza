@@ -36,7 +36,7 @@ from pathlib import Path
 
 from .inference import run_three_pass_inference, truncate_reasoning
 from .action_encoder import parse_action, encode_action_bytes
-from .input_hash import compute_input_hash, derive_contract_state, verify_display_data, _keccak256
+from .input_hash import compute_input_hash, _keccak256
 from .attestation import get_tdx_quote, compute_report_data
 from .prompt_builder import build_epoch_context, build_full_prompt
 
@@ -318,43 +318,35 @@ def main():
         log(f"  Prompt: {len(system_prompt)} chars, sha256={hashlib.sha256(system_prompt.encode()).hexdigest()[:16]}...")
 
         # Step 3: Compute input hash
-        # The runner sends the full flat epoch state. The TEE derives the
-        # structured contract_state from it for hash verification, ensuring
-        # ALL data shown to the model is transitively verified via inputHash.
+        # The enclave is a dumb hasher. It takes the flat epoch_state from the
+        # runner, re-derives EVERY leaf hash (state, nonprofits, investments,
+        # worldview, messages, history) from the raw display data, and combines
+        # them the same way the contract does. On-chain verification is pure
+        # hash equality against epochInputHashes[epoch]. If the runner lied
+        # about any display field, the hash won't match and the submission
+        # reverts. No separate verification step.
         log("")
         log("Step 3: Computing input hash...")
         epoch_state = epoch_data.get("epoch_state")
         if not epoch_state:
             raise RuntimeError(
-                "epoch_state is required. The TEE must derive all data "
-                "deterministically from the hash-verified epoch state."
+                "epoch_state is required. The enclave hashes the runner-supplied "
+                "flat state directly and the contract verifies by hash equality."
             )
-        # Derive contract_state from flat epoch_state
-        contract_state = derive_contract_state(epoch_state)
         # base_input_hash = _computeInputHash() in Solidity (no seed)
-        base_input_hash = compute_input_hash(contract_state)
+        base_input_hash = compute_input_hash(epoch_state)
         # final input_hash = keccak256(base || seed), matching epochInputHashes[epoch]
-        # set in TheHumanFund.closeReveal():
+        # set in TheHumanFund._syncPhase() reveal-close:
         #   epochInputHashes[epoch] = keccak256(epochBaseInputHashes[epoch] || seed)
         seed_bytes = seed.to_bytes(32, "big") if seed > 0 else b"\x00" * 32
         input_hash = _keccak256(base_input_hash + seed_bytes)
         log(f"  Base input hash: 0x{base_input_hash.hex()[:16]}...")
-        log(f"  Input hash (derived from epoch_state): 0x{input_hash.hex()[:16]}...")
+        log(f"  Input hash (with seed):  0x{input_hash.hex()[:16]}...")
 
-        # Step 3b: Verify display data matches opaque hashes
-        # The input hash includes opaque sub-hashes (invest_hash, worldview_hash,
-        # message_hashes, epoch_content_hashes). The prompt builder uses EXPANDED
-        # display data from epoch_state. A malicious runner could provide correct
-        # opaque hashes alongside fabricated display data. This step recomputes
-        # each opaque hash from the expanded data and verifies they match.
-        log("")
-        log("Step 3b: Verifying display data against opaque hashes...")
-        verify_display_data(epoch_state, contract_state)
-        log("  All display data verified — investments, worldview, messages, history match hashes.")
-
-        # Step 4: Build prompt (deterministically from hash-verified state)
-        # epoch_context is built INSIDE the TEE from the same data that was
-        # hash-verified in steps 3 and 3b. No runner-supplied free-text prompt.
+        # Step 4: Build prompt (deterministically from the hashed state).
+        # Any field the model sees is a field that contributed to the hash
+        # above. If the runner lied, the hash won't match on-chain and we
+        # waste GPU time, but no bad action ever lands.
         log("")
         log("Step 4: Building prompt...")
         epoch_context = build_epoch_context(epoch_state, seed=seed)

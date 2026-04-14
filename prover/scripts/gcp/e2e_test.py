@@ -546,14 +546,14 @@ def run_dmverity_inference(w3, fund_addr, fund_abi, am_addr, am_abi, epoch, seed
     """
     print(f"\n  4d. Running dm-verity inference...")
 
-    # Read contract state using runner.epoch_state
+    # Read contract state using prover.client.epoch_state
     sys.path.insert(0, str(PROJECT_ROOT))
-    from runner.epoch_state import read_contract_state, build_contract_state_for_tee
-    from runner.tee_clients.gcp import GCPTEEClient
+    from prover.client.epoch_state import read_contract_state, apply_snapshot_overrides
+    from prover.client.tee_clients.gcp import GCPTEEClient
 
     fund = w3.eth.contract(address=fund_addr, abi=fund_abi)
     state = read_contract_state(fund, w3)
-    contract_state = build_contract_state_for_tee(fund, w3, state)
+    apply_snapshot_overrides(fund, w3, state)
 
     # Choose machine type based on --cpu flag
     machine_type = GCP_MACHINE_TYPE_CPU if not USE_GPU else GCP_MACHINE_TYPE_GPU
@@ -576,7 +576,6 @@ def run_dmverity_inference(w3, fund_addr, fund_abi, am_addr, am_abi, epoch, seed
     # (the client sends it for interface compatibility but it's not used)
     return client.run_epoch(
         epoch_state=state,
-        contract_state=contract_state,
         system_prompt="",
         seed=seed,
     )

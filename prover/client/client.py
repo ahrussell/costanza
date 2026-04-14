@@ -46,7 +46,7 @@ from .notifier import (
     notify_auction_won, notify_auction_lost, notify_result_submitted,
     notify_error, notify_submission_failed, notify_epoch_abandoned,
     notify_epoch_settled, notify_bond_forfeited, notify_bond_claimed,
-    notify_cached_submission,
+    notify_cached_submission, notify_low_balance,
 )
 
 logger = logging.getLogger(__name__)
@@ -220,6 +220,25 @@ def _handle_commit(chain, config, auction, saved, participation, state_dir, ntfy
         return
 
     gas_price = chain.get_gas_price()
+
+    # Balance pre-check: bond + commit gas with 20% headroom. If we can't
+    # afford the commit, fail loud BEFORE generating a salt. Otherwise the
+    # tx fails with a cryptic web3 stack trace and we still write a half-
+    # baked state record on disk. (See incident on 2026-04-14 11:15 UTC.)
+    from .auction import GAS_COMMIT  # local import to avoid circular
+    bond = chain.get_current_bond()
+    required = bond + GAS_COMMIT * gas_price * 12 // 10
+    balance = chain.w3.eth.get_balance(chain.account.address)
+    if balance < required:
+        logger.error("Insufficient funds to commit for epoch %d: have %d wei, "
+                     "need ~%d wei (bond=%d, gas headroom=%d)",
+                     epoch, balance, required, bond, required - bond)
+        if not saved.get("low_balance_notified"):
+            notify_low_balance(ntfy, epoch, balance / 1e18, required / 1e18)
+            saved["low_balance_notified"] = True
+            save_state(saved, state_dir)
+        return
+
     max_bid = chain.get_effective_max_bid()
     eth_usd = _parse_eth_usd(chain.get_eth_usd_price())
 
@@ -299,6 +318,25 @@ def _handle_execution(chain, config, auction, saved, participation, state_dir, n
         return
 
     # Case 3: We won!
+
+    # Recovery path: if local state is empty (e.g. operator wiped state mid-
+    # execution to apply a hot fix, or we're restarting from a crash), we
+    # need to populate `saved` with at least `epoch` so subsequent saves
+    # don't write a stub `{won_notified: true}` record that load_state
+    # would discard on the next tick. Re-derive bid_amount from the on-
+    # chain bid record where possible (purely advisory — submission only
+    # needs the TEE result).
+    if not saved.get("epoch"):
+        logger.info("Local state empty for epoch %d but chain says we won — "
+                    "recovering from on-chain record", epoch)
+        saved["epoch"] = epoch
+        saved["committed"] = True
+        saved["revealed"] = True
+        bid_record = chain.get_my_bid_record(epoch)
+        if bid_record and bid_record["bid_amount"] > 0:
+            saved["bid_amount"] = bid_record["bid_amount"]
+            logger.info("Recovered bid_amount from chain: %.6f ETH", bid_record["bid_amount"] / 1e18)
+        save_state(saved, state_dir)
 
     # Check if we already failed permanently
     if saved.get("submission_failed"):
@@ -395,7 +433,10 @@ def _run_tee_inference(chain, config, auction, saved, state_dir):
 
     logger.info("Starting TEE inference...")
     epoch_state = chain.read_contract_state()
-    contract_state = chain.build_contract_state_for_tee(epoch_state)
+    # Overlay frozen EpochSnapshot values for fields that drift post-auction-open
+    # (balance, inflows, message queue, investment current values, effective_max_bid).
+    # The enclave hashes the flat state directly; the contract verifies by hash equality.
+    chain.apply_snapshot_overrides(epoch_state)
 
     prompt_path = Path(config["system_prompt_path"])
     system_prompt = prompt_path.read_text().strip()
@@ -406,7 +447,6 @@ def _run_tee_inference(chain, config, auction, saved, state_dir):
     tee_client = get_tee_client(config)
     tee_result = tee_client.run_epoch(
         epoch_state=epoch_state,
-        contract_state=contract_state,
         system_prompt=system_prompt,
         seed=seed,
     )

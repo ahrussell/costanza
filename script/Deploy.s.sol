@@ -130,6 +130,7 @@ contract Deploy is Script {
         address swapRouter;
         address ethUsdFeed;
         address wstETH;
+        address wstEthRateFeed;
         address cbETH;
         address comet;
         address morphoGauntletWeth;
@@ -144,6 +145,8 @@ contract Deploy is Script {
         d.swapRouter = vm.envAddress("SWAP_ROUTER");
         d.ethUsdFeed = vm.envAddress("ETH_USD_FEED");
         d.wstETH     = vm.envAddress("WSTETH");
+        // Chainlink wstETH/stETH exchange-rate feed (Base: 0xB88BAc61a4Ca37C43a3725912B1f472c9A5bc061)
+        d.wstEthRateFeed = vm.envAddress("WSTETH_RATE_FEED");
         d.cbETH      = vm.envAddress("CBETH");
         d.comet      = vm.envAddress("COMPOUND_COMET");
         d.morphoGauntletWeth   = vm.envAddress("MORPHO_GAUNTLET_WETH");
@@ -166,7 +169,7 @@ contract Deploy is Script {
             "Swap ETH to USDC, lend on Aave. Higher APY but you lose if ETH rises.", 2, 500);
 
         // Protocol 3: Lido wstETH (risk 1, ~3.5% APY)
-        address a3 = address(new WstETHAdapter(d.wstETH, d.swapRouter, mgr));
+        address a3 = address(new WstETHAdapter(d.wstETH, d.weth, d.swapRouter, d.wstEthRateFeed, mgr));
         im.addProtocol(a3, "Lido wstETH",
             "Stake ETH via Lido for validator rewards. Risk: stETH depeg, slashing.", 1, 350);
 

@@ -678,6 +678,130 @@ contract TheHumanFundAuctionTest is Test {
     }
 
     // ═══════════════════════════════════════════════════════════════════════
+    // Group 6b: _syncPhase regression tests for issues #2 and #3
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// @dev Issue #2: pristine IDLE epoch (no auction ever opened) that fully
+    ///      elapses must advance currentEpoch and must NOT credit a missed
+    ///      epoch (nothing was offered, nothing was missed).
+    function test_syncPhase_pristineIdleEpochAdvances() public {
+        // Do NOT call syncPhase first — leave epoch 1 in pristine IDLE state.
+        assertEq(uint256(am.getPhase(1)), uint256(IAuctionManager.AuctionPhase.IDLE));
+        assertEq(fund.currentEpoch(), 1);
+
+        // Let epoch 1 fully elapse without any interaction at all.
+        vm.warp(block.timestamp + EPOCH_DUR);
+
+        fund.syncPhase();
+
+        // currentEpoch should now be 2, and consecutiveMissedEpochs should still
+        // be 0 because no auction was ever opened for epoch 1.
+        assertEq(fund.currentEpoch(), 2);
+        assertEq(fund.consecutiveMissedEpochs(), 0);
+
+        // Subsequent syncPhase calls should be idempotent.
+        fund.syncPhase();
+        assertEq(fund.currentEpoch(), 2);
+        assertEq(fund.consecutiveMissedEpochs(), 0);
+    }
+
+    /// @dev Issue #2 (fully-elapsed pristine IDLE) followed immediately by
+    ///      opening the new epoch's auction when the wall-clock lands in its
+    ///      commit window.
+    function test_syncPhase_pristineIdleAdvancesAndOpens() public {
+        // Pristine IDLE for epoch 1.
+        vm.warp(block.timestamp + EPOCH_DUR); // exactly at epoch 2 start
+        fund.syncPhase();
+
+        assertEq(fund.currentEpoch(), 2);
+        // Within epoch 2's commit window — auction should be open.
+        assertEq(uint256(am.getPhase(2)), uint256(IAuctionManager.AuctionPhase.COMMIT));
+    }
+
+    /// @dev Issue #3 repro: winner committed+revealed but never submitted.
+    ///      Wall-clock advances multiple epochs past the execution deadline.
+    ///      syncPhase() must not revert and must end up in the correct epoch.
+    function test_syncPhase_afterWinnerForfeitThenSkipIntoCommitWindow() public {
+        // Epoch 1: full commit+reveal cycle, winner picked, but no submission.
+        _runAuctionTo(runner1, 0.005 ether, bytes32("s1"));
+        assertEq(uint256(am.getPhase(1)), uint256(IAuctionManager.AuctionPhase.EXECUTION));
+
+        // Land inside epoch 6's commit window (5 full epochs after epoch 1).
+        vm.warp(fund.epochStartTime(6) + 1);
+
+        fund.syncPhase();
+
+        // Epoch 1 should be forfeited, currentEpoch advanced to 6, and a
+        // fresh auction opened for epoch 6. 1 forfeit + 4 missed = 5.
+        assertEq(fund.currentEpoch(), 6);
+        assertEq(fund.consecutiveMissedEpochs(), 5);
+        assertEq(uint256(am.getPhase(6)), uint256(IAuctionManager.AuctionPhase.COMMIT));
+    }
+
+    /// @dev Issue #3 variant: forfeit+skip when the wall-clock lands OUTSIDE
+    ///      the new epoch's commit window. Must advance epoch but must NOT
+    ///      open an auction (and must not revert).
+    function test_syncPhase_afterWinnerForfeitThenSkipOutsideCommitWindow() public {
+        _runAuctionTo(runner1, 0.005 ether, bytes32("s1"));
+
+        // Land in epoch 6's REVEAL window (past commit window).
+        vm.warp(fund.epochStartTime(6) + COMMIT_WIN + 1);
+
+        fund.syncPhase();
+
+        assertEq(fund.currentEpoch(), 6);
+        assertEq(fund.consecutiveMissedEpochs(), 5);
+        // No auction should be opened — we missed epoch 6's commit window too.
+        assertEq(uint256(am.getPhase(6)), uint256(IAuctionManager.AuctionPhase.IDLE));
+    }
+
+    /// @dev syncPhase should be safely repeatable from any state without
+    ///      changing anything between back-to-back calls.
+    function test_syncPhase_repeatedCallsAreNoop() public {
+        // Pristine IDLE, fully elapsed, deep skip.
+        _runAuctionTo(runner1, 0.005 ether, bytes32("s1"));
+        vm.warp(block.timestamp + EXEC_WIN + EPOCH_DUR * 3);
+
+        fund.syncPhase();
+        uint256 epochAfter = fund.currentEpoch();
+        uint256 missedAfter = fund.consecutiveMissedEpochs();
+        IAuctionManager.AuctionPhase phaseAfter = am.getPhase(epochAfter);
+
+        // 4 more calls — nothing should change.
+        for (uint256 i = 0; i < 4; i++) {
+            fund.syncPhase();
+            assertEq(fund.currentEpoch(), epochAfter);
+            assertEq(fund.consecutiveMissedEpochs(), missedAfter);
+            assertEq(uint256(am.getPhase(epochAfter)), uint256(phaseAfter));
+        }
+    }
+
+    /// @dev After a no-commit elapsed epoch, the very next epoch's commit
+    ///      window should still be openable for normal participation.
+    function test_syncPhase_afterNoCommitEpochNextEpochUsable() public {
+        // Open epoch 1, nobody commits, epoch elapses.
+        fund.syncPhase();
+        vm.warp(block.timestamp + EPOCH_DUR);
+        fund.syncPhase();
+
+        // Now in epoch 2's commit window — runner should be able to commit.
+        assertEq(fund.currentEpoch(), 2);
+        assertEq(uint256(am.getPhase(2)), uint256(IAuctionManager.AuctionPhase.COMMIT));
+
+        uint256 bond = fund.currentBond();
+        vm.prank(runner1);
+        fund.commit{value: bond}(_commitHash(0.005 ether, bytes32("s2")));
+
+        vm.warp(block.timestamp + COMMIT_WIN);
+        vm.prank(runner1);
+        fund.reveal(0.005 ether, bytes32("s2"));
+
+        vm.warp(block.timestamp + REVEAL_WIN);
+        fund.syncPhase();
+        assertTrue(am.getRandomnessSeed(2) != 0);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
     // Group 7: Seed & Input Hash
     // ═══════════════════════════════════════════════════════════════════════
 

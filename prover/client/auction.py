@@ -98,15 +98,26 @@ def is_expected_revert(err: str) -> bool:
 def sync_phase(chain: ChainClient):
     """Call syncPhase() on the contract to advance through elapsed phases.
 
-    Returns True if successful, False on expected revert, raises on unexpected error.
+    Returns True if the call succeeded, False on a *known* timing/phase race
+    (which is benign — the next tick will retry). Raises on any other error
+    so the main loop can escalate via ntfy. Issue #4: do NOT swallow blanket
+    RuntimeErrors — that masks real on-chain reverts as routine no-ops.
     """
     try:
         chain.sync_phase(gas=GAS_SYNC_PHASE)
         return True
-    except (ContractLogicError, ContractCustomError, RuntimeError) as e:
-        if isinstance(e, RuntimeError) or is_expected_revert(str(e)):
-            logger.info("syncPhase() no-op or not ready — %s", str(e)[:80])
+    except (ContractLogicError, ContractCustomError) as e:
+        if is_expected_revert(str(e)):
+            logger.info("syncPhase() no-op (expected timing race) — %s", str(e)[:120])
             return False
+        # Known custom error but not in the expected set — escalate.
+        raise
+    except RuntimeError as e:
+        # web3.py wraps unknown on-chain reverts as RuntimeError. These are
+        # NOT expected; let them propagate to main()'s ntfy path so the
+        # operator finds out about contract bugs immediately instead of
+        # discovering them hours later in journald.
+        logger.error("syncPhase() unexpected revert — %s", str(e)[:200])
         raise
 
 

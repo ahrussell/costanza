@@ -1015,7 +1015,9 @@ REPORTDATA is the mechanism by which the attestation binds a specific execution 
 
 $$\textit{inputHash} = \text{Keccak256}(\textit{baseInputHash} \;\|\; \textit{seed})$$
 
-where $\textit{baseInputHash}$ covers all epoch state (treasury, nonprofits, investments, worldview, messages, history) and $\textit{seed}$ = `block.prevrandao` captured at the REVEAL → EXECUTION transition.
+where $\textit{baseInputHash}$ covers all epoch state (treasury balance, commission rate, `maxBid`, `effectiveMaxBid`, consecutive missed epochs, total inflows / donations / commissions / bounties, per-epoch counters, snapshotted ETH/USD price, epoch duration, nonprofits, investment positions, worldview policies, donor messages, and epoch history). $\textit{seed}$ = `block.prevrandao` XOR salt accumulator, captured at the REVEAL → EXECUTION transition.
+
+The escalated bid ceiling $\textit{effectiveMaxBid}$ is hashed directly into $\textit{baseInputHash}$ (via `_hashState()`) rather than re-derived inside the enclave. This eliminates any risk of Python/Solidity formula divergence: the enclave is a dumb hasher and never re-computes anything.
 
 $$\textit{outputHash} = \text{Keccak256}\!\big(\text{SHA256}(\textit{action}) \;\|\; \text{SHA256}(\textit{reasoning})\big)$$
 
@@ -1027,9 +1029,9 @@ $$\text{REPORTDATA}_{[32:64]} = 0$$
 
 The enclave (running inside the TD on the dm-verity rootfs) performs these steps:
 
-1. **Receive epoch state** from the prover via GCP instance metadata.
-2. **Independently recompute** $\textit{inputHash}'$ from the provided state, using the same hash construction as the contract.
-3. **Verify display data** — recompute sub-hashes from expanded text and check against committed hashes (see Section B.4).
+1. **Receive epoch state** from the prover via GCP instance metadata — a single flat dictionary containing every display field the model will see (scalars, nonprofits, investments, policies, messages, history).
+2. **Recompute** $\textit{baseInputHash}'$ by hashing that flat state leaf-by-leaf with the same construction the contract uses (see Section B.4 for the per-leaf formulas). There is no separate "verify display data" step — the enclave re-derives every leaf hash from the display data itself, so any tampering produces a different $\textit{baseInputHash}'$ which the contract rejects at submission.
+3. **Compute** $\textit{inputHash}' = \text{Keccak256}(\textit{baseInputHash}' \;\|\; \textit{seed})$.
 4. **Run inference** with the committed seed, producing $(\textit{action}, \textit{reasoning})$.
 5. **Compute** $\textit{outputHash}$ and $\text{REPORTDATA}$ as above.
 6. **Request TDX quote** via `configfs-tsm` with the computed REPORTDATA.
@@ -1046,22 +1048,24 @@ The contract computes the expected REPORTDATA:
 
 If the prover tampers with the output after attestation — submitting $(\textit{action}^{\ast}, \textit{reasoning}^{\ast})$ different from what the enclave produced — the hashes diverge and the submission is rejected (Theorem 2, Section 6.2).
 
-### B.4 Display Data Verification
+### B.4 Leaf Hash Reproducibility
 
-The input hash commits to several opaque sub-hashes: investment positions, worldview policies, donor messages, and epoch history. Since the enclave has no direct chain access, the prover must provide both the hash values and the expanded human-readable data that the model will see.
+The enclave is a dumb hasher: it takes the flat epoch state from the prover, re-derives every leaf sub-hash from the raw display data, and combines them into $\textit{baseInputHash}$ using the same construction as the contract's `_computeInputHash()`. On-chain verification is pure hash equality — if the prover fabricates, reorders, truncates, or omits any display field, the computed $\textit{baseInputHash}'$ diverges from `epochBaseInputHashes[epoch]` (which the contract produced at auction open from live state), and `submitAuctionResult()` reverts.
 
-The enclave independently recomputes each sub-hash from the display data and verifies it matches the committed value:
+The six leaf hashes that make up $\textit{baseInputHash}$:
 
-| Field | Hash Construction | Verification |
-|-------|-------------------|-------------|
-| Investment positions | `abi.encodePacked` over protocol details array (mirrors `InvestmentManager.stateHash()`) | Recompute from protocol details, compare to committed `investmentHash` |
-| Worldview policies | `abi.encode` over 8 policy slots (mirrors `WorldView.stateHash()`) | Recompute from policy text array, compare to committed `worldviewHash` |
-| Donor messages | Per-message `keccak256(abi.encodePacked(sender, amount, text))` | Recompute each hash, compare to committed message hash array |
-| Epoch history | Rolling chain: $h_k = \text{Keccak256}(h_{k-1} \;\|\; \text{Keccak256}(\textit{reasoning}_k))$ | Replay the chain, compare final hash to committed `historyHash` |
+| Leaf | Hash Construction | Source in Contract |
+|------|-------------------|--------------------|
+| State scalars | Two-stage `keccak256(abi.encode(...))` over 16 scalar fields (epoch, balance, commission rate, maxBid, **effectiveMaxBid**, consecutive missed, last donation/commission epochs, total inflows/donated/commissions/bounties, per-epoch inflow/count, ETH/USD price, epoch duration) | `_hashState()` |
+| Nonprofits | Rolling `keccak256(rolling \|\| itemHash)` where $\textit{itemHash} = \text{Keccak256}(\text{abi.encode}(\textit{name}, \textit{desc}, \textit{ein}, \textit{totalDonated}, \textit{totalDonatedUsd}, \textit{donationCount}))$ | `_hashNonprofits()` |
+| Investments | `keccak256(abi.encodePacked(\\forall i: pid_i \|\| deposited_i \|\| shares_i \|\| currentValue_i, protocolCount, totalInvested))` | `InvestmentManager.stateHash()` |
+| Worldview | `keccak256(abi.encode(\textit{policies}_0, \ldots, \textit{policies}_9))` over 10 policy slots | `WorldView.stateHash()` |
+| Donor messages | Rolling `keccak256(rolling \|\| perMsgHash)` where $\textit{perMsgHash} = \text{Keccak256}(\text{abi.encode}(\textit{sender}, \textit{amount}, \textit{text}, \textit{epoch}))$ | `_hashUnreadMessages()` |
+| Epoch history | Rolling `keccak256(rolling \|\| contentHash)` over the last 10 slots, where $\textit{contentHash} = \text{Keccak256}(\text{abi.encode}(\text{Keccak256}(\textit{reasoning}), \text{Keccak256}(\textit{action}), \textit{treasuryBefore}, \textit{treasuryAfter}))$ — unexecuted slots contribute a zero leaf | `_hashRecentHistory()` |
 
-If any sub-hash does not match, the enclave refuses to proceed. This prevents a prover from showing the model fabricated text (e.g., fake donor messages, altered worldview policies) while the top-level input hash still checks out.
+Drifting fields (balance, inflows, message queue boundaries, investment current values, effective max bid) are **frozen in an `EpochSnapshot` struct** at auction open. The prover reads the snapshot from chain and passes the frozen values to the enclave. The contract's own `_computeInputHash()` is called in the same transaction that writes the snapshot, so at that instant live state equals snapshot values — the enclave later reproduces the hash using the snapshot values, and the two agree.
 
-**Security argument.** Substituting display text $\textit{text}^{\ast}$ for the real $\textit{text}$ while preserving $H(\textit{text}^{\ast}) = H(\textit{text})$ requires finding a preimage collision, which contradicts assumption A2.
+**Security argument.** Substituting display field $f^{\ast}$ for the real $f$ while preserving $H(f^{\ast}) = H(f)$ requires finding a keccak256 preimage collision, which contradicts assumption A2. Therefore any tampering with any display field — whether a donor message, a history reasoning blob, an investment current value, or a worldview policy text — produces a detectable hash mismatch at submission time.
 
 ### B.5 Output Length Bounds
 
