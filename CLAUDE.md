@@ -13,7 +13,7 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 ## Current Status
 
 ### Base Mainnet
-- **Contract**: [`0xe1Ff438b1C0bf0c61d6eff439C2a9eb1DDCb71e5`](https://basescan.org/address/0xe1Ff438b1C0bf0c61d6eff439C2a9eb1DDCb71e5)
+- **Contract**: [`0xE1Ff438B1C0Bf0C61d6EfF439C2A9eB1dDcb71e5`](https://basescan.org/address/0xE1Ff438B1C0Bf0C61d6EfF439C2A9eB1dDcb71e5)
 - **AuctionManager**: [`0x3157cD7Ef8B41f8FF97461eE43ebD23062A4F9BF`](https://basescan.org/address/0x3157cD7Ef8B41f8FF97461eE43ebD23062A4F9BF)
 - **TdxVerifier**: [`0x83D6029b39802caAd7302C60320F1C5a25FdD16b`](https://basescan.org/address/0x83D6029b39802caAd7302C60320F1C5a25FdD16b)
 - **InvestmentManager**: [`0xA102d70D9c688ac3736320feb44dD1dCc839aFf4`](https://basescan.org/address/0xA102d70D9c688ac3736320feb44dD1dCc839aFf4)
