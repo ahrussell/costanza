@@ -345,6 +345,15 @@ def build_contract_state_for_tee(contract, w3, state):
     state["epoch_donation_count"] = snapshot["current_epoch_donation_count"]
     state["message_head"] = snapshot["message_head"]
     state["message_count"] = snapshot["message_count"]
+    # Truncate donor_messages to only those that were unread at snapshot time.
+    # getUnreadMessages() returns the live view (may include messages that arrived
+    # after auction open). messageHead can't advance between snapshot and now (only
+    # _recordAndExecute advances it, and that runs after submission), so the first
+    # N entries of the live unread queue are exactly the snapshot's unread set.
+    # Also bound by MAX_MESSAGES_PER_EPOCH=20, matching getUnreadMessages's own cap.
+    snap_unread = min(snapshot["message_count"] - snapshot["message_head"], 20)
+    if snap_unread < len(state.get("donor_messages", [])):
+        state["donor_messages"] = state["donor_messages"][:snap_unread]
     # Override investment currentValues with frozen snapshot values
     frozen_values = snapshot["investment_current_values"]
     total_invested = 0
