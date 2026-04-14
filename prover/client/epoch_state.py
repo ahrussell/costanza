@@ -183,6 +183,7 @@ def read_epoch_snapshot(contract, w3, epoch):
                      {"name": "messageHead", "type": "uint256"},
                      {"name": "messageCount", "type": "uint256"},
                      {"name": "effectiveMaxBid", "type": "uint256"},
+                     {"name": "epochDuration", "type": "uint256"},
                      {"name": "investmentProtocolCount", "type": "uint256"},
                      {"name": "investmentCurrentValues", "type": "uint256[21]"},
                  ], "name": "", "type": "tuple"}],
@@ -198,8 +199,9 @@ def read_epoch_snapshot(contract, w3, epoch):
         "message_head": snap[4],
         "message_count": snap[5],
         "effective_max_bid": snap[6],
-        "investment_protocol_count": snap[7],
-        "investment_current_values": snap[8],  # uint256[21], 1-indexed
+        "epoch_duration": snap[7],
+        "investment_protocol_count": snap[8],
+        "investment_current_values": snap[9],  # uint256[21], 1-indexed
     }
 
 
@@ -232,6 +234,10 @@ def apply_snapshot_overrides(contract, w3, state):
     state["message_head"] = snapshot["message_head"]
     state["message_count"] = snapshot["message_count"]
     state["effective_max_bid"] = snapshot["effective_max_bid"]
+    # epoch_duration must come from the snapshot, not live chain state:
+    # the contract's _hashState() reads from _epochSnapshots[epoch].epochDuration
+    # so that mid-epoch setAuctionTiming() calls don't mutate the stored hash.
+    state["epoch_duration"] = snapshot["epoch_duration"]
 
     # Truncate donor_messages to exactly the snapshot's unread set.
     # getUnreadMessages() returns the live view (may include messages that

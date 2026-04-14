@@ -143,7 +143,10 @@ contract CrossStackHashTest is Test {
             ',"epoch_inflow":', vm.toString(fund.currentEpochInflow()),
             ',"epoch_donation_count":', vm.toString(fund.currentEpochDonationCount()),
             ',"epoch_eth_usd_price":', vm.toString(fund.epochEthUsdPrice()),
-            ',"epoch_duration":', vm.toString(fund.epochDuration())
+            // epoch_duration is read from _epochSnapshots[currentEpoch] in _hashState(),
+            // not from the live storage slot. For tests that haven't opened an auction
+            // yet, the snapshot is all zeros, so we emit 0 here to match.
+            ',"epoch_duration":', vm.toString(fund.getEpochSnapshot(fund.currentEpoch()).epochDuration)
         );
 
         // Nonprofits

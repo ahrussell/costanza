@@ -81,6 +81,12 @@ contract TheHumanFund is ReentrancyGuard {
         // hashes a single authoritative value instead of re-deriving a formula
         // that can diverge from Solidity.
         uint256 effectiveMaxBid;
+        // epochDuration frozen at auction open. The owner can change the live
+        // epochDuration mid-epoch via setAuctionTiming (e.g. to extend a
+        // phase window for a stuck runner). Hashing the snapshotted value —
+        // rather than the live one — keeps epochBaseInputHashes[epoch]
+        // reproducible for the enclave regardless of owner adjustments.
+        uint256 epochDuration;
         // Investment position currentValues at auction open (drift with DeFi yields).
         // Indexed 1..investmentProtocolCount, matching InvestmentManager.
         // depositedEth and shares don't drift (only changed by execute actions).
@@ -757,6 +763,7 @@ contract TheHumanFund is ReentrancyGuard {
         snap.messageHead = messageHead;
         snap.messageCount = messages.length;
         snap.effectiveMaxBid = effectiveMaxBid();
+        snap.epochDuration = epochDuration;
 
         // Snapshot investment currentValues (drift with DeFi yields between blocks)
         if (address(investmentManager) != address(0)) {
@@ -1110,6 +1117,12 @@ contract TheHumanFund is ReentrancyGuard {
     ///      is what the prover passes to the enclave afterward. Binding it
     ///      directly here eliminates any need for the enclave to re-derive
     ///      the escalation formula.
+    ///      epochDuration is read from the EpochSnapshot (not live) so that
+    ///      owner-triggered mid-epoch timing changes via setAuctionTiming()
+    ///      do not mutate epochBaseInputHashes[epoch] after it's been stored.
+    ///      At _openAuction() time, snap.epochDuration is populated BEFORE
+    ///      _computeInputHash() is called, so the stored hash is computed
+    ///      against the correct frozen value.
     function _hashState() internal view returns (bytes32) {
         bytes32 h1 = keccak256(abi.encode(
             currentEpoch,
@@ -1130,7 +1143,7 @@ contract TheHumanFund is ReentrancyGuard {
             currentEpochInflow,
             currentEpochDonationCount,
             epochEthUsdPrice,
-            epochDuration
+            _epochSnapshots[currentEpoch].epochDuration
         ));
     }
 

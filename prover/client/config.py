@@ -61,7 +61,7 @@ Examples:
         "verbose": parsed.verbose,
     }
 
-    # Verifier ID: 1 = TdxVerifier (registered on current Base Sepolia contract)
+    # Verifier ID: 1 = TdxVerifier registered by script/Deploy.s.sol
     config["verifier_id"] = int(os.environ.get("VERIFIER_ID", "1"))
 
     # Validate required fields

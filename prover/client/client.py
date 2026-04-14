@@ -26,6 +26,7 @@ import logging
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 from .config import load_config
@@ -381,8 +382,28 @@ def _handle_execution(chain, config, auction, saved, participation, state_dir, n
     # Sync phase to capture seed (REVEAL → EXECUTION transition)
     sync_phase(chain)
 
-    # Re-read auction state after sync — seed is now captured
+    # Re-read auction state after sync — seed is now captured.
+    # IMPORTANT: after a reveal-close tx mines, the state RPC may still return
+    # the pre-tx view for a short window (Alchemy node-to-RPC consistency lag).
+    # Polling until seed != 0 defends against passing seed=0 to the enclave,
+    # which would produce a REPORTDATA that doesn't match the contract's
+    # computed input_hash and fails on-chain verification.
     auction = chain.get_auction_state()
+    max_wait = 30  # seconds
+    poll_start = time.time()
+    while auction["randomness_seed"] == 0 and time.time() - poll_start < max_wait:
+        logger.info("Post-sync seed still 0 (stale read), retrying in 2s...")
+        time.sleep(2)
+        auction = chain.get_auction_state()
+
+    if auction["randomness_seed"] == 0:
+        # Seed is genuinely 0 on chain — this means sync_phase didn't close
+        # reveal (e.g. we're still in the reveal window per wall-clock). Bail;
+        # we'll retry on the next cron tick.
+        logger.warning("Post-sync seed is 0 after %ds poll — reveal window hasn't "
+                       "closed yet. Bailing until next tick.", max_wait)
+        return
+
     logger.info("Post-sync: epoch=%d, phase=%d, seed=%d",
                 auction["epoch"], auction["contract_phase"], auction["randomness_seed"])
 

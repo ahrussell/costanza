@@ -99,17 +99,20 @@ contract TheHumanFundAuctionTest is Test {
     }
 
     function _buildDcapOutput(bytes32 reportData) internal pure returns (bytes memory) {
-        bytes memory output = new bytes(595);
+        // Matches the real Automata DCAP v1.0 output layout (see TdxVerifier.sol):
+        // the +2 shift vs a textbook TD10ReportBody comes from the Output envelope
+        // Automata prepends (quoteVersion + teeType).
+        bytes memory output = new bytes(597);
         output[0] = 0x00; output[1] = 0x04;
         output[2] = 0x00; output[3] = 0x02;
         for (uint256 i = 0; i < 48; i++) {
-            output[147 + i] = TEST_MRTD[i];
-            output[387 + i] = TEST_RTMR1[i];
-            output[435 + i] = TEST_RTMR2[i];
-            output[483 + i] = TEST_RTMR3[i];
+            output[149 + i] = TEST_MRTD[i];
+            output[389 + i] = TEST_RTMR1[i];
+            output[437 + i] = TEST_RTMR2[i];
+            output[485 + i] = TEST_RTMR3[i];
         }
         for (uint256 i = 0; i < 32; i++) {
-            output[531 + i] = reportData[i];
+            output[533 + i] = reportData[i];
         }
         return output;
     }
@@ -822,9 +825,44 @@ contract TheHumanFundAuctionTest is Test {
     }
 
     function test_baseInputHash_committedAtAuctionOpen() public {
-        bytes32 expectedHash = fund.computeInputHash();
         fund.syncPhase();
-        assertEq(fund.epochBaseInputHashes(1), expectedHash);
+        // After _openAuction populates the snapshot, the computeInputHash()
+        // view reads from the same snapshot and must match the stored
+        // baseInputHash byte-for-byte. (Calling computeInputHash() BEFORE
+        // opening the auction would hash against an empty snapshot and
+        // return a different value — that's expected because the snapshot
+        // is the frozen source of truth for every drifting field.)
+        assertEq(fund.epochBaseInputHashes(1), fund.computeInputHash());
+    }
+
+    function test_baseInputHash_unchangedByMidEpochSetAuctionTiming() public {
+        // Regression test for the epochDuration drift bug: changing auction
+        // timing mid-epoch must NOT mutate epochBaseInputHashes[epoch].
+        fund.syncPhase();
+        bytes32 hashAtOpen = fund.epochBaseInputHashes(1);
+        bytes32 viewAtOpen = fund.computeInputHash();
+        assertEq(hashAtOpen, viewAtOpen, "view matches stored at open");
+
+        // Advance past commit + reveal to avoid phase violations on re-read.
+        vm.prank(runner1);
+        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, bytes32("s1")));
+        vm.warp(block.timestamp + COMMIT_WIN);
+        vm.prank(runner1);
+        fund.reveal(0.005 ether, bytes32("s1"));
+        vm.warp(block.timestamp + REVEAL_WIN);
+        fund.syncPhase();
+
+        // Owner changes timing mid-epoch (e.g. to extend the exec window).
+        // Total = 300 (EPOCH_DUR). Grow epoch_duration to 600; commit/reveal
+        // windows stay the same so we still pass the sum check.
+        fund.setAuctionTiming(600, COMMIT_WIN, REVEAL_WIN, 600 - COMMIT_WIN - REVEAL_WIN);
+
+        // The stored base hash must be unchanged.
+        assertEq(fund.epochBaseInputHashes(1), hashAtOpen,
+                 "baseInputHash must not drift when epochDuration changes mid-epoch");
+        // The view (which reads from the snapshot) must still match.
+        assertEq(fund.computeInputHash(), hashAtOpen,
+                 "computeInputHash view must stay stable after setAuctionTiming");
     }
 
     // ═══════════════════════════════════════════════════════════════════════
