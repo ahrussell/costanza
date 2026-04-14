@@ -22,13 +22,21 @@ import "./interfaces/IProofVerifier.sol";
 ///         RTMR[3] is skipped — with full dm-verity rootfs, RTMR[2] already covers all
 ///         code via the root hash in the kernel command line. See DMVERITY_NOTES.md.
 ///
-/// @dev Automata DCAP output layout (offsets relative to output start):
-///          147-194:  MRTD        (48 bytes) — verified
-///          339-386:  RTMR[0]     (48 bytes) — NOT verified
-///          387-434:  RTMR[1]     (48 bytes) — verified
-///          435-482:  RTMR[2]     (48 bytes) — verified
-///          483-530:  RTMR[3]     (48 bytes) — NOT verified
-///          531-594:  REPORTDATA  (64 bytes) — verified
+/// @dev Automata DCAP v1.0 output layout (offsets relative to output start).
+///      Empirically validated against a real quote submitted on Base mainnet
+///      (see test/fixtures/dcap_v1_0_output.bin):
+///          149-196:  MRTD        (48 bytes) — verified
+///          341-388:  RTMR[0]     (48 bytes) — NOT verified
+///          389-436:  RTMR[1]     (48 bytes) — verified
+///          437-484:  RTMR[2]     (48 bytes) — verified
+///          485-532:  RTMR[3]     (48 bytes) — NOT verified
+///          533-596:  REPORTDATA  (64 bytes) — verified
+///
+///      The 2-byte shift from "textbook" TD10ReportBody offsets comes from the
+///      Output envelope Automata prepends (quoteVersion + teeType fields). The
+///      earlier 147/387/435/531 constants were wrong and silently produced bad
+///      image keys; we never caught it because the on-chain verify path was
+///      never exercised end-to-end until 2026-04-14.
 contract TdxVerifier is IProofVerifier {
     // ─── Errors ──────────────────────────────────────────────────────────
 
@@ -48,13 +56,14 @@ contract TdxVerifier is IProofVerifier {
     IAutomataDcapAttestation public constant DCAP_VERIFIER =
         IAutomataDcapAttestation(0x95175096a9B74165BE0ac84260cc14Fc1c0EF5FF);
 
-    /// @dev Byte offsets in the Automata DCAP output for TD10ReportBody fields
-    uint256 private constant MRTD_OFFSET = 147;
-    uint256 private constant RTMR1_OFFSET = 387;
-    uint256 private constant RTMR2_OFFSET = 435;
-    uint256 private constant REPORTDATA_OFFSET = 531;
+    /// @dev Byte offsets in the Automata DCAP v1.0 output for TD10ReportBody fields
+    uint256 private constant MRTD_OFFSET = 149;
+    uint256 private constant RTMR1_OFFSET = 389;
+    uint256 private constant RTMR2_OFFSET = 437;
+    uint256 private constant REPORTDATA_OFFSET = 533;
+    uint256 private constant REPORTDATA_PADDING_OFFSET = 565;  // REPORTDATA_OFFSET + 32
     uint256 private constant MEASUREMENT_LEN = 48; // SHA-384 output
-    uint256 private constant MIN_OUTPUT_LEN = 595;  // Must have at least through REPORTDATA
+    uint256 private constant MIN_OUTPUT_LEN = 597;  // Must have at least through REPORTDATA (533 + 64)
 
     // ─── State ───────────────────────────────────────────────────────────
 
@@ -147,7 +156,7 @@ contract TdxVerifier is IProofVerifier {
         // Step 4: Verify REPORTDATA padding is zero (bytes 32-63)
         bytes32 reportDataPadding;
         assembly {
-            reportDataPadding := mload(add(add(output, 32), 563))
+            reportDataPadding := mload(add(add(output, 32), REPORTDATA_PADDING_OFFSET))
         }
         if (reportDataPadding != bytes32(0)) return false;
 

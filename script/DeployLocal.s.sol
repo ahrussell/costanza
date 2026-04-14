@@ -19,7 +19,8 @@ contract LocalMockDcapVerifier is IAutomataDcapAttestation {
         // For local testing: always return success with a crafted output
         // that has the REPORTDATA from the rawQuote placed at byte 531
 
-        bytes memory output = new bytes(595);
+        // Matches real Automata DCAP v1.0 output layout (see TdxVerifier.sol).
+        bytes memory output = new bytes(597);
         // Header
         output[0] = 0x00; output[1] = 0x04; // version 4
         output[2] = 0x00; output[3] = 0x02; // TDX
@@ -28,11 +29,11 @@ contract LocalMockDcapVerifier is IAutomataDcapAttestation {
         // Use all-zeros for local testing — the approved image key will match
         // (we approve the all-zeros image key)
 
-        // Place REPORTDATA at offset 531 from the rawQuote
+        // Place REPORTDATA at offset 533 from the rawQuote
         // The mock enclave sends compute_report_data output (64 bytes) as rawQuote
         uint256 len = rawQuote.length < 64 ? rawQuote.length : 64;
         for (uint256 i = 0; i < len; i++) {
-            output[531 + i] = rawQuote[i];
+            output[533 + i] = rawQuote[i];
         }
 
         return (true, output);

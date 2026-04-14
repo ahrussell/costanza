@@ -54,16 +54,19 @@ contract TdxVerifierTest is Test {
         bytes memory rtmr1, bytes memory rtmr2, bytes memory rtmr3,
         bytes32 reportData
     ) internal pure returns (bytes memory) {
-        bytes memory output = new bytes(595);
+        // Matches the real Automata DCAP v1.0 output layout (see TdxVerifier.sol).
+        // The +2 shift versus a textbook TD10ReportBody comes from the Output
+        // envelope Automata prepends (quoteVersion + teeType).
+        bytes memory output = new bytes(597);
         for (uint256 i = 0; i < 48; i++) {
-            output[147 + i] = mrtd[i];
-            output[339 + i] = rtmr0[i];
-            output[387 + i] = rtmr1[i];
-            output[435 + i] = rtmr2[i];
-            output[483 + i] = rtmr3[i];
+            output[149 + i] = mrtd[i];
+            output[341 + i] = rtmr0[i];
+            output[389 + i] = rtmr1[i];
+            output[437 + i] = rtmr2[i];
+            output[485 + i] = rtmr3[i];
         }
         for (uint256 i = 0; i < 32; i++) {
-            output[531 + i] = reportData[i];
+            output[533 + i] = reportData[i];
         }
         return output;
     }

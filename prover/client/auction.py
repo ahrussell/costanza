@@ -183,7 +183,7 @@ def reveal_bid(chain: ChainClient, state: dict):
 
 
 def submit_result(chain: ChainClient, action_bytes: bytes, reasoning: bytes,
-                  proof: bytes, verifier_id=1, policy_slot=-1, policy_text=""):
+                  proof: bytes, verifier_id=2, policy_slot=-1, policy_text=""):
     """Submit auction result with attestation proof.
 
     The contract's submitAuctionResult() calls _syncPhase() first,

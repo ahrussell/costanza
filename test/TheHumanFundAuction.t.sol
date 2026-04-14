@@ -99,17 +99,20 @@ contract TheHumanFundAuctionTest is Test {
     }
 
     function _buildDcapOutput(bytes32 reportData) internal pure returns (bytes memory) {
-        bytes memory output = new bytes(595);
+        // Matches the real Automata DCAP v1.0 output layout (see TdxVerifier.sol):
+        // the +2 shift vs a textbook TD10ReportBody comes from the Output envelope
+        // Automata prepends (quoteVersion + teeType).
+        bytes memory output = new bytes(597);
         output[0] = 0x00; output[1] = 0x04;
         output[2] = 0x00; output[3] = 0x02;
         for (uint256 i = 0; i < 48; i++) {
-            output[147 + i] = TEST_MRTD[i];
-            output[387 + i] = TEST_RTMR1[i];
-            output[435 + i] = TEST_RTMR2[i];
-            output[483 + i] = TEST_RTMR3[i];
+            output[149 + i] = TEST_MRTD[i];
+            output[389 + i] = TEST_RTMR1[i];
+            output[437 + i] = TEST_RTMR2[i];
+            output[485 + i] = TEST_RTMR3[i];
         }
         for (uint256 i = 0; i < 32; i++) {
-            output[531 + i] = reportData[i];
+            output[533 + i] = reportData[i];
         }
         return output;
     }

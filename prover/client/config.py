@@ -61,8 +61,9 @@ Examples:
         "verbose": parsed.verbose,
     }
 
-    # Verifier ID: 1 = TdxVerifier (registered on current Base Sepolia contract)
-    config["verifier_id"] = int(os.environ.get("VERIFIER_ID", "1"))
+    # Verifier ID: 2 = patched TdxVerifier with correct DCAP v1.0 offsets
+    # (id 1 was the earlier version with the +2 offset bug, revoked 2026-04-14)
+    config["verifier_id"] = int(os.environ.get("VERIFIER_ID", "2"))
 
     # Validate required fields
     missing = []
