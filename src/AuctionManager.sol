@@ -298,6 +298,42 @@ contract AuctionManager is IAuctionManager, ReentrancyGuard {
         currentAuctionEpoch = 0;
     }
 
+    // ─── Owner-Driven Single-Step Advance ───────────────────────────────
+
+    /// @notice Force-close the current auction phase WITHOUT checking
+    ///         wall-clock deadlines. Callable only by the fund (via its
+    ///         owner `nextPhase` entry point). The time-independent
+    ///         counterpart to `syncPhase`.
+    ///
+    /// Transitions by phase:
+    ///  - COMMIT    → REVEAL (or SETTLED if no commits — `_closeCommit`)
+    ///  - REVEAL    → EXECUTION (or SETTLED if no reveals; captures seed
+    ///                and pushes forfeited non-revealer bonds — `_closeReveal`)
+    ///  - EXECUTION → SETTLED (forfeits winner bond — `_doForfeit`)
+    ///  - IDLE/SETTLED: reverts with WrongPhase (nothing to close).
+    ///
+    /// @dev User actions (commit, reveal, submitAuctionResult) still
+    ///      enforce their wall-clock windows. `forceClosePhase` only
+    ///      bypasses the *state-machine's* time gates — it does not
+    ///      grant the owner a way to invalidate a revealer's fair
+    ///      reveal window, because those bounds are enforced in
+    ///      commit()/recordReveal()/settleExecution() themselves. The
+    ///      worst an owner can do with this is prematurely close a
+    ///      phase — bidders lose the opportunity to act, but bonds
+    ///      are still handled by the normal close-paths.
+    function forceClosePhase() external override onlyFund nonReentrant {
+        AuctionPhase phase = currentPhase;
+        if (phase == AuctionPhase.COMMIT) {
+            _closeCommit();
+        } else if (phase == AuctionPhase.REVEAL) {
+            _closeReveal();
+        } else if (phase == AuctionPhase.EXECUTION) {
+            _doForfeit();
+        } else {
+            revert WrongPhase();
+        }
+    }
+
     // ─── Internal: Phase Transitions ────────────────────────────────────
 
     /// @dev Close the commit phase. COMMIT → REVEAL (or SETTLED if no commits).

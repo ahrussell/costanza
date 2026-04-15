@@ -62,6 +62,12 @@ interface IAuctionManager {
     ///         See `AuctionManager.abortAuction` for the full refund matrix.
     function abortAuction() external;
 
+    /// @notice Force-close the current auction phase without checking
+    ///         wall-clock deadlines. Time-independent counterpart to
+    ///         `syncPhase`, used by the fund's owner `nextPhase` entry
+    ///         point. Reverts in IDLE/SETTLED.
+    function forceClosePhase() external;
+
     // ─── Bond Claims (anyone) ───────────────────────────────────────────
 
     /// @notice Claim bond refund for a specific epoch.
