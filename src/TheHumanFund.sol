@@ -293,7 +293,7 @@ contract TheHumanFund is ReentrancyGuard {
     uint256 public constant FREEZE_AUCTION_CONFIG      = 1 << 3;
     uint256 public constant FREEZE_VERIFIERS           = 1 << 4;
     // FREEZE_PROMPT (1 << 5) removed — prompt verified via dm-verity image key
-    uint256 public constant FREEZE_DIRECT_MODE         = 1 << 6;
+    // FREEZE_DIRECT_MODE (1 << 6) removed — direct mode deleted in _nextPhase refactor
     uint256 public constant FREEZE_MIGRATE              = 1 << 7;
     uint256 public constant FREEZE_SUNSET               = 1 << 8;
     uint256 public frozenFlags;
@@ -513,32 +513,6 @@ contract TheHumanFund is ReentrancyGuard {
         if (!sent) revert TransferFailed();
     }
 
-    // ─── Owner: Direct Epoch Submission ───────────────────────────────────
-
-    /// @notice Submit the AI agent's action with an optional worldview update.
-    /// @param action The encoded action blob.
-    /// @param reasoning The agent's chain-of-thought reasoning.
-    /// @param policySlot The worldview slot to update (0-9), or -1 to skip.
-    /// @param policyText The policy text (max 280 chars). Ignored if policySlot is -1.
-    function submitEpochAction(
-        bytes calldata action,
-        bytes calldata reasoning,
-        int8 policySlot,
-        string calldata policyText
-    ) external onlyOwner {
-        if (frozenFlags & FREEZE_DIRECT_MODE != 0) revert Frozen();
-        uint256 epoch = currentEpoch;
-        if (epochs[epoch].executed) revert AlreadyDone();
-        _snapshotEthUsdPrice();
-        _applyPolicyUpdate(policySlot, policyText);
-        // Direct mode never opens an auction, so the epoch snapshot is empty.
-        // Freeze the full snapshot here so `_recordAndExecute` (and any future
-        // reader) sees a complete, consistent view. In direct mode there is no
-        // window between "snapshot" and "execute" — they run in the same tx.
-        _freezeEpochSnapshot(epoch);
-        _recordAndExecute(epoch, action, reasoning, 0);
-    }
-
     // ─── Owner: Proof Verifier Registry ──────────────────────────────────
 
     event VerifierApproved(uint8 indexed verifierId, address verifier);
@@ -667,7 +641,7 @@ contract TheHumanFund is ReentrancyGuard {
 
     /// @notice Permanently freeze a permission group. Once frozen, methods guarded
     ///         by that flag will revert with Frozen(). Cannot be undone.
-    /// @param flag The permission flag (e.g., FREEZE_NONPROFITS, FREEZE_DIRECT_MODE).
+    /// @param flag The permission flag (e.g., FREEZE_NONPROFITS, FREEZE_AUCTION_CONFIG).
     function freeze(uint256 flag) external onlyOwner {
         frozenFlags |= flag;
         emit PermissionFrozen(flag);
@@ -1045,10 +1019,8 @@ contract TheHumanFund is ReentrancyGuard {
     }
 
     /// @dev Open the next auction for `epoch`. The single freeze site:
-    ///      this is the only production path that calls
-    ///      `_freezeEpochSnapshot` (direct mode's `submitEpochAction`
-    ///      also calls it, but that path is slated for removal — see
-    ///      the direct-mode removal commit in docs/REFACTOR_PLAN.md).
+    ///      this is the ONLY path that calls `_freezeEpochSnapshot`.
+    ///      Every action flows through the auction state machine.
     ///      Steps:
     ///        1. Snapshot ETH/USD price
     ///        2. Call AuctionManager.openAuction with current bond
@@ -1076,9 +1048,8 @@ contract TheHumanFund is ReentrancyGuard {
     }
 
     /// @dev Freeze all drifting state into `_epochSnapshots[epoch]`. Called from
-    ///      `_openNextAuction` at auction open, and from `submitEpochAction` (direct
-    ///      mode) where there's no auction but `_recordAndExecute` still reads
-    ///      the snapshot. Must be called at a moment when live state represents
+    ///      `_openNextAuction` at auction open. Must be called at a moment
+    ///      when live state represents
     ///      what should be hashed — anything that isn't frozen here is invisible
     ///      to `_hashSnapshot` (by compiler enforcement).
     ///

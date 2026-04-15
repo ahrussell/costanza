@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import "forge-std/Test.sol";
+import "./helpers/EpochTest.sol";
 import "../src/TheHumanFund.sol";
 import "../src/AuctionManager.sol";
 import "../src/TdxVerifier.sol";
@@ -34,7 +35,7 @@ import "../src/adapters/MorphoWETHAdapter.sol";
 /// prior mainnet submission for replay). The DCAP verifier validates the
 /// quote against Automata's on-chain collateral, so this test only passes if
 /// the FMSPC/QE identity/Root CA CRL are all registered for Base mainnet.
-contract MainnetForkTest is Test {
+contract MainnetForkTest is EpochTest {
     // ─── Real Base Mainnet Addresses ────────────────────────────────────
     address constant ENDAOMENT_FACTORY = 0x10fD9348136dCea154F752fe0B6dB45Fc298A589;
     address constant WETH              = 0x4200000000000000000000000000000000000006;
@@ -154,6 +155,12 @@ contract MainnetForkTest is Test {
         im.addProtocol(address(a6), "Morpho Gauntlet WETH Core", "Curated Morpho vault", 2, 500);
 
         vm.stopPrank();
+
+        // Register mock verifier for speedrunEpoch (slot 7, avoids collision
+        // with the real TdxVerifier at slot 1).
+        if (WETH.code.length > 0) {
+            _registerMockVerifier(fund);
+        }
     }
 
     // ─── Sanity: real mainnet state ─────────────────────────────────────
@@ -184,16 +191,10 @@ contract MainnetForkTest is Test {
     // ─── Adapter sanity: real protocol calls ────────────────────────────
 
     function test_fork_aaveWethAdapter_depositWithdraw() public onlyOnFork {
-        // Open an auction and advance state so the investment manager will accept calls
-        vm.prank(owner);
-        fund.syncPhase();
-
-        // Execute an invest action via the owner's direct-submission path (if not frozen)
+        // Execute an invest action via the real auction path.
         // This touches the REAL Aave V3 pool — if the adapter is wrong, it reverts here.
         bytes memory action = abi.encodePacked(uint8(3), abi.encode(uint256(1), uint256(0.01 ether)));
-
-        vm.prank(owner);
-        fund.submitEpochAction(action, "testing aave invest", -1, "");
+        speedrunEpoch(fund, action, "testing aave invest");
 
         // Verify the position was created
         (uint256 deposited, uint256 shares,,,,,) = im.getPosition(1);
@@ -202,12 +203,8 @@ contract MainnetForkTest is Test {
     }
 
     function test_fork_lidoWstEthAdapter_depositWithdraw() public onlyOnFork {
-        vm.prank(owner);
-        fund.syncPhase();
-
         bytes memory action = abi.encodePacked(uint8(3), abi.encode(uint256(3), uint256(0.01 ether)));
-        vm.prank(owner);
-        fund.submitEpochAction(action, "testing lido invest", -1, "");
+        speedrunEpoch(fund, action, "testing lido invest");
 
         (uint256 deposited, uint256 shares,,,,,) = im.getPosition(3);
         assertEq(deposited, 0.01 ether, "wstETH deposit recorded");

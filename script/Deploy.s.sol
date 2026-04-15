@@ -81,9 +81,6 @@ contract Deploy is Script {
         // Seed initial worldview
         _seedWorldView(fund);
 
-        // Freeze direct submission — auctions are the only submission path.
-        fund.freeze(fund.FREEZE_DIRECT_MODE());
-
         // ─── 2. DeFi adapters ───────────────────────────────────────────
         // Only deployed if DeFi addresses are provided (mainnet/fork).
         // On bare testnet without DeFi protocols, skip adapter deployment.

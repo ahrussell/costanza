@@ -311,16 +311,6 @@ contract TheHumanFundTest is EpochTest {
         assertTrue(found, "DiaryEntry event must be emitted");
     }
 
-    // ─── Auth ────────────────────────────────────────────────────────────
-
-    function test_only_owner_can_submit() public {
-        bytes memory action = abi.encodePacked(uint8(0));
-
-        vm.prank(donor);
-        vm.expectRevert(TheHumanFund.Unauthorized.selector);
-        fund.submitEpochAction(action, bytes("unauthorized"), -1, "");
-    }
-
     // ─── Multi-epoch Donation Tracking ───────────────────────────────────
 
     function test_multiple_donations_across_epochs() public {
@@ -416,17 +406,6 @@ contract TheHumanFundTest is EpochTest {
         fund.freeze(fund.FREEZE_NONPROFITS());
         fund.freeze(fund.FREEZE_NONPROFITS()); // should not revert
         assertTrue(fund.frozenFlags() & fund.FREEZE_NONPROFITS() != 0);
-    }
-
-    function test_freezeDirectMode() public {
-        // Submit works before freeze
-        bytes memory noop = abi.encodePacked(uint8(0));
-        speedrunEpoch(fund, noop, "ok");
-
-        fund.freeze(fund.FREEZE_DIRECT_MODE());
-
-        vm.expectRevert(TheHumanFund.Frozen.selector);
-        fund.submitEpochAction(noop, "frozen", -1, "");
     }
 
     function test_freezeVerifiers() public {
@@ -615,16 +594,14 @@ contract TheHumanFundTest is EpochTest {
     function testFuzz_commissionRate_validRange(uint256 rate) public {
         rate = bound(rate, 100, 9000);
         bytes memory action = abi.encodePacked(uint8(2), abi.encode(rate));
-        fund.submitEpochAction(action, bytes("Adjusting commission"), -1, "");
+        speedrunEpoch(fund, action, bytes("Adjusting commission"));
         assertEq(fund.commissionRateBps(), rate);
     }
 
     function testFuzz_commissionRate_belowMin_rejected(uint256 rate) public {
         rate = bound(rate, 0, 99);
         bytes memory action = abi.encodePacked(uint8(2), abi.encode(rate));
-        vm.expectEmit(true, false, false, false);
-        emit TheHumanFund.ActionRejected(1, action, 0);
-        fund.submitEpochAction(action, bytes("Bad rate"), -1, "");
+        speedrunEpoch(fund, action, bytes("Bad rate"));
         // Commission rate unchanged
         assertEq(fund.commissionRateBps(), 1000);
     }
@@ -632,9 +609,7 @@ contract TheHumanFundTest is EpochTest {
     function testFuzz_commissionRate_aboveMax_rejected(uint256 rate) public {
         rate = bound(rate, 9001, type(uint256).max);
         bytes memory action = abi.encodePacked(uint8(2), abi.encode(rate));
-        vm.expectEmit(true, false, false, false);
-        emit TheHumanFund.ActionRejected(1, action, 0);
-        fund.submitEpochAction(action, bytes("Bad rate"), -1, "");
+        speedrunEpoch(fund, action, bytes("Bad rate"));
         assertEq(fund.commissionRateBps(), 1000);
     }
 
@@ -646,9 +621,9 @@ contract TheHumanFundTest is EpochTest {
 
         bytes memory action = abi.encodePacked(uint8(1), abi.encode(uint256(0), amount));
         // Should emit ActionRejected (amount exceeds 10% of treasury)
-        fund.submitEpochAction(action, bytes("Too generous"), -1, "");
-        // Fund balance unchanged (action was rejected, not reverted)
-        assertEq(address(fund).balance, treasury);
+        speedrunEpoch(fund, action, bytes("Too generous"));
+        // Fund balance loses only 1 wei bounty (action was rejected, not reverted)
+        assertEq(address(fund).balance, treasury - 1);
     }
 
     function testFuzz_actionEncoding_malformedBytes_neverReverts(uint256 seed) public {
@@ -659,9 +634,8 @@ contract TheHumanFundTest is EpochTest {
             action[i] = bytes1(uint8(uint256(keccak256(abi.encode(seed, i))) % 256));
         }
         // Should never revert — malformed actions emit ActionRejected or are noop
-        uint256 balBefore = address(fund).balance;
-        fund.submitEpochAction(action, bytes("fuzz"), -1, "");
+        speedrunEpoch(fund, action, bytes("fuzz"));
         // Treasury never decreases from malformed actions (except valid donate actions)
-        // which are bounded. Just verify no revert happened.
+        // which are bounded, plus 1 wei bounty. Just verify no revert happened.
     }
 }

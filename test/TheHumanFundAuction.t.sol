@@ -976,12 +976,6 @@ contract TheHumanFundAuctionTest is EpochTest {
         fund.setAuctionManager(address(freshAm), 0, 30, 50);
     }
 
-    function test_directSubmission_coexists() public {
-        fund.submitEpochAction(_noopAction(), bytes("direct"), -1, "");
-        fund.syncPhase();
-        assertEq(fund.currentEpoch(), 2);
-    }
-
     /// @dev syncPhase() is intentionally NOT sunset-gated so that in-flight
     ///      auctions can still be drained to SETTLED during sunset (required
     ///      before `migrate()` can run). See test_sunset_midAuction_canDrainAndMigrate.
