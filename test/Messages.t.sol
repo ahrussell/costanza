@@ -4,6 +4,7 @@ pragma solidity ^0.8.20;
 import "forge-std/Test.sol";
 import "../src/TheHumanFund.sol";
 import "../src/AuctionManager.sol";
+import "./helpers/EpochTest.sol";
 
 /// @dev Malicious referrer whose fallback calls `fund.syncPhase()` during
 ///      commission payout. Used by test_referrer_reentry_cannot_erase_donation
@@ -21,7 +22,7 @@ contract ReentrantReferrer {
     }
 }
 
-contract MessagesTest is Test {
+contract MessagesTest is EpochTest {
     TheHumanFund public fund;
 
     address donor1 = address(0x2001);
@@ -151,8 +152,7 @@ contract MessagesTest is Test {
 
         // Execute an epoch (advances head)
         bytes memory noopAction = bytes(hex"00");
-        fund.submitEpochAction(noopAction, "reasoning", -1, "");
-        fund.syncPhase();
+        speedrunEpoch(fund, noopAction, "reasoning");
 
         assertEq(fund.messageHead(), 3);
 
@@ -172,8 +172,7 @@ contract MessagesTest is Test {
 
         // Execute epoch — should only advance by 5
         bytes memory noopAction = bytes(hex"00");
-        fund.submitEpochAction(noopAction, "reasoning", -1, "");
-        fund.syncPhase();
+        speedrunEpoch(fund, noopAction, "reasoning");
 
         assertEq(fund.messageHead(), 5);
 
@@ -205,13 +204,11 @@ contract MessagesTest is Test {
 
         // Epoch 1: advances head to 5
         bytes memory noopAction = bytes(hex"00");
-        fund.submitEpochAction(noopAction, "reasoning", -1, "");
-        fund.syncPhase();
+        speedrunEpoch(fund, noopAction, "reasoning");
         assertEq(fund.messageHead(), 5);
 
         // Epoch 2: advances head to 7
-        fund.submitEpochAction(noopAction, "reasoning", -1, "");
-        fund.syncPhase();
+        speedrunEpoch(fund, noopAction, "reasoning");
         assertEq(fund.messageHead(), 7);
 
         // All read
@@ -273,10 +270,7 @@ contract MessagesTest is Test {
         // The new _hashSnapshot is `pure` — mid-epoch donations don't
         // affect the already-frozen snapshot. Coverage is verified
         // across a fresh epoch whose snapshot captures the new message.
-        fund.submitEpochAction(
-            abi.encodePacked(uint8(0)), "Epoch with no messages", int8(-1), ""
-        );
-        fund.syncPhase();
+        speedrunEpoch(fund, abi.encodePacked(uint8(0)), "Epoch with no messages");
         bytes32 hashNoMessages = fund.computeInputHashForEpoch(1);
 
         vm.deal(donor1, 1 ether);

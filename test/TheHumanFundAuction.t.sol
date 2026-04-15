@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "forge-std/Test.sol";
 import "../src/TheHumanFund.sol";
 import "../src/AuctionManager.sol";
 import "../src/TdxVerifier.sol";
 import "../src/interfaces/IAutomataDcapAttestation.sol";
+import "./helpers/EpochTest.sol";
 
 /// @dev Mock DCAP verifier for auction integration tests
 contract AuctionMockDcapVerifier is IAutomataDcapAttestation {
@@ -20,7 +20,7 @@ contract AuctionMockDcapVerifier is IAutomataDcapAttestation {
 }
 
 /// @title V2 Auction tests — auto-advancing phases with syncPhase() and lazy bond claims
-contract TheHumanFundAuctionTest is Test {
+contract TheHumanFundAuctionTest is EpochTest {
     TheHumanFund public fund;
     AuctionManager public am;
     TdxVerifier public verifier;
@@ -1074,13 +1074,11 @@ contract TheHumanFundAuctionTest is Test {
     }
 
     function test_epochContentHashes_accumulate() public {
-        fund.submitEpochAction(_noopAction(), bytes("First"), -1, "");
-        fund.syncPhase();
+        speedrunEpoch(fund, _noopAction(), bytes("First"));
         bytes32 hash1 = fund.epochContentHashes(1);
         assertTrue(hash1 != bytes32(0));
 
-        fund.submitEpochAction(_noopAction(), bytes("Second"), -1, "");
-        fund.syncPhase();
+        speedrunEpoch(fund, _noopAction(), bytes("Second"));
         bytes32 hash2 = fund.epochContentHashes(2);
         assertTrue(hash2 != bytes32(0));
         assertTrue(hash1 != hash2);

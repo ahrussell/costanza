@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "forge-std/Test.sol";
 import "../src/TheHumanFund.sol";
 import "../src/AuctionManager.sol";
 import "./helpers/MockEndaoment.sol";
+import "./helpers/EpochTest.sol";
 
-contract TheHumanFundTest is Test {
+contract TheHumanFundTest is EpochTest {
     TheHumanFund public fund;
     MockEndaomentFactory public mockFactory;
     MockWETH public mockWeth;
@@ -140,8 +140,7 @@ contract TheHumanFundTest is Test {
         bytes memory action = abi.encodePacked(uint8(0));
         bytes memory reasoning = bytes("I decided to do nothing this epoch.");
 
-        fund.submitEpochAction(action, reasoning, -1, "");
-        fund.syncPhase();
+        speedrunEpoch(fund, action, reasoning);
 
         assertEq(fund.currentEpoch(), 2);
         assertEq(fund.treasuryBalance(), 5 ether); // unchanged
@@ -154,8 +153,7 @@ contract TheHumanFundTest is Test {
         bytes memory action = abi.encodePacked(uint8(1), abi.encode(uint256(1), uint256(0.5 ether)));
         bytes memory reasoning = bytes("Donating to GiveDirectly.");
 
-        fund.submitEpochAction(action, reasoning, -1, "");
-        fund.syncPhase();
+        speedrunEpoch(fund, action, reasoning);
 
         assertEq(fund.currentEpoch(), 2);
         assertEq(fund.treasuryBalance(), 4.5 ether);
@@ -172,8 +170,7 @@ contract TheHumanFundTest is Test {
         bytes memory reasoning = bytes("Trying to donate too much.");
 
         uint256 treasuryBefore = fund.treasuryBalance();
-        fund.submitEpochAction(action, reasoning, -1, "");
-        fund.syncPhase();
+        speedrunEpoch(fund, action, reasoning);
 
         // Epoch advances but treasury unchanged (noop)
         assertEq(fund.currentEpoch(), 2);
@@ -186,8 +183,7 @@ contract TheHumanFundTest is Test {
         bytes memory reasoning = bytes("Bad nonprofit.");
 
         uint256 treasuryBefore = fund.treasuryBalance();
-        fund.submitEpochAction(action, reasoning, -1, "");
-        fund.syncPhase();
+        speedrunEpoch(fund, action, reasoning);
 
         assertEq(fund.currentEpoch(), 2);
         assertEq(fund.treasuryBalance(), treasuryBefore);
@@ -199,8 +195,7 @@ contract TheHumanFundTest is Test {
         bytes memory action = abi.encodePacked(uint8(2), abi.encode(uint256(2500)));
         bytes memory reasoning = bytes("Raising commission to attract referrers.");
 
-        fund.submitEpochAction(action, reasoning, -1, "");
-        fund.syncPhase();
+        speedrunEpoch(fund, action, reasoning);
 
         assertEq(fund.commissionRateBps(), 2500);
         assertEq(fund.lastCommissionChangeEpoch(), 1);
@@ -211,15 +206,13 @@ contract TheHumanFundTest is Test {
 
         // Too low — should noop
         bytes memory action = abi.encodePacked(uint8(2), abi.encode(uint256(50)));
-        fund.submitEpochAction(action, bytes("rate too low"), -1, "");
-        fund.syncPhase();
+        speedrunEpoch(fund, action, bytes("rate too low"));
         assertEq(fund.commissionRateBps(), originalRate);
         assertEq(fund.currentEpoch(), 2);
 
         // Too high — should noop
         action = abi.encodePacked(uint8(2), abi.encode(uint256(9500)));
-        fund.submitEpochAction(action, bytes("rate too high"), -1, "");
-        fund.syncPhase();
+        speedrunEpoch(fund, action, bytes("rate too high"));
         assertEq(fund.commissionRateBps(), originalRate);
         assertEq(fund.currentEpoch(), 3);
     }
@@ -228,11 +221,10 @@ contract TheHumanFundTest is Test {
 
     function test_epoch_advances_prevents_double_execution() public {
         bytes memory action = abi.encodePacked(uint8(0));
-        fund.submitEpochAction(action, bytes("first"), -1, "");
-        fund.syncPhase();
+        speedrunEpoch(fund, action, bytes("first"));
 
         // After execution, epoch advances (1 → 2), so the next call acts on epoch 2.
-        // The contract prevents double-execution by design: each submitEpochAction
+        // The contract prevents double-execution by design: each epoch action
         // increments currentEpoch, so you're always acting on a fresh epoch.
         assertEq(fund.currentEpoch(), 2);
 
@@ -244,12 +236,9 @@ contract TheHumanFundTest is Test {
     function test_epoch_advances() public {
         bytes memory action = abi.encodePacked(uint8(0));
 
-        fund.submitEpochAction(action, bytes("epoch 1"), -1, ""); // epoch 1 → 2
-        fund.syncPhase();
-        fund.submitEpochAction(action, bytes("epoch 2"), -1, ""); // epoch 2 → 3
-        fund.syncPhase();
-        fund.submitEpochAction(action, bytes("epoch 3"), -1, ""); // epoch 3 → 4
-        fund.syncPhase();
+        speedrunEpoch(fund, action, bytes("epoch 1")); // epoch 1 → 2
+        speedrunEpoch(fund, action, bytes("epoch 2")); // epoch 2 → 3
+        speedrunEpoch(fund, action, bytes("epoch 3")); // epoch 3 → 4
 
         assertEq(fund.currentEpoch(), 4);
     }
@@ -290,8 +279,7 @@ contract TheHumanFundTest is Test {
 
         // Execute an epoch — resets escalation
         bytes memory action = abi.encodePacked(uint8(0));
-        fund.submitEpochAction(action, bytes("back online"), -1, "");
-        fund.syncPhase();
+        speedrunEpoch(fund, action, bytes("back online"));
 
         assertEq(fund.effectiveMaxBid(), 0.005 ether);
         assertEq(fund.consecutiveMissedEpochs(), 0);
@@ -306,8 +294,7 @@ contract TheHumanFundTest is Test {
         vm.expectEmit(true, false, false, true);
         emit TheHumanFund.DiaryEntry(1, reasoning, action, 5 ether, 5 ether);
 
-        fund.submitEpochAction(action, reasoning, -1, "");
-        fund.syncPhase();
+        speedrunEpoch(fund, action, reasoning);
     }
 
     // ─── Auth ────────────────────────────────────────────────────────────
@@ -325,13 +312,11 @@ contract TheHumanFundTest is Test {
     function test_multiple_donations_across_epochs() public {
         // Epoch 1: donate to np1
         bytes memory action1 = abi.encodePacked(uint8(1), abi.encode(uint256(1), uint256(0.3 ether)));
-        fund.submitEpochAction(action1, bytes("donate 1"), -1, "");
-        fund.syncPhase();
+        speedrunEpoch(fund, action1, bytes("donate 1"));
 
         // Epoch 2: donate to np2
         bytes memory action2 = abi.encodePacked(uint8(1), abi.encode(uint256(2), uint256(0.2 ether)));
-        fund.submitEpochAction(action2, bytes("donate 2"), -1, "");
-        fund.syncPhase();
+        speedrunEpoch(fund, action2, bytes("donate 2"));
 
         // Check totals
         (, , , uint256 donated1,,) = fund.getNonprofit(1);
@@ -349,8 +334,7 @@ contract TheHumanFundTest is Test {
         bytes memory reasoning = bytes("First epoch thoughts.");
 
         uint256 treasuryBefore = address(fund).balance;
-        fund.submitEpochAction(action, reasoning, -1, "");
-        fund.syncPhase();
+        speedrunEpoch(fund, action, reasoning);
 
         // epochContentHash should be set for epoch 1
         bytes32 contentHash = fund.epochContentHashes(1);
@@ -368,8 +352,7 @@ contract TheHumanFundTest is Test {
         // Run two epochs and verify that their frozen snapshot hashes
         // differ — proving the historyHash sub-hash (which rolls in
         // epochContentHashes) is bound into _hashSnapshot.
-        fund.submitEpochAction(abi.encodePacked(uint8(0)), bytes("reasoning 1"), -1, "");
-        fund.syncPhase();
+        speedrunEpoch(fund, abi.encodePacked(uint8(0)), bytes("reasoning 1"));
         bytes32 hash1 = fund.computeInputHashForEpoch(1);
 
         // Advance to epoch 2 so submitEpochAction targets a fresh epoch.
@@ -428,8 +411,7 @@ contract TheHumanFundTest is Test {
     function test_freezeDirectMode() public {
         // Submit works before freeze
         bytes memory noop = abi.encodePacked(uint8(0));
-        fund.submitEpochAction(noop, "ok", -1, "");
-        fund.syncPhase();
+        speedrunEpoch(fund, noop, "ok");
 
         fund.freeze(fund.FREEZE_DIRECT_MODE());
 
