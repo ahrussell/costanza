@@ -130,57 +130,57 @@ contract MessagesTest is Test {
     }
 
     function test_message_head_caps_at_max_per_epoch() public {
-        // Send 25 messages (more than MAX_MESSAGES_PER_EPOCH = 20)
+        // Send 7 messages (more than MAX_MESSAGES_PER_EPOCH = 5)
         vm.deal(donor1, 1 ether);
-        for (uint256 i = 0; i < 25; i++) {
+        for (uint256 i = 0; i < 7; i++) {
             vm.prank(donor1);
             fund.donateWithMessage{value: 0.01 ether}(0, "msg");
         }
-        assertEq(fund.messageCount(), 25);
+        assertEq(fund.messageCount(), 7);
 
-        // Execute epoch — should only advance by 20
+        // Execute epoch — should only advance by 5
         bytes memory noopAction = bytes(hex"00");
         fund.submitEpochAction(noopAction, "reasoning", -1, "");
         fund.syncPhase();
 
-        assertEq(fund.messageHead(), 20);
+        assertEq(fund.messageHead(), 5);
 
-        // 5 unread messages remain
+        // 2 unread messages remain
         (address[] memory senders,,,) = fund.getUnreadMessages();
-        assertEq(senders.length, 5);
+        assertEq(senders.length, 2);
     }
 
     function test_unread_messages_bounded_by_max() public {
-        // Send 30 messages
+        // Send 10 messages
         vm.deal(donor1, 10 ether);
-        for (uint256 i = 0; i < 30; i++) {
+        for (uint256 i = 0; i < 10; i++) {
             vm.prank(donor1);
             fund.donateWithMessage{value: 0.01 ether}(0, "msg");
         }
 
         // getUnreadMessages returns at most MAX_MESSAGES_PER_EPOCH
         (address[] memory senders,,,) = fund.getUnreadMessages();
-        assertEq(senders.length, 20);
+        assertEq(senders.length, 5);
     }
 
     function test_multiple_epochs_drain_queue() public {
-        // Send 25 messages
+        // Send 7 messages
         vm.deal(donor1, 1 ether);
-        for (uint256 i = 0; i < 25; i++) {
+        for (uint256 i = 0; i < 7; i++) {
             vm.prank(donor1);
             fund.donateWithMessage{value: 0.01 ether}(0, "msg");
         }
 
-        // Epoch 1: advances head to 20
+        // Epoch 1: advances head to 5
         bytes memory noopAction = bytes(hex"00");
         fund.submitEpochAction(noopAction, "reasoning", -1, "");
         fund.syncPhase();
-        assertEq(fund.messageHead(), 20);
+        assertEq(fund.messageHead(), 5);
 
-        // Epoch 2: advances head to 25
+        // Epoch 2: advances head to 7
         fund.submitEpochAction(noopAction, "reasoning", -1, "");
         fund.syncPhase();
-        assertEq(fund.messageHead(), 25);
+        assertEq(fund.messageHead(), 7);
 
         // All read
         (address[] memory senders,,,) = fund.getUnreadMessages();

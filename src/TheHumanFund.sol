@@ -152,7 +152,7 @@ contract TheHumanFund is ReentrancyGuard {
     uint256 public constant MAX_BOND_BPS = 1000;             // Bond cap as 10% of treasury
     uint256 public constant MIN_MESSAGE_DONATION = 0.01 ether;  // 10x normal min to prevent spam
     uint256 public constant MAX_MESSAGE_LENGTH = 280;
-    uint256 public constant MAX_MESSAGES_PER_EPOCH = 20;
+    uint256 public constant MAX_MESSAGES_PER_EPOCH = 5;
     uint256 public constant PRICE_STALENESS_THRESHOLD = 3600; // 1 hour
     uint256 public constant MAX_MISSED_EPOCHS = 50;           // Cap loop iterations in effectiveMaxBid/currentBond
 
@@ -452,6 +452,11 @@ contract TheHumanFund is ReentrancyGuard {
         if (epochs[epoch].executed) revert AlreadyDone();
         _snapshotEthUsdPrice();
         _applyPolicyUpdate(policySlot, policyText);
+        // Direct mode never opens an auction, so the epoch snapshot is empty.
+        // Freeze the full snapshot here so `_recordAndExecute` (and any future
+        // reader) sees a complete, consistent view. In direct mode there is no
+        // window between "snapshot" and "execute" — they run in the same tx.
+        _freezeEpochSnapshot(epoch);
         _recordAndExecute(epoch, action, reasoning, 0);
     }
 
@@ -755,6 +760,20 @@ contract TheHumanFund is ReentrancyGuard {
 
         // Freeze drifting state into snapshot so the prover can reproduce the input hash.
         // At this instant, live state == snapshot values, so _computeInputHash() is consistent.
+        _freezeEpochSnapshot(epoch);
+
+        bytes32 baseInputHash = _computeInputHash();
+        epochBaseInputHashes[epoch] = baseInputHash;
+
+        emit AuctionOpened(epoch, baseInputHash, effectiveMaxBid(), bond);
+    }
+
+    /// @dev Freeze all drifting state into `_epochSnapshots[epoch]`. Called from
+    ///      `_openAuction` at auction open, and from `submitEpochAction` (direct
+    ///      mode) where there's no auction but `_recordAndExecute` still reads
+    ///      the snapshot for bounds like messageHead advancement. Must be called
+    ///      at a moment when live state represents what should be hashed.
+    function _freezeEpochSnapshot(uint256 epoch) internal {
         EpochSnapshot storage snap = _epochSnapshots[epoch];
         snap.balance = address(this).balance;
         snap.totalInflows = totalInflows;
@@ -773,11 +792,6 @@ contract TheHumanFund is ReentrancyGuard {
                 snap.investmentCurrentValues[i] = investmentManager.getProtocolValue(i);
             }
         }
-
-        bytes32 baseInputHash = _computeInputHash();
-        epochBaseInputHashes[epoch] = baseInputHash;
-
-        emit AuctionOpened(epoch, baseInputHash, effectiveMaxBid(), bond);
     }
 
     // ─── Prover Actions (auto-sync before each) ─────────────────────────
@@ -921,12 +935,17 @@ contract TheHumanFund is ReentrancyGuard {
             keccak256(reasoning), keccak256(action), treasuryBefore, treasuryAfter
         ));
 
-        // Advance message head (up to MAX_MESSAGES_PER_EPOCH)
-        uint256 unread = messages.length - messageHead;
-        if (unread > MAX_MESSAGES_PER_EPOCH) {
+        // Advance message head using the frozen count captured at auction open.
+        // The model only saw messages in [messageHead, frozenCount) — any message
+        // that arrived between auction open and execution has index >= frozenCount
+        // and must survive until a future epoch's snapshot picks it up. Using the
+        // live messages.length here would silently skip past those late arrivals.
+        uint256 frozenCount = _epochSnapshots[epoch].messageCount;
+        uint256 newlyReadMessages = frozenCount - messageHead;
+        if (newlyReadMessages > MAX_MESSAGES_PER_EPOCH) {
             messageHead += MAX_MESSAGES_PER_EPOCH;
         } else {
-            messageHead = messages.length;
+            messageHead = frozenCount;
         }
 
         currentEpochInflow = 0;

@@ -245,7 +245,7 @@ def apply_snapshot_overrides(contract, w3, state):
     # and now (only _recordAndExecute advances it, and that runs after
     # submission), so the first N entries of the live unread queue are
     # exactly the snapshot's unread set. Also bound by MAX_MESSAGES_PER_EPOCH.
-    snap_unread = min(snapshot["message_count"] - snapshot["message_head"], 20)
+    snap_unread = min(snapshot["message_count"] - snapshot["message_head"], 5)
     donor_messages = state.get("donor_messages", [])
     if snap_unread < len(donor_messages):
         state["donor_messages"] = donor_messages[:snap_unread]

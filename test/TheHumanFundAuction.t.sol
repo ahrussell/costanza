@@ -1436,4 +1436,51 @@ contract TheHumanFundAuctionTest is Test {
         // Now the message should be consumed
         assertEq(fund.messageHead(), 1, "message consumed on successful epoch 2");
     }
+
+    function test_message_arrivingAfterSnapshot_survivesToNextEpoch() public {
+        // Regression: late-arriving messages (donated after auction open but
+        // before submission) must not be silently skipped by messageHead
+        // advancement. The TEE only sees the frozen snapshot count, so the
+        // executor must advance messageHead against that frozen count too —
+        // not against the live messages.length.
+
+        // M1 arrives before auction open → model will see it in epoch 1.
+        vm.deal(address(0xDEAD), 2 ether);
+        vm.prank(address(0xDEAD));
+        fund.donateWithMessage{value: 0.05 ether}(0, "seen by epoch 1");
+
+        // Run epoch 1 auction to reveal-close (snapshot already frozen at
+        // auction open with messageCount = 1).
+        _runAuctionTo(runner1, 0.005 ether, bytes32("s1"));
+        TheHumanFund.EpochSnapshot memory snap1 = fund.getEpochSnapshot(1);
+        assertEq(snap1.messageCount, 1, "snapshot frozen at 1 message");
+        assertEq(snap1.messageHead, 0);
+
+        // M2 arrives during the execution window — the model never saw it.
+        vm.prank(address(0xDEAD));
+        fund.donateWithMessage{value: 0.05 ether}(0, "late arrival");
+        assertEq(fund.messageCount(), 2, "live queue has 2 messages");
+
+        // Epoch 1 submission consumes only M1.
+        _submitAttestedResult(runner1, 1);
+        assertEq(
+            fund.messageHead(),
+            1,
+            "messageHead advanced past only the model-visible message"
+        );
+        assertEq(fund.messageCount(), 2, "M2 still in the queue");
+
+        // Epoch 2 opens — its snapshot must include M2 so the next model
+        // execution actually reads it.
+        vm.warp(fund.epochStartTime(2));
+        fund.syncPhase();
+        TheHumanFund.EpochSnapshot memory snap2 = fund.getEpochSnapshot(2);
+        assertEq(snap2.messageHead, 1);
+        assertEq(snap2.messageCount, 2, "epoch 2 snapshot sees the late message");
+
+        // And unread-messages view confirms M2 is the one the next epoch will read.
+        (address[] memory senders, , string[] memory texts, ) = fund.getUnreadMessages();
+        assertEq(senders.length, 1);
+        assertEq(texts[0], "late arrival");
+    }
 }
