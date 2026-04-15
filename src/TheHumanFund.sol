@@ -5,10 +5,8 @@ import "./interfaces/IProofVerifier.sol";
 import "./interfaces/IInvestmentManager.sol";
 import "./interfaces/IAuctionManager.sol";
 import "./interfaces/IWorldView.sol";
-import "./interfaces/IEndaoment.sol";
 import "./interfaces/IAggregatorV3.sol";
-import "./adapters/IWETH.sol";
-import "./adapters/SwapHelper.sol"; // for ISwapRouter, IERC20
+import "./DonationExecutor.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /// @title The Human Fund
@@ -228,11 +226,8 @@ contract TheHumanFund is ReentrancyGuard {
     uint256 public nonprofitCount;
     mapping(uint256 => Nonprofit) public nonprofits;
 
-    // Endaoment integration (Base mainnet addresses passed via constructor)
-    IEndaomentFactory public immutable endaomentFactory;
-    IWETH public immutable weth;
-    address public immutable usdc;
-    address public immutable swapRouter;
+    // Donation execution (ETH → WETH → USDC → Endaoment pipeline)
+    DonationExecutor public immutable donationExecutor;
 
     // Chainlink ETH/USD price feed
     IAggregatorV3 public immutable ethUsdFeed;
@@ -319,10 +314,7 @@ contract TheHumanFund is ReentrancyGuard {
     constructor(
         uint256 _initialCommissionBps,
         uint256 _initialMaxBid,
-        address _endaomentFactory,
-        address _weth,
-        address _usdc,
-        address _swapRouter,
+        address _donationExecutor,
         address _ethUsdFeed
     ) payable {
         if (_initialCommissionBps < MIN_COMMISSION_BPS || _initialCommissionBps > MAX_COMMISSION_BPS) revert InvalidParams();
@@ -344,11 +336,7 @@ contract TheHumanFund is ReentrancyGuard {
         // cap) and resets to this value on successful execution.
         currentBond = BASE_BOND;
 
-        // Endaoment integration addresses
-        endaomentFactory = IEndaomentFactory(_endaomentFactory);
-        weth = IWETH(_weth);
-        usdc = _usdc;
-        swapRouter = _swapRouter;
+        donationExecutor = DonationExecutor(_donationExecutor);
         ethUsdFeed = IAggregatorV3(_ethUsdFeed);
 
         if (msg.value > 0) {
@@ -1348,7 +1336,9 @@ contract TheHumanFund is ReentrancyGuard {
         }
     }
 
-    /// @dev Returns false if parameters are out of bounds (action becomes noop).
+    /// @dev Bounds-check then delegate to DonationExecutor for the
+    ///      ETH → WETH → USDC → Endaoment pipeline. State updates
+    ///      (nonprofit totals, global counters) stay here on the fund.
     function _executeDonate(uint256 epoch, uint256 nonprofitId, uint256 amount) internal returns (bool) {
         if (nonprofitId < 1 || nonprofitId > nonprofitCount) return false;
         if (amount == 0) return false;
@@ -1359,39 +1349,17 @@ contract TheHumanFund is ReentrancyGuard {
         Nonprofit storage np = nonprofits[nonprofitId];
         if (!np.exists) return false;
 
-        // Compute Endaoment org address from EIN (deterministic via CREATE2)
-        address orgAddr = endaomentFactory.computeOrgAddress(np.ein);
-
-        // Deploy org if not yet deployed on this chain (one-time cost)
-        if (orgAddr.code.length == 0) {
-            endaomentFactory.deployOrg(np.ein);
+        // Delegate the DeFi pipeline to DonationExecutor.
+        // Guard + try/catch so a misconfigured or absent executor
+        // results in a noop (ActionRejected) rather than a revert.
+        if (address(donationExecutor).code.length == 0) return false;
+        uint256 usdcAmount;
+        try donationExecutor.executeDonate{value: amount}(np.ein) returns (uint256 result) {
+            usdcAmount = result;
+        } catch {
+            return false;
         }
-
-        // Compute slippage floor from Chainlink ETH/USD price (defense against sandwich attacks)
-        uint256 minUsdc = _minUsdcForDonation(amount);
-        if (minUsdc == 0) return false; // Oracle unavailable — reject donation rather than swap unprotected
-
-        // Swap ETH → USDC via Uniswap V3 SwapRouter02 (7-field struct, no deadline —
-        // SwapRouter02 dropped the deadline field when it added multicall support).
-        weth.deposit{value: amount}();
-        weth.approve(swapRouter, amount);
-        (bool swapOk, bytes memory swapRet) = swapRouter.call(abi.encodeWithSignature(
-            "exactInputSingle((address,address,uint24,address,uint256,uint256,uint160))",
-            address(weth), usdc, uint24(500), address(this),
-            amount, minUsdc, uint160(0)
-        ));
-        // Clear residual allowance regardless of swap outcome — defensive
-        // hygiene so a partial-pull router can't leave dangling approval.
-        weth.approve(swapRouter, 0);
-        if (!swapOk) return false;
-        uint256 usdcAmount = abi.decode(swapRet, (uint256));
-
-        // Donate USDC to Endaoment org
-        IERC20(usdc).approve(orgAddr, usdcAmount);
-        IEndaomentOrg(orgAddr).donate(usdcAmount);
-        // Clear residual USDC allowance — protects against a buggy/compromised
-        // org that pulls less than the full amount and later drains dust.
-        IERC20(usdc).approve(orgAddr, 0);
+        if (usdcAmount == 0) return false;
 
         np.totalDonated += amount;
         np.totalDonatedUsd += usdcAmount;
@@ -1402,23 +1370,6 @@ contract TheHumanFund is ReentrancyGuard {
 
         emit NonprofitDonation(epoch, nonprofitId, amount, usdcAmount);
         return true;
-    }
-
-    /// @dev Minimum USDC expected for `ethAmount` wei, with 3% slippage tolerance.
-    ///      Reads FRESH from oracle (not cached epochEthUsdPrice) to prevent stale-price
-    ///      sandwich attacks when execution is hours after epoch start.
-    uint256 private constant DONATION_SLIPPAGE_BPS = 300;
-    function _minUsdcForDonation(uint256 ethAmount) internal view returns (uint256) {
-        if (address(ethUsdFeed) == address(0)) return 0;
-        try ethUsdFeed.latestRoundData() returns (
-            uint80, int256 answer, uint256, uint256 updatedAt, uint80
-        ) {
-            if (answer <= 0 || block.timestamp - updatedAt > PRICE_STALENESS_THRESHOLD) return 0;
-            uint256 expected = (ethAmount * uint256(answer)) / 1e20;
-            return (expected * (10000 - DONATION_SLIPPAGE_BPS)) / 10000;
-        } catch {
-            return 0;
-        }
     }
 
     /// @dev Returns false if parameters are out of bounds (action becomes noop).

@@ -57,14 +57,11 @@ contract DeployLocal is Script {
         // and the AttestationVerifier will call the hardcoded address which won't exist
         // We need a different approach...
 
-        // Deploy TheHumanFund (use deployer as placeholder for Endaoment/DeFi addresses in local mode)
+        // Deploy TheHumanFund (donation executor unused in local mode)
         TheHumanFund fund = new TheHumanFund{value: 1 ether}(
             1000,           // 10% commission
             0.001 ether,    // max bid
-            deployer,       // endaoment factory (placeholder)
-            deployer,       // weth (placeholder)
-            deployer,       // usdc (placeholder)
-            deployer,       // swap router (placeholder)
+            address(0),     // donationExecutor (not needed for local testing)
             address(0)      // ethUsdFeed (not needed for local testing)
         );
 

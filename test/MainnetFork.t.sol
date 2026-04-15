@@ -97,10 +97,7 @@ contract MainnetForkTest is EpochTest {
         fund = new TheHumanFund{value: 0.1 ether}(
             1000,          // 10% commission
             0.01 ether,    // initial max bid (production value)
-            ENDAOMENT_FACTORY,
-            WETH,
-            USDC,
-            SWAP_ROUTER,
+            address(0xBEEF), // donationExecutor (unused — fork tests cover invest, not donate)
             ETH_USD_FEED
         );
 

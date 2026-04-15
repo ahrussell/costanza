@@ -32,7 +32,7 @@ contract AuctionInvariantsTest is EpochTest {
     function setUp() public {
         fund = new TheHumanFund{value: 10 ether}(
             1000, 0.01 ether,
-            address(0xBEEF), address(0xBEEF), address(0xBEEF), address(0xBEEF), address(0)
+            address(0xBEEF), address(0)
         );
 
         am = new AuctionManager(address(fund));
@@ -1427,7 +1427,7 @@ contract AuctionInvariantsTest is EpochTest {
         // Deploy a bare fund with no AM
         TheHumanFund bare = new TheHumanFund{value: 1 ether}(
             1000, 0.01 ether,
-            address(0xBEEF), address(0xBEEF), address(0xBEEF), address(0xBEEF), address(0)
+            address(0xBEEF), address(0)
         );
         vm.expectRevert(TheHumanFund.InvalidParams.selector);
         bare.nextPhase();

@@ -25,13 +25,14 @@ contract TheHumanFundTest is EpochTest {
         mockFactory = new MockEndaomentFactory();
         mockFeed = new MockChainlinkFeed(2000e8, 8);  // $2000/ETH, 8 decimals
 
+        DonationExecutor donExec = new DonationExecutor(
+            address(mockFactory), address(mockWeth), address(mockUsdc),
+            address(mockRouter), address(mockFeed)
+        );
         fund = new TheHumanFund{value: 5 ether}(
             1000,                       // 10% commission
             0.005 ether,                // initial max bid
-            address(mockFactory),
-            address(mockWeth),
-            address(mockUsdc),
-            address(mockRouter),
+            address(donExec),
             address(mockFeed)
         );
 
@@ -72,10 +73,10 @@ contract TheHumanFundTest is EpochTest {
 
     function test_constructor_rejects_invalid_commission() public {
         vm.expectRevert(TheHumanFund.InvalidParams.selector);
-        new TheHumanFund{value: 1 ether}(50, 0.005 ether, address(0xBEEF), address(0xBEEF), address(0xBEEF), address(0xBEEF), address(0)); // 0.5% — too low
+        new TheHumanFund{value: 1 ether}(50, 0.005 ether, address(0xBEEF), address(0)); // 0.5% — too low
 
         vm.expectRevert(TheHumanFund.InvalidParams.selector);
-        new TheHumanFund{value: 1 ether}(9500, 0.005 ether, address(0xBEEF), address(0xBEEF), address(0xBEEF), address(0xBEEF), address(0)); // 95% — too high
+        new TheHumanFund{value: 1 ether}(9500, 0.005 ether, address(0xBEEF), address(0)); // 95% — too high
     }
 
     function test_add_nonprofit_rejects_zero_ein() public {

@@ -52,13 +52,15 @@ contract Deploy is Script {
         // ETH/USD feed (required for price snapshots; adapters also use it)
         address ethUsdFeedAddr = vm.envOr("ETH_USD_FEED", address(0));
 
+        // Deploy DonationExecutor (stateless — handles ETH→USDC→Endaoment)
+        DonationExecutor donExec = new DonationExecutor(
+            endaomentFactory, wethAddr, usdcAddr, swapRouterAddr, ethUsdFeedAddr
+        );
+
         TheHumanFund fund = new TheHumanFund{value: seedAmount}(
             1000,               // 10% initial commission
             0.01 ether,         // initial max bid
-            endaomentFactory,
-            wethAddr,
-            usdcAddr,
-            swapRouterAddr,
+            address(donExec),
             ethUsdFeedAddr
         );
 

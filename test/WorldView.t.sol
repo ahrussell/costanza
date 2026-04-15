@@ -18,9 +18,12 @@ contract WorldViewTest is EpochTest {
         MockEndaomentFactory mf = new MockEndaomentFactory();
 
         MockChainlinkFeed mfeed = new MockChainlinkFeed(2000e8, 8);
+        DonationExecutor donExec = new DonationExecutor(
+            address(mf), address(mw), address(mu), address(mr), address(mfeed)
+        );
         fund = new TheHumanFund{value: 5 ether}(
             1000, 0.005 ether,
-            address(mf), address(mw), address(mu), address(mr), address(mfeed)
+            address(donExec), address(mfeed)
         );
 
         fund.addNonprofit("GiveDirectly", "Cash transfers", bytes32("EIN-GD"));

@@ -30,10 +30,7 @@ contract CrossStackHashTest is EpochTest {
         fund = new TheHumanFund{value: 5 ether}(
             1000,                       // 10% commission
             0.005 ether,                // initial max bid
-            address(mockFactory),
-            address(mockWeth),
-            address(mockUsdc),
-            address(mockRouter),
+            address(0xBEEF),            // donationExecutor (mock)
             address(mockFeed)
         );
 

@@ -34,10 +34,7 @@ contract MessagesTest is EpochTest {
         fund = new TheHumanFund{value: 5 ether}(
             1000,              // 10% commission
             0.005 ether,       // initial max bid
-            address(0xBEEF),   // endaomentFactory
-            address(0xBEEF),   // weth
-            address(0xBEEF),   // usdc
-            address(0xBEEF),   // swapRouter
+            address(0xBEEF),   // donationExecutor (mock)
             address(0)         // ethUsdFeed (not needed for message tests)
         );
 

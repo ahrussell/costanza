@@ -64,7 +64,7 @@ contract InvestmentManagerTest is EpochTest {
         // Deploy fund with 10 ETH
         fund = new TheHumanFund{value: 10 ether}(
             1000, 0.0001 ether,
-            address(0xBEEF), address(0xBEEF), address(0xBEEF), address(0xBEEF), address(0)
+            address(0xBEEF), address(0)
         );
 
         fund.addNonprofit("NP1", "Nonprofit 1", bytes32("EIN-1"));
@@ -330,7 +330,7 @@ contract InvestmentManagerTest is EpochTest {
         // Deploy a fresh fund without InvestmentManager
         TheHumanFund fund2 = new TheHumanFund{value: 1 ether}(
             1000, 0.0001 ether,
-            address(0xBEEF), address(0xBEEF), address(0xBEEF), address(0xBEEF), address(0)
+            address(0xBEEF), address(0)
         );
         AuctionManager am2 = new AuctionManager(address(fund2));
         fund2.setAuctionManager(address(am2), 1200, 1200, 82800);
