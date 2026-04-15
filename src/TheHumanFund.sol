@@ -943,13 +943,25 @@ contract TheHumanFund is ReentrancyGuard {
             block.timestamp >= newScheduledStart &&
             block.timestamp < newScheduledStart + am.commitWindow();
         if (amReady && inCommitWindow) {
-            _openAuction(epoch, newScheduledStart);
+            _openNextAuction(epoch, newScheduledStart);
         }
     }
 
-    /// @dev Open an auction for the given epoch. Snapshots price and drifting state,
-    ///      then computes input hash (which reads the same live state at this instant).
-    function _openAuction(uint256 epoch, uint256 scheduledStart) internal {
+    /// @dev Open the next auction for `epoch`. The single freeze site:
+    ///      this is the only production path that calls
+    ///      `_freezeEpochSnapshot` (direct mode's `submitEpochAction`
+    ///      also calls it, but that path is slated for removal — see
+    ///      the direct-mode removal commit in docs/REFACTOR_PLAN.md).
+    ///      Steps:
+    ///        1. Snapshot ETH/USD price
+    ///        2. Call AuctionManager.openAuction with current bond
+    ///        3. Freeze the full epoch snapshot (drifting state → storage)
+    ///        4. Compute & store the base input hash off the snapshot
+    ///        5. Emit AuctionOpened
+    ///      At this instant live state == snapshot values, so the input
+    ///      hash computed here is consistent with what the prover will
+    ///      reproduce off the frozen snapshot.
+    function _openNextAuction(uint256 epoch, uint256 scheduledStart) internal {
         _snapshotEthUsdPrice();
 
         uint256 bond = currentBond;
@@ -967,7 +979,7 @@ contract TheHumanFund is ReentrancyGuard {
     }
 
     /// @dev Freeze all drifting state into `_epochSnapshots[epoch]`. Called from
-    ///      `_openAuction` at auction open, and from `submitEpochAction` (direct
+    ///      `_openNextAuction` at auction open, and from `submitEpochAction` (direct
     ///      mode) where there's no auction but `_recordAndExecute` still reads
     ///      the snapshot. Must be called at a moment when live state represents
     ///      what should be hashed — anything that isn't frozen here is invisible

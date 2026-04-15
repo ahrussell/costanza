@@ -847,7 +847,7 @@ contract TheHumanFundAuctionTest is EpochTest {
 
     function test_baseInputHash_committedAtAuctionOpen() public {
         fund.syncPhase();
-        // After _openAuction populates the snapshot, the computeInputHash()
+        // After _openNextAuction populates the snapshot, the computeInputHash()
         // view reads from the same snapshot and must match the stored
         // baseInputHash byte-for-byte. (Calling computeInputHash() BEFORE
         // opening the auction would hash against an empty snapshot and
