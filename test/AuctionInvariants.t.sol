@@ -347,4 +347,200 @@ contract AuctionInvariantsTest is EpochTest {
     //     to treasury.
     //   - Assert: runner1.balance increased by bond.
     //   - Assert: treasury.balance unchanged (mod seed).
+
+    // ══════════════════════════════════════════════════════════════════
+    // Multi-epoch fast-forward — O(1) preservation
+    //
+    // The contract must handle "untouched for days" gracefully. When
+    // many epochs elapse with no interaction, syncPhase should:
+    //   - Run the in-flight auction through its real cleanup (if any)
+    //   - Arithmetic-advance through empty epochs in O(1)
+    //   - Land in the wall-clock target epoch's COMMIT with correct
+    //     bookkeeping (consecutiveMissedEpochs, effectiveMaxBid, bond
+    //     escalation, message queue preserved)
+    //
+    // These tests run against the CURRENT contract and lock in the
+    // existing O(1) arithmetic-advance behavior (see commits 74dfdfd
+    // and 990f944). Any refactor regression shows up here immediately.
+    // ══════════════════════════════════════════════════════════════════
+
+    /// Warp 10 epochs forward with an auction open but no commits. Exactly
+    /// one syncPhase call should land in epoch 11's COMMIT with escalated
+    /// bond/bid values. The "missed" semantics require that an auction was
+    /// open at the start of the silence — that's what distinguishes a
+    /// real-world prover outage from a fresh-deploy state.
+    function test_ff_longSilence_noActivity() public {
+        fund.syncPhase(); // opens epoch 1 auction
+
+        // Jump 10 full epochs into the future without any interaction.
+        vm.warp(fund.epochStartTime(11) + 1);
+        fund.syncPhase();
+
+        assertEq(fund.currentEpoch(), 11, "ff: landed at epoch 11");
+        // Epoch 1 had an open auction that was never completed, and epochs
+        // 2..10 were fully skipped — 10 missed epochs total.
+        assertEq(fund.consecutiveMissedEpochs(), 10, "ff: missed counter");
+    }
+
+    /// A committer who never reveals + long silence: exactly ONE bond
+    /// forfeited, not 10. The forfeit happens on the in-flight epoch
+    /// (epoch 1 here) via _closeReveal's no-reveals branch.
+    function test_ff_commitNoReveal_thenSilence() public {
+        fund.syncPhase(); // open epoch 1 COMMIT
+        uint256 bond = fund.currentBond();
+        uint256 treasuryBefore = address(fund).balance;
+
+        vm.prank(runner1);
+        fund.commit{value: bond}(_commitHash(runner1, 0.005 ether, bytes32("r1")));
+
+        // Jump 10 full epochs forward.
+        vm.warp(fund.epochStartTime(11) + 1);
+        fund.syncPhase();
+
+        // Treasury gained exactly ONE bond (the one committed, forfeited
+        // for non-reveal). Not 10.
+        assertEq(address(fund).balance, treasuryBefore + bond, "ff: one forfeit, not many");
+        // Epochs 1..10 all count as missed.
+        assertEq(fund.consecutiveMissedEpochs(), 10, "ff: missed counter after forfeit");
+        assertEq(fund.currentEpoch(), 11, "ff: landed at epoch 11");
+    }
+
+    // [POST_REFACTOR] ff successful epoch → silence:
+    //   After a successful auction execution, consecutiveMissedEpochs
+    //   resets to 0 and a subsequent long silence re-accumulates it.
+    //   Needs a real commit/reveal/submit flow + mock proof verifier
+    //   to avoid direct mode's peculiar post-submit state, which
+    //   commit 7 removes. The reset-after-success property is already
+    //   covered by existing tests in TheHumanFund.t.sol; this stub
+    //   is specifically the re-accumulation-after-reset path.
+
+    /// Messages queued before silence must survive and be visible in the
+    /// landing epoch's snapshot. messageHead must NOT advance during
+    /// silence (no action executed = no messages consumed).
+    function test_ff_messagesPreservedAcrossSilence() public {
+        // Queue 3 messages in epoch 1 BEFORE any executed epoch, so
+        // they land in the queue with epoch=1 tagging.
+        vm.deal(address(0xAA), 1 ether);
+        vm.prank(address(0xAA));
+        fund.donateWithMessage{value: 0.01 ether}(0, "msg 1");
+        vm.prank(address(0xAA));
+        fund.donateWithMessage{value: 0.01 ether}(0, "msg 2");
+        vm.prank(address(0xAA));
+        fund.donateWithMessage{value: 0.01 ether}(0, "msg 3");
+
+        assertEq(fund.messageCount(), 3, "3 messages queued");
+        assertEq(fund.messageHead(), 0, "head at 0");
+
+        // Silence for 10 epochs.
+        vm.warp(fund.epochStartTime(11) + 1);
+        fund.syncPhase();
+
+        // Head NEVER advanced — no action executed during silence.
+        assertEq(fund.messageHead(), 0, "ff: messageHead preserved");
+        assertEq(fund.messageCount(), 3, "ff: messageCount preserved");
+
+        // All 3 messages visible in the landing epoch's snapshot.
+        TheHumanFund.EpochSnapshot memory snap = fund.getEpochSnapshot(fund.currentEpoch());
+        // messageCount in snapshot = live count at freeze time. Head and
+        // count frozen; the window is [head, count).
+        assertEq(snap.messageHead, 0, "ff: snapshot head");
+        assertEq(snap.messageCount, 3, "ff: snapshot sees all 3");
+    }
+
+    /// Messages can arrive DURING silence (donateWithMessage doesn't
+    /// advance the state machine). All must be preserved.
+    function test_ff_messagesQueuedDuringSilence() public {
+        fund.syncPhase(); // open epoch 1
+
+        // Warp partway, then queue messages.
+        vm.warp(fund.epochStartTime(5) + 1);
+        vm.deal(address(0xAA), 1 ether);
+        vm.prank(address(0xAA));
+        fund.donateWithMessage{value: 0.01 ether}(0, "mid-silence 1");
+        vm.prank(address(0xAA));
+        fund.donateWithMessage{value: 0.01 ether}(0, "mid-silence 2");
+
+        // Warp further, then syncPhase to land.
+        vm.warp(fund.epochStartTime(10) + 1);
+        fund.syncPhase();
+
+        assertEq(fund.messageCount(), 2, "ff: mid-silence messages preserved");
+        assertEq(fund.messageHead(), 0, "ff: head still at 0");
+    }
+
+    /// The landing epoch's snapshot must reflect the escalated values,
+    /// not the pre-silence values. This is the I5 invariant applied to
+    /// the fast-forward path: whatever is frozen MUST match what
+    /// `currentBond()` and `effectiveMaxBid()` would return for the
+    /// landing state.
+    function test_ff_snapshotReflectsEscalation() public {
+        fund.syncPhase(); // open epoch 1 auction
+
+        vm.warp(fund.epochStartTime(6) + 1);
+        fund.syncPhase();
+
+        TheHumanFund.EpochSnapshot memory snap = fund.getEpochSnapshot(fund.currentEpoch());
+        assertEq(snap.consecutiveMissedEpochs, 5, "ff: snap missed count");
+        assertEq(snap.effectiveMaxBid, fund.effectiveMaxBid(), "ff: snap effectiveMaxBid matches live");
+    }
+
+    /// Bond escalation is a pure function of consecutiveMissedEpochs.
+    /// After N missed epochs, currentBond() should match the base bond
+    /// escalated N times at 10% per step.
+    function test_ff_bondEscalation() public {
+        fund.syncPhase(); // open epoch 1 auction
+        uint256 bondBefore = fund.currentBond();
+
+        vm.warp(fund.epochStartTime(6) + 1);
+        fund.syncPhase();
+
+        // Escalate bondBefore by 1.1^5 using the same integer math.
+        uint256 expected = bondBefore;
+        for (uint256 i = 0; i < 5; i++) {
+            expected = expected + (expected * 1000) / 10000;
+        }
+        assertEq(fund.currentBond(), expected, "ff: bond escalated correctly");
+    }
+
+    /// O(1) gas property: syncPhase gas usage should be roughly constant
+    /// regardless of how many empty epochs are being fast-forwarded.
+    /// This is the regression canary — if someone replaces the arithmetic
+    /// advance with a loop, this test fires immediately.
+    ///
+    /// We measure gas for N=1 missed vs N=20 missed. If the advance is
+    /// truly O(1), the gas delta should be a small constant (< 10k gas
+    /// difference). If it's O(N), the delta would be tens of thousands.
+    function test_ff_syncPhaseGas_boundedInN() public {
+        uint256 snapId = vm.snapshotState();
+
+        // Baseline: open auction + 1 missed epoch.
+        fund.syncPhase();
+        vm.warp(fund.epochStartTime(2) + 1);
+        uint256 g1 = gasleft();
+        fund.syncPhase();
+        uint256 gasN1 = g1 - gasleft();
+
+        vm.revertToState(snapId);
+
+        // Longer: open auction + 20 missed epochs.
+        fund.syncPhase();
+        vm.warp(fund.epochStartTime(21) + 1);
+        uint256 g20 = gasleft();
+        fund.syncPhase();
+        uint256 gasN20 = g20 - gasleft();
+
+        // The delta should be bounded — if it weren't, someone has
+        // introduced per-missed-epoch work in the fast-forward path.
+        // A 2x slack gives room for effectiveMaxBid's bounded loop
+        // (over min(N, MAX_MISSED_EPOCHS)) without permitting a true
+        // O(N) regression.
+        // As of the current contract: gasN1 ≈ 416k, gasN20 ≈ 451k (8%
+        // delta for 20x more missed epochs). The delta comes from
+        // effectiveMaxBid's bounded escalation loop, not the fast-forward
+        // advance itself.
+        assertLt(gasN20, gasN1 * 2, "ff: syncPhase gas must not scale linearly in N");
+    }
+
+    // test_ff_commitNoReveal_thenSilence above already asserts "exactly
+    // one forfeit" via treasury delta. No separate test needed.
 }

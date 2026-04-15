@@ -33,26 +33,55 @@ fund's external API, the phase enum is `COMMIT | REVEAL | EXECUTION`.
 - The AM is self-contained at 418 LOC and well-tested. Disturbing it
   risks regressions in bond accounting and randomness capture — the
   two things we have the hardest time testing end-to-end.
-- The invariants doc says "no SETTLED phase." The invariants are about
-  the *fund's* external behavior, not the AM's internal state. As long
-  as the fund never leaves a call in SETTLED, the invariant holds.
 - Option A is reachable as a follow-up if we want to collapse the two
   contracts later.
+
+**Sub-decision: collapse SETTLED into IDLE inside the AM.** The
+invariants doc says "no SETTLED phase." Today the AM has both IDLE
+(no auction has ever started OR just cleared) and SETTLED (an auction
+completed, history stored, waiting for fund to call `openAuction`
+again). These are semantically the same "AM is at rest" state — the
+only caller-visible difference is whether `auctionHistory[epoch]` is
+populated, which is a storage question, not a phase question.
+
+The refactor collapses them: the AM's phase enum becomes
+`IDLE | COMMIT | REVEAL | EXECUTION`. After `_closeReveal`/`_doForfeit`,
+the AM transitions back to IDLE. Historical data lives in
+`auctionHistory[epoch]` keyed by epoch, unchanged from today.
+`getPhase(epoch)` returns IDLE for past epochs too (the AM doesn't
+remember "this was settled" — the fund's `epochs[epoch].executed`
+mapping is the authoritative source for that).
+
+Effect on invariants:
+- I5 (freeze atomicity): unchanged. Fund still freezes snapshot at
+  `_openNextAuction`.
+- External view of phase is three-state (`COMMIT | REVEAL | EXECUTION`)
+  for the active epoch, and "no active auction" otherwise. Frontend
+  uses timing math to decide what to display, same as today.
+
+This sub-decision adds a tiny bit of work to commit 2 (map SETTLED →
+IDLE in the AM and update call sites that distinguish them), but
+makes commits 3–6 cleaner because there's one fewer phase to reason
+about.
 
 ## Ordered commits
 
 Each bullet is one reviewable commit. Order is load-bearing: earlier
 commits enable invariant tests that catch regressions in later ones.
 
-### 1. `FREEZE_AUCTION` flag scaffold  *(low risk)*
-- Add `FREEZE_AUCTION` constant to `TheHumanFund.sol`.
-- Add `frozen(FREEZE_AUCTION)` guards to `setAuctionTiming`,
-  `setAuctionManager` (owner-only entry points that mutate auction
-  wiring). Leave `submitEpochAction` for now.
-- Do NOT gate `syncPhase`, `commit`, `reveal`, `submitAuctionResult`.
-- Unblocks: I7 test can be enabled (it currently sits in the
-  `[POST_REFACTOR]` TODO block).
-- Test: enable the stubbed I7 test, confirm it passes.
+### 1. Reuse `FREEZE_AUCTION_CONFIG` for manual-driver gate  *(low risk)*
+- `FREEZE_AUCTION_CONFIG` already gates `setAuctionTiming` and
+  `setAuctionManager` — semantically "owner can't reshape the auction
+  state machine." Extend it (no rename) to cover the new manual-driver
+  entry points `nextPhase` and `resetAuction` added in commits 3 and 4.
+- `FREEZE_MIGRATE` stays as-is for `migrate`/`withdrawAll`/
+  `transferOwnership` — those are lifecycle, not auction control.
+- This commit is documentation-only: the flag already exists. The
+  actual gating happens in commits 3 and 4 when the new entry points
+  land.
+- Alternative: land a tiny scaffold commit that adds a `whenAuctionUnfrozen`
+  modifier and the I7 test stub. But since there's nothing to gate yet,
+  skip it — fold the work into commits 3 and 4 directly.
 
 ### 2. `_nextPhase` as the single progression helper  *(medium risk)*
 - In `TheHumanFund.sol`, rename internal `_syncPhase` → `_advanceToNow`
@@ -66,22 +95,88 @@ commits enable invariant tests that catch regressions in later ones.
 - Invariant test: `test_I1_timeDriver_monotonicEpoch` already covers
   this; it will keep passing.
 
+### 2.5. Multi-epoch fast-forward preservation + tests  *(low risk, pure spec lock-in)*
+
+The current code already does O(1) arithmetic advance through empty
+missed epochs (see commits `74dfdfd` and `990f944`). This is
+load-bearing for the realistic "contract untouched for days" case:
+without it, `syncPhase` would have to do N real transitions for N
+missed epochs, and anyone who stopped calling the contract would hit
+a gas cliff when trying to resume.
+
+The refactor must preserve this property. This commit locks it in as
+tests *before* the `_nextPhase` restructure, so any regression during
+commits 2–7 shows up as an immediate test failure.
+
+**Two primitives, one loop:**
+
+1. `_stepPhase()` — one real transition on the in-flight auction
+   (`COMMIT → REVEAL`, `REVEAL → EXECUTION`, `EXECUTION → close-out`).
+   Each call runs exactly one phase's cleanup. These have side effects
+   that must fire: bond forfeiture, seed capture, winner bond settle.
+
+2. `_fastForwardEmptyEpochs(uint256 nMissed)` — O(1) bulk advance
+   through `N` fully-missed epochs. Updates only:
+   - `currentEpoch += nMissed`
+   - `consecutiveMissedEpochs += nMissed` (capped at `MAX_MISSED_EPOCHS`)
+   - `lastEpochStartTime` bumped to the new epoch's scheduled start
+   - Nothing else. `effectiveMaxBid` and `currentBond` are pure
+     functions of `consecutiveMissedEpochs`, so they recompute
+     automatically. Messages untouched. No content hashes appended.
+     No snapshot frozen.
+
+**The loop in `_advanceToNow`:**
+```
+while (currentPhase != wallClockPhase) {
+    _stepPhase();
+    if (just finished in-flight auction) {
+        uint256 missed = _wallClockEpoch() - currentEpoch - 1;
+        if (missed > 0) _fastForwardEmptyEpochs(missed);
+    }
+}
+```
+
+Worst case is ~3 internal transitions + one arithmetic collapse,
+regardless of how many epochs were skipped.
+
+**Tests to add (all run against the current contract and should pass
+today; they are regression canaries, not new-behavior specs):**
+
+| Test | Scenario | Asserts |
+|---|---|---|
+| `test_ff_longSilence_noActivity` | open epoch 1, warp +10 epochs, syncPhase | `currentEpoch == 11`, `consecutiveMissedEpochs == 10`, `effectiveMaxBid` escalated correctly |
+| `test_ff_commitNoReveal_thenSilence` | commit epoch 1, warp +10 epochs, syncPhase | treasury gained exactly ONE bond (not 10), `consecutiveMissedEpochs == 10` |
+| `test_ff_successfulEpoch_thenSilence` | execute epoch 1, warp +10, syncPhase | `consecutiveMissedEpochs` resets on success then re-accumulates to 10 |
+| `test_ff_messagesPreservedAcrossSilence` | queue 3 messages in epoch 1, no submit, warp +10, syncPhase | `messageCount == 3`, `messageHead == 0`, all 3 visible in landing snapshot |
+| `test_ff_messagesQueuedDuringSilence` | warp +5, queue 2 messages, warp +5, syncPhase | both messages visible, `messageCount == 2` |
+| `test_ff_snapshotReflectsEscalation` | long silence, read landing `getEpochSnapshot` | snapshot's `effectiveMaxBid` and `consecutiveMissedEpochs` match live values |
+| `test_ff_bondEscalation` | long silence, read `currentBond()` | matches formula `bond * 1.1^N` within integer math |
+| `test_ff_syncPhaseGas_boundedInN` | measure gas for `syncPhase` at N=1 vs N=20 missed epochs | gas stays within ~20% envelope (regression canary for "accidentally made it O(N)") |
+| `test_ff_exactlyOneForfeit` | vm.recordLogs + treasury delta | treasury gains exactly one bond, not N bonds |
+
+The **gas bound test** is the most important — it's the guard rail
+against someone (future Claude or otherwise) "simplifying" the
+arithmetic advance into a loop. If that test fails, the O(1)
+property has been regressed.
+
 ### 3. Owner `nextPhase()` entry point  *(medium risk)*
 - Add `function nextPhase() external onlyOwner` that:
-  1. Reverts if `FREEZE_AUCTION` is set.
-  2. Calls `_nextPhase()` once.
+  1. Reverts if `FREEZE_AUCTION_CONFIG` is set.
+  2. Calls `_stepPhase()` once (just one transition — no wall-clock
+     loop, no fast-forward).
   3. Re-anchors `timingAnchor` so `epochStartTime(currentEpoch) ==
      block.timestamp`. This guarantees I4 under the manual driver.
 - Unblocks: `[POST_REFACTOR] I1 manual driver`, `[POST_REFACTOR] I4
-  manual re-anchor`. Write those tests in this commit.
+  manual re-anchor`, `[POST_REFACTOR] I7 manual-only freeze`. Write
+  those tests in this commit.
 
 ### 4. `resetAuction()` owner entry point  *(medium-high risk)*
 - Add `function resetAuction() external onlyOwner`.
-- Behavior: loop `_nextPhase()` until we're back in a fresh
+- Behavior: loop `_stepPhase()` until we're back in a fresh
   `COMMIT[e+1]`, refunding all active bonds along the way (never
   forfeiting). This is the "operator intervention never punishes
   bidders" rule from invariant I3.
-- Gated by `FREEZE_AUCTION`.
+- Gated by `FREEZE_AUCTION_CONFIG`.
 - Key subtlety: the refund path needs to iterate committers and send
   each their bond. The current AM has `MAX_COMMITTERS = 50`, so a loop
   is safe. Add an internal AM helper `refundAllActiveBonds()` that
@@ -176,13 +271,22 @@ commits enable invariant tests that catch regressions in later ones.
 - WorldView slot schema
 - Frontend (beyond DEPLOYMENTS update at the end)
 
+## Risk register addendum
+
+| Risk | Mitigation |
+|---|---|
+| Refactor accidentally regresses O(1) missed-epoch gas | `test_ff_syncPhaseGas_boundedInN` (added in commit 2.5) catches this immediately |
+| Fast-forward drops messages or content hashes | `test_ff_messagesPreservedAcrossSilence` + `test_ff_messagesQueuedDuringSilence` |
+| Bond/bid escalation drifts from `currentBond()` / `effectiveMaxBid()` during arithmetic advance | `test_ff_snapshotReflectsEscalation` + `test_ff_bondEscalation` |
+
 ## Status check
 
 - [x] Invariants doc (`docs/AUCTION_INVARIANTS.md`)
 - [x] `speedrunEpoch` abstraction + migration of 5 test files
 - [x] Invariant tests (`test/AuctionInvariants.t.sol`)
-- [ ] Commit 1: `FREEZE_AUCTION` scaffold
-- [ ] Commit 2: `_nextPhase` extraction
+- [ ] Commit 1: reuse `FREEZE_AUCTION_CONFIG` (folded into 3+4)
+- [ ] Commit 2: `_nextPhase` / `_stepPhase` extraction
+- [ ] Commit 2.5: fast-forward preservation + tests
 - [ ] Commit 3: owner `nextPhase()`
 - [ ] Commit 4: `resetAuction()`
 - [ ] Commit 5: composed `migrate()`
