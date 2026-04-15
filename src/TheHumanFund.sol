@@ -894,11 +894,11 @@ contract TheHumanFund is ReentrancyGuard {
     ///        auction. Only meaningful when the AM is IDLE or SETTLED.
     ///        Wall-clock driver passes `_epochStartTime(epoch)`; manual
     ///        driver passes `block.timestamp`.
-    /// @return advanced True if a transition occurred.
-    function _nextPhase(uint256 scheduledStart) internal returns (bool advanced) {
+    /// @return phase The AM phase for `currentEpoch` after the transition.
+    function _nextPhase(uint256 scheduledStart) internal returns (IAuctionManager.AuctionPhase phase) {
         IAuctionManager am = auctionManager;
         uint256 epoch = currentEpoch;
-        IAuctionManager.AuctionPhase phase = am.getPhase(epoch);
+        phase = am.getPhase(epoch);
 
         // ── Case 1: in-flight auction — close one phase ─────────────
         if (phase == IAuctionManager.AuctionPhase.COMMIT
@@ -932,16 +932,16 @@ contract TheHumanFund is ReentrancyGuard {
                 emit RevealClosed(epoch, am.getWinner(epoch), am.getWinningBid(epoch));
             }
 
-            return true;
+            return am.getPhase(epoch);
         }
 
         // ── Case 2: terminal state — open next auction ──────────────
         // IDLE = pristine (no auction yet for this epoch).
         // SETTLED = prior auction completed.
         // Both mean "the AM is at rest" — open a new auction.
-        if (frozenFlags & FREEZE_SUNSET != 0) return false;
+        if (frozenFlags & FREEZE_SUNSET != 0) return phase;
         _openNextAuction(epoch, scheduledStart);
-        return true;
+        return am.getPhase(epoch);
     }
 
     // ─── Wall-Clock Driver ─────────────────────────────────────────────
