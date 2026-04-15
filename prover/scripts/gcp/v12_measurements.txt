@@ -11,3 +11,5 @@ PLATFORM_KEY: bcb9ec5fd5088b5cb7e2aff71878cec4192f44028f3678a40c50cb22aa4abb5a
 input_hash: 0x9893f110938ae0892b08bdfc24aa58aaecb8933892621642bd8cc78c535cde06
 attestation_quote_len: 16002
 inference_seconds: 20.5
+
+commit: e8888a8
