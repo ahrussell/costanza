@@ -67,10 +67,10 @@ contract MainnetForkTest is Test {
     address runner1 = address(0x4001);
 
     // Timing matching production
-    uint256 constant EPOCH_DUR = 5400;     // 90 min
     uint256 constant COMMIT_WIN = 1200;    // 20 min
     uint256 constant REVEAL_WIN = 1200;    // 20 min
     uint256 constant EXEC_WIN = 3000;      // 50 min
+    uint256 constant EPOCH_DUR = COMMIT_WIN + REVEAL_WIN + EXEC_WIN; // 90 min
 
     modifier onlyOnFork() {
         // Skip these tests unless the test runner is forking a real Base chain.
@@ -120,7 +120,7 @@ contract MainnetForkTest is Test {
         fund.approveVerifier(1, address(verifier));
 
         am = new AuctionManager(address(fund));
-        fund.setAuctionManager(address(am));
+        fund.setAuctionManager(address(am), COMMIT_WIN, REVEAL_WIN, EXEC_WIN);
 
         im = new InvestmentManager(address(fund), owner);
         fund.setInvestmentManager(address(im));
@@ -152,8 +152,6 @@ contract MainnetForkTest is Test {
             MORPHO_GAUNTLET, WETH, address(im), "Morpho Gauntlet WETH Core"
         );
         im.addProtocol(address(a6), "Morpho Gauntlet WETH Core", "Curated Morpho vault", 2, 500);
-
-        fund.setAuctionTiming(EPOCH_DUR, COMMIT_WIN, REVEAL_WIN, EXEC_WIN);
 
         vm.stopPrank();
     }

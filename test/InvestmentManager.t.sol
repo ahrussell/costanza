@@ -79,7 +79,7 @@ contract InvestmentManagerTest is EpochTest {
 
         // Deploy AuctionManager so syncPhase() works
         AuctionManager _am = new AuctionManager(address(fund));
-        fund.setAuctionManager(address(_am));
+        fund.setAuctionManager(address(_am), 1200, 1200, 82800);
 
         // Deploy mock adapters
         adapterA = new MockAdapter("Aave Mock");
@@ -332,7 +332,7 @@ contract InvestmentManagerTest is EpochTest {
             address(0xBEEF), address(0xBEEF), address(0xBEEF), address(0xBEEF), address(0)
         );
         AuctionManager am2 = new AuctionManager(address(fund2));
-        fund2.setAuctionManager(address(am2));
+        fund2.setAuctionManager(address(am2), 1200, 1200, 82800);
 
         bytes memory action = abi.encodePacked(uint8(3), abi.encode(uint256(1), uint256(0.1 ether)));
         uint256 balBefore = address(fund2).balance;

@@ -230,15 +230,20 @@ def deploy_contracts(w3, account):
     print(f"  AuctionManager: {am_addr} (gas: {receipt.gasUsed})")
     nonce += 1
 
-    # Wire AuctionManager to fund
-    print("Wiring AuctionManager...")
-    tx = fund.functions.setAuctionManager(am_addr).build_transaction({
-        "from": deployer, "nonce": nonce, "gas": 100_000,
+    # Wire AuctionManager to fund AND set timing atomically
+    # (setAuctionManager now takes cw/rw/xw; setAuctionTiming was removed)
+    print(f"Wiring AuctionManager with timing (commit={COMMIT_WINDOW}s, reveal={REVEAL_WINDOW}s, exec={EXECUTION_WINDOW}s)...")
+    tx = fund.functions.setAuctionManager(
+        am_addr, COMMIT_WINDOW, REVEAL_WINDOW, EXECUTION_WINDOW
+    ).build_transaction({
+        "from": deployer, "nonce": nonce, "gas": 200_000,
         "maxFeePerGas": w3.eth.gas_price * 2, "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
     })
     signed = account.sign_transaction(tx)
     tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-    w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+    receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+    if receipt.status != 1:
+        raise RuntimeError(f"setAuctionManager failed! Gas: {receipt.gasUsed}")
     nonce += 1
 
     # Approve TdxVerifier (verifierId=2)
@@ -252,23 +257,6 @@ def deploy_contracts(w3, account):
     signed = account.sign_transaction(tx)
     tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
     w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
-    nonce += 1
-
-    # Configure auction timing (cross-contract call to AuctionManager.setTiming)
-    print(f"Setting auction timing (epoch={EPOCH_DURATION}s, commit={COMMIT_WINDOW}s, reveal={REVEAL_WINDOW}s, exec={EXECUTION_WINDOW}s)...")
-    tx = fund.functions.setAuctionTiming(
-        EPOCH_DURATION, COMMIT_WINDOW, REVEAL_WINDOW, EXECUTION_WINDOW
-    ).build_transaction({
-        "from": deployer, "nonce": nonce,
-        "gas": 200_000,
-        "maxFeePerGas": w3.eth.gas_price * 2,
-        "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
-    })
-    signed = account.sign_transaction(tx)
-    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-    receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
-    if receipt.status != 1:
-        raise RuntimeError(f"setAuctionTiming failed! Gas: {receipt.gasUsed}")
     nonce += 1
 
     # approvedPromptHash removed — prompt verified via dm-verity image key

@@ -48,8 +48,7 @@ contract MessagesTest is EpochTest {
         // Needed for the missed-epoch tests that rely on _syncPhase's wall-clock
         // path to credit consecutiveMissedEpochs and advance the epoch.
         AuctionManager am = new AuctionManager(address(fund));
-        fund.setAuctionManager(address(am));
-        fund.setAuctionTiming(86400, 1200, 1200, 3000);
+        fund.setAuctionManager(address(am), 1200, 1200, 82800); // 20m / 20m / 23h
     }
 
     // ─── donateWithMessage ──────────────────────────────────────────────

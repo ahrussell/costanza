@@ -47,7 +47,7 @@ contract CrossStackHashTest is Test {
         // Wire an AuctionManager so `syncPhase` can advance currentEpoch
         // across elapsed epochs — the multi-epoch test needs this.
         AuctionManager am = new AuctionManager(address(fund));
-        fund.setAuctionManager(address(am));
+        fund.setAuctionManager(address(am), 1200, 1200, 82800);
     }
 
     // Every cross-stack test forces a freeze via `submitEpochAction`

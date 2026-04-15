@@ -31,7 +31,7 @@ contract WorldViewTest is EpochTest {
 
         // Deploy AuctionManager so syncPhase() works
         AuctionManager am = new AuctionManager(address(fund));
-        fund.setAuctionManager(address(am));
+        fund.setAuctionManager(address(am), 1200, 1200, 82800);
 
         wv = new WorldView(address(fund));
         fund.setWorldView(address(wv));

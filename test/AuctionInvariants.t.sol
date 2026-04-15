@@ -26,10 +26,10 @@ contract AuctionInvariantsTest is EpochTest {
     address runner1 = address(0x4001);
     address runner2 = address(0x4002);
 
-    uint256 constant EPOCH_DUR  = 300;
     uint256 constant COMMIT_WIN = 60;
     uint256 constant REVEAL_WIN = 30;
-    uint256 constant EXEC_WIN   = 120;
+    uint256 constant EXEC_WIN   = 210;
+    uint256 constant EPOCH_DUR  = COMMIT_WIN + REVEAL_WIN + EXEC_WIN; // 300
 
     function setUp() public {
         fund = new TheHumanFund{value: 10 ether}(
@@ -38,8 +38,7 @@ contract AuctionInvariantsTest is EpochTest {
         );
 
         am = new AuctionManager(address(fund));
-        fund.setAuctionManager(address(am));
-        fund.setAuctionTiming(EPOCH_DUR, COMMIT_WIN, REVEAL_WIN, EXEC_WIN);
+        fund.setAuctionManager(address(am), COMMIT_WIN, REVEAL_WIN, EXEC_WIN);
 
         vm.deal(runner1, 10 ether);
         vm.deal(runner2, 10 ether);
@@ -266,7 +265,7 @@ contract AuctionInvariantsTest is EpochTest {
     // [POST_REFACTOR] I7:
     //   - Set FREEZE_AUCTION.
     //   - Assert: fund.nextPhase() reverts with Frozen
-    //   - Assert: fund.resetAuction(EPOCH_DUR, COMMIT_WIN, REVEAL_WIN, EXEC_WIN) reverts with Frozen
+    //   - Assert: fund.resetAuction(COMMIT_WIN, REVEAL_WIN, EXEC_WIN) reverts with Frozen
     //   - Assert: runner can still call commit() (no revert)
     //   - Assert: runner can still call reveal() (no revert)
     //   - Assert: fund.syncPhase() still advances phases
@@ -354,7 +353,7 @@ contract AuctionInvariantsTest is EpochTest {
         // Fund balance temporarily excludes the bond (it sits in AM).
         assertEq(address(fund).balance, treasuryBefore, "treasury unchanged by commit");
 
-        fund.resetAuction(EPOCH_DUR, COMMIT_WIN, REVEAL_WIN, EXEC_WIN);
+        fund.resetAuction(COMMIT_WIN, REVEAL_WIN, EXEC_WIN);
 
         // Runner got their bond back via direct push.
         assertEq(runner1.balance, runnerBefore, "committer bond refunded");
@@ -384,7 +383,7 @@ contract AuctionInvariantsTest is EpochTest {
         fund.reveal(0.008 ether, bytes32("r1"));
 
         // We're in REVEAL with one revealer, one non-revealer. Owner aborts.
-        fund.resetAuction(EPOCH_DUR, COMMIT_WIN, REVEAL_WIN, EXEC_WIN);
+        fund.resetAuction(COMMIT_WIN, REVEAL_WIN, EXEC_WIN);
 
         // Both runners get their bonds back — even runner2 who didn't reveal.
         // Under normal flow, runner2 would have forfeited at reveal close;
@@ -422,7 +421,7 @@ contract AuctionInvariantsTest is EpochTest {
         fund.syncPhase();
 
         uint256 treasuryBeforeReset = address(fund).balance;
-        fund.resetAuction(EPOCH_DUR, COMMIT_WIN, REVEAL_WIN, EXEC_WIN);
+        fund.resetAuction(COMMIT_WIN, REVEAL_WIN, EXEC_WIN);
 
         // runner2 (winner) refunded directly.
         assertEq(runner2.balance, r2Before, "execution-phase winner refunded");
@@ -443,7 +442,7 @@ contract AuctionInvariantsTest is EpochTest {
         uint256 startEpoch = fund.currentEpoch();
         uint256 treasuryBefore = address(fund).balance;
 
-        fund.resetAuction(EPOCH_DUR, COMMIT_WIN, REVEAL_WIN, EXEC_WIN);
+        fund.resetAuction(COMMIT_WIN, REVEAL_WIN, EXEC_WIN);
 
         assertEq(fund.currentEpoch(), startEpoch + 1, "epoch advanced by 1");
         assertEq(address(fund).balance, treasuryBefore, "treasury unchanged");
@@ -460,7 +459,7 @@ contract AuctionInvariantsTest is EpochTest {
         fund.commit{value: bond}(_commitHash(runner1, 0.005 ether, bytes32("r1")));
 
         uint256 missedBefore = fund.consecutiveMissedEpochs();
-        fund.resetAuction(EPOCH_DUR, COMMIT_WIN, REVEAL_WIN, EXEC_WIN);
+        fund.resetAuction(COMMIT_WIN, REVEAL_WIN, EXEC_WIN);
         assertEq(fund.consecutiveMissedEpochs(), missedBefore, "reset does not count as a miss");
     }
 
@@ -473,7 +472,7 @@ contract AuctionInvariantsTest is EpochTest {
         vm.prank(runner1);
         fund.commit{value: bond}(_commitHash(runner1, 0.005 ether, bytes32("r1")));
 
-        fund.resetAuction(EPOCH_DUR, COMMIT_WIN, REVEAL_WIN, EXEC_WIN);
+        fund.resetAuction(COMMIT_WIN, REVEAL_WIN, EXEC_WIN);
         uint256 newEpoch = fund.currentEpoch();
 
         // syncPhase should open the new epoch's auction.
@@ -491,14 +490,14 @@ contract AuctionInvariantsTest is EpochTest {
     function test_resetAuction_blockedByFreezeAuctionConfig() public {
         fund.freeze(fund.FREEZE_AUCTION_CONFIG());
         vm.expectRevert(TheHumanFund.Frozen.selector);
-        fund.resetAuction(EPOCH_DUR, COMMIT_WIN, REVEAL_WIN, EXEC_WIN);
+        fund.resetAuction(COMMIT_WIN, REVEAL_WIN, EXEC_WIN);
     }
 
     /// resetAuction is owner-only.
     function test_resetAuction_onlyOwner() public {
         vm.prank(address(0xDEAD));
         vm.expectRevert(TheHumanFund.Unauthorized.selector);
-        fund.resetAuction(EPOCH_DUR, COMMIT_WIN, REVEAL_WIN, EXEC_WIN);
+        fund.resetAuction(COMMIT_WIN, REVEAL_WIN, EXEC_WIN);
     }
 
     /// Emits AuctionReset(from, to) with the correct epoch pair.
@@ -506,7 +505,7 @@ contract AuctionInvariantsTest is EpochTest {
         uint256 from = fund.currentEpoch();
         vm.expectEmit(true, true, false, false);
         emit TheHumanFund.AuctionReset(from, from + 1);
-        fund.resetAuction(EPOCH_DUR, COMMIT_WIN, REVEAL_WIN, EXEC_WIN);
+        fund.resetAuction(COMMIT_WIN, REVEAL_WIN, EXEC_WIN);
     }
 
     /// The whole reason `resetAuction` takes timing parameters: apply
@@ -521,12 +520,12 @@ contract AuctionInvariantsTest is EpochTest {
         vm.prank(runner1);
         fund.commit{value: bond}(_commitHash(runner1, 0.005 ether, bytes32("r1")));
 
-        // Change timing: bigger epoch, different phase splits.
-        uint256 newEpochDur  = 1000;
+        // Change timing: different phase splits.
+        // (epochDuration is derived as the sum — 800 here.)
         uint256 newCommitWin = 200;
         uint256 newRevealWin = 100;
         uint256 newExecWin   = 500;
-        fund.resetAuction(newEpochDur, newCommitWin, newRevealWin, newExecWin);
+        fund.resetAuction(newCommitWin, newRevealWin, newExecWin);
 
         // New timing is live on the AM.
         assertEq(am.commitWindow(), newCommitWin, "new commit window applied");
@@ -558,11 +557,14 @@ contract AuctionInvariantsTest is EpochTest {
         );
     }
 
-    /// resetAuction rejects invalid timing (windows exceeding duration).
+    /// resetAuction rejects zero-duration phases.
     function test_resetAuction_rejectsInvalidTiming() public {
         vm.expectRevert(TheHumanFund.InvalidParams.selector);
-        // commit + reveal + exec = 500, but epochDuration = 100.
-        fund.resetAuction(100, 200, 200, 100);
+        fund.resetAuction(0, 100, 100); // zero commit window
+        vm.expectRevert(TheHumanFund.InvalidParams.selector);
+        fund.resetAuction(100, 0, 100); // zero reveal window
+        vm.expectRevert(TheHumanFund.InvalidParams.selector);
+        fund.resetAuction(100, 100, 0); // zero execution window
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -622,14 +624,46 @@ contract AuctionInvariantsTest is EpochTest {
         assertEq(fund.currentEpoch(), 11, "ff: landed at epoch 11");
     }
 
-    // [POST_REFACTOR] ff successful epoch → silence:
-    //   After a successful auction execution, consecutiveMissedEpochs
-    //   resets to 0 and a subsequent long silence re-accumulates it.
-    //   Needs a real commit/reveal/submit flow + mock proof verifier
-    //   to avoid direct mode's peculiar post-submit state, which
-    //   commit 7 removes. The reset-after-success property is already
-    //   covered by existing tests in TheHumanFund.t.sol; this stub
-    //   is specifically the re-accumulation-after-reset path.
+    /// After a successful execution, wall-clock silence re-accumulates
+    /// the missed counter. Only the silent epochs count — the successful
+    /// epoch itself is not a miss.
+    function test_ff_successfulEpoch_thenSilence() public {
+        // Direct mode executes epoch 1 and advances currentEpoch to 2.
+        // (Direct mode is removed in commit 7; when it goes, swap this
+        // for a real commit/reveal/submit flow via the mock verifier.)
+        speedrunEpoch(fund, abi.encodePacked(uint8(0)), "executed");
+        assertEq(fund.consecutiveMissedEpochs(), 0, "reset after success");
+        assertEq(fund.currentEpoch(), 2, "advanced past executed epoch 1");
+
+        // Warp to the start of epoch 11 (9 full silent epochs between
+        // epoch 2 and epoch 11).
+        vm.warp(fund.epochStartTime(11) + 1);
+        fund.syncPhase();
+
+        // Epochs 2..10 were all silent → 9 misses.
+        assertEq(fund.consecutiveMissedEpochs(), 9, "9 silent epochs credited");
+        assertEq(fund.currentEpoch(), 11, "landed at epoch 11");
+    }
+
+    /// Pristine-IDLE long silence (fresh deploy, nobody has called
+    /// anything): every elapsed epoch counts as a miss. This was
+    /// previously broken — the original logic explicitly skipped
+    /// pristine-IDLE escalation, which meant a fresh deploy with no
+    /// prover activity would never raise the bid cap, forever.
+    function test_ff_pristineIdle_longSilence_credits() public {
+        // No setup beyond the test's setUp(). Contract was just deployed.
+        assertEq(fund.currentEpoch(), 1, "fresh deploy at epoch 1");
+        assertEq(fund.consecutiveMissedEpochs(), 0, "counter starts at 0");
+
+        vm.warp(fund.epochStartTime(11) + 1);
+        fund.syncPhase();
+
+        // All 10 elapsed epochs were silent → all 10 count as misses.
+        // The bid cap should be escalated so any prover that shows up
+        // later has headroom to win.
+        assertEq(fund.currentEpoch(), 11, "landed at epoch 11");
+        assertEq(fund.consecutiveMissedEpochs(), 10, "pristine silence counts");
+    }
 
     /// Messages queued before silence must survive and be visible in the
     /// landing epoch's snapshot. messageHead must NOT advance during

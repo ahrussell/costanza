@@ -100,10 +100,10 @@ contract TheHumanFund is ReentrancyGuard {
         uint256 currentEpochInflow;
         uint256 currentEpochDonationCount;
         uint256 epochEthUsdPrice;
-        // epochDuration frozen at auction open. The owner can change the
-        // live epochDuration mid-epoch via setAuctionTiming (e.g. to extend
-        // a phase window for a stuck runner). Hashing the snapshotted value
-        // keeps the base hash reproducible regardless of owner adjustments.
+        // epochDuration frozen at auction open. The only path that can
+        // change live epochDuration is `resetAuction`, which aborts the
+        // in-flight auction atomically — so by construction no in-flight
+        // snapshot can drift from live.
         uint256 epochDuration;
         // Message queue boundaries at auction open (used alongside messagesHash).
         uint256 messageHead;
@@ -335,7 +335,7 @@ contract TheHumanFund is ReentrancyGuard {
         maxBid = _initialMaxBid;
         nextReferralCodeId = 1;
 
-        // Default epoch duration (can be overridden via setAuctionTiming)
+        // Default epoch duration (overwritten by setAuctionManager when AM timing is set)
         epochDuration = 24 hours;
         timingAnchor = block.timestamp;
         anchorEpoch = 1;
@@ -614,10 +614,32 @@ contract TheHumanFund is ReentrancyGuard {
         worldView = IWorldView(_wv);
     }
 
-    /// @notice Set the auction manager contract address.
-    function setAuctionManager(address _am) external onlyOwner {
+    /// @notice Set (or replace) the auction manager and configure its
+    ///         phase timing. Re-anchors the epoch schedule to now so the
+    ///         new AM's windows take effect from this block.
+    /// @dev This is the only entry point for wiring a fresh AM. For
+    ///      mid-life timing changes after auctions have run, use
+    ///      `resetAuction` instead (it also refunds any in-flight bonds).
+    /// @dev `epochDuration` is derived from the sum of phase windows —
+    ///      there is no independent timing parameter to drift.
+    function setAuctionManager(
+        address _am,
+        uint256 _commitWindow,
+        uint256 _revealWindow,
+        uint256 _executionWindow
+    ) external onlyOwner {
         if (frozenFlags & FREEZE_AUCTION_CONFIG != 0) revert Frozen();
+        if (_am == address(0)) revert InvalidParams();
+        if (_commitWindow == 0 || _revealWindow == 0 || _executionWindow == 0) revert InvalidParams();
+
         auctionManager = IAuctionManager(_am);
+        IAuctionManager(_am).setTiming(_commitWindow, _revealWindow, _executionWindow);
+        epochDuration = _commitWindow + _revealWindow + _executionWindow;
+
+        // Re-anchor the schedule so the new AM's first epoch starts now.
+        timingAnchor = block.timestamp;
+        anchorEpoch = currentEpoch;
+        lastEpochStartTime = block.timestamp;
     }
 
     // setApprovedPromptHash removed — prompt verified via dm-verity image key
@@ -652,24 +674,6 @@ contract TheHumanFund is ReentrancyGuard {
 
     // ─── Reverse Auction ──────────────────────────────────────────────────
 
-    /// @notice Set auction timing parameters (owner-only, for testnet tuning).
-    function setAuctionTiming(
-        uint256 _epochDuration,
-        uint256 _commitWindow,
-        uint256 _revealWindow,
-        uint256 _executionWindow
-    ) external onlyOwner {
-        if (frozenFlags & FREEZE_AUCTION_CONFIG != 0) revert Frozen();
-        if (_commitWindow + _revealWindow + _executionWindow > _epochDuration) revert InvalidParams();
-        // Re-anchor before changing duration so _epochStartTime uses the old value
-        if (anchorEpoch > 0 && currentEpoch >= anchorEpoch) {
-            timingAnchor = _epochStartTime(currentEpoch);
-            anchorEpoch = currentEpoch;
-        }
-        epochDuration = _epochDuration;
-        auctionManager.setTiming(_commitWindow, _revealWindow, _executionWindow);
-    }
-
     /// @notice Current bond amount — fixed base that escalates 10% per consecutive missed epoch.
     ///         Capped at max(MIN_BOND_CAP, 10% of treasury). The bond cap is independent of the
     ///         bounty cap because the cost of stalling is unrelated to the treasury size — an
@@ -690,6 +694,27 @@ contract TheHumanFund is ReentrancyGuard {
         return timingAnchor + (epoch - anchorEpoch) * epochDuration;
     }
 
+    /// @dev Advance `currentEpoch` by `count`, resetting per-epoch
+    ///      counters. Shared by the single-epoch and multi-epoch
+    ///      branches of `_syncPhase` Step B so the bookkeeping is
+    ///      defined in exactly one place.
+    /// @param count The number of epochs to advance past.
+    /// @param missCount How many of those elapsed epochs to credit
+    ///      toward `consecutiveMissedEpochs`. Usually equal to `count`;
+    ///      one less when the current epoch was successfully executed
+    ///      (that one doesn't count as a miss). See call site.
+    function _advanceEpochBy(uint256 count, uint256 missCount) internal {
+        if (missCount > 0) {
+            uint256 newMissed = consecutiveMissedEpochs + missCount;
+            if (newMissed > MAX_MISSED_EPOCHS) newMissed = MAX_MISSED_EPOCHS;
+            consecutiveMissedEpochs = newMissed;
+        }
+        currentEpoch += count;
+        currentEpochInflow = 0;
+        currentEpochDonationCount = 0;
+        currentEpochCommissions = 0;
+    }
+
     // ─── Phase Sync ────────────────────────────────────────────────────
 
     /// @notice Advance the contract through any elapsed epoch/phase boundaries.
@@ -708,50 +733,44 @@ contract TheHumanFund is ReentrancyGuard {
     ///         auction timing parameters, advance one epoch, and re-anchor
     ///         timing to now. This is the ONLY safe way to change auction
     ///         timing while the contract is live.
-    /// @dev Why `setAuctionTiming` alone is unsafe: changing `epochDuration`
-    ///      mid-epoch bricked mainnet v1 (commit bd883a9) because
-    ///      `epochBaseInputHashes[epoch]` was bound to the old duration at
-    ///      auction open, so the prover's TEE input hash diverged after
-    ///      the timing change and `submitAuctionResult` reverted with
-    ///      `ProofFailed`. `resetAuction` avoids this by aborting the
-    ///      in-flight auction, refunding all held bonds (operator
-    ///      intervention is NOT a forfeit), applying the new timing
-    ///      atomically, and advancing to a fresh epoch whose snapshot
-    ///      will be opened at the new timing values.
+    /// @dev Why this exists: mainnet v1 was bricked (commit bd883a9) when
+    ///      `epochDuration` was changed mid-epoch — the frozen snapshot's
+    ///      `epochBaseInputHashes[epoch]` was bound to the old duration,
+    ///      so the prover's TEE input hash diverged after the change and
+    ///      `submitAuctionResult` reverted. `resetAuction` avoids this by
+    ///      aborting the in-flight auction first (refunding all held
+    ///      bonds — operator intervention is NOT a forfeit), applying
+    ///      new timing atomically, and advancing to a fresh epoch whose
+    ///      snapshot will be opened at the new timing values.
+    /// @dev `epochDuration` is derived from `cw + rw + xw` — no separate
+    ///      parameter that could drift.
     /// @dev `consecutiveMissedEpochs` is NOT incremented — the reset
     ///      wasn't anyone's fault, and we don't want auto-escalation to
     ///      spike as a side effect of recovery.
-    /// @dev Gated by `FREEZE_AUCTION_CONFIG`, matching the same "owner
-    ///      can't reshape the auction state machine" semantics as
-    ///      `setAuctionTiming` and `setAuctionManager`.
-    /// @param _epochDuration  New epoch duration (use current value for a
-    ///                        pure reset with no timing change).
-    /// @param _commitWindow   New commit window duration.
-    /// @param _revealWindow   New reveal window duration.
-    /// @param _executionWindow New execution window duration.
+    /// @dev Gated by `FREEZE_AUCTION_CONFIG`.
+    /// @param _commitWindow    New commit window duration (seconds).
+    /// @param _revealWindow    New reveal window duration (seconds).
+    /// @param _executionWindow New execution window duration (seconds).
     function resetAuction(
-        uint256 _epochDuration,
         uint256 _commitWindow,
         uint256 _revealWindow,
         uint256 _executionWindow
     ) external onlyOwner {
         if (frozenFlags & FREEZE_AUCTION_CONFIG != 0) revert Frozen();
-        if (_commitWindow + _revealWindow + _executionWindow > _epochDuration) revert InvalidParams();
+        if (_commitWindow == 0 || _revealWindow == 0 || _executionWindow == 0) revert InvalidParams();
         IAuctionManager am = auctionManager;
         if (address(am) == address(0)) revert InvalidParams();
 
         uint256 fromEpoch = currentEpoch;
 
         // Abort the in-flight auction and refund all held bonds. Safe to
-        // call even if there's no active auction (AM treats IDLE/SETTLED
-        // as a no-op).
+        // call even if there's no active auction (AM treats IDLE as a no-op).
         am.abortAuction();
 
-        // Apply the new timing atomically. This is the whole point of
-        // `resetAuction` existing — change timing without leaving any
-        // in-flight auction bound to the old windows.
-        epochDuration = _epochDuration;
+        // Apply the new timing atomically. epochDuration is derived from
+        // the sum — it cannot drift from the phase windows.
         am.setTiming(_commitWindow, _revealWindow, _executionWindow);
+        epochDuration = _commitWindow + _revealWindow + _executionWindow;
 
         // Advance one epoch. The aborted epoch is closed; the next one
         // will be opened by the first syncPhase() call after this.
@@ -828,42 +847,38 @@ contract TheHumanFund is ReentrancyGuard {
 
         if (epochDone) {
             uint256 scheduledStart = _epochStartTime(epoch);
+            uint256 advance;
             if (block.timestamp >= scheduledStart + epochDuration) {
-                // Whole epoch(s) have elapsed since this epoch started.
-                uint256 missedCount = (block.timestamp - scheduledStart) / epochDuration;
-
-                // Credit consecutive-missed escalation for elapsed epochs that
-                // had an auction opened (whether or not anyone bid) and that
-                // weren't successfully executed. A pristine IDLE epoch (no
-                // auction ever opened) doesn't count — there was nothing to
-                // miss — but an opened-then-empty epoch does, because the
-                // escalation raises effectiveMaxBid to attract bidders next
-                // time.
-                if (phase != IAuctionManager.AuctionPhase.IDLE && !epochs[epoch].executed) {
-                    uint256 newMissed = consecutiveMissedEpochs + missedCount;
-                    if (newMissed > MAX_MISSED_EPOCHS) newMissed = MAX_MISSED_EPOCHS;
-                    consecutiveMissedEpochs = newMissed;
-                }
-
-                currentEpoch += missedCount;
-                epoch = currentEpoch;
-                currentEpochInflow = 0;
-                currentEpochDonationCount = 0;
-                currentEpochCommissions = 0;
+                // Wall-clock jumped forward by one or more whole epochs.
+                advance = (block.timestamp - scheduledStart) / epochDuration;
             } else if (phase == IAuctionManager.AuctionPhase.SETTLED || epochs[epoch].executed) {
-                // Epoch completed in-window (settled with no commits, settled
-                // with a forfeited winner, or successfully executed). Credit a
-                // missed epoch if a winner failed to deliver, then advance.
-                if (phase != IAuctionManager.AuctionPhase.IDLE && !epochs[epoch].executed) {
-                    if (consecutiveMissedEpochs < MAX_MISSED_EPOCHS) {
-                        consecutiveMissedEpochs += 1;
-                    }
-                }
-                currentEpoch += 1;
+                // Epoch completed in-window (no-commit drain, winner
+                // forfeited, or successful submission). Advance by one.
+                advance = 1;
+            }
+
+            if (advance > 0) {
+                // Auto-escalation (`consecutiveMissedEpochs`) counts
+                // elapsed epochs that did NOT end in a successful
+                // execution. Every epoch we advance past is a miss,
+                // with ONE exception: the current epoch if it was
+                // successfully executed (that's not a miss — we're
+                // just catching up past it). The skipped epochs are
+                // all misses by definition — nobody acted during them,
+                // whether the AM was pristine IDLE or had an opened
+                // auction waiting for a bidder that never came.
+                //
+                // missCount = advance - (executed ? 1 : 0):
+                //   - advance=1, executed=true  → 0 (pure success)
+                //   - advance=1, executed=false → 1 (forfeit/settled)
+                //   - advance=N, executed=false → N (pristine silence
+                //                                  or opened-then-empty)
+                //   - advance=N, executed=true  → N-1 (success,
+                //                                  then N-1 silent epochs)
+                uint256 missCount = advance;
+                if (epochs[epoch].executed) missCount -= 1;
+                _advanceEpochBy(advance, missCount);
                 epoch = currentEpoch;
-                currentEpochInflow = 0;
-                currentEpochDonationCount = 0;
-                currentEpochCommissions = 0;
             }
         }
 

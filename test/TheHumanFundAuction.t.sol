@@ -30,11 +30,11 @@ contract TheHumanFundAuctionTest is EpochTest {
     address runner2 = address(0x4002);
     address runner3 = address(0x4003);
 
-    // Short testnet timing
-    uint256 constant EPOCH_DUR = 300;     // 5 minutes
+    // Short testnet timing — epoch duration is derived from the sum.
     uint256 constant COMMIT_WIN = 60;     // 1 minute commit
     uint256 constant REVEAL_WIN = 30;     // 30 seconds reveal
-    uint256 constant EXEC_WIN = 120;      // 2 minutes execution
+    uint256 constant EXEC_WIN = 210;      // 3.5 minute execution
+    uint256 constant EPOCH_DUR = COMMIT_WIN + REVEAL_WIN + EXEC_WIN; // 300 (5 min)
 
     // Test measurement values (48 bytes each, SHA-384)
     bytes constant TEST_MRTD  = hex"aabbccdd0000000000000000000000000000000000000000000000000000000000000000000000000000000000000011";
@@ -49,7 +49,7 @@ contract TheHumanFundAuctionTest is EpochTest {
         );
 
         am = new AuctionManager(address(fund));
-        fund.setAuctionManager(address(am));
+        fund.setAuctionManager(address(am), COMMIT_WIN, REVEAL_WIN, EXEC_WIN);
 
         fund.addNonprofit("GiveDirectly", "Cash transfers", bytes32("EIN-GD"));
         fund.addNonprofit("Against Malaria Foundation", "Malaria prevention", bytes32("EIN-AMF"));
@@ -62,8 +62,6 @@ contract TheHumanFundAuctionTest is EpochTest {
         bytes32 imageKey = sha256(abi.encodePacked(TEST_MRTD, TEST_RTMR1, TEST_RTMR2));
         verifier.approveImage(imageKey);
         fund.approveVerifier(1, address(verifier));
-
-        fund.setAuctionTiming(EPOCH_DUR, COMMIT_WIN, REVEAL_WIN, EXEC_WIN);
 
         vm.deal(runner1, 10 ether);
         vm.deal(runner2, 10 ether);
@@ -684,9 +682,11 @@ contract TheHumanFundAuctionTest is EpochTest {
     // Group 6b: _syncPhase regression tests for issues #2 and #3
     // ═══════════════════════════════════════════════════════════════════════
 
-    /// @dev Issue #2: pristine IDLE epoch (no auction ever opened) that fully
-    ///      elapses must advance currentEpoch and must NOT credit a missed
-    ///      epoch (nothing was offered, nothing was missed).
+    /// @dev Pristine IDLE epoch (no auction ever opened) that fully elapses
+    ///      must advance currentEpoch AND credit a missed epoch. Rationale:
+    ///      `consecutiveMissedEpochs` drives bid/bond escalation, and the
+    ///      whole point of escalation is to raise the cap when nothing is
+    ///      happening — so pristine silence is exactly when it should fire.
     function test_syncPhase_pristineIdleEpochAdvances() public {
         // Do NOT call syncPhase first — leave epoch 1 in pristine IDLE state.
         assertEq(uint256(am.getPhase(1)), uint256(IAuctionManager.AuctionPhase.IDLE));
@@ -697,15 +697,15 @@ contract TheHumanFundAuctionTest is EpochTest {
 
         fund.syncPhase();
 
-        // currentEpoch should now be 2, and consecutiveMissedEpochs should still
-        // be 0 because no auction was ever opened for epoch 1.
+        // currentEpoch advances, and epoch 1 counts as a missed epoch
+        // even though no auction was ever opened for it.
         assertEq(fund.currentEpoch(), 2);
-        assertEq(fund.consecutiveMissedEpochs(), 0);
+        assertEq(fund.consecutiveMissedEpochs(), 1);
 
         // Subsequent syncPhase calls should be idempotent.
         fund.syncPhase();
         assertEq(fund.currentEpoch(), 2);
-        assertEq(fund.consecutiveMissedEpochs(), 0);
+        assertEq(fund.consecutiveMissedEpochs(), 1);
     }
 
     /// @dev Issue #2 (fully-elapsed pristine IDLE) followed immediately by
@@ -835,35 +835,12 @@ contract TheHumanFundAuctionTest is EpochTest {
         assertEq(fund.epochBaseInputHashes(1), fund.computeInputHash());
     }
 
-    function test_baseInputHash_unchangedByMidEpochSetAuctionTiming() public {
-        // Regression test for the epochDuration drift bug: changing auction
-        // timing mid-epoch must NOT mutate epochBaseInputHashes[epoch].
-        fund.syncPhase();
-        bytes32 hashAtOpen = fund.epochBaseInputHashes(1);
-        bytes32 viewAtOpen = fund.computeInputHash();
-        assertEq(hashAtOpen, viewAtOpen, "view matches stored at open");
-
-        // Advance past commit + reveal to avoid phase violations on re-read.
-        vm.prank(runner1);
-        fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.005 ether, bytes32("s1")));
-        vm.warp(block.timestamp + COMMIT_WIN);
-        vm.prank(runner1);
-        fund.reveal(0.005 ether, bytes32("s1"));
-        vm.warp(block.timestamp + REVEAL_WIN);
-        fund.syncPhase();
-
-        // Owner changes timing mid-epoch (e.g. to extend the exec window).
-        // Total = 300 (EPOCH_DUR). Grow epoch_duration to 600; commit/reveal
-        // windows stay the same so we still pass the sum check.
-        fund.setAuctionTiming(600, COMMIT_WIN, REVEAL_WIN, 600 - COMMIT_WIN - REVEAL_WIN);
-
-        // The stored base hash must be unchanged.
-        assertEq(fund.epochBaseInputHashes(1), hashAtOpen,
-                 "baseInputHash must not drift when epochDuration changes mid-epoch");
-        // The view (which reads from the snapshot) must still match.
-        assertEq(fund.computeInputHash(), hashAtOpen,
-                 "computeInputHash view must stay stable after setAuctionTiming");
-    }
+    // test_baseInputHash_unchangedByMidEpochSetAuctionTiming removed —
+    // `setAuctionTiming` no longer exists. The only timing-change path
+    // is `resetAuction`, which aborts the in-flight auction atomically;
+    // mid-epoch drift is impossible by construction, not by this
+    // regression test. See `test_resetAuction_changesAuctionTiming` in
+    // AuctionInvariants.t.sol for the positive coverage.
 
     // ═══════════════════════════════════════════════════════════════════════
     // Group 8: Full Attestation Integration
@@ -967,11 +944,14 @@ contract TheHumanFundAuctionTest is EpochTest {
     // ═══════════════════════════════════════════════════════════════════════
 
     function test_timing_validation() public {
+        // resetAuction rejects zero-duration phases.
         vm.expectRevert(TheHumanFund.InvalidParams.selector);
-        fund.setAuctionTiming(100, 40, 30, 40); // 110 > 100
+        fund.resetAuction(0, 30, 50);
 
+        // setAuctionManager rejects zero-duration phases too.
+        AuctionManager freshAm = new AuctionManager(address(fund));
         vm.expectRevert(TheHumanFund.InvalidParams.selector);
-        fund.setAuctionTiming(100, 0, 30, 50);
+        fund.setAuctionManager(address(freshAm), 0, 30, 50);
     }
 
     function test_directSubmission_coexists() public {

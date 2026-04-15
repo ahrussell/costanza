@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import "forge-std/Script.sol";
 import "../src/TheHumanFund.sol";
+import "../src/AuctionManager.sol";
 import "../src/TdxVerifier.sol";
 import "../src/interfaces/IAutomataDcapAttestation.sol";
 
@@ -84,8 +85,10 @@ contract DeployLocal is Script {
         // Register TDX verifier at ID 1
         fund.approveVerifier(1, address(verifier));
 
-        // Configure short timing for local testing (30s epoch, 10s commit, 5s reveal, 10s exec)
-        fund.setAuctionTiming(30, 10, 5, 10);
+        // Deploy and wire AuctionManager with short testnet timing
+        // (10s commit / 5s reveal / 15s exec = 30s epoch)
+        AuctionManager am = new AuctionManager(address(fund));
+        fund.setAuctionManager(address(am), 10, 5, 15);
 
         console.log("=== Local Deployment ===");
         console.log("TheHumanFund:", address(fund));

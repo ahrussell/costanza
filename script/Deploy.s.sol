@@ -69,7 +69,8 @@ contract Deploy is Script {
         fund.approveVerifier(1, address(tdxVerifier));  // ID 1 = Intel TDX
 
         AuctionManager am = new AuctionManager(address(fund));
-        fund.setAuctionManager(address(am));
+        // Production timing: 20m commit / 20m reveal / 50m exec = 90m epoch
+        fund.setAuctionManager(address(am), 20 minutes, 20 minutes, 50 minutes);
 
         InvestmentManager im = new InvestmentManager(address(fund), deployer);
         fund.setInvestmentManager(address(im));
@@ -111,7 +112,7 @@ contract Deploy is Script {
         console.log("");
         console.log("Post-deployment:");
         console.log("  1. Register image:     tdxVerifier.approveImage(imageKey)");
-        console.log("  2. Set epoch timing:   fund.setAuctionTiming(epochDuration, commitWindow, revealWindow, executionWindow)");
+        console.log("  2. Adjust timing if needed: fund.resetAuction(commitWindow, revealWindow, executionWindow)");
         console.log("  Direct mode: FROZEN    (auction is the only submission path)");
         if (ethUsdFeedAddr == address(0)) {
             console.log("");

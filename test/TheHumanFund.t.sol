@@ -48,8 +48,7 @@ contract TheHumanFundTest is EpochTest {
         // Without non-zero windows, Step C (auction open) is skipped and the
         // missed-epoch credit path never fires.
         AuctionManager am = new AuctionManager(address(fund));
-        fund.setAuctionManager(address(am));
-        fund.setAuctionTiming(86400, 1200, 1200, 3000); // 24h / 20m / 20m / 50m
+        fund.setAuctionManager(address(am), 1200, 1200, 82800); // 20m / 20m / 23h = 24h
     }
 
     // ─── Constructor ─────────────────────────────────────────────────────
@@ -455,7 +454,11 @@ contract TheHumanFundTest is EpochTest {
         fund.freeze(fund.FREEZE_AUCTION_CONFIG());
 
         vm.expectRevert(TheHumanFund.Frozen.selector);
-        fund.setAuctionTiming(86400, 3600, 1800, 7200);
+        fund.resetAuction(3600, 1800, 7200);
+
+        AuctionManager freshAm = new AuctionManager(address(fund));
+        vm.expectRevert(TheHumanFund.Frozen.selector);
+        fund.setAuctionManager(address(freshAm), 3600, 1800, 7200);
     }
 
     // test_freezePrompt removed — approvedPromptHash eliminated (dm-verity covers prompt)
