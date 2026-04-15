@@ -1190,10 +1190,15 @@ contract TheHumanFundAuctionTest is Test {
     }
 
     function testFuzz_bondEscalation_neverOverflows(uint8 misses) public {
-        // Skip epochs to build up consecutiveMissedEpochs
+        // Miss `n` epochs via the wall-clock path to build up consecutiveMissedEpochs.
+        // Warps to absolute timestamps because Forge caches block.timestamp
+        // within a test frame after vm.warp.
         uint256 n = bound(misses, 0, 50);
         for (uint256 i = 0; i < n; i++) {
-            fund.skipEpoch();
+            fund.syncPhase();
+            uint256 targetEpoch = fund.currentEpoch() + 1;
+            vm.warp(fund.epochStartTime(targetEpoch) + 1);
+            fund.syncPhase();
         }
         assertEq(fund.consecutiveMissedEpochs(), n > 50 ? 50 : n);
 

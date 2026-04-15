@@ -422,6 +422,27 @@ contract TheHumanFund is ReentrancyGuard {
     }
 
     /// @dev Pay commission to the referrer. Falls back to pull-based if referrer reverts.
+    ///
+    /// Known accepted limitation — "referrer reentry drift":
+    /// The external `.call` below hands execution to an arbitrary referrer
+    /// address. A malicious smart-contract referrer can reenter the fund
+    /// via `fund.syncPhase()` (which is intentionally not nonReentrant, so
+    /// migrate paths can drive it during sunset). If wall-clock has crossed
+    /// an epoch boundary, that reentrant sync advances `currentEpoch` and
+    /// zeros `currentEpochInflow` / `currentEpochDonationCount` /
+    /// `currentEpochCommissions` — effectively hiding the in-progress
+    /// donation from per-epoch telemetry. Callers of donate/donateWithMessage
+    /// write state BEFORE calling this function (CEI), so:
+    ///   - `totalInflows` is correct (written pre-call, never reset)
+    ///   - `messages[]` contains the donor message (pushed pre-call)
+    ///   - Treasury balance reflects the net ETH movement
+    ///   - Only the per-epoch counters can drift to zero
+    /// The model reads treasury balance and the message queue directly, so
+    /// this drift only affects one narrative line in the prompt. It is
+    /// equivalent to the "idle-gap donation" accounting loss that is also
+    /// accepted. Closing it hard would require either marking `syncPhase`
+    /// nonReentrant (breaks the sunset-drain path) or tracking per-donation
+    /// epoch tags independently of the global counters.
     function _payCommission(uint256 referralCodeId) internal returns (uint256 commission) {
         commission = (msg.value * commissionRateBps) / 10000;
         address payable referrer = payable(referralCodes[referralCodeId].owner);
@@ -470,33 +491,6 @@ contract TheHumanFund is ReentrancyGuard {
         // window between "snapshot" and "execute" — they run in the same tx.
         _freezeEpochSnapshot(epoch);
         _recordAndExecute(epoch, action, reasoning, 0);
-    }
-
-    /// @notice Skip the current epoch (no runner bid or missed deadline).
-    /// @dev Must not advance past an in-flight AuctionManager epoch — doing so
-    ///      would orphan the AM state (committed runners couldn't settle,
-    ///      winner's bond stranded). Require AM to be IDLE or SETTLED first;
-    ///      if there's an in-flight auction, the owner should call
-    ///      `syncPhase()` (or wait for timeouts) to drain it before skipping.
-    function skipEpoch() external onlyOwner {
-        if (frozenFlags & FREEZE_DIRECT_MODE != 0) revert Frozen();
-        uint256 epoch = currentEpoch;
-        if (epochs[epoch].executed) revert AlreadyDone();
-
-        IAuctionManager am = auctionManager;
-        if (address(am) != address(0)) {
-            IAuctionManager.AuctionPhase phase = am.getPhase(epoch);
-            if (phase != IAuctionManager.AuctionPhase.IDLE
-                && phase != IAuctionManager.AuctionPhase.SETTLED) revert WrongPhase();
-        }
-
-        if (consecutiveMissedEpochs < MAX_MISSED_EPOCHS) consecutiveMissedEpochs += 1;
-        currentEpoch = epoch + 1;
-
-        // Reset per-epoch counters
-        currentEpochInflow = 0;
-        currentEpochDonationCount = 0;
-        currentEpochCommissions = 0;
     }
 
     // ─── Owner: Proof Verifier Registry ──────────────────────────────────

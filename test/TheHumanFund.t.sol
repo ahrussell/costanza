@@ -44,9 +44,12 @@ contract TheHumanFundTest is Test {
         mockFactory.preDeployOrg(bytes32("EIN-AMF"));
         mockFactory.preDeployOrg(bytes32("EIN-HKI"));
 
-        // Deploy AuctionManager so syncPhase() works
+        // Deploy AuctionManager and set timing so syncPhase() can open auctions.
+        // Without non-zero windows, Step C (auction open) is skipped and the
+        // missed-epoch credit path never fires.
         AuctionManager am = new AuctionManager(address(fund));
         fund.setAuctionManager(address(am));
+        fund.setAuctionTiming(86400, 1200, 1200, 3000); // 24h / 20m / 20m / 50m
     }
 
     // ─── Constructor ─────────────────────────────────────────────────────
@@ -251,10 +254,23 @@ contract TheHumanFundTest is Test {
         assertEq(fund.currentEpoch(), 4);
     }
 
-    // ─── Epoch: Skip & Auto-Escalation ───────────────────────────────────
+    // ─── Epoch: Miss & Auto-Escalation ───────────────────────────────────
 
-    function test_skip_epoch() public {
-        fund.skipEpoch();
+    /// @dev Simulate a missed epoch: open an auction, warp past its deadline,
+    ///      and let syncPhase drain+advance. This is the on-chain path
+    ///      exercised by real timeouts (no owner intervention needed).
+    ///      NOTE: Forge caches `block.timestamp` within a single test frame
+    ///      after `vm.warp`, so we must warp to an absolute target read from
+    ///      the contract rather than `block.timestamp + X`.
+    function _missEpoch() internal {
+        fund.syncPhase(); // ensures auction is open for the current epoch
+        uint256 targetEpoch = fund.currentEpoch() + 1;
+        vm.warp(fund.epochStartTime(targetEpoch) + 1); // 1s into next epoch
+        fund.syncPhase(); // drains AM to SETTLED, advances epoch, credits missed
+    }
+
+    function test_missed_epoch_advances_and_credits() public {
+        _missEpoch();
         assertEq(fund.currentEpoch(), 2);
         assertEq(fund.consecutiveMissedEpochs(), 1);
     }
@@ -263,10 +279,10 @@ contract TheHumanFundTest is Test {
         // Initial max bid is 0.005 ETH
         assertEq(fund.effectiveMaxBid(), 0.005 ether);
 
-        // Skip 3 epochs
-        fund.skipEpoch(); // +10% → 0.0055
-        fund.skipEpoch(); // +10% → 0.00605
-        fund.skipEpoch(); // +10% → 0.006655
+        // Miss 3 epochs
+        _missEpoch(); // +10% → 0.0055
+        _missEpoch(); // +10% → 0.00605
+        _missEpoch(); // +10% → 0.006655
 
         uint256 effective = fund.effectiveMaxBid();
         // 0.005 * 1.1^3 = 0.006655
@@ -302,12 +318,6 @@ contract TheHumanFundTest is Test {
         vm.prank(donor);
         vm.expectRevert(TheHumanFund.Unauthorized.selector);
         fund.submitEpochAction(action, bytes("unauthorized"), -1, "");
-    }
-
-    function test_only_owner_can_skip() public {
-        vm.prank(donor);
-        vm.expectRevert(TheHumanFund.Unauthorized.selector);
-        fund.skipEpoch();
     }
 
     // ─── Multi-epoch Donation Tracking ───────────────────────────────────
@@ -416,9 +426,6 @@ contract TheHumanFundTest is Test {
 
         vm.expectRevert(TheHumanFund.Frozen.selector);
         fund.submitEpochAction(noop, "frozen", -1, "");
-
-        vm.expectRevert(TheHumanFund.Frozen.selector);
-        fund.skipEpoch();
     }
 
     function test_freezeVerifiers() public {
@@ -573,13 +580,13 @@ contract TheHumanFundTest is Test {
         address newOwner = address(0xBEEF);
         fund.transferOwnership(newOwner);
 
-        // Old owner can no longer act
+        // Old owner can no longer act (any onlyOwner function will do)
         vm.expectRevert(TheHumanFund.Unauthorized.selector);
-        fund.skipEpoch();
+        fund.approveVerifier(2, address(0xCAFE));
 
         // New owner can act
         vm.prank(newOwner);
-        fund.skipEpoch();
+        fund.approveVerifier(2, address(0xCAFE));
     }
 
     // ─── Fuzz Tests ────────────────────────────────────────────────────

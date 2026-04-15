@@ -43,9 +43,12 @@ contract MessagesTest is Test {
         fund.addNonprofit("Against Malaria Foundation", "Malaria prevention", bytes32("EIN-AMF"));
         fund.addNonprofit("Helen Keller International", "NTDs", bytes32("EIN-HKI"));
 
-        // Deploy AuctionManager so syncPhase() works
+        // Deploy AuctionManager and set timing so syncPhase() can open auctions.
+        // Needed for the missed-epoch tests that rely on _syncPhase's wall-clock
+        // path to credit consecutiveMissedEpochs and advance the epoch.
         AuctionManager am = new AuctionManager(address(fund));
         fund.setAuctionManager(address(am));
+        fund.setAuctionTiming(86400, 1200, 1200, 3000);
     }
 
     // ─── donateWithMessage ──────────────────────────────────────────────
@@ -281,6 +284,17 @@ contract MessagesTest is Test {
     // NOT on failed auctions or missed epochs. These tests lock in that behavior:
     // messages are never dropped, they just wait for the next successful epoch.
 
+    /// @dev Miss an epoch via the on-chain wall-clock path: open an auction,
+    ///      warp past its deadline, let syncPhase drain to SETTLED + advance.
+    ///      Uses absolute-time warp because Forge caches `block.timestamp`
+    ///      within a test frame after vm.warp.
+    function _missEpoch() internal {
+        fund.syncPhase();
+        uint256 targetEpoch = fund.currentEpoch() + 1;
+        vm.warp(fund.epochStartTime(targetEpoch) + 1);
+        fund.syncPhase();
+    }
+
     function test_message_survives_missed_epoch() public {
         // Send a message in epoch 1
         vm.deal(donor1, 1 ether);
@@ -289,11 +303,11 @@ contract MessagesTest is Test {
         assertEq(fund.messageCount(), 1);
         assertEq(fund.messageHead(), 0);
 
-        // "Miss" epoch 1 by advancing to epoch 2 via skipEpoch (no _recordAndExecute).
-        // skipEpoch must not advance messageHead.
-        fund.skipEpoch();
+        // "Miss" epoch 1 by timing out the auction (no reveal, no submission).
+        // The wall-clock path must not advance messageHead.
+        _missEpoch();
         assertEq(fund.currentEpoch(), 2);
-        assertEq(fund.messageHead(), 0, "messageHead should NOT advance on skip");
+        assertEq(fund.messageHead(), 0, "messageHead should NOT advance on missed epoch");
 
         // Message is still unread
         (address[] memory senders,,,) = fund.getUnreadMessages();
@@ -316,9 +330,9 @@ contract MessagesTest is Test {
         fund.donateWithMessage{value: 0.01 ether}(0, "patient donor");
         assertEq(fund.messageCount(), 1);
 
-        // Skip 5 epochs in a row — message should still be in the queue
+        // Miss 5 epochs in a row — message should still be in the queue
         for (uint256 i = 0; i < 5; i++) {
-            fund.skipEpoch();
+            _missEpoch();
         }
         assertEq(fund.currentEpoch(), 6);
         assertEq(fund.messageHead(), 0, "messageHead preserved across 5 missed epochs");
