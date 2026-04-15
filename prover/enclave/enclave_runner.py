@@ -44,6 +44,7 @@ from .prompt_builder import build_epoch_context, build_full_prompt
 
 MODEL_PATH = os.environ.get("MODEL_PATH", "/models/model.gguf")
 SYSTEM_PROMPT_PATH = os.environ.get("SYSTEM_PROMPT_PATH", "/opt/humanfund/system_prompt.txt")
+VOICE_ANCHORS_PATH = os.environ.get("VOICE_ANCHORS_PATH", "/opt/humanfund/voice_anchors.txt")
 LLAMA_SERVER_PORT = int(os.environ.get("LLAMA_SERVER_PORT", "8080"))
 LLAMA_SERVER_URL = f"http://127.0.0.1:{LLAMA_SERVER_PORT}"
 LLAMA_SERVER_BIN = os.environ.get("LLAMA_SERVER_BIN", "/opt/humanfund/bin/llama-server")
@@ -287,6 +288,7 @@ def main():
     log("The Human Fund — TEE Enclave (one-shot)")
     log(f"  Model: {MODEL_PATH}")
     log(f"  System prompt: {SYSTEM_PROMPT_PATH}")
+    log(f"  Voice anchors: {VOICE_ANCHORS_PATH}")
     log(f"  dm-verity rootfs: all code is immutable")
     if args.mock:
         log("  WARNING: Mock attestation enabled (--mock flag)")
@@ -308,14 +310,22 @@ def main():
         llama_seed = seed & 0xFFFFFFFF if seed > 0 else -1
         log(f"  Seed: {seed} (llama: {llama_seed})")
 
-        # Step 2: Read system prompt from dm-verity rootfs
+        # Step 2: Read system prompt + voice anchors from dm-verity rootfs
         log("")
-        log("Step 2: Reading system prompt...")
+        log("Step 2: Reading system prompt and voice anchors...")
         prompt_path = Path(SYSTEM_PROMPT_PATH)
         if not prompt_path.exists():
             raise RuntimeError(f"System prompt not found at {SYSTEM_PROMPT_PATH}")
         system_prompt = prompt_path.read_text().strip()
         log(f"  Prompt: {len(system_prompt)} chars, sha256={hashlib.sha256(system_prompt.encode()).hexdigest()[:16]}...")
+
+        anchors_path = Path(VOICE_ANCHORS_PATH)
+        if anchors_path.exists():
+            voice_anchors = anchors_path.read_text().strip()
+            log(f"  Voice anchors: {len(voice_anchors)} chars, sha256={hashlib.sha256(voice_anchors.encode()).hexdigest()[:16]}...")
+        else:
+            voice_anchors = ""
+            log(f"  Voice anchors: not found at {VOICE_ANCHORS_PATH}, continuing without")
 
         # Step 3: Compute input hash
         # The enclave is a dumb hasher. It takes the flat epoch_state from the
@@ -349,7 +359,7 @@ def main():
         # waste GPU time, but no bad action ever lands.
         log("")
         log("Step 4: Building prompt...")
-        epoch_context = build_epoch_context(epoch_state, seed=seed)
+        epoch_context = build_epoch_context(epoch_state, seed=seed, voice_anchors=voice_anchors)
         log(f"  Epoch context built from verified state ({len(epoch_context)} chars)")
         full_prompt = build_full_prompt(system_prompt, epoch_context)
         log(f"  Full prompt: {len(full_prompt)} chars")

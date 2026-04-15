@@ -18,7 +18,6 @@ The epoch context includes:
 
 import random
 import re
-from pathlib import Path
 
 
 # ─── Constants ────────────────────────────────────────────────────────────
@@ -28,43 +27,6 @@ RISK_LABELS = {1: "LOW", 2: "MEDIUM", 3: "MEDIUM-HIGH", 4: "HIGH"}
 # Characters for dynamic marker generation — avoid common text chars
 # 8 chars with length 5 = 32,768 possible markers (vs prior 4^3 = 64)
 _MARKER_ALPHABET = "^~`|@#$%"
-
-
-# ─── Voice anchors ────────────────────────────────────────────────────────
-# Hand-written reference diary entries that demonstrate Costanza's voice.
-# Injected into the reminder block at the END of epoch_context, where they
-# land inside the Pass-2 attention window (closest to where the diary
-# actually starts generating). These do not drift across epochs — they are
-# a fixed baseline for voice, independent of real on-chain history.
-
-_VOICE_ANCHORS_CACHE = None
-
-def _load_voice_anchors() -> str:
-    """Load voice_anchors.txt from the prompts directory, cached after first read.
-
-    Returns empty string if the file is missing (graceful fallback — the
-    prompt builder still works, just without anchors).
-    """
-    global _VOICE_ANCHORS_CACHE
-    if _VOICE_ANCHORS_CACHE is not None:
-        return _VOICE_ANCHORS_CACHE
-
-    here = Path(__file__).resolve()
-    candidates = [
-        here.parent.parent / "prompts" / "voice_anchors.txt",           # prover/prompts/
-        Path("/opt/humanfund/prompts/voice_anchors.txt"),               # dm-verity rootfs
-        Path("/opt/humanfund/prover/prompts/voice_anchors.txt"),        # alt layout
-        here.parent.parent.parent / "prover" / "prompts" / "voice_anchors.txt",
-    ]
-    for path in candidates:
-        try:
-            if path.exists():
-                _VOICE_ANCHORS_CACHE = path.read_text().strip()
-                return _VOICE_ANCHORS_CACHE
-        except Exception:
-            pass
-    _VOICE_ANCHORS_CACHE = ""
-    return ""
 
 
 # ─── Formatting Helpers ──────────────────────────────────────────────────
@@ -362,7 +324,7 @@ def _decode_action_display(action_bytes):
         return action_names.get(action_type, f"unknown({action_type})")
 
 
-def build_epoch_context(state, seed=None):
+def build_epoch_context(state, seed=None, voice_anchors: str = ""):
     """Build the epoch context string from the flat epoch state.
 
     Runs inside the TEE. The state dict is the same flat dict that was just
@@ -711,7 +673,7 @@ def build_epoch_context(state, seed=None):
     # -- Voice anchors — right before the generation point --
     # These are the freshest context the model sees before it starts writing
     # the <think> block. They establish baseline voice independent of history.
-    anchors = _load_voice_anchors()
+    anchors = voice_anchors
     if anchors:
         lines.append("")
         lines.append("=== VOICE ANCHORS — how past-you wrote when the writing was working ===")
