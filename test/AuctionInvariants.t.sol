@@ -40,6 +40,7 @@ contract AuctionInvariantsTest is EpochTest {
 
         vm.deal(runner1, 10 ether);
         vm.deal(runner2, 10 ether);
+        _registerMockVerifier(fund);
     }
 
     function _commitHash(address runner, uint256 bid, bytes32 salt) internal pure returns (bytes32) {

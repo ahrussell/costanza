@@ -92,6 +92,7 @@ contract InvestmentManagerTest is EpochTest {
         im.addProtocol(address(adapterB), "Lido wstETH", "Stake ETH via Lido", 2, 380);     // protocol 2
         im.addProtocol(address(adapterC), "Compound V3 USDC", "Lend USDC on Compound", 1, 450); // protocol 3
         vm.stopPrank();
+        _registerMockVerifier(fund);
     }
 
     // ─── Protocol Registry ───────────────────────────────────────────────
@@ -156,8 +157,8 @@ contract InvestmentManagerTest is EpochTest {
         uint256 balBefore = address(fund).balance;
         speedrunEpoch(fund, action, "too much");
 
-        // Fund balance should be unchanged (action was rejected)
-        assertEq(address(fund).balance, balBefore);
+        // Fund balance should be unchanged (action was rejected) minus bounty
+        assertEq(address(fund).balance, balBefore - 1); // -1 wei bounty
         assertEq(im.totalInvestedValue(), 0);
     }
 
@@ -168,7 +169,7 @@ contract InvestmentManagerTest is EpochTest {
         uint256 balBefore = address(fund).balance;
         speedrunEpoch(fund, action, "too much per protocol");
 
-        assertEq(address(fund).balance, balBefore);
+        assertEq(address(fund).balance, balBefore - 1); // -1 wei bounty
     }
 
     function test_depositBreaksMinReserve() public {
@@ -182,14 +183,14 @@ contract InvestmentManagerTest is EpochTest {
         bytes memory action2 = abi.encodePacked(uint8(3), abi.encode(uint256(2), uint256(7 ether)));
         uint256 balBefore = address(fund).balance;
         speedrunEpoch(fund, action2, "breaks reserve");
-        assertEq(address(fund).balance, balBefore); // unchanged
+        assertEq(address(fund).balance, balBefore - 1); // -1 wei bounty
     }
 
     function test_depositToInvalidProtocol() public {
         bytes memory action = abi.encodePacked(uint8(3), abi.encode(uint256(99), uint256(1 ether)));
         uint256 balBefore = address(fund).balance;
         speedrunEpoch(fund, action, "bad protocol");
-        assertEq(address(fund).balance, balBefore); // noop
+        assertEq(address(fund).balance, balBefore - 1); // -1 wei bounty
     }
 
     function test_depositToPausedProtocol() public {
@@ -199,7 +200,7 @@ contract InvestmentManagerTest is EpochTest {
         bytes memory action = abi.encodePacked(uint8(3), abi.encode(uint256(1), uint256(1 ether)));
         uint256 balBefore = address(fund).balance;
         speedrunEpoch(fund, action, "paused protocol");
-        assertEq(address(fund).balance, balBefore); // noop
+        assertEq(address(fund).balance, balBefore - 1); // -1 wei bounty
     }
 
     // ─── Withdraw ────────────────────────────────────────────────────────
@@ -243,7 +244,7 @@ contract InvestmentManagerTest is EpochTest {
         bytes memory action = abi.encodePacked(uint8(4), abi.encode(uint256(1), uint256(1 ether)));
         uint256 balBefore = address(fund).balance;
         speedrunEpoch(fund, action, "withdraw empty");
-        assertEq(address(fund).balance, balBefore);
+        assertEq(address(fund).balance, balBefore - 1); // -1 wei bounty
     }
 
     function test_withdrawFromPausedProtocolStillWorks() public {
@@ -319,8 +320,8 @@ contract InvestmentManagerTest is EpochTest {
         bytes memory invest = abi.encodePacked(uint8(3), abi.encode(uint256(1), uint256(2 ether)));
         speedrunEpoch(fund, invest, "invest");
 
-        // Total assets should still be 10 ETH (8 liquid + 2 invested)
-        assertEq(fund.totalAssets(), 10 ether);
+        // Total assets should still be ~10 ETH (8 liquid + 2 invested) minus bounty
+        assertEq(fund.totalAssets(), 10 ether - 1); // -1 wei bounty
     }
 
     // ─── No InvestmentManager ────────────────────────────────────────────
@@ -333,11 +334,12 @@ contract InvestmentManagerTest is EpochTest {
         );
         AuctionManager am2 = new AuctionManager(address(fund2));
         fund2.setAuctionManager(address(am2), 1200, 1200, 82800);
+        _registerMockVerifier(fund2);
 
         bytes memory action = abi.encodePacked(uint8(3), abi.encode(uint256(1), uint256(0.1 ether)));
         uint256 balBefore = address(fund2).balance;
         speedrunEpoch(fund2, action, "invest without IM");
-        assertEq(address(fund2).balance, balBefore); // noop
+        assertEq(address(fund2).balance, balBefore - 1); // noop, -1 wei bounty
     }
 
     // ─── Bounds Management ───────────────────────────────────────────────
@@ -433,9 +435,9 @@ contract InvestmentManagerTest is EpochTest {
         uint256 ownerBalBefore = address(owner).balance;
         fund.withdrawAll();
 
-        // Owner gets: 3 ETH from investment (2 * 1.5) + 8 ETH liquid = 11 ETH
+        // Owner gets: 3 ETH from investment (2 * 1.5) + 8 ETH liquid - 1 wei bounty
         uint256 received = address(owner).balance - ownerBalBefore;
-        assertEq(received, 11 ether);
+        assertEq(received, 11 ether - 1); // -1 wei bounty
     }
 
     function test_withdrawAll_skipsEmptyProtocols() public {

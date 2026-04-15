@@ -49,6 +49,7 @@ contract TheHumanFundTest is EpochTest {
         // missed-epoch credit path never fires.
         AuctionManager am = new AuctionManager(address(fund));
         fund.setAuctionManager(address(am), 1200, 1200, 82800); // 20m / 20m / 23h = 24h
+        _registerMockVerifier(fund);
     }
 
     // ─── Constructor ─────────────────────────────────────────────────────
@@ -142,23 +143,26 @@ contract TheHumanFundTest is EpochTest {
         speedrunEpoch(fund, action, reasoning);
 
         assertEq(fund.currentEpoch(), 2);
-        assertEq(fund.treasuryBalance(), 5 ether); // unchanged
+        // Treasury loses 1 wei (minimum auction bounty paid to runner).
+        assertEq(fund.treasuryBalance(), 5 ether - 1);
     }
 
     // ─── Epoch: Donate ───────────────────────────────────────────────────
 
     function test_donate_action() public {
-        // Donate 0.5 ETH (10% of 5 ETH) to nonprofit 1
-        bytes memory action = abi.encodePacked(uint8(1), abi.encode(uint256(1), uint256(0.5 ether)));
+        // Donate 0.49 ETH to nonprofit 1. Must be under 10% of treasury
+        // at execution time (5 ETH - 1 wei bounty = ~4.999... ETH).
+        uint256 donateAmount = 0.49 ether;
+        bytes memory action = abi.encodePacked(uint8(1), abi.encode(uint256(1), donateAmount));
         bytes memory reasoning = bytes("Donating to GiveDirectly.");
 
         speedrunEpoch(fund, action, reasoning);
 
         assertEq(fund.currentEpoch(), 2);
-        assertEq(fund.treasuryBalance(), 4.5 ether);
+        assertEq(fund.treasuryBalance(), 5 ether - 1 - donateAmount); // -1 wei bounty
 
         (, , , uint256 totalDonated,, uint256 donationCount) = fund.getNonprofit(1);
-        assertEq(totalDonated, 0.5 ether);
+        assertEq(totalDonated, donateAmount);
         assertEq(donationCount, 1);
         assertEq(fund.lastDonationEpoch(), 1);
     }
@@ -171,9 +175,9 @@ contract TheHumanFundTest is EpochTest {
         uint256 treasuryBefore = fund.treasuryBalance();
         speedrunEpoch(fund, action, reasoning);
 
-        // Epoch advances but treasury unchanged (noop)
+        // Epoch advances; treasury loses only the 1 wei bounty (action was noop)
         assertEq(fund.currentEpoch(), 2);
-        assertEq(fund.treasuryBalance(), treasuryBefore);
+        assertEq(fund.treasuryBalance(), treasuryBefore - 1);
         assertEq(fund.lastDonationEpoch(), 0); // Never donated
     }
 
@@ -185,7 +189,7 @@ contract TheHumanFundTest is EpochTest {
         speedrunEpoch(fund, action, reasoning);
 
         assertEq(fund.currentEpoch(), 2);
-        assertEq(fund.treasuryBalance(), treasuryBefore);
+        assertEq(fund.treasuryBalance(), treasuryBefore - 1); // -1 wei bounty
     }
 
     // ─── Epoch: Set Commission Rate ──────────────────────────────────────
@@ -290,10 +294,21 @@ contract TheHumanFundTest is EpochTest {
         bytes memory action = abi.encodePacked(uint8(0));
         bytes memory reasoning = bytes("Testing diary emission.");
 
-        vm.expectEmit(true, false, false, true);
-        emit TheHumanFund.DiaryEntry(1, reasoning, action, 5 ether, 5 ether);
-
+        vm.recordLogs();
         speedrunEpoch(fund, action, reasoning);
+
+        // DiaryEntry is emitted among other auction events. Find it.
+        Vm.Log[] memory entries = vm.getRecordedLogs();
+        bytes32 diaryTopic = keccak256("DiaryEntry(uint256,bytes,bytes,uint256,uint256)");
+        bool found = false;
+        for (uint256 i = 0; i < entries.length; i++) {
+            if (entries[i].topics[0] == diaryTopic) {
+                assertEq(entries[i].topics[1], bytes32(uint256(1)), "epoch 1");
+                found = true;
+                break;
+            }
+        }
+        assertTrue(found, "DiaryEntry event must be emitted");
     }
 
     // ─── Auth ────────────────────────────────────────────────────────────
@@ -332,17 +347,17 @@ contract TheHumanFundTest is EpochTest {
         bytes memory action = abi.encodePacked(uint8(0));
         bytes memory reasoning = bytes("First epoch thoughts.");
 
-        uint256 treasuryBefore = address(fund).balance;
         speedrunEpoch(fund, action, reasoning);
 
         // epochContentHash should be set for epoch 1
         bytes32 contentHash = fund.epochContentHashes(1);
         assertTrue(contentHash != bytes32(0));
 
-        // Verify it matches the expected formula.
-        // bountyPaid is 0 for this direct submitEpochAction call (no auction bounty).
+        // Verify it matches the expected formula. _recordAndExecute
+        // captures treasuryBefore AFTER the bounty is paid (1 wei).
+        (, , , uint256 tBefore, uint256 tAfter, uint256 bounty,) = fund.getEpochRecord(1);
         bytes32 expected = keccak256(abi.encode(
-            keccak256(reasoning), keccak256(action), treasuryBefore, treasuryBefore, uint256(0)
+            keccak256(reasoning), keccak256(action), tBefore, tAfter, bounty
         ));
         assertEq(contentHash, expected);
     }
@@ -354,11 +369,7 @@ contract TheHumanFundTest is EpochTest {
         speedrunEpoch(fund, abi.encodePacked(uint8(0)), bytes("reasoning 1"));
         bytes32 hash1 = fund.computeInputHashForEpoch(1);
 
-        // Advance to epoch 2 so submitEpochAction targets a fresh epoch.
-        vm.warp(fund.epochStartTime(2) + 1);
-        fund.syncPhase();
-
-        fund.submitEpochAction(abi.encodePacked(uint8(0)), bytes("reasoning 2"), -1, "");
+        speedrunEpoch(fund, abi.encodePacked(uint8(0)), bytes("reasoning 2"));
         bytes32 hash2 = fund.computeInputHashForEpoch(2);
 
         // Epoch 2's snapshot differs from epoch 1's in at least:

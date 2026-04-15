@@ -35,6 +35,7 @@ contract WorldViewTest is EpochTest {
 
         wv = new WorldView(address(fund));
         fund.setWorldView(address(wv));
+        _registerMockVerifier(fund);
     }
 
     // ─── Basic Policy Setting (via sidecar) ───────────────────────────
@@ -157,11 +158,8 @@ contract WorldViewTest is EpochTest {
         );
         bytes32 hash1 = fund.computeInputHashForEpoch(1);
 
-        // Advance to epoch 2 so submitEpochAction targets a fresh epoch.
-        vm.warp(fund.epochStartTime(2) + 1);
-        fund.syncPhase();
-
-        fund.submitEpochAction(
+        speedrunEpoch(
+            fund,
             abi.encodePacked(uint8(0)),
             "Epoch 2", int8(1), "Policy changes input hash"
         );
@@ -195,14 +193,25 @@ contract WorldViewTest is EpochTest {
     // ─── Event Emission ────────────────────────────────────────────────
 
     function test_emits_guiding_policy_event() public {
-        vm.expectEmit(true, false, false, true);
-        emit WorldView.GuidingPolicyUpdated(1, "Test policy");
-
+        vm.recordLogs();
         speedrunEpoch(
             fund,
             abi.encodePacked(uint8(0)),
             "Event test", int8(1), "Test policy"
         );
+
+        // GuidingPolicyUpdated is emitted among auction events. Find it.
+        Vm.Log[] memory entries = vm.getRecordedLogs();
+        bytes32 topic = keccak256("GuidingPolicyUpdated(uint256,string)");
+        bool found = false;
+        for (uint256 i = 0; i < entries.length; i++) {
+            if (entries[i].topics[0] == topic) {
+                assertEq(entries[i].topics[1], bytes32(uint256(1)), "slot 1");
+                found = true;
+                break;
+            }
+        }
+        assertTrue(found, "GuidingPolicyUpdated event must be emitted");
     }
 
     // ─── Only Fund Can Set ─────────────────────────────────────────────

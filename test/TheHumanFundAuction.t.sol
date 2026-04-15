@@ -66,6 +66,7 @@ contract TheHumanFundAuctionTest is EpochTest {
         vm.deal(runner1, 10 ether);
         vm.deal(runner2, 10 ether);
         vm.deal(runner3, 10 ether);
+        _registerMockVerifier(fund);
     }
 
     // ─── Helpers ────────────────────────────────────────────────────────────
