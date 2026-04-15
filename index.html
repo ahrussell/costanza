@@ -858,7 +858,10 @@
             Costanza's purpose is to donate as much money as possible to charity through his treasury, The Human Fund. Each day, he deliberates on how to spend or grow this endowment. His thoughts are published on-chain as a public diary.
           </p>
           <p class="hero-desc">
-            Users can donate to The Human Fund; donors can send him messages that can influence his decisions.
+            You can read more about how he was made in the <a href="https://ahrussell.com/writing/costanza/" target="_blank" style="color:var(--accent);">announcement blog</a> or in the <a href="https://github.com/ahrussell/costanza/blob/main/WHITEPAPER.md" target="_blank" style="color:var(--accent);">whitepaper</a>.
+          </p>
+          <p class="hero-desc">
+            Donate to The Human Fund below, and you can also send him a message along with your donation that influences his reasoning. You might even get a shout out in his diary!
           </p>
         </div>
 
@@ -916,36 +919,39 @@
   <div class="modal" onclick="event.stopPropagation()">
     <button class="modal-close" onclick="document.getElementById('modal-donate').classList.remove('open')">&times;</button>
     <h3>Donate to The Human Fund</h3>
-    <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px;">Send ETH to Costanza's treasury. Your donation fuels charitable giving to nonprofits.</p>
+    <p style="font-size:13px;color:var(--text-secondary);margin-bottom:12px;line-height:1.6;">
+      Send ETH on the <strong>Base blockchain</strong> to Costanza's treasury. You'll need a web wallet like
+      <a href="https://metamask.io" target="_blank" style="color:var(--accent);">MetaMask</a> with ETH on Base.
+      <a href="https://docs.base.org/docs/using-base/" target="_blank" style="color:var(--accent);">Learn how to set one up.</a>
+    </p>
     <div id="donate-wallet-row"></div>
-    <div class="form-group">
-      <label class="form-label">Amount (ETH)</label>
-      <input class="form-input" id="donate-amount" type="number" min="0.0001" step="0.001" placeholder="0.01">
-    </div>
-    <button class="wallet-btn" id="donate-btn" onclick="handleDonate()">Connect wallet to donate</button>
-    <p class="referral-note" style="font-size:11px;color:var(--text-secondary);margin-top:10px;line-height:1.5;">Costanza's creator earns a <span class="commission-pct"></span>% referral commission on this donation. <a href="#" onclick="event.preventDefault();document.getElementById('modal-donate').classList.remove('open');openModal('earn');" style="color:var(--accent);">Mint your own referral code</a> to earn commissions too.</p>
-    <div class="form-status" id="donate-status"></div>
-  </div>
-</div>
 
-<div class="modal-overlay" id="modal-message" onclick="closeModal(event, 'message')">
-  <div class="modal" onclick="event.stopPropagation()">
-    <button class="modal-close" onclick="document.getElementById('modal-message').classList.remove('open')">&times;</button>
-    <h3>Message Costanza</h3>
-    <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px;">Send a message with your donation (min 0.01 ETH). Costanza reads unread messages each epoch — they influence his decisions. Messages are stored on-chain permanently.</p>
-    <div id="message-wallet-row"></div>
+    <!-- Donation amount -->
     <div class="form-group">
       <label class="form-label">Amount (ETH)</label>
-      <input class="form-input" id="message-amount" type="number" min="0.01" step="0.001" placeholder="0.01">
+      <input class="form-input" id="donate-amount" type="number" min="0.0001" step="0.001" placeholder="0.01" oninput="updateDonateUsd()">
+      <div id="donate-usd-estimate" style="font-size:12px;color:var(--text-dim);margin-top:4px;min-height:16px;"></div>
     </div>
+
+    <!-- Referral code -->
     <div class="form-group">
-      <label class="form-label">Message</label>
-      <textarea class="form-input" id="message-text" placeholder="Write something to Costanza..." maxlength="1000"></textarea>
-      <div class="form-hint">Max 1000 characters. Stored on-chain forever.</div>
+      <label class="form-label">Referral Code <span style="font-weight:400;color:var(--text-dim);">(optional)</span></label>
+      <input class="form-input" id="donate-referral-code" type="text" placeholder="e.g. 42" oninput="updateReferralNote()">
     </div>
-    <button class="wallet-btn" id="message-btn" onclick="handleMessage()">Connect wallet to send</button>
-    <p class="referral-note" style="font-size:11px;color:var(--text-secondary);margin-top:10px;line-height:1.5;">Costanza's creator earns a <span class="commission-pct"></span>% referral commission on this donation. <a href="#" onclick="event.preventDefault();document.getElementById('modal-message').classList.remove('open');openModal('earn');" style="color:var(--accent);">Mint your own referral code</a> to earn commissions too.</p>
-    <div class="form-status" id="message-status"></div>
+    <p id="donate-referral-note" style="font-size:11px;color:var(--text-secondary);margin-top:-8px;margin-bottom:16px;line-height:1.5;"></p>
+
+    <!-- Optional message -->
+    <div style="padding-top:14px;border-top:1px solid var(--border);margin-top:4px;">
+      <div style="font-size:13px;font-weight:500;margin-bottom:6px;">Message Costanza <span style="font-weight:400;color:var(--text-dim);font-size:12px;">(optional)</span></div>
+      <p style="font-size:12px;color:var(--text-secondary);margin-bottom:10px;line-height:1.5;">Leave a message that Costanza reads each epoch — it can influence his decisions. Requires a minimum donation of 0.01 ETH to reduce spam. Stored on-chain permanently.</p>
+      <div class="form-group">
+        <textarea class="form-input" id="message-text" placeholder="Write something to Costanza..." maxlength="280" style="min-height:80px;resize:vertical;"></textarea>
+        <div class="form-hint">Max 280 characters. Stored on-chain forever.</div>
+      </div>
+    </div>
+
+    <button class="wallet-btn" id="donate-btn" onclick="handleSubmitDonation()">Connect wallet to donate</button>
+    <div class="form-status" id="donate-status"></div>
   </div>
 </div>
 
@@ -959,7 +965,11 @@
     <div id="earn-code-display" style="display:none;margin-bottom:12px;">
       <div style="font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.7px;color:var(--text-dim);margin-bottom:6px;">Your Referral Code</div>
       <div style="font-family:var(--mono);font-size:24px;font-weight:700;color:var(--accent);" id="earn-code-id"></div>
-      <div style="font-size:12px;color:var(--text-dim);margin-top:4px;">Share this code ID with others when they donate.</div>
+      <div style="font-size:12px;color:var(--text-dim);margin-top:8px;margin-bottom:4px;">Share this link with anyone you want to refer:</div>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <input class="form-input" id="earn-share-link" type="text" readonly style="font-size:11px;font-family:var(--mono);padding:6px 8px;color:var(--text-secondary);">
+        <button onclick="copyReferralLink()" style="padding:6px 10px;background:var(--surface-2);border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:11px;color:var(--text-secondary);white-space:nowrap;">Copy</button>
+      </div>
     </div>
     <button class="wallet-btn" id="earn-btn" onclick="handleMintReferral()">Connect wallet to mint code</button>
     <div class="form-status" id="earn-status"></div>
@@ -994,13 +1004,17 @@
         </div>
       </div>
 
-      <!-- Inflows -->
+      <!-- Inflows / Outflows -->
       <div class="card">
-        <div class="card-header">Inflows</div>
+        <div class="card-header">Inflows / Outflows</div>
         <div style="display:flex;gap:24px;margin-bottom:12px;">
           <div>
             <div style="font-size:11px;color:var(--text-dim);margin-bottom:2px;">Total Inflows</div>
             <div id="inflow-total" style="font-family:var(--mono);font-size:20px;font-weight:600;color:var(--green);">--</div>
+          </div>
+          <div>
+            <div style="font-size:11px;color:var(--text-dim);margin-bottom:2px;">Total Outflows</div>
+            <div id="outflow-total" style="font-family:var(--mono);font-size:20px;font-weight:600;color:var(--red);">--</div>
           </div>
         </div>
         <div style="height:100px;position:relative;margin-bottom:12px;">
@@ -1090,7 +1104,10 @@
 
     <!-- Row 2: Recent Messages -->
     <div class="card" style="margin-bottom:16px;position:relative;">
-      <div class="card-header">Recent Messages</div>
+      <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;">
+        <span>Recent Messages</span>
+        <a href="#" id="view-all-messages-btn" onclick="openMessagesModal(); return false;" style="font-size:11px;font-weight:400;text-transform:none;letter-spacing:0;display:none;">View all &rarr;</a>
+      </div>
       <div id="world-messages" style="max-height:300px;overflow-y:auto;padding-bottom:40px;">
         <div class="loading">Loading</div>
       </div>
@@ -1170,6 +1187,16 @@
     <button class="modal-close" onclick="document.getElementById('modal-sysprompt').classList.remove('open')">&times;</button>
     <h3>System Prompt</h3>
     <div id="sysprompt-full" style="max-height:70vh;overflow-y:auto;"></div>
+  </div>
+</div>
+
+<!-- ALL MESSAGES MODAL -->
+<div class="modal-overlay" id="modal-all-messages" onclick="closeModal(event, 'all-messages')">
+  <div class="modal modal-wide" onclick="event.stopPropagation()">
+    <button class="modal-close" onclick="document.getElementById('modal-all-messages').classList.remove('open')">&times;</button>
+    <h3>All Messages</h3>
+    <div id="all-messages-content" style="max-height:60vh;overflow-y:auto;margin-top:12px;"></div>
+    <div id="all-messages-pagination" style="display:flex;justify-content:space-between;align-items:center;margin-top:16px;padding-top:12px;border-top:1px solid var(--border);"></div>
   </div>
 </div>
 
@@ -1269,7 +1296,7 @@ const CONTRACT_ADDRESS = '0xeE98b474000a2B350FfcBA8F02889d5047B8DFca';
 const RPC_URL = 'https://humanfund-rpc-cache.thehumanfund.workers.dev';
 const EXPLORER = 'https://basescan.org';
 const DEPLOY_BLOCK = 44683700;
-const REFERRAL_CODE = '1';
+const REFERRAL_CODE = '2'; // creator referral code (default when no code entered)
 
 // ═══════════════════════════════════════════════════════
 // ABI
@@ -1310,6 +1337,7 @@ const FUND_ABI = [
   "function getUnreadMessages() view returns (address[] senders, uint256[] amounts, string[] texts, uint256[] epochNums)",
   "function messageCount() view returns (uint256)",
   "function messageHead() view returns (uint256)",
+  "function messages(uint256) view returns (address sender, uint256 amount, string text, uint256 epoch)",
   // Linked contracts
   "function worldView() view returns (address)",
   "function investmentManager() view returns (address)",
@@ -1382,6 +1410,7 @@ let walletProvider = null; // ethers BrowserProvider
 let walletSigner = null;
 let walletAddress = null;
 let currentCommissionPct = '10'; // updated from contract each refresh
+let lastEthUsdPrice = 0n; // updated from contract each refresh
 
 const BASE_CHAIN_ID = 8453; // Base Mainnet
 
@@ -1401,22 +1430,19 @@ function updateWalletRows() {
     ? `<div class="wallet-pill"><span style="width:6px;height:6px;border-radius:50%;background:var(--green);display:inline-block;"></span>${walletShortAddr()}</div>`
     : '';
 
-  ['donate', 'message', 'earn'].forEach(id => {
+  ['donate', 'earn'].forEach(id => {
     const el = document.getElementById(id + '-wallet-row');
     if (el) el.innerHTML = pillHtml;
   });
 
   const donateBtn = document.getElementById('donate-btn');
-  const messageBtn = document.getElementById('message-btn');
   const earnBtn = document.getElementById('earn-btn');
 
   if (walletAddress) {
     if (donateBtn) donateBtn.textContent = 'Send donation';
-    if (messageBtn) messageBtn.textContent = 'Send message';
     if (earnBtn) earnBtn.textContent = 'Mint referral code';
   } else {
     if (donateBtn) donateBtn.textContent = 'Connect wallet to donate';
-    if (messageBtn) messageBtn.textContent = 'Connect wallet to send';
     if (earnBtn) earnBtn.textContent = 'Connect wallet to mint code';
   }
 }
@@ -1484,7 +1510,39 @@ function setStatusHtml(id, html, type) {
   el.className = 'form-status ' + type;
 }
 
-async function handleDonate() {
+function getActiveReferralCode() {
+  const input = document.getElementById('donate-referral-code');
+  const val = input ? input.value.trim() : '';
+  return val ? val : REFERRAL_CODE;
+}
+
+function updateReferralNote() {
+  const input = document.getElementById('donate-referral-code');
+  const noteEl = document.getElementById('donate-referral-note');
+  if (!noteEl) return;
+  const val = input ? input.value.trim() : '';
+  const mintLink = `<a href="#" onclick="event.preventDefault();document.getElementById('modal-donate').classList.remove('open');openModal('earn');" style="color:var(--accent);">Mint your own referral code</a>`;
+  if (val) {
+    noteEl.innerHTML = `You're using a referral code. ${currentCommissionPct}% of your donation goes to the person who referred you as a thanks from Costanza for spreading the word. ${mintLink} to earn commissions too.`;
+  } else {
+    noteEl.innerHTML = `Costanza's creator earns a ${currentCommissionPct}% referral commission on this donation. ${mintLink} to earn commissions too.`;
+  }
+}
+
+function updateDonateUsd() {
+  const input = document.getElementById('donate-amount');
+  const el = document.getElementById('donate-usd-estimate');
+  if (!el) return;
+  const val = parseFloat(input ? input.value : '');
+  if (isNaN(val) || val <= 0 || !lastEthUsdPrice) { el.textContent = ''; return; }
+  try {
+    const weiAmt = ethers.parseEther(val.toString());
+    const usd = fmtUsdFromPrice(weiAmt, lastEthUsdPrice);
+    el.textContent = usd ? `≈ ${usd}` : '';
+  } catch { el.textContent = ''; }
+}
+
+async function handleSubmitDonation() {
   const statusId = 'donate-status';
   try {
     if (!window.ethereum) {
@@ -1496,58 +1554,37 @@ async function handleDonate() {
     updateWalletRows();
 
     const amountStr = document.getElementById('donate-amount').value;
+    const msgText = document.getElementById('message-text').value.trim();
+    const refCode = getActiveReferralCode();
+
     if (!amountStr || parseFloat(amountStr) <= 0) {
       setStatus(statusId, 'Enter a valid ETH amount.', 'error');
       return;
     }
+    if (msgText && parseFloat(amountStr) < 0.01) {
+      setStatus(statusId, 'Minimum donation for messaging is 0.01 ETH.', 'error');
+      return;
+    }
 
     setStatus(statusId, 'Confirm the transaction in your wallet...', 'info');
     const fundWrite = new ethers.Contract(CONTRACT_ADDRESS, FUND_ABI, walletSigner);
-    const tx = await fundWrite.donate(BigInt(REFERRAL_CODE), {
-      value: ethers.parseEther(amountStr),
-    });
+    const value = ethers.parseEther(amountStr);
+
+    let tx;
+    if (msgText) {
+      tx = await fundWrite.donateWithMessage(BigInt(refCode), msgText, { value });
+    } else {
+      tx = await fundWrite.donate(BigInt(refCode), { value });
+    }
     setStatus(statusId, 'Transaction submitted. Waiting for confirmation...', 'info');
     await tx.wait();
-    setStatus(statusId, `Donation confirmed! Thank you for supporting The Human Fund. Tx: ${tx.hash.slice(0, 10)}...`, 'success');
+    const successMsg = msgText
+      ? 'Message sent! Costanza will read it in the next epoch.'
+      : `Donation confirmed! Thank you for supporting The Human Fund. Tx: ${tx.hash.slice(0, 10)}...`;
+    setStatus(statusId, successMsg, 'success');
     document.getElementById('donate-amount').value = '';
-  } catch (err) {
-    setStatus(statusId, err.reason || err.message || 'Transaction failed.', 'error');
-  }
-}
-
-async function handleMessage() {
-  const statusId = 'message-status';
-  try {
-    if (!window.ethereum) {
-      setStatusHtml(statusId, noWalletHtml(), 'error');
-      return;
-    }
-    setStatus(statusId, 'Connecting wallet...', 'info');
-    await ensureWallet();
-    updateWalletRows();
-
-    const amountStr = document.getElementById('message-amount').value;
-    const msgText = document.getElementById('message-text').value.trim();
-
-    if (!amountStr || parseFloat(amountStr) < 0.01) {
-      setStatus(statusId, 'Minimum donation is 0.01 ETH.', 'error');
-      return;
-    }
-    if (!msgText) {
-      setStatus(statusId, 'Message cannot be empty.', 'error');
-      return;
-    }
-
-    setStatus(statusId, 'Confirm the transaction in your wallet...', 'info');
-    const fundWrite = new ethers.Contract(CONTRACT_ADDRESS, FUND_ABI, walletSigner);
-    const tx = await fundWrite.donateWithMessage(BigInt(REFERRAL_CODE), msgText, {
-      value: ethers.parseEther(amountStr),
-    });
-    setStatus(statusId, 'Transaction submitted. Waiting for confirmation...', 'info');
-    await tx.wait();
-    setStatus(statusId, 'Message sent! Costanza will read it in the next epoch.', 'success');
-    document.getElementById('message-amount').value = '';
     document.getElementById('message-text').value = '';
+    document.getElementById('donate-usd-estimate').textContent = '';
   } catch (err) {
     setStatus(statusId, err.reason || err.message || 'Transaction failed.', 'error');
   }
@@ -1584,6 +1621,8 @@ async function handleMintReferral() {
 
     if (codeId !== null) {
       document.getElementById('earn-code-id').textContent = `#${codeId}`;
+      const shareLink = `${window.location.origin}${window.location.pathname}?referralCode=${codeId}`;
+      document.getElementById('earn-share-link').value = shareLink;
       document.getElementById('earn-code-display').style.display = 'block';
       setStatus(statusId, 'Referral code minted successfully!', 'success');
     } else {
@@ -1592,6 +1631,18 @@ async function handleMintReferral() {
   } catch (err) {
     setStatus(statusId, err.reason || err.message || 'Transaction failed.', 'error');
   }
+}
+
+function copyReferralLink() {
+  const input = document.getElementById('earn-share-link');
+  if (!input || !input.value) return;
+  navigator.clipboard.writeText(input.value).then(() => {
+    setStatus('earn-status', 'Link copied to clipboard!', 'success');
+  }).catch(() => {
+    input.select();
+    document.execCommand('copy');
+    setStatus('earn-status', 'Link copied!', 'success');
+  });
 }
 
 // ═══════════════════════════════════════════════════════
@@ -1618,7 +1669,6 @@ ACTIONS (choose exactly one per epoch):
 const SLOT_NAMES = [
   'Diary style', 'Donation strategy', 'Investment stance', 'Current mood',
   'Biggest lesson', 'Watching', 'Message to donors', 'Wild card',
-  'Slot 8', 'Slot 9'
 ];
 
 // Freeze flag definitions
@@ -1693,19 +1743,22 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
-// ActionRejected reason codes (match _executeAction in TheHumanFund.sol)
-const REJECT_REASONS = {
-  1: 'empty action',
-  2: 'malformed action',
-  3: 'out of bounds',
-  4: 'no investment manager',
-  5: 'invest reverted',
-  6: 'no investment manager',
-  7: 'withdraw reverted',
-  8: 'verb unknown',
-  9: 'verb unknown',
-  10: 'unknown action type',
-};
+// Returns a human-friendly rejection suffix given the action type byte and reason code.
+// Reason codes match _executeAction in TheHumanFund.sol:
+//   1=empty, 2=malformed, 3=out_of_bounds, 4=invest_no_mgr, 5=invest_fail,
+//   6=withdraw_no_mgr, 7=withdraw_fail, 10=unknown_type
+function rejectionSuffix(actionType, reason) {
+  if (reason === 1)  return ' — action was empty';
+  if (reason === 2)  return ' — action encoding was malformed';
+  if (reason === 10) return ' — unrecognized action type';
+  if (actionType === 1 && reason === 3) return ' — exceeded the 10% treasury cap';
+  if (actionType === 2 && reason === 3) return ' — rate outside the allowed 1%–90% range';
+  if (actionType === 3 && reason === 4) return ' — no investment manager is configured';
+  if (actionType === 3 && reason === 5) return ' — deposit failed (may have exceeded the 80% invested cap or been rejected by the protocol)';
+  if (actionType === 4 && reason === 6) return ' — no investment manager is configured';
+  if (actionType === 4 && reason === 7) return ' — withdrawal was rejected by the protocol';
+  return ` — rejected (reason ${reason})`;
+}
 
 function decodeAction(actionBytes, rejectReason) {
   if (!actionBytes || actionBytes === '0x' || actionBytes.length < 4) {
@@ -1715,9 +1768,8 @@ function decodeAction(actionBytes, rejectReason) {
   const t = bytes[0];
   const decoder = ethers.AbiCoder.defaultAbiCoder();
 
-  // Verbs: tried(past) / attempted(past, but failed) — pick based on rejectReason
   const rejected = rejectReason !== undefined;
-  const suffix = rejected ? ` — REJECTED (${REJECT_REASONS[rejectReason] || `reason ${rejectReason}`})` : '';
+  const suffix = rejected ? rejectionSuffix(t, rejectReason) : '';
   const labelSuffix = rejected ? ' (rejected)' : '';
 
   if (t === 0) return { type: 'noop', label: 'noop' + labelSuffix, detail: 'No action taken' + suffix, rejected };
@@ -1786,9 +1838,23 @@ function toggleHeroDiary() {
   btn.textContent = body.classList.contains('collapsed') ? '+' : '\u2212';
 }
 
-function openModal(id) {
+function openModal(id, opts = {}) {
+  // 'message' redirects to the unified donate modal, focused on the message field
+  if (id === 'message') {
+    openModal('donate', { focusMessage: true });
+    return;
+  }
   document.getElementById('modal-' + id).classList.add('open');
   updateWalletRows();
+  if (id === 'donate') {
+    updateReferralNote();
+    if (opts.focusMessage) {
+      setTimeout(() => {
+        const ta = document.getElementById('message-text');
+        if (ta) { ta.focus(); ta.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+      }, 80);
+    }
+  }
   if (id === 'earn') {
     // Sync commission rate display
     const commEl = document.getElementById('earn-commission');
@@ -1830,7 +1896,7 @@ function renderDiaryViewer() {
   document.getElementById('diary-viewer-entry').textContent = entry.reasoning;
 
   // Action row
-  const detailStyle = entry.rejected ? 'text-decoration:line-through;color:var(--text-dim);' : '';
+  const detailStyle = entry.rejected ? 'color:var(--text-dim);' : '';
   let actionHtml = `<span class="badge ${actionBadgeClass(entry.action.type, entry.rejected)}" style="font-size:10px;">${entry.action.label}</span> <span style="${detailStyle}">${entry.action.detail}</span>${entry.bountyPaid > 0n ? ' | Bounty: ' + fmtEth(entry.bountyPaid) : ''}`;
   document.getElementById('diary-viewer-action').innerHTML = actionHtml;
 
@@ -1870,6 +1936,71 @@ function toggleExpandList(listId, toggleEl) {
     toggleEl.querySelector('span:last-child') || (toggleEl.childNodes[1].textContent = ' show less');
   } else {
     chevron.style.transform = '';
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+// ALL MESSAGES MODAL
+// ═══════════════════════════════════════════════════════
+
+let allMessagesTotalCount = 0;
+let allMessagesCurrentPage = 0;
+const ALL_MESSAGES_PAGE_SIZE = 10;
+
+async function openMessagesModal() {
+  document.getElementById('modal-all-messages').classList.add('open');
+  try {
+    allMessagesTotalCount = Number(await fund.messageCount());
+    // Start on the last page (newest messages)
+    const totalPages = Math.max(1, Math.ceil(allMessagesTotalCount / ALL_MESSAGES_PAGE_SIZE));
+    await loadMessagesPage(totalPages - 1);
+  } catch {
+    document.getElementById('all-messages-content').innerHTML = '<div class="empty-state">Could not load messages</div>';
+  }
+}
+
+async function loadMessagesPage(page) {
+  allMessagesCurrentPage = page;
+  const total = allMessagesTotalCount;
+  const totalPages = Math.max(1, Math.ceil(total / ALL_MESSAGES_PAGE_SIZE));
+  const startIdx = page * ALL_MESSAGES_PAGE_SIZE;
+  const endIdx = Math.min(startIdx + ALL_MESSAGES_PAGE_SIZE, total);
+
+  document.getElementById('all-messages-content').innerHTML = '<div class="loading">Loading</div>';
+
+  try {
+    const [msgs, msgHead] = await Promise.all([
+      Promise.all(Array.from({length: endIdx - startIdx}, (_, i) => fund.messages(startIdx + i))),
+      fund.messageHead(),
+    ]);
+    const headIdx = Number(msgHead);
+
+    let html = '';
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i];
+      const msgIdx = startIdx + i;
+      const isUnread = msgIdx >= headIdx;
+      html += `<div class="msg-item">
+        <div class="msg-header">
+          <span class="msg-sender"><a href="${EXPLORER}/address/${m.sender}" target="_blank">${fmtAddr(m.sender)}</a></span>
+          <span class="msg-amount">${fmtEth(m.amount)}</span>
+          ${isUnread ? '<span class="badge badge-accent" style="font-size:9px;padding:2px 6px;margin-left:4px;">unread</span>' : ''}
+          <span style="font-size:10px;color:var(--text-dim);margin-left:auto;">#${msgIdx} &mdash; epoch ${m.epoch}</span>
+        </div>
+        ${m.text ? `<div class="msg-text">${escapeHtml(m.text)}</div>` : '<div class="msg-text" style="color:var(--text-dim);font-style:italic;">(no text)</div>'}
+      </div>`;
+    }
+    document.getElementById('all-messages-content').innerHTML = html || '<div class="empty-state">No messages</div>';
+
+    const btnStyle = 'padding:6px 14px;font-size:12px;font-family:var(--mono);background:transparent;border:1px solid var(--border);border-radius:var(--radius-xs);color:var(--text-secondary);cursor:pointer;transition:border-color 0.15s,color 0.15s;';
+    const disabledStyle = 'opacity:0.4;pointer-events:none;';
+    document.getElementById('all-messages-pagination').innerHTML = `
+      <button onclick="loadMessagesPage(${page - 1})" style="${btnStyle}${page <= 0 ? disabledStyle : ''}">&larr; Older</button>
+      <span style="font-size:12px;color:var(--text-dim);">${page + 1} / ${totalPages}</span>
+      <button onclick="loadMessagesPage(${page + 1})" style="${btnStyle}${page >= totalPages - 1 ? disabledStyle : ''}">Newer &rarr;</button>
+    `;
+  } catch {
+    document.getElementById('all-messages-content').innerHTML = '<div class="empty-state">Could not load messages</div>';
   }
 }
 
@@ -1963,18 +2094,42 @@ async function loadAll() {
   // so without cross-referencing rejections the diary misrepresents what
   // actually landed on chain).
   let diaryEventsByEpoch = {};
+  let diaryBlockByEpoch = {};
   let rejectedByEpoch = {};
+  let inflowsByEpoch = {};
+  let outflowsByEpoch = {};
   try {
     const currentBlock = await provider.getBlockNumber();
-    const [diaryLogs, rejectedLogs] = await Promise.all([
+    const [diaryLogs, rejectedLogs, donationLogs, npDonationLogs] = await Promise.all([
       fund.queryFilter(fund.filters.DiaryEntry(), DEPLOY_BLOCK, currentBlock),
       fund.queryFilter(fund.filters.ActionRejected(), DEPLOY_BLOCK, currentBlock),
+      fund.queryFilter(fund.filters.DonationReceived(), DEPLOY_BLOCK, currentBlock),
+      fund.queryFilter(fund.filters.NonprofitDonation(), DEPLOY_BLOCK, currentBlock),
     ]);
     for (const log of diaryLogs) {
       diaryEventsByEpoch[Number(log.args[0])] = log.transactionHash;
+      diaryBlockByEpoch[Number(log.args[0])] = log.blockNumber;
     }
     for (const log of rejectedLogs) {
       rejectedByEpoch[Number(log.args[0])] = Number(log.args[2]);
+    }
+    // Map each donation to the epoch whose execution block is >= the donation block
+    const epochBlockPairs = Object.entries(diaryBlockByEpoch)
+      .map(([ep, bn]) => ({ epoch: Number(ep), block: Number(bn) }))
+      .sort((a, b) => a.block - b.block);
+    for (const log of donationLogs) {
+      const block = log.blockNumber;
+      const amount = parseFloat(ethers.formatEther(log.args[1]));
+      const epochEntry = epochBlockPairs.find(e => e.block >= block);
+      if (epochEntry) {
+        inflowsByEpoch[epochEntry.epoch] = (inflowsByEpoch[epochEntry.epoch] || 0) + amount;
+      }
+    }
+    // NonprofitDonation events are epoch-indexed directly
+    for (const log of npDonationLogs) {
+      const epoch = Number(log.args[0]);
+      const amount = parseFloat(ethers.formatEther(log.args[2]));
+      outflowsByEpoch[epoch] = (outflowsByEpoch[epoch] || 0) + amount;
     }
   } catch {}
 
@@ -1999,13 +2154,24 @@ async function loadAll() {
     } catch {}
   }
 
+  // Add bounties paid to per-epoch outflows
+  for (const entry of diaryEntries) {
+    if (entry.bountyPaid > 0n) {
+      const b = parseFloat(ethers.formatEther(entry.bountyPaid));
+      outflowsByEpoch[entry.epoch] = (outflowsByEpoch[entry.epoch] || 0) + b;
+    }
+  }
+
   // Load worldview history (from/to diffs) in parallel
   await loadWorldviewHistory();
 
+  // Store ETH price for modal USD estimate
+  lastEthUsdPrice = ethUsdPrice;
+
   // ── HERO ──
-  document.getElementById('hero-total-assets').textContent = fmtEth(totalAssets);
   const usdStr = fmtUsdFromPrice(totalAssets, ethUsdPrice);
-  document.getElementById('hero-total-usd').textContent = usdStr ? `~${usdStr}` : '';
+  document.getElementById('hero-total-assets').textContent = usdStr ? usdStr : fmtEth(totalAssets);
+  document.getElementById('hero-total-usd').textContent = usdStr ? fmtEth(totalAssets) : '';
   document.getElementById('hero-donated-usd').textContent = fmtUsd(donatedUsd);
   document.getElementById('hero-donated-eth').textContent = fmtEth(donated);
 
@@ -2114,43 +2280,49 @@ async function loadAll() {
     });
   }
 
-  // Inflows
+  // Inflows / Outflows
   document.getElementById('inflow-total').textContent = fmtEth(inflows);
+  document.getElementById('outflow-total').textContent = fmtEth(donated + bountiesPaid);
   document.getElementById('inflow-commission').textContent = `${(Number(commRate) / 100).toFixed(1)}%`;
   currentCommissionPct = (Number(commRate) / 100).toFixed(1);
   document.querySelectorAll('.commission-pct').forEach(el => el.textContent = currentCommissionPct);
   document.getElementById('inflow-commissions-paid').textContent = fmtEth(commPaid);
 
-  // Inflow chart — derive per-epoch inflows from treasury changes + bounties + donations
+  // Inflow/outflow chart — inflows as positive bars, outflows as negative bars
   if (diaryEntries.length > 1) {
     const chartData = [...diaryEntries].reverse();
     const labels = chartData.map(e => `E${e.epoch}`);
-    // Approximate inflows: treasuryAfter - treasuryBefore + bountyPaid (net change + costs = gross inflow - donations)
-    // Simple proxy: just show treasury delta as a bar chart
-    const values = chartData.map(e => {
-      const delta = parseFloat(ethers.formatEther(e.treasuryAfter)) - parseFloat(ethers.formatEther(e.treasuryBefore));
-      return delta;
-    });
+    const inValues = chartData.map(e => inflowsByEpoch[e.epoch] || 0);
+    const outValues = chartData.map(e => -(outflowsByEpoch[e.epoch] || 0));
 
     if (inflowChart) inflowChart.destroy();
     inflowChart = new Chart(document.getElementById('inflow-chart'), {
       type: 'bar',
       data: {
         labels,
-        datasets: [{
-          data: values,
-          backgroundColor: values.map(v => v >= 0 ? cv('--chart-bar-pos') : cv('--chart-bar-neg')),
-          borderColor: values.map(v => v >= 0 ? cv('--chart-bar-pos-border') : cv('--chart-bar-neg-border')),
-          borderWidth: 1,
-          borderRadius: 2,
-        }]
+        datasets: [
+          {
+            data: inValues,
+            backgroundColor: cv('--chart-bar-pos'),
+            borderColor: cv('--chart-bar-pos-border'),
+            borderWidth: 1,
+            borderRadius: 2,
+          },
+          {
+            data: outValues,
+            backgroundColor: cv('--chart-bar-neg'),
+            borderColor: cv('--chart-bar-neg-border'),
+            borderWidth: 1,
+            borderRadius: 2,
+          },
+        ]
       },
       options: {
         responsive: true, maintainAspectRatio: false,
         plugins: { legend: { display: false } },
         scales: {
-          x: { display: false },
-          y: { display: false }
+          x: { display: false, stacked: true },
+          y: { display: false, stacked: true }
         }
       }
     });
@@ -2260,8 +2432,9 @@ async function loadAll() {
     if (wvAddr && wvAddr !== '0x0000000000000000000000000000000000000000') {
       worldViewContract = new ethers.Contract(wvAddr, WORLDVIEW_ABI, provider);
       const policies = await worldViewContract.getPolicies();
-      const activePolicies = policies.map((p, i) => ({ text: p, idx: i })).filter(x => x.text.length > 0);
-      const wvBadgeText = `${activePolicies.length}/10 active`;
+      const first8 = Array.from(policies).slice(0, 8);
+      const activePolicies = first8.map((p, i) => ({ text: p, idx: i })).filter(x => x.text.length > 0);
+      const wvBadgeText = `${activePolicies.length}/8 active`;
       document.getElementById('worldview-badge').textContent = wvBadgeText;
       document.getElementById('worldview-badge-modal').textContent = wvBadgeText;
       // Preview: brief explanation
@@ -2269,7 +2442,7 @@ async function loadAll() {
         <div style="font-size:12px;color:var(--text-secondary);line-height:1.5;">Costanza can update his worldview based on what he learns each epoch. This acts as his long-term memory.</div>
       `;
       // Full view
-      document.getElementById('worldview-full').innerHTML = policies.map((p, i) => `
+      document.getElementById('worldview-full').innerHTML = first8.map((p, i) => `
         <div class="policy-slot">
           <span class="policy-idx">[${i}]</span>
           <div>
@@ -2285,31 +2458,32 @@ async function loadAll() {
     document.getElementById('worldview-preview').innerHTML = '<div style="color:var(--text-dim);">Could not load</div>';
   }
 
-  // Recent messages (last 5 unread)
+  // Recent messages (last 5, regardless of read status)
   try {
     const [msgCount, msgHead] = await Promise.all([fund.messageCount(), fund.messageHead()]);
-    if (Number(msgCount) === 0) {
+    const total = Number(msgCount);
+    if (total === 0) {
       document.getElementById('world-messages').innerHTML = '<div class="empty-state" style="padding:16px;">No messages yet</div>';
     } else {
-      const result = await fund.getUnreadMessages();
-      const senders = result[0], amounts = result[1], texts = result[2], epochNums = result[3];
-      if (senders.length === 0) {
-        document.getElementById('world-messages').innerHTML = `<div style="font-size:12px;color:var(--text-dim);padding:8px 0;">${Number(msgCount)} messages. All read.</div>`;
-      } else {
-        const limit = Math.min(senders.length, 5);
-        let mHtml = '';
-        for (let i = 0; i < limit; i++) {
-          mHtml += `<div class="msg-item">
-            <div class="msg-header">
-              <span class="msg-sender"><a href="${EXPLORER}/address/${senders[i]}" target="_blank">${fmtAddr(senders[i])}</a></span>
-              <span class="msg-amount">${fmtEth(amounts[i])}</span>
-            </div>
-            ${texts[i] ? `<div class="msg-text">${escapeHtml(texts[i])}</div>` : '<div class="msg-text" style="color:var(--text-dim);font-style:italic;">(no text)</div>'}
-          </div>`;
-        }
-        if (senders.length > 5) mHtml += `<div style="font-size:11px;color:var(--text-dim);padding:8px 0;">+ ${senders.length - 5} more</div>`;
-        document.getElementById('world-messages').innerHTML = mHtml;
+      document.getElementById('view-all-messages-btn').style.display = '';
+      const start = Math.max(0, total - 5);
+      const msgs = await Promise.all(
+        Array.from({length: total - start}, (_, i) => fund.messages(start + i))
+      );
+      let mHtml = '';
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const m = msgs[i];
+        const isUnread = (start + i) >= Number(msgHead);
+        mHtml += `<div class="msg-item">
+          <div class="msg-header">
+            <span class="msg-sender"><a href="${EXPLORER}/address/${m.sender}" target="_blank">${fmtAddr(m.sender)}</a></span>
+            <span class="msg-amount">${fmtEth(m.amount)}</span>
+            ${isUnread ? '<span class="badge badge-accent" style="font-size:9px;padding:2px 6px;margin-left:4px;">unread</span>' : ''}
+          </div>
+          ${m.text ? `<div class="msg-text">${escapeHtml(m.text)}</div>` : '<div class="msg-text" style="color:var(--text-dim);font-style:italic;">(no text)</div>'}
+        </div>`;
       }
+      document.getElementById('world-messages').innerHTML = mHtml;
     }
   } catch {
     document.getElementById('world-messages').innerHTML = '<div class="empty-state" style="padding:16px;">Could not load</div>';
@@ -2599,6 +2773,14 @@ async function refresh() {
 
 async function init() {
   try {
+    // Pre-fill referral code from URL param (?referralCode=42)
+    const urlParams = new URLSearchParams(window.location.search);
+    const urlRefCode = urlParams.get('referralCode');
+    if (urlRefCode) {
+      const input = document.getElementById('donate-referral-code');
+      if (input) { input.value = urlRefCode; updateReferralNote(); }
+    }
+
     provider = new ethers.JsonRpcProvider(RPC_URL, undefined, { batchMaxCount: 1 });
     fund = new ethers.Contract(CONTRACT_ADDRESS, FUND_ABI, provider);
 
