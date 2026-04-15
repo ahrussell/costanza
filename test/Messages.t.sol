@@ -285,6 +285,83 @@ contract MessagesTest is EpochTest {
 
     // ─── Regular donate still works without message ──────────────────────
 
+    // ─── Message Visibility Boundary ────────────────────────────────────
+    //
+    // Messages sent AFTER the epoch snapshot is frozen must NOT be visible
+    // to the current epoch's execution. They appear in the NEXT epoch.
+    // This is critical for TEE correctness: the enclave's input hash is
+    // bound to the frozen snapshot, so any message the model "sees" must
+    // be in that snapshot. A bug here means the TEE prompt includes data
+    // that isn't in the input hash, and attestation silently diverges.
+
+    /// @dev The snapshot freezes at auction open (step 1 of speedrunEpoch).
+    ///      A message sent after that — but before execution — must be
+    ///      invisible to the current epoch and appear in the next one.
+    function test_message_sent_after_freeze_invisible_until_next_epoch() public {
+        // ── Epoch 1: manually walk through to control the freeze point ──
+        fund.nextPhase(); // opens auction for epoch 1 → freezes snapshot
+        // Snapshot is now frozen with messageCount=0, messageHead=0.
+
+        // A donor sends a message AFTER the snapshot freeze.
+        vm.deal(donor1, 1 ether);
+        vm.prank(donor1);
+        fund.donateWithMessage{value: 0.01 ether}(0, "I arrive late");
+        assertEq(fund.messageCount(), 1, "message stored on-chain");
+
+        // The frozen snapshot must NOT include this message.
+        TheHumanFund.EpochSnapshot memory snap1 = fund.getEpochSnapshot(1);
+        assertEq(snap1.messageCount, 0, "epoch 1 snapshot: 0 messages (frozen before send)");
+
+        // Complete epoch 1 via the auction path.
+        uint256 bond = fund.currentBond();
+        address runner = EPOCH_TEST_RUNNER;
+        bytes32 salt = bytes32(uint256(0xF00D));
+        vm.prank(runner);
+        fund.commit{value: bond}(keccak256(abi.encodePacked(runner, uint256(1), salt)));
+        fund.nextPhase(); // COMMIT → REVEAL
+        vm.prank(runner);
+        fund.reveal(1, salt);
+        fund.nextPhase(); // REVEAL → EXECUTION
+        vm.prank(runner);
+        fund.submitAuctionResult(
+            abi.encodePacked(uint8(0)), bytes("noop"), bytes("mock"),
+            EPOCH_TEST_VERIFIER_ID, -1, ""
+        );
+
+        // After execution, messageHead must still be 0 — the model saw
+        // 0 messages (frozenCount=0), so it consumed 0.
+        assertEq(fund.messageHead(), 0, "epoch 1 did not consume the late message");
+
+        // ── Epoch 2: the late message becomes visible ───────────────────
+        fund.nextPhase(); // SETTLED → advance to epoch 2 + open auction
+
+        // Epoch 2's snapshot must include the message.
+        TheHumanFund.EpochSnapshot memory snap2 = fund.getEpochSnapshot(2);
+        assertEq(snap2.messageCount, 1, "epoch 2 snapshot: 1 message (now visible)");
+        assertEq(snap2.messageHead, 0, "epoch 2 snapshot: head at 0");
+
+        // Complete epoch 2.
+        bond = fund.currentBond();
+        vm.prank(runner);
+        fund.commit{value: bond}(keccak256(abi.encodePacked(runner, uint256(1), salt)));
+        fund.nextPhase();
+        vm.prank(runner);
+        fund.reveal(1, salt);
+        fund.nextPhase();
+        vm.prank(runner);
+        fund.submitAuctionResult(
+            abi.encodePacked(uint8(0)), bytes("noop 2"), bytes("mock"),
+            EPOCH_TEST_VERIFIER_ID, -1, ""
+        );
+
+        // Now the message was consumed.
+        assertEq(fund.messageHead(), 1, "epoch 2 consumed the message");
+
+        // No unread messages remain.
+        (address[] memory senders,,,) = fund.getUnreadMessages();
+        assertEq(senders.length, 0, "all messages read");
+    }
+
     // ─── Message Queue Preservation Across Failed/Missed Epochs ─────────
     //
     // messageHead only advances inside _recordAndExecute (successful submission),
