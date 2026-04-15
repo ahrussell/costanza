@@ -9,21 +9,25 @@ the refactor earns its keep.
 ## Vocabulary
 
 - **Driver** — anything that causes a phase transition. Three kinds:
-  1. *Time driver*: `syncPhase()` called by anyone, walks `_nextPhase`
-     until the current phase matches `_phaseForTimestamp(now)`.
+  1. *Time driver*: `syncPhase()` called by anyone, internally calls
+     `_advanceToNow()` which uses `_nextPhase()` to close elapsed
+     phases, then arithmetic-advances through missed epochs (O(1)),
+     then opens the next auction if within the commit window.
   2. *Action driver*: `commit` / `reveal` / `submitAuctionResult` each
      call the time driver first, then act in the resulting phase.
-  3. *Manual driver*: owner-only `nextPhase()`, walks exactly one step
-     regardless of wall clock, and re-anchors timing so the wall-clock
-     schedule remains consistent with the new state. Gated by
-     `FREEZE_AUCTION`.
-- **Transition** — a single call to `_nextPhase()`, producing exactly
-  one step in the state machine (`COMMIT → REVEAL`, `REVEAL →
-  EXECUTION`, or `EXECUTION → COMMIT[e+1]` with `epoch++` and fresh
-  snapshot). There is no SETTLED phase; settlement of epoch `e` is
-  the same transition that opens epoch `e+1`.
-- **`_nextPhase()`** returns the new `(epoch, phase)` so the time
-  driver's loop can be written without re-reading storage.
+  3. *Manual driver*: owner-only `nextPhase()`, calls `_nextPhase()`
+     exactly once — no wall-clock loop, no fast-forward. Re-anchors
+     timing on epoch advance / auction open so the wall-clock schedule
+     remains consistent. Gated by `FREEZE_AUCTION_CONFIG`.
+- **Transition** — a single call to `_nextPhase(scheduledStart)`,
+  producing exactly one step: close a phase (COMMIT → REVEAL, etc.)
+  OR open the next auction (IDLE/SETTLED → COMMIT). Epoch advancement
+  is handled by the caller, not by `_nextPhase` itself — this lets
+  the time driver preserve its O(1) fast-forward arithmetic.
+- **SETTLED phase** — the AM's terminal state after an auction completes.
+  The fund's callers (manual and wall-clock drivers) both advance
+  `currentEpoch` and re-open from SETTLED. SETTLED is internal to
+  the AM; the fund's external API never exposes it.
 - **Active epoch** — the epoch whose auction is currently open, i.e.
   `currentEpoch` while its phase is not yet terminal.
 
@@ -66,12 +70,17 @@ At every moment, for every bidder `b` who has committed in any epoch
   all bonds active at reset time. Manual operator intervention is
   never a forfeit event.
 
-No state transition may leave a bond in two states, or in none. In
-particular, manual `nextPhase` past `REVEAL` must refund all non-reveal
-committers (operator intervention is not their fault), and manual
-`nextPhase` past `EXECUTION` must refund the winner's bond (same
-reasoning). This is a stronger rule than today's; it simplifies the
-operator's mental model.
+No state transition may leave a bond in two states, or in none.
+
+**Driver equivalence for `nextPhase`**: `nextPhase` applies the same
+forfeit rules as the wall-clock driver. Non-revealers forfeit at
+reveal close; winners forfeit at execution close. This preserves the
+derived property that both drivers produce the same state for the
+same scenario. For a **non-confiscatory** abort (refund all bonds
+regardless of phase), the operator uses `resetAuction` instead.
+The operator's mental model: `nextPhase` = "advance the protocol
+one step (normal rules apply)", `resetAuction` = "abort and refund
+everyone (operator intervention, never a forfeit)".
 
 ### I4. Schedule coherence
 After any transition, `epochStartTime(currentEpoch)` must be ≤
@@ -171,8 +180,9 @@ halting the auction for participants.
    renounce unilateral control without halting participant-driven
    auction flow.
 
-5. **`_nextPhase()` returns `(epoch, phase)`.** The time driver's
-   loop reads the return value rather than re-reading storage.
+5. **`_nextPhase(scheduledStart)` returns `bool advanced`.** The time
+   driver re-reads AM phase from storage after each call; the return
+   value indicates whether any transition occurred.
 
 ## Non-goals
 

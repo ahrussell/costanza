@@ -745,6 +745,56 @@ contract TheHumanFund is ReentrancyGuard {
         _advanceToNow();
     }
 
+    /// @notice Owner-only manual advance: walk the state machine exactly
+    ///         one step, then re-anchor timing to now if a new auction
+    ///         was opened. Useful for debugging stuck auctions in prod
+    ///         and for test ergonomics (no vm.warp needed).
+    ///
+    ///         Transitions:
+    ///           IDLE / SETTLED → advance epoch (if needed), open auction
+    ///           COMMIT         → REVEAL  (or SETTLED if 0 commits)
+    ///           REVEAL         → EXECUTION (or SETTLED if 0 reveals)
+    ///           EXECUTION      → SETTLED (forfeits winner bond)
+    ///
+    ///         Normal auction consequences apply: non-revealers forfeit
+    ///         bonds at reveal close, winners forfeit at execution close.
+    ///         This preserves **driver equivalence** — manual and wall-
+    ///         clock drivers produce the same state for the same scenario.
+    ///         For a non-confiscatory abort (refund all bonds), use
+    ///         `resetAuction` instead.
+    ///
+    /// @dev Gated by `FREEZE_AUCTION_CONFIG` (invariant I7).
+    /// @dev Re-anchors timing only on epoch advance / auction open,
+    ///      satisfying I4 (schedule coherence).
+    function nextPhase() external onlyOwner {
+        if (frozenFlags & FREEZE_AUCTION_CONFIG != 0) revert Frozen();
+        IAuctionManager am = auctionManager;
+        if (address(am) == address(0)) revert InvalidParams();
+
+        uint256 epoch = currentEpoch;
+        IAuctionManager.AuctionPhase phase = am.getPhase(epoch);
+
+        if (phase == IAuctionManager.AuctionPhase.COMMIT
+            || phase == IAuctionManager.AuctionPhase.REVEAL
+            || phase == IAuctionManager.AuctionPhase.EXECUTION
+        ) {
+            // Close one in-flight phase. scheduledStart is unused for
+            // phase closes (only matters when opening an auction).
+            _nextPhase(0);
+        } else {
+            // IDLE or SETTLED — advance epoch if needed, then open.
+            if (phase == IAuctionManager.AuctionPhase.SETTLED) {
+                uint256 missCount = epochs[epoch].executed ? 0 : 1;
+                _advanceEpochBy(1, missCount);
+            }
+            // Re-anchor: epochStartTime(currentEpoch) == block.timestamp.
+            timingAnchor = block.timestamp;
+            anchorEpoch = currentEpoch;
+            lastEpochStartTime = block.timestamp;
+            _nextPhase(block.timestamp);
+        }
+    }
+
     /// @notice Owner-only reset: abort any in-flight auction, apply new
     ///         auction timing parameters, advance one epoch, and re-anchor
     ///         timing to now. This is the ONLY safe way to change auction
