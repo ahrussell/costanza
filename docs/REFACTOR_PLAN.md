@@ -338,71 +338,12 @@ property has been regressed.
 - ~~Commit 1~~: reuse `FREEZE_AUCTION_CONFIG`. **Folded into
   `resetAuction`** — the flag already existed and `resetAuction`
   just uses it directly. No dedicated commit needed.
-- ~~Commit 2~~: `_nextPhase` / `_stepPhase` extraction. **Skipped.**
-  After implementing `resetAuction` directly, we found the manual
-  driver use case is fully covered without restructuring `_syncPhase`
-  into a loop of atomic transitions. The original plan anticipated
-  this might happen; `docs/AUCTION_INVARIANTS.md` is still accurate
-  because fund behavior matches the invariants, even if internal
-  structure differs.
 - ~~Commit 2.5~~: fast-forward preservation. **Not needed** —
   preservation is already locked in by the fast-forward tests
   landed in `fcff066`, and no commit reworked the fast-forward path.
-- ~~Commit 3~~: owner `nextPhase()`. **Not needed** — `resetAuction`
-  covers the operator-intervention use cases. If we ever want
-  single-step manual advance for debugging, we can add it.
 
 ### Remaining
 
-- [ ] **Commit 5: compose `migrate()`** *(small, ~30 LOC)*
-  - Currently `migrate()` reverts if AM is in any non-IDLE/SETTLED
-    state. Operator has to wait for natural drain (up to ~90min).
-  - New: call `resetAuction(cw, rw, xw)` internally first (passing
-    current timing), then `_withdrawTo(destination)`. Operator can
-    migrate immediately regardless of in-flight auction state.
-  - `test_sunset_midAuction_canDrainAndMigrate` must still pass —
-    it's the canary for the drain path working correctly.
-  - New test: `test_migrate_midAuction_refundsCommitters` — verify
-    in-flight bonds are refunded, not forfeited, during migration.
-- [ ] **Commit 6: extract `_openNextAuction` helper** *(low risk,
-      pure refactor)*
-  - Extract `_openAuction` + `_freezeEpochSnapshot` + opening setup
-    into a single internal helper so there's exactly one freeze site.
-  - Constructor and `_syncPhase` Step C both call it.
-  - No behavior change. Satisfies the "single freeze site" corollary
-    of Invariant I5.
-- [ ] **Commit 7: remove direct mode** *(high risk — biggest blast
-      radius, its own session)*
-  - Delete `submitEpochAction`, `FREEZE_DIRECT_MODE`, the direct-mode
-    branch of `_recordAndExecute`.
-  - Rewire `EpochTest.speedrunEpoch` to use a real commit → reveal →
-    submit flow against a `MockProofVerifier` that accepts any proof.
-    See the existing `AuctionMockDcapVerifier` pattern in
-    `test/TheHumanFundAuction.t.sol` for reference — we need the same
-    idea but for the general `IProofVerifier` interface.
-  - Each test class that inherits `EpochTest` will need to deploy
-    the mock verifier in its own `setUp` (Foundry doesn't chain
-    inherited setUps). Add a helper like `_deployMockVerifier()` on
-    `EpochTest` that each class calls.
-  - Delete tests that only made sense for direct mode:
-    - `test_only_owner_can_submit` (in TheHumanFund.t.sol)
-    - `test_freezeDirectMode` (in TheHumanFund.t.sol)
-    - `test_directSubmission_coexists` (in TheHumanFundAuction.t.sol)
-  - Rewrite tests that used direct mode for mid-epoch hash inspection
-    to run two full epochs instead (`test_ff_successfulEpoch_thenSilence`
-    is already marked as depending on this — un-mark when commit 7
-    lands, or rewrite it to use the new flow).
-  - Migrate `CrossStackHash.t.sol` to freeze via the auction path
-    (currently uses `submitEpochAction` to force a freeze — rewrite
-    to use `speedrunEpoch` which will go through commit/reveal/submit).
-  - Migrate `MainnetFork.t.sol` adapter tests to use `speedrunEpoch`.
-  - Rewrite fuzz tests in `test/TheHumanFund.t.sol` (L604–L649:
-    `testFuzz_commissionRate_validRange`, `_belowMin_rejected`,
-    `_aboveMax_rejected`, `donate_action_boundedByTreasury`,
-    `actionEncoding_malformedBytes_neverReverts`) to use `speedrunEpoch`.
-  - Consider splitting into sub-commits if the diff is >500 LOC:
-    (a) add MockProofVerifier + rewire speedrunEpoch, (b) delete
-    direct-mode-only tests, (c) remove direct mode from contract.
 - [ ] **Commit 8: update prover client** *(medium risk)*
   - Doesn't call `submitEpochAction` (never did), but references
     phase constants and error selectors. Audit:
@@ -431,13 +372,43 @@ property has been regressed.
     image has changed (it hasn't in this refactor — the enclave
     code and the input hash format are both untouched).
 
-### Suggested next session
+### What was done (session 2)
 
-Start with **commit 5 (`migrate()` composition)**. It's small,
-low-risk, and the tests already tell you when you've got it right
-(`test_sunset_midAuction_canDrainAndMigrate` is the canary). After
-that, commit 6 is trivial, and then commit 7 is where you want a
-fresh session with clean context because of the test churn.
+- [x] **Commit 5: compose `migrate()` out of `_resetAuction`**
+      (commit `ce6c7d2`). Extracted `_resetAuction` internal helper;
+      `migrate()` calls it with current AM timing before draining.
+      Mid-auction migration now works atomically. New test
+      `test_migrate_midAuction_refundsCommitters`.
+- [x] **Commit 6: rename `_openAuction` → `_openNextAuction`**
+      (commit `e1c94a0`). Pure refactor, documents single-freeze-site
+      role. `_openNextAuction` is the only production path that calls
+      `_freezeEpochSnapshot`.
+- [x] **Commit 2: extract `_nextPhase`, rename `_syncPhase` →
+      `_advanceToNow`** (commit `fbfa660`). New internal
+      `_nextPhase(scheduledStart)` — shared single-step primitive.
+      `_advanceToNow` uses it for each elapsed phase close; preserves
+      O(1 fast-forward. AM gets `forceClosePhase()` for time-
+      independent phase transitions.
+- [x] **Commit 3: owner `nextPhase()` entry point** (commit `6f47aae`).
+      Owner-only manual driver. Calls `_nextPhase()` once, re-anchors
+      timing on epoch advance / auction open. Gated by
+      `FREEZE_AUCTION_CONFIG` (I7). 14 new tests: I1/I3/I4/I7
+      manual driver, driver equivalence, 4 mixed-driver, edge cases.
+      Updated `AUCTION_INVARIANTS.md` with implemented semantics.
+- [x] **`_nextPhase` returns `AuctionPhase`** (commit `9cba456`).
+      Per invariants doc design decision #5.
+- [x] **Commit 7a: rewire `speedrunEpoch` via `nextPhase`**
+      (commit `2641d17`). `MockProofVerifier` + `EpochTest` rewrite.
+      `speedrunEpoch` now drives epochs through the real auction
+      path using `nextPhase()` — no `vm.warp` needed. All test
+      setUps register mock verifier at slot 7. Mechanical fixes:
+      balance assertions (1 wei bounty), content hash, event ordering.
+- [x] **Commit 7b+c+d: delete `submitEpochAction` and
+      `FREEZE_DIRECT_MODE`** (commit `0ca5d77`). Removed from
+      contract, deploy script, and prover comments. Deleted 3
+      direct-mode-only tests. Converted 5 fuzz tests,
+      CrossStackHash, and MainnetFork to use `speedrunEpoch`.
+      `_openNextAuction` is now THE sole freeze site (I5).
 
-Current test total: **259 passing, 0 failing, 9 skipped** on branch
-`claude/nextphase` at commit `d5e1dda`.
+Current test total: **266 passing, 0 failing, 9 skipped** on branch
+`claude/nextphase` at commit `0ca5d77`.
