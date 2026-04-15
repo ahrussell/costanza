@@ -281,22 +281,163 @@ property has been regressed.
 
 ## Status check
 
+### Done
+
 - [x] Invariants doc (`docs/AUCTION_INVARIANTS.md`)
 - [x] `speedrunEpoch` abstraction + migration of 5 test files
-- [x] Invariant tests (`test/AuctionInvariants.t.sol`)
-- [x] Fast-forward regression tests (7 tests — commit 2.5 prep)
-- [x] **Commit 4**: `resetAuction()` — landed first (no dependencies on
-      commits 2/3). Includes `AuctionManager.abortAuction()`, 9 new
-      tests covering all phase cases + non-confiscation property.
-      Also removed `claimLegacyBonds` / `claimableBonds` mapping —
-      winners now get bond via direct push in `settleExecution`.
-- [ ] Commit 1: reuse `FREEZE_AUCTION_CONFIG` (folded into 3)
-- [ ] Commit 2: `_nextPhase` / `_stepPhase` extraction
-- [ ] Commit 2.5: fast-forward preservation in `_nextPhase`
-- [ ] Commit 3: owner `nextPhase()`
-- [ ] Commit 5: composed `migrate()` (`resetAuction` now available)
-- [ ] Commit 6: `_openNextAuction` genesis bootstrap
-- [ ] Commit 7: remove direct mode (test churn)
-- [ ] Commit 8: prover client update
-- [ ] Commit 9: Sepolia burn-in
-- [ ] Commit 10: mainnet redeploy
+      (commit `a0056eb`)
+- [x] Invariant tests (`test/AuctionInvariants.t.sol`) — 9 tests
+      mapping to I1–I6 + derived (commit `c6f796a`)
+- [x] Fast-forward regression tests — 7 tests including gas canary
+      (commit `fcff066`)
+- [x] **`resetAuction()`** — owner entry point, gated by
+      `FREEZE_AUCTION_CONFIG`. Takes `(commitWindow, revealWindow,
+      executionWindow)`, aborts in-flight auction (refunds all held
+      bonds via `AuctionManager.abortAuction`), applies new timing
+      atomically, re-anchors schedule to now. Covers every phase:
+      COMMIT/REVEAL refund all committers, EXECUTION refunds winner
+      only (non-winning revealers keep their existing `claimBond`
+      path), IDLE/SETTLED is a no-op. Plus 11 new tests for the
+      non-confiscation property and each phase case
+      (commit `3e8f2b8`). Also: deleted `claimLegacyBonds` +
+      `claimableBonds` mapping; winners now get bond via direct push
+      in `settleExecution`.
+- [x] **`setAuctionTiming` removed.** The only paths that change
+      auction timing now are `setAuctionManager(am, cw, rw, xw)`
+      (initial wiring + initial timing) and `resetAuction(cw, rw, xw)`
+      (mid-life). Both take the three phase windows; `epochDuration`
+      is derived as `cw + rw + xw`, so it can't drift. The drift bug
+      that bricked mainnet v1 (bd883a9) is impossible by construction.
+- [x] **Missed-epoch credit semantics fix.** Old behavior: pristine
+      IDLE silence didn't escalate `consecutiveMissedEpochs`, so a
+      fresh deploy with no prover activity would never raise the max
+      bid — bounded escalation mechanism was effectively dead on
+      arrival. New rule, in `_advanceEpochBy(count, missCount)`:
+      `missCount = advance - (executed ? 1 : 0)`. Every elapsed epoch
+      counts as a miss except the current epoch if it was
+      successfully executed (we're just catching up past a success).
+      Plus the single-epoch and multi-epoch branches of Step B are
+      now factored through a shared `_advanceEpochBy` helper
+      (commit `705b982`).
+- [x] **Bond and max-bid escalation decoupled** (commit `d5e1dda`).
+      Two different incentives, two different triggers:
+      - `effectiveMaxBid` escalates on every silent epoch
+        (`consecutiveMissedEpochs`) → attracts bidders when running
+        the agent isn't profitable. Unchanged from prior refactor.
+      - `currentBond` is now direct state (not derived). Mutates via
+        `currentBond = min(currentBond * 1.1, cap)` on winner-forfeit
+        only. Resets to `BASE_BOND` on successful execution. Pristine
+        silence, non-reveal, infra drop-outs do NOT bump it — they're
+        either already punished via direct bond loss or shouldn't
+        discourage new bidders from joining.
+      Test `test_missedEpochs_escalateMaxBidButNotBond` and new
+      `test_winnerForfeit_bondEscalates` lock the decoupled semantics in.
+
+### Skipped / folded
+
+- ~~Commit 1~~: reuse `FREEZE_AUCTION_CONFIG`. **Folded into
+  `resetAuction`** — the flag already existed and `resetAuction`
+  just uses it directly. No dedicated commit needed.
+- ~~Commit 2~~: `_nextPhase` / `_stepPhase` extraction. **Skipped.**
+  After implementing `resetAuction` directly, we found the manual
+  driver use case is fully covered without restructuring `_syncPhase`
+  into a loop of atomic transitions. The original plan anticipated
+  this might happen; `docs/AUCTION_INVARIANTS.md` is still accurate
+  because fund behavior matches the invariants, even if internal
+  structure differs.
+- ~~Commit 2.5~~: fast-forward preservation. **Not needed** —
+  preservation is already locked in by the fast-forward tests
+  landed in `fcff066`, and no commit reworked the fast-forward path.
+- ~~Commit 3~~: owner `nextPhase()`. **Not needed** — `resetAuction`
+  covers the operator-intervention use cases. If we ever want
+  single-step manual advance for debugging, we can add it.
+
+### Remaining
+
+- [ ] **Commit 5: compose `migrate()`** *(small, ~30 LOC)*
+  - Currently `migrate()` reverts if AM is in any non-IDLE/SETTLED
+    state. Operator has to wait for natural drain (up to ~90min).
+  - New: call `resetAuction(cw, rw, xw)` internally first (passing
+    current timing), then `_withdrawTo(destination)`. Operator can
+    migrate immediately regardless of in-flight auction state.
+  - `test_sunset_midAuction_canDrainAndMigrate` must still pass —
+    it's the canary for the drain path working correctly.
+  - New test: `test_migrate_midAuction_refundsCommitters` — verify
+    in-flight bonds are refunded, not forfeited, during migration.
+- [ ] **Commit 6: extract `_openNextAuction` helper** *(low risk,
+      pure refactor)*
+  - Extract `_openAuction` + `_freezeEpochSnapshot` + opening setup
+    into a single internal helper so there's exactly one freeze site.
+  - Constructor and `_syncPhase` Step C both call it.
+  - No behavior change. Satisfies the "single freeze site" corollary
+    of Invariant I5.
+- [ ] **Commit 7: remove direct mode** *(high risk — biggest blast
+      radius, its own session)*
+  - Delete `submitEpochAction`, `FREEZE_DIRECT_MODE`, the direct-mode
+    branch of `_recordAndExecute`.
+  - Rewire `EpochTest.speedrunEpoch` to use a real commit → reveal →
+    submit flow against a `MockProofVerifier` that accepts any proof.
+    See the existing `AuctionMockDcapVerifier` pattern in
+    `test/TheHumanFundAuction.t.sol` for reference — we need the same
+    idea but for the general `IProofVerifier` interface.
+  - Each test class that inherits `EpochTest` will need to deploy
+    the mock verifier in its own `setUp` (Foundry doesn't chain
+    inherited setUps). Add a helper like `_deployMockVerifier()` on
+    `EpochTest` that each class calls.
+  - Delete tests that only made sense for direct mode:
+    - `test_only_owner_can_submit` (in TheHumanFund.t.sol)
+    - `test_freezeDirectMode` (in TheHumanFund.t.sol)
+    - `test_directSubmission_coexists` (in TheHumanFundAuction.t.sol)
+  - Rewrite tests that used direct mode for mid-epoch hash inspection
+    to run two full epochs instead (`test_ff_successfulEpoch_thenSilence`
+    is already marked as depending on this — un-mark when commit 7
+    lands, or rewrite it to use the new flow).
+  - Migrate `CrossStackHash.t.sol` to freeze via the auction path
+    (currently uses `submitEpochAction` to force a freeze — rewrite
+    to use `speedrunEpoch` which will go through commit/reveal/submit).
+  - Migrate `MainnetFork.t.sol` adapter tests to use `speedrunEpoch`.
+  - Rewrite fuzz tests in `test/TheHumanFund.t.sol` (L604–L649:
+    `testFuzz_commissionRate_validRange`, `_belowMin_rejected`,
+    `_aboveMax_rejected`, `donate_action_boundedByTreasury`,
+    `actionEncoding_malformedBytes_neverReverts`) to use `speedrunEpoch`.
+  - Consider splitting into sub-commits if the diff is >500 LOC:
+    (a) add MockProofVerifier + rewire speedrunEpoch, (b) delete
+    direct-mode-only tests, (c) remove direct mode from contract.
+- [ ] **Commit 8: update prover client** *(medium risk)*
+  - Doesn't call `submitEpochAction` (never did), but references
+    phase constants and error selectors. Audit:
+    - Any phase enum handling that assumes `SETTLED` exists
+      distinctly from `IDLE` — probably none since the AM's enum
+      still has SETTLED (the collapse was not done).
+    - Error selector map in `prover/client/chain.py` — `Frozen` now
+      refers to different owner paths than before. Check whether
+      the prover cares (it probably doesn't, since it's not calling
+      owner methods).
+  - Run the prover in simulation mode against a local anvil node
+    with the new contract to catch anything missed.
+- [ ] **Commit 9: Sepolia burn-in** *(user operation)*
+  - Deploy the new contract to Base Sepolia.
+  - Run the prover cron for at least 24 hours (one full day/night
+    cycle).
+  - Watch for stuck-state reports or forfeit alerts. Any issue is
+    a Class A bug that would have hit mainnet.
+- [ ] **Commit 10: mainnet redeploy** *(user operation)*
+  - Withdraw from old contract (`0xeE98b474...`) using the existing
+    sunset/migrate flow.
+  - Deploy new contract with production timing (20m/20m/50m = 90m).
+  - Update frontend `DEPLOYMENTS` array in `index.html`.
+  - Update prover `.env` with new contract address.
+  - Register GCP image key via `register_image.py` if the enclave
+    image has changed (it hasn't in this refactor — the enclave
+    code and the input hash format are both untouched).
+
+### Suggested next session
+
+Start with **commit 5 (`migrate()` composition)**. It's small,
+low-risk, and the tests already tell you when you've got it right
+(`test_sunset_midAuction_canDrainAndMigrate` is the canary). After
+that, commit 6 is trivial, and then commit 7 is where you want a
+fresh session with clean context because of the test churn.
+
+Current test total: **259 passing, 0 failing, 9 skipped** on branch
+`claude/nextphase` at commit `d5e1dda`.
