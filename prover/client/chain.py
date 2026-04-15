@@ -4,7 +4,7 @@
 Wraps web3.py calls to TheHumanFund contract for:
 - Reading auction state (phase, bonds, timing)
 - Reading epoch state (treasury, nonprofits, investments, etc.)
-- Submitting transactions (startEpoch, commit, reveal, closeCommit, etc.)
+- Submitting transactions (syncPhase, commit, reveal, submitAuctionResult, etc.)
 """
 
 import json
@@ -236,7 +236,7 @@ class ChainClient:
         """Build, sign, and send a transaction.
 
         Args:
-            fn: Contract function call (e.g., self.contract.functions.startEpoch())
+            fn: Contract function call (e.g., self.contract.functions.syncPhase())
             value: ETH value to send in wei.
             gas: Gas limit (estimated if not provided).
 

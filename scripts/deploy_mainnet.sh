@@ -68,14 +68,13 @@ DEPLOY
 # ─── Step 3: Configure auction timing ────────────────────────────────
 cat << 'TIMING'
 
-# 6-hour epochs: 1h bidding + 5h execution
-# epochDuration=21600, biddingWindow=3600, executionWindow=18000
-FUND=0x...  # TheHumanFund address from step 2
-
-cast send $FUND "setAuctionTiming(uint256,uint256,uint256)" \
-  21600 3600 18000 \
-  --rpc-url $RPC_URL \
-  --private-key $PRIVATE_KEY
+# Timing is set via setAuctionManager at deploy time (Deploy.s.sol).
+# To change timing mid-life, use resetAuction(commitWindow, revealWindow, executionWindow):
+# FUND=0x...  # TheHumanFund address from step 2
+# cast send $FUND "resetAuction(uint256,uint256,uint256)" \
+#   1200 1200 3000 \
+#   --rpc-url $RPC_URL \
+#   --private-key $PRIVATE_KEY
 
 TIMING
 

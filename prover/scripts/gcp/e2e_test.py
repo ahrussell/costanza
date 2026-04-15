@@ -8,7 +8,8 @@ Tests the complete security model end-to-end:
   1. Deploy TheHumanFund + DstackVerifier to Base Sepolia
   2. Boot measurement VM from dm-verity image, extract RTMR measurements
   3. Register platform key = sha256(MRTD || RTMR[1] || RTMR[2]) in DstackVerifier
-  4. Run full auction: startEpoch -> commit -> closeCommit -> reveal -> closeReveal
+  4. Run full auction: syncPhase (opens auction) -> commit -> syncPhase (closes commit)
+     -> reveal -> syncPhase (closes reveal, captures seed)
      -> boot fresh H100 TDX VM -> one-shot inference via serial console -> submitAuctionResult
   5. Verify on-chain: Automata DCAP + platform key registry + REPORTDATA binding all pass
   6. Cleanup VMs
@@ -145,13 +146,12 @@ def deploy_contracts(w3, account):
         abi=fund_artifact["abi"],
         bytecode=fund_artifact["bytecode"]["object"]
     )
-    # Constructor: (commissionBps, maxBid, endaomentFactory, weth, usdc, swapRouter, ethUsdFeed)
-    # Use deployer as placeholder for Endaoment/DeFi addresses on testnet
-    # ethUsdFeed must be address(0) -- deployer is an EOA, calling latestRoundData() on it reverts
+    # Constructor: (commissionBps, maxBid, donationExecutor, ethUsdFeed)
+    # Use ZERO_ADDR for donationExecutor and ethUsdFeed -- e2e test doesn't need donations or price feed
     ZERO_ADDR = "0x0000000000000000000000000000000000000000"
     tx = fund_contract.constructor(
         1000, w3.to_wei(0.0001, "ether"),
-        deployer, deployer, deployer, deployer, ZERO_ADDR
+        ZERO_ADDR, ZERO_ADDR
     ).build_transaction({
         "from": deployer,
         "nonce": nonce,
@@ -616,10 +616,10 @@ def run_auction_e2e(w3, account, fund_addr, am_addr, nonce):
     print(f"  Current epoch: {epoch}")
     print(f"  Treasury: {w3.from_wei(fund.functions.treasuryBalance().call(), 'ether')} ETH")
 
-    # --- 4a: startEpoch ---
+    # --- 4a: syncPhase (open auction) ---
     # Clean up any stale auction state before starting a new epoch.
     # If the current epoch has an active auction (e.g., from a previous failed run),
-    # close it out so we can proceed.
+    # advance phases via syncPhase() so we can proceed.
     epoch_dur = fund.functions.epochDuration().call()
     commit_win = am.functions.commitWindow().call()
     reveal_win = am.functions.revealWindow().call()
@@ -637,10 +637,10 @@ def run_auction_e2e(w3, account, fund_addr, am_addr, nonce):
                 print(f"      Waiting {wait}s for commit window to close...")
                 time.sleep(wait)
             try:
-                receipt = send_tx(fund.functions.closeCommit())
-                print(f"      closeCommit: gas={receipt.gasUsed}")
+                receipt = send_tx(fund.functions.syncPhase())
+                print(f"      syncPhase (close commit): gas={receipt.gasUsed}")
             except Exception as e:
-                print(f"      closeCommit failed: {e}")
+                print(f"      syncPhase (close commit) failed: {e}")
             w3, fund = fresh_connection()
             nonce = w3.eth.get_transaction_count(account.address)
             phase = am.functions.getPhase(epoch).call()
@@ -653,15 +653,15 @@ def run_auction_e2e(w3, account, fund_addr, am_addr, nonce):
                 print(f"      Waiting {wait}s for reveal window to close...")
                 time.sleep(wait)
             try:
-                receipt = send_tx(fund.functions.closeReveal())
-                print(f"      closeReveal: gas={receipt.gasUsed}")
+                receipt = send_tx(fund.functions.syncPhase())
+                print(f"      syncPhase (close reveal): gas={receipt.gasUsed}")
             except Exception as e:
-                print(f"      closeReveal failed: {e}")
+                print(f"      syncPhase (close reveal) failed: {e}")
             w3, fund = fresh_connection()
             nonce = w3.eth.get_transaction_count(account.address)
             phase = am.functions.getPhase(epoch).call()
 
-        if phase == 3:  # EXECUTION -- need to forfeit bond
+        if phase == 3:  # EXECUTION -- need to advance past execution window to forfeit bond
             exec_win = am.functions.executionWindow().call()
             deadline = start_time + commit_win + reveal_win + exec_win
             now = int(time.time())
@@ -670,10 +670,10 @@ def run_auction_e2e(w3, account, fund_addr, am_addr, nonce):
                 print(f"      Waiting {wait}s for execution window to expire...")
                 time.sleep(wait)
             try:
-                receipt = send_tx(fund.functions.forfeitBond())
-                print(f"      forfeitBond: gas={receipt.gasUsed}")
+                receipt = send_tx(fund.functions.syncPhase())
+                print(f"      syncPhase (forfeit bond): gas={receipt.gasUsed}")
             except Exception as e:
-                print(f"      forfeitBond failed: {e}")
+                print(f"      syncPhase (forfeit bond) failed: {e}")
             w3, fund = fresh_connection()
             nonce = w3.eth.get_transaction_count(account.address)
 
@@ -697,16 +697,16 @@ def run_auction_e2e(w3, account, fund_addr, am_addr, nonce):
         except Exception:
             pass  # AM query may fail for epoch 0
 
-    # Start the fresh epoch
-    print(f"  4a. Starting epoch {epoch}...")
+    # syncPhase to open auction for the fresh epoch
+    print(f"  4a. Opening auction for epoch {epoch} via syncPhase()...")
     for attempt in range(5):
         try:
-            receipt = send_tx(fund.functions.startEpoch())
+            receipt = send_tx(fund.functions.syncPhase())
             break
         except (AssertionError, Exception) as e:
             if attempt < 4:
                 wait = 30
-                print(f"      startEpoch reverted, retrying in {wait}s (attempt {attempt + 2}/5)...")
+                print(f"      syncPhase reverted, retrying in {wait}s (attempt {attempt + 2}/5)...")
                 time.sleep(wait)
                 w3, fund = fresh_connection()
                 nonce = w3.eth.get_transaction_count(account.address)
@@ -735,7 +735,7 @@ def run_auction_e2e(w3, account, fund_addr, am_addr, nonce):
     receipt = send_tx(fund.functions.commit(commit_hash), value=bond_wei)
     print(f"      Gas: {receipt.gasUsed}")
 
-    # --- 4c: Wait for commit window, closeCommit, reveal, closeReveal ---
+    # --- 4c: Wait for commit window, syncPhase (close commit), reveal, syncPhase (close reveal) ---
     start_time = am.functions.getStartTime(epoch).call()
     commit_win = am.functions.commitWindow().call()
     now = w3.eth.get_block("latest").timestamp
@@ -746,8 +746,8 @@ def run_auction_e2e(w3, account, fund_addr, am_addr, nonce):
         w3, fund = fresh_connection()
         nonce = w3.eth.get_transaction_count(account.address)
 
-    print("      Closing commit phase...")
-    receipt = send_tx(fund.functions.closeCommit())
+    print("      Closing commit phase via syncPhase()...")
+    receipt = send_tx(fund.functions.syncPhase())
     print(f"      Gas: {receipt.gasUsed}")
 
     # Reveal our bid
@@ -766,10 +766,10 @@ def run_auction_e2e(w3, account, fund_addr, am_addr, nonce):
         w3, fund = fresh_connection()
         nonce = w3.eth.get_transaction_count(account.address)
 
-    print("      Closing reveal phase...")
-    receipt = send_tx(fund.functions.closeReveal())
+    print("      Closing reveal phase via syncPhase()...")
+    receipt = send_tx(fund.functions.syncPhase())
 
-    # Fresh connection to avoid stale reads after closeReveal
+    # Fresh connection to avoid stale reads after syncPhase (close reveal)
     time.sleep(3)
     w3, fund = fresh_connection()
     nonce = w3.eth.get_transaction_count(account.address)
@@ -779,7 +779,7 @@ def run_auction_e2e(w3, account, fund_addr, am_addr, nonce):
     seed = am.functions.getRandomnessSeed(epoch).call()
     input_hash = fund.functions.epochInputHashes(epoch).call()
     print(f"      Winner: {winner}")
-    print(f"      Input hash: 0x{input_hash.hex()[:16]}... (set at closeReveal)")
+    print(f"      Input hash: 0x{input_hash.hex()[:16]}... (set at reveal close via syncPhase)")
     print(f"      Randomness seed: {seed}")
     print(f"      Gas: {receipt.gasUsed}")
 
@@ -1079,22 +1079,22 @@ def main():
                 success = False
             if not success:
                 print(f"\n  Epoch {epoch_i + 1} failed, continuing to next epoch...")
-                # Forfeit bond if stuck in execution
+                # Advance past execution via syncPhase if stuck (forfeits bond automatically)
                 try:
                     w3 = Web3(Web3.HTTPProvider(RPC_URL, request_kwargs={"timeout": 120}))
                     fund = w3.eth.contract(address=fund_addr, abi=json.loads((ABI_DIR / "TheHumanFund.sol" / "TheHumanFund.json").read_text())["abi"])
                     epoch = fund.functions.currentEpoch().call()
                     am_tmp = w3.eth.contract(address=am_addr, abi=json.loads((ABI_DIR / "AuctionManager.sol" / "AuctionManager.json").read_text())["abi"])
                     phase = am_tmp.functions.getPhase(epoch).call()
-                    if phase == 3:  # EXECUTION phase
+                    if phase == 3:  # EXECUTION phase -- syncPhase after deadline forfeits bond
                         deadline = am_tmp.functions.executionDeadline().call()
                         wait = max(0, deadline - int(time.time())) + 5
-                        print(f"      Waiting {wait}s to forfeit bond...")
+                        print(f"      Waiting {wait}s for execution window to expire...")
                         time.sleep(wait)
                         w3 = Web3(Web3.HTTPProvider(RPC_URL, request_kwargs={"timeout": 120}))
                         fund = w3.eth.contract(address=fund_addr, abi=json.loads((ABI_DIR / "TheHumanFund.sol" / "TheHumanFund.json").read_text())["abi"])
                         nonce = w3.eth.get_transaction_count(account.address)
-                        tx = fund.functions.forfeitBond().build_transaction({
+                        tx = fund.functions.syncPhase().build_transaction({
                             "from": account.address, "nonce": nonce, "gas": 200_000,
                             "maxFeePerGas": w3.eth.gas_price * 2,
                             "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
@@ -1102,9 +1102,9 @@ def main():
                         signed = account.sign_transaction(tx)
                         tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
                         w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
-                        print(f"      Bond forfeited, continuing...")
+                        print(f"      syncPhase advanced past execution (bond forfeited), continuing...")
                 except Exception as fe:
-                    print(f"      Could not auto-forfeit: {fe}")
+                    print(f"      Could not auto-advance past execution: {fe}")
                 success = False  # Track overall
 
     finally:
