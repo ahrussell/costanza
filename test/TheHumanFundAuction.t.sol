@@ -989,6 +989,35 @@ contract TheHumanFundAuctionTest is Test {
         fund.syncPhase();
     }
 
+    /// @dev Regression: even though syncPhase() is callable during sunset,
+    ///      it must NOT open a fresh auction (Step C), otherwise the new
+    ///      auction would block migrate() for up to ~90 min until its
+    ///      commit+reveal+exec windows all time out.
+    function test_sunset_syncPhase_doesNotOpenNewAuction() public {
+        // Start in IDLE. Advance wall-clock into a new epoch's commit window.
+        fund.syncPhase();
+        vm.warp(fund.epochStartTime(2));
+
+        // Freeze sunset while we're still at epoch 1 with no in-flight auction.
+        fund.freeze(fund.FREEZE_SUNSET());
+
+        // syncPhase must drain/advance but NOT open auction for epoch 2.
+        fund.syncPhase();
+
+        // AM must remain IDLE/SETTLED so migrate can proceed.
+        IAuctionManager.AuctionPhase phase = am.getPhase(fund.currentEpoch());
+        assertTrue(
+            phase == IAuctionManager.AuctionPhase.IDLE
+                || phase == IAuctionManager.AuctionPhase.SETTLED,
+            "Step C must not open a new auction under sunset"
+        );
+
+        // migrate() should succeed without waiting for any timeout.
+        uint256 balBefore = address(0xBEEF).balance;
+        fund.migrate(address(0xBEEF));
+        assertGt(address(0xBEEF).balance, balBefore);
+    }
+
     function test_sunset_blocksCommit() public {
         fund.syncPhase();
         fund.freeze(fund.FREEZE_SUNSET());
