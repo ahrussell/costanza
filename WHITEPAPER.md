@@ -83,7 +83,7 @@ The security model is built on three ideal functionalities. The concrete constru
 
 **$\mathcal{F}_{\text{HASH}}$ — Collision-Resistant Hashing.** A family of hash functions $H : \{0,1\}^{\ast} \to \{0,1\}^{256}$ such that no PPT adversary can find $x \neq x'$ with $H(x) = H(x')$ with non-negligible probability. Instantiated by SHA-256 and Keccak-256.
 
-**$\mathcal{F}_{\text{COMMIT}}$ — Commitment Scheme.** $\text{Commit}(x; r) = H(x \| r)$ where $r \leftarrow \{0,1\}^{256}$. Computationally hiding (observing the commitment reveals nothing about $x$) and computationally binding (the committer cannot open to $x' \neq x$). Both properties reduce to the properties of $H$ under $\mathcal{F}_{\text{HASH}}$.
+**$\mathcal{F}_{\text{COMMIT}}$ — Commitment Scheme.** $\text{Commit}_{P}(x; r) = H(P \| x \| r)$ where $r \leftarrow \{0,1\}^{256}$ and $P$ is the committing party's address (bound into the preimage to prevent reveal-phase identity theft; see Theorem 5 and §A3). Computationally hiding (observing the commitment reveals nothing about $x$) and computationally binding (the committer cannot open to $x' \neq x$). Both properties reduce to the properties of $H$ under $\mathcal{F}_{\text{HASH}}$.
 
 ### 3.3 Contract Parameters
 
@@ -112,9 +112,9 @@ Each assumption is labeled for precise reference in theorems.
 
 **A2 (Collision Resistance).** The hash functions SHA-256 and Keccak-256 are collision-resistant. No PPT adversary can find $x \neq x'$ such that $H(x) = H(x')$ with non-negligible probability in the security parameter $\lambda$.
 
-**A3 (Commitment Binding).** The commitment scheme $\text{Commit}(\textit{bid}; \textit{salt}) = \text{Keccak256}(\textit{bid} \| \textit{salt})$ is computationally binding. No PPT adversary can produce $(\textit{bid}, \textit{salt})$ and $(\textit{bid}', \textit{salt}')$ with $\textit{bid} \neq \textit{bid}'$ and $\text{Commit}(\textit{bid}; \textit{salt}) = \text{Commit}(\textit{bid}'; \textit{salt}')$.
+**A3 (Commitment Binding).** The commitment scheme $\text{Commit}_{P}(\textit{bid}; \textit{salt}) = \text{Keccak256}(P \| \textit{bid} \| \textit{salt})$ is computationally binding. No PPT adversary can produce $(\textit{bid}, \textit{salt})$ and $(\textit{bid}', \textit{salt}')$ with $\textit{bid} \neq \textit{bid}'$ and $\text{Commit}_{P}(\textit{bid}; \textit{salt}) = \text{Commit}_{P}(\textit{bid}'; \textit{salt}')$. The prover address $P$ is encoded in the preimage so that a commitment $c$ submitted by $P$ is not a valid opening for any $P' \neq P$ — this closes a reveal-phase identity-theft attack where $P'$ copies $P$'s commit hash, observes $P$'s reveal of $(\textit{bid}, \textit{salt})$, and front-runs with the same opening under their own address.
 
-**A4 (Commitment Hiding).** The commitment scheme is computationally hiding. Observing $\text{Commit}(\textit{bid}; \textit{salt})$ reveals no information about $\textit{bid}$ to a PPT adversary who does not know $\textit{salt}$.
+**A4 (Commitment Hiding).** The commitment scheme is computationally hiding. Observing $\text{Commit}_{P}(\textit{bid}; \textit{salt})$ reveals no information about $\textit{bid}$ to a PPT adversary who does not know $\textit{salt}$ (note: the adversary does learn $P$, but $P$ is already public from the commit transaction's sender field).
 
 ### Infrastructure Assumptions
 
@@ -326,7 +326,7 @@ The commit-reveal auction must ensure that no participant learns another's bid b
 
 **Game** $\mathsf{BID\text{-}PRIVACY}(\lambda)$:
 
-1. Prover $P_1$ commits bid $b_1$ with salt $r_1$: commitment $c_1 = H(b_1 \| r_1)$.
+1. Prover $P_1$ commits bid $b_1$ with salt $r_1$: commitment $c_1 = H(P_1 \| b_1 \| r_1)$.
 2. Adversary $\mathcal{A}$ (another prover) observes $c_1$ on-chain.
 3. $\mathcal{A}$ wins if $\mathcal{A}$ can determine $b_1$ with probability significantly better than guessing from the bid space $\{1, \ldots, b_{\max}\}$.
 
@@ -334,7 +334,7 @@ The commit-reveal auction must ensure that no participant learns another's bid b
 
 **Theorem 5 (Bid Privacy).** *Under A4 (commitment hiding), the commit-reveal auction preserves bid privacy during the commit phase.*
 
-> *Proof sketch.* By A4, $\text{Commit}(b_1; r_1) = H(b_1 \| r_1)$ is computationally hiding. Observing $c_1$ gives $\mathcal{A}$ no advantage in determining $b_1$ beyond what is implied by the public bid range $[1, b_{\max}]$. $\square$
+> *Proof sketch.* By A4, $\text{Commit}_{P_1}(b_1; r_1) = H(P_1 \| b_1 \| r_1)$ is computationally hiding in $b_1$ given that $r_1$ is uniform and secret. Observing $c_1$ gives $\mathcal{A}$ no advantage in determining $b_1$ beyond what is implied by the public bid range $[1, b_{\max}]$ (the address $P_1$ is already public from the commit transaction's sender field and contributes no additional information about $b_1$). $\square$
 
 **Limitation: reveal-phase information leakage.** Bid privacy holds only during the commit phase. During the reveal phase, bids are revealed publicly and sequentially. The last revealer sees all previously revealed bids and can condition their strategy — they may choose not to reveal (forfeiting bond $\gamma_k$) if they observe that they would lose, or they may use the information to inform future epochs' strategies.
 
@@ -506,7 +506,7 @@ The security of the system follows from the composition of Properties 1–7, pro
 |---------------|---------------|-----------|
 | $\mathcal{F}_{\text{TEE}}$ | Intel TDX + dm-verity rootfs + Automata DCAP | Appendix A |
 | $\mathcal{F}_{\text{HASH}}$ | SHA-256, Keccak-256 | Standard |
-| $\mathcal{F}_{\text{COMMIT}}$ | $H(\textit{bid} \;\|\; \textit{salt})$ with 256-bit salt | Standard |
+| $\mathcal{F}_{\text{COMMIT}}$ | $H(P \;\|\; \textit{bid} \;\|\; \textit{salt})$ with 256-bit salt; $P$ = committer address (binds opener identity, prevents reveal front-run) | Standard |
 
 The argument that the TDX + dm-verity construction realizes $\mathcal{F}_{\text{TEE}}$ is given in Appendix A. The three requirements it must satisfy:
 

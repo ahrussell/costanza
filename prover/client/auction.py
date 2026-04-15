@@ -133,7 +133,8 @@ def commit_bid(chain: ChainClient, bid_wei: int, state_dir=None):
     # Commit hash preimage is (runner, bidAmount, salt) — runner binding
     # prevents reveal front-running attacks where an attacker copies the
     # commit hash under their own address and front-runs the legit reveal.
-    runner_bytes = bytes.fromhex(chain.account.address[2:])
+    runner_bytes = Web3.to_bytes(hexstr=chain.account.address)
+    assert len(runner_bytes) == 20, f"runner address must be 20 bytes, got {len(runner_bytes)}"
     commit_hash = Web3.keccak(runner_bytes + bid_wei.to_bytes(32, "big") + salt_bytes)
 
     bond = chain.get_current_bond()

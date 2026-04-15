@@ -738,7 +738,8 @@ def run_auction_e2e(w3, account, fund_addr, am_addr, nonce):
     bond_wei = fund.functions.currentBond().call()
     salt = w3.keccak(os.urandom(32))
     # Commit hash binds runner address to prevent reveal front-running.
-    runner_bytes = bytes.fromhex(account.address[2:])
+    runner_bytes = w3.to_bytes(hexstr=account.address)
+    assert len(runner_bytes) == 20
     commit_hash = w3.keccak(runner_bytes + bid_wei.to_bytes(32, "big") + salt)
 
     print(f"\n  4b. Committing sealed bid: {w3.from_wei(bid_wei, 'ether')} ETH (bond: {w3.from_wei(bond_wei, 'ether')} ETH)...")

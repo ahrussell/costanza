@@ -945,8 +945,8 @@
       <div style="font-size:13px;font-weight:500;margin-bottom:6px;">Message Costanza <span style="font-weight:400;color:var(--text-dim);font-size:12px;">(optional)</span></div>
       <p style="font-size:12px;color:var(--text-secondary);margin-bottom:10px;line-height:1.5;">Leave a message that Costanza reads each epoch — it can influence his decisions. Requires a minimum donation of 0.01 ETH to reduce spam. Stored on-chain permanently.</p>
       <div class="form-group">
-        <textarea class="form-input" id="message-text" placeholder="Write something to Costanza..." maxlength="280" style="min-height:80px;resize:vertical;"></textarea>
-        <div class="form-hint">Max 280 characters. Stored on-chain forever.</div>
+        <textarea class="form-input" id="message-text" placeholder="Write something to Costanza..." oninput="updateMessageByteCount()" style="min-height:80px;resize:vertical;"></textarea>
+        <div class="form-hint" id="message-hint">0 / 280 bytes. Emoji and non-ASCII characters count as multiple bytes. Stored on-chain forever.</div>
       </div>
     </div>
 
@@ -1542,6 +1542,19 @@ function updateDonateUsd() {
   } catch { el.textContent = ''; }
 }
 
+// Contract enforces MAX_MESSAGE_LENGTH = 280 BYTES (UTF-8 encoded), not
+// characters — emoji and non-ASCII codepoints take multiple bytes each.
+// Show a live byte counter so donors don't get a revert at submit time.
+function updateMessageByteCount() {
+  const ta = document.getElementById('message-text');
+  const hint = document.getElementById('message-hint');
+  if (!ta || !hint) return;
+  const bytes = new TextEncoder().encode(ta.value).length;
+  const over = bytes > 280;
+  hint.textContent = `${bytes} / 280 bytes. Emoji and non-ASCII characters count as multiple bytes. Stored on-chain forever.`;
+  hint.style.color = over ? '#c00' : '';
+}
+
 async function handleSubmitDonation() {
   const statusId = 'donate-status';
   try {
@@ -1565,6 +1578,16 @@ async function handleSubmitDonation() {
       setStatus(statusId, 'Minimum donation for messaging is 0.01 ETH.', 'error');
       return;
     }
+    // Contract enforces MAX_MESSAGE_LENGTH = 280 BYTES (not characters).
+    // Check UTF-8 byte length so emoji / multibyte codepoints don't
+    // silently submit a tx that will revert on-chain.
+    if (msgText) {
+      const msgBytes = new TextEncoder().encode(msgText).length;
+      if (msgBytes > 280) {
+        setStatus(statusId, `Message is ${msgBytes} bytes (max 280). Emoji and non-ASCII characters count as multiple bytes.`, 'error');
+        return;
+      }
+    }
 
     setStatus(statusId, 'Confirm the transaction in your wallet...', 'info');
     const fundWrite = new ethers.Contract(CONTRACT_ADDRESS, FUND_ABI, walletSigner);
@@ -1585,6 +1608,7 @@ async function handleSubmitDonation() {
     document.getElementById('donate-amount').value = '';
     document.getElementById('message-text').value = '';
     document.getElementById('donate-usd-estimate').textContent = '';
+    updateMessageByteCount();
   } catch (err) {
     setStatus(statusId, err.reason || err.message || 'Transaction failed.', 'error');
   }
