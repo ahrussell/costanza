@@ -1028,12 +1028,27 @@ contract TheHumanFundAuctionTest is EpochTest {
         fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.005 ether, bytes32("s1")));
     }
 
-    function test_migrate_requiresNoActiveAuction() public {
+    /// @dev migrate() composes out of `_resetAuction`, so it can run
+    ///      mid-auction and must refund all held bonds to committers
+    ///      (operator intervention is never a forfeit — invariant I3).
+    function test_migrate_midAuction_refundsCommitters() public {
         fund.syncPhase();
-        fund.freeze(fund.FREEZE_SUNSET());
+        uint256 bond = fund.currentBond();
 
-        vm.expectRevert(TheHumanFund.WrongPhase.selector);
+        // runner1 commits — bond is held by the AuctionManager.
+        uint256 runner1Before = runner1.balance;
+        vm.prank(runner1);
+        fund.commit{value: bond}(_commitHash(runner1, 0.005 ether, bytes32("s1")));
+        assertEq(runner1.balance, runner1Before - bond);
+
+        // Owner sunsets then migrates mid-COMMIT.
+        fund.freeze(fund.FREEZE_SUNSET());
+        uint256 destBefore = address(0xBEEF).balance;
         fund.migrate(address(0xBEEF));
+
+        // runner1's bond is refunded (not forfeited to the destination).
+        assertEq(runner1.balance, runner1Before, "committer bond refunded");
+        assertGt(address(0xBEEF).balance, destBefore, "migration sent funds");
     }
 
     /// @dev Regression: setting FREEZE_SUNSET while an auction is in-flight

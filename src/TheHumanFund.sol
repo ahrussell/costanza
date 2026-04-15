@@ -590,13 +590,17 @@ contract TheHumanFund is ReentrancyGuard {
     function migrate(address destination) external onlyOwner {
         if (frozenFlags & FREEZE_MIGRATE != 0) revert Frozen();
         if (frozenFlags & FREEZE_SUNSET == 0) revert InvalidParams();
-        // Ensure no auction is in flight
+        // Drain any in-flight auction first (refunds all held bonds —
+        // operator intervention is never a forfeit). Composed out of
+        // `_resetAuction` so the abort + re-anchor path is defined
+        // once and shared with the public `resetAuction` entry point.
         IAuctionManager am = auctionManager;
-        uint256 epoch = currentEpoch;
-        if (address(am) != address(0) && epoch > 0) {
-            IAuctionManager.AuctionPhase phase = am.getPhase(epoch);
-            if (phase != IAuctionManager.AuctionPhase.IDLE
-                && phase != IAuctionManager.AuctionPhase.SETTLED) revert WrongPhase();
+        if (address(am) != address(0)) {
+            _resetAuction(
+                am.commitWindow(),
+                am.revealWindow(),
+                am.executionWindow()
+            );
         }
         _withdrawTo(destination);
         emit Sunset(destination);
@@ -769,6 +773,20 @@ contract TheHumanFund is ReentrancyGuard {
         uint256 _executionWindow
     ) external onlyOwner {
         if (frozenFlags & FREEZE_AUCTION_CONFIG != 0) revert Frozen();
+        _resetAuction(_commitWindow, _revealWindow, _executionWindow);
+    }
+
+    /// @dev Internal core of `resetAuction`. Aborts any in-flight auction
+    ///      (refunding held bonds), applies new timing, advances one epoch,
+    ///      and re-anchors the schedule to now. Callers are responsible for
+    ///      their own authorization and freeze gating. Shared by
+    ///      `resetAuction` (auction-config gated) and `migrate` (sunset
+    ///      gated) so the drain path lives in exactly one place.
+    function _resetAuction(
+        uint256 _commitWindow,
+        uint256 _revealWindow,
+        uint256 _executionWindow
+    ) internal {
         if (_commitWindow == 0 || _revealWindow == 0 || _executionWindow == 0) revert InvalidParams();
         IAuctionManager am = auctionManager;
         if (address(am) == address(0)) revert InvalidParams();
