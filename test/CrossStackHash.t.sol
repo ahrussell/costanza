@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import "forge-std/Test.sol";
 import "../src/TheHumanFund.sol";
+import "../src/AuctionManager.sol";
 import "./helpers/MockEndaoment.sol";
 
 /// @title CrossStackHashTest
@@ -42,46 +43,53 @@ contract CrossStackHashTest is Test {
         mockFactory.preDeployOrg(bytes32("EIN-GD"));
         mockFactory.preDeployOrg(bytes32("EIN-AMF"));
         mockFactory.preDeployOrg(bytes32("EIN-HKI"));
+
+        // Wire an AuctionManager so `syncPhase` can advance currentEpoch
+        // across elapsed epochs — the multi-epoch test needs this.
+        AuctionManager am = new AuctionManager(address(fund));
+        fund.setAuctionManager(address(am));
     }
+
+    // Every cross-stack test forces a freeze via `submitEpochAction`
+    // (which always calls `_freezeEpochSnapshot` as its first step,
+    // regardless of auction timing), then compares the snapshot hash
+    // against Python's hash of the JSON-serialized snapshot state.
+    //
+    // The new `_hashSnapshot` is `pure` — it reads only from the frozen
+    // EpochSnapshot. For Solidity and Python to agree, we freeze with
+    // live state == the desired test state, then read the frozen
+    // snapshot on both sides.
 
     /// @notice Core cross-stack test: compare Solidity and Python hash outputs.
     function test_cross_stack_hash_matches_initial_state() public {
-        bytes32 solidityHash = fund.computeInputHash();
-
-        // Build the same state as JSON for Python
-        string memory stateJson = _buildStateJson();
-
-        // Call Python via FFI
-        bytes32 pythonHash = _callPythonHash(stateJson);
-
-        assertEq(solidityHash, pythonHash, "Solidity and Python hashes must match");
+        // Execute epoch 1 with a noop; this freezes epoch 1's snapshot.
+        bytes memory noopAction = abi.encodePacked(uint8(0));
+        fund.submitEpochAction(noopAction, "initial", -1, "");
+        _assertCrossStackMatch(1, "initial state");
     }
 
     /// @notice Test after a donation changes state — hashes should still match.
     function test_cross_stack_hash_after_donation() public {
-        // Donate to change state
         vm.deal(address(0xDEAD), 1 ether);
         vm.prank(address(0xDEAD));
         fund.donate{value: 0.5 ether}(0);
-
-        bytes32 solidityHash = fund.computeInputHash();
-        string memory stateJson = _buildStateJson();
-        bytes32 pythonHash = _callPythonHash(stateJson);
-
-        assertEq(solidityHash, pythonHash, "Hashes must match after donation");
+        bytes memory noopAction = abi.encodePacked(uint8(0));
+        fund.submitEpochAction(noopAction, "donation", -1, "");
+        _assertCrossStackMatch(1, "after donation");
     }
 
     /// @notice Test after epoch execution — content hashes and epoch state change.
     function test_cross_stack_hash_after_epoch() public {
-        // Execute an epoch (noop action)
+        // Execute epoch 1 (freezes epoch 1, records executed=true).
         bytes memory noopAction = abi.encodePacked(uint8(0));
-        fund.submitEpochAction(noopAction, "Test reasoning", -1, "");
+        fund.submitEpochAction(noopAction, "epoch 1", -1, "");
 
-        bytes32 solidityHash = fund.computeInputHash();
-        string memory stateJson = _buildStateJson();
-        bytes32 pythonHash = _callPythonHash(stateJson);
-
-        assertEq(solidityHash, pythonHash, "Hashes must match after epoch execution");
+        // Advance currentEpoch to 2, then execute it — freezes epoch 2's
+        // snapshot whose history-hash rolls in epoch 1's content hash.
+        vm.warp(fund.epochStartTime(2) + 1);
+        fund.syncPhase();
+        fund.submitEpochAction(noopAction, "epoch 2", -1, "");
+        _assertCrossStackMatch(2, "after epoch");
     }
 
     /// @notice Test with messages in the queue.
@@ -89,12 +97,17 @@ contract CrossStackHashTest is Test {
         vm.deal(address(0xBEEF), 1 ether);
         vm.prank(address(0xBEEF));
         fund.donateWithMessage{value: 0.1 ether}(0, "Hello from a donor!");
+        bytes memory noopAction = abi.encodePacked(uint8(0));
+        fund.submitEpochAction(noopAction, "with msg", -1, "");
+        _assertCrossStackMatch(1, "with messages");
+    }
 
-        bytes32 solidityHash = fund.computeInputHash();
-        string memory stateJson = _buildStateJson();
+    function _assertCrossStackMatch(uint256 epoch, string memory label) internal {
+        bytes32 solidityHash = fund.computeInputHashForEpoch(epoch);
+        string memory stateJson = _buildStateJson(epoch);
         bytes32 pythonHash = _callPythonHash(stateJson);
-
-        assertEq(solidityHash, pythonHash, "Hashes must match with messages");
+        assertEq(solidityHash, pythonHash,
+            string.concat("Solidity/Python hashes must match: ", label));
     }
 
     // ─── Internal Helpers ──────────────────────────────────────────────────
@@ -118,45 +131,45 @@ contract CrossStackHashTest is Test {
         return abi.decode(result, (bytes32));
     }
 
-    function _buildStateJson() internal view returns (string memory) {
+    function _buildStateJson(uint256 epoch) internal view returns (string memory) {
         // Build the flat epoch_state JSON that compute_input_hash() expects.
-        // This must exactly mirror the structure the runner passes to the
-        // enclave — the enclave is a dumb hasher and reads all display data
-        // directly from this dict.
+        // Scalar fields are read from the FROZEN snapshot for the given
+        // epoch — this is the single source of truth after the
+        // pure-_hashSnapshot refactor.
+        TheHumanFund.EpochSnapshot memory snap = fund.getEpochSnapshot(epoch);
 
-        // Scalar state fields (matches _hashState() layout)
         string memory scalars = string.concat(
-            '{"epoch":', vm.toString(fund.currentEpoch()),
-            ',"treasury_balance":', vm.toString(address(fund).balance),
-            ',"commission_rate_bps":', vm.toString(fund.commissionRateBps()),
-            ',"max_bid":', vm.toString(fund.maxBid()),
-            ',"effective_max_bid":', vm.toString(fund.effectiveMaxBid()),
-            ',"consecutive_missed":', vm.toString(fund.consecutiveMissedEpochs()),
-            ',"last_donation_epoch":', vm.toString(fund.lastDonationEpoch()),
-            ',"last_commission_change_epoch":', vm.toString(fund.lastCommissionChangeEpoch()),
-            ',"total_inflows":', vm.toString(fund.totalInflows())
+            '{"epoch":', vm.toString(snap.epoch),
+            ',"treasury_balance":', vm.toString(snap.balance),
+            ',"commission_rate_bps":', vm.toString(snap.commissionRateBps),
+            ',"max_bid":', vm.toString(snap.maxBid),
+            ',"effective_max_bid":', vm.toString(snap.effectiveMaxBid),
+            ',"consecutive_missed":', vm.toString(snap.consecutiveMissedEpochs),
+            ',"last_donation_epoch":', vm.toString(snap.lastDonationEpoch),
+            ',"last_commission_change_epoch":', vm.toString(snap.lastCommissionChangeEpoch),
+            ',"total_inflows":', vm.toString(snap.totalInflows)
         );
         scalars = string.concat(scalars,
-            ',"total_donated":', vm.toString(fund.totalDonatedToNonprofits()),
-            ',"total_commissions":', vm.toString(fund.totalCommissionsPaid()),
-            ',"total_bounties":', vm.toString(fund.totalBountiesPaid()),
-            ',"epoch_inflow":', vm.toString(fund.currentEpochInflow()),
-            ',"epoch_donation_count":', vm.toString(fund.currentEpochDonationCount()),
-            ',"epoch_eth_usd_price":', vm.toString(fund.epochEthUsdPrice()),
-            // epoch_duration is read from _epochSnapshots[currentEpoch] in _hashState(),
-            // not from the live storage slot. For tests that haven't opened an auction
-            // yet, the snapshot is all zeros, so we emit 0 here to match.
-            ',"epoch_duration":', vm.toString(fund.getEpochSnapshot(fund.currentEpoch()).epochDuration)
+            ',"total_donated":', vm.toString(snap.totalDonatedToNonprofits),
+            ',"total_commissions":', vm.toString(snap.totalCommissionsPaid),
+            ',"total_bounties":', vm.toString(snap.totalBountiesPaid),
+            ',"epoch_inflow":', vm.toString(snap.currentEpochInflow),
+            ',"epoch_donation_count":', vm.toString(snap.currentEpochDonationCount),
+            ',"epoch_eth_usd_price":', vm.toString(snap.epochEthUsdPrice),
+            ',"epoch_duration":', vm.toString(snap.epochDuration),
+            ',"message_head":', vm.toString(snap.messageHead),
+            ',"message_count":', vm.toString(snap.messageCount),
+            ',"nonprofit_count":', vm.toString(snap.nonprofitCount)
         );
 
-        // Nonprofits
-        string memory nps = _buildNonprofitsJson();
+        // Nonprofits — bounded by the frozen snapshot count, not live.
+        string memory nps = _buildNonprofitsJson(snap.nonprofitCount);
 
-        // Donor messages (unread queue)
-        string memory msgs = _buildDonorMessagesJson();
+        // Donor messages (unread queue) — bounded by the frozen head/count.
+        string memory msgs = _buildDonorMessagesJson(snap.messageHead, snap.messageCount);
 
-        // History (executed epochs)
-        string memory hist = _buildHistoryJson();
+        // History (executed epochs) — rolled over the frozen epoch.
+        string memory hist = _buildHistoryJson(epoch);
 
         return string.concat(
             scalars,
@@ -169,9 +182,9 @@ contract CrossStackHashTest is Test {
         );
     }
 
-    function _buildNonprofitsJson() internal view returns (string memory) {
+    function _buildNonprofitsJson(uint256 nonprofitCount) internal view returns (string memory) {
         string memory result = "[";
-        for (uint256 i = 1; i <= fund.nonprofitCount(); i++) {
+        for (uint256 i = 1; i <= nonprofitCount; i++) {
             (string memory name, string memory description, bytes32 ein,
              uint256 totalDonated, uint256 totalDonatedUsd, uint256 donationCount) = fund.getNonprofit(i);
 
@@ -187,27 +200,33 @@ contract CrossStackHashTest is Test {
         return string.concat(result, "]");
     }
 
-    function _buildDonorMessagesJson() internal view returns (string memory) {
-        (address[] memory senders, uint256[] memory amounts,
-         string[] memory texts, uint256[] memory epochNums) = fund.getUnreadMessages();
-
-        if (senders.length == 0) return "[]";
+    function _buildDonorMessagesJson(uint256 head, uint256 count)
+        internal view returns (string memory)
+    {
+        // Read the frozen unread range via the raw message storage so the
+        // bound matches the snapshot's messageHead/messageCount, not the
+        // live unread queue (which may include post-freeze messages).
+        uint256 unread = count - head;
+        uint256 maxMsgs = 5; // MAX_MESSAGES_PER_EPOCH
+        uint256 emit_ = unread > maxMsgs ? maxMsgs : unread;
+        if (emit_ == 0) return "[]";
 
         string memory result = "[";
-        for (uint256 i = 0; i < senders.length; i++) {
+        for (uint256 i = 0; i < emit_; i++) {
+            (address sender, uint256 amount, string memory text, uint256 epochNum)
+                = fund.messages(head + i);
             if (i > 0) result = string.concat(result, ",");
             result = string.concat(result,
-                '{"sender":"', vm.toString(senders[i]),
-                '","amount":', vm.toString(amounts[i]),
-                ',"text":"', texts[i],
-                '","epoch":', vm.toString(epochNums[i]), '}'
+                '{"sender":"', vm.toString(sender),
+                '","amount":', vm.toString(amount),
+                ',"text":"', text,
+                '","epoch":', vm.toString(epochNum), '}'
             );
         }
         return string.concat(result, "]");
     }
 
-    function _buildHistoryJson() internal view returns (string memory) {
-        uint256 epoch = fund.currentEpoch();
+    function _buildHistoryJson(uint256 epoch) internal view returns (string memory) {
         if (epoch == 0) return "[]";
 
         uint256 maxHist = 10; // MAX_HISTORY_ENTRIES
@@ -222,7 +241,7 @@ contract CrossStackHashTest is Test {
         for (uint256 i = 0; i < count; i++) {
             uint256 histEpoch = epoch - 1 - i;
             (, bytes memory action, bytes memory reasoning,
-             uint256 tb, uint256 ta, , bool executed) = fund.getEpochRecord(histEpoch);
+             uint256 tb, uint256 ta, uint256 bountyPaid, bool executed) = fund.getEpochRecord(histEpoch);
             if (!executed) continue;
             if (!first) result = string.concat(result, ",");
             first = false;
@@ -231,7 +250,8 @@ contract CrossStackHashTest is Test {
                 ',"action":"0x', _bytesToHex(action),
                 '","reasoning":"', string(reasoning),
                 '","treasury_before":', vm.toString(tb),
-                ',"treasury_after":', vm.toString(ta), '}'
+                ',"treasury_after":', vm.toString(ta),
+                ',"bounty_paid":', vm.toString(bountyPaid), '}'
             );
         }
         return string.concat(result, "]");

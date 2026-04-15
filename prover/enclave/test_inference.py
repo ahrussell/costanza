@@ -65,7 +65,11 @@ class TestThreePassInference(unittest.TestCase):
         # Pass 2: diary
         args2, kwargs2 = mock_call.call_args_list[1]
         self.assertIn("I should donate to charity", args2[0])
-        self.assertIn("</think>\n<diary>\n", args2[0])
+        # Diary nudge text is injected between </think> and <diary> to
+        # anchor voice before generation — just verify the tags surround it.
+        self.assertIn("</think>", args2[0])
+        self.assertIn("<diary>", args2[0])
+        self.assertLess(args2[0].index("</think>"), args2[0].index("<diary>"))
         self.assertEqual(kwargs2["temperature"], 0.8)
         self.assertEqual(kwargs2["stop"], ["</diary>"])
         self.assertEqual(kwargs2["max_tokens"], 1024)

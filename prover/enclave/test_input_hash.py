@@ -290,8 +290,12 @@ class TestCrossLanguageHashes:
             {"id": 2, "deposited": 0, "shares": 0, "current_value": 0},
         ]
         computed = _hash_investments(investments)
-        # Same golden value as pre-refactor test — no byte-level change.
-        assert "0x" + computed.hex() == "0x8acb0a4a74f5ed06da07f1790383a28ee2bb6442768396c5b83250c0dd77b0b0"
+        # Golden updated after _hash_investments was extended to bind the
+        # full protocol metadata (active, name, risk_tier, expected_apy_bps)
+        # into the rolling hash — see InvestmentManager.epochStateHash.
+        # Real byte-exact parity with Solidity is enforced by CrossStackHash.t.sol;
+        # this test is a regression guard on the Python side alone.
+        assert "0x" + computed.hex() == "0xb4cb5c993e18ed940247b46cb3ced062c505197c95bbfb57af750db429fb8116"
 
     def test_worldview_hash_matches_solidity(self):
         """WorldView.stateHash(): keccak256(abi.encode(10 strings))."""

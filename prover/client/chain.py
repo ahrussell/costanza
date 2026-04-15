@@ -184,24 +184,13 @@ class ChainClient:
             return 2000 * 10**8  # fallback: $2000 in 8-decimal format
 
     def read_contract_state(self):
-        """Read full contract state for epoch context building.
+        """Read the full epoch state the enclave needs.
 
-        Delegates to runner.epoch_state which reads all on-chain data.
+        After the pure-`_hashSnapshot` refactor, this reads scalars from
+        the frozen `EpochSnapshot` directly — no separate overlay pass.
         """
         from .epoch_state import read_contract_state
         return read_contract_state(self.contract, self.w3)
-
-    def apply_snapshot_overrides(self, state):
-        """Overlay the frozen EpochSnapshot onto the flat epoch_state in place.
-
-        After auction open, fields like treasury balance, inflows, message
-        queue bounds, investment current values, and effective_max_bid drift.
-        The contract froze them at auction open; the enclave will hash the
-        frozen values. This shim just overwrites the drifting fields with
-        the snapshot values so the enclave sees what the contract hashed.
-        """
-        from .epoch_state import apply_snapshot_overrides
-        return apply_snapshot_overrides(self.contract, self.w3, state)
 
     def get_epoch_timing(self):
         """Read epoch timing from contract.
