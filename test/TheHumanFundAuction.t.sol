@@ -628,14 +628,35 @@ contract TheHumanFundAuctionTest is EpochTest {
         assertEq(fund.consecutiveMissedEpochs(), 50); // MAX_MISSED_EPOCHS
     }
 
-    function test_missedEpochs_bondEscalates() public {
+    /// Missed epochs escalate the MAX BID (to attract bidders) but
+    /// NOT the bond (which would discourage participation). Bond only
+    /// escalates on winner-forfeit — see `test_winnerForfeit_bondEscalates`.
+    function test_missedEpochs_escalateMaxBidButNotBond() public {
         fund.syncPhase();
         vm.warp(block.timestamp + EPOCH_DUR * 3);
         fund.syncPhase();
 
         assertEq(fund.consecutiveMissedEpochs(), 3);
-        assertEq(fund.currentBond(), 0.01331 ether); // 0.01 * 1.1^3
-        assertEq(fund.effectiveMaxBid(), 0.01331 ether); // 0.01 * 1.1^3
+        assertEq(fund.currentBond(), 0.01 ether, "bond unchanged during silence");
+        assertEq(fund.effectiveMaxBid(), 0.01331 ether, "max bid escalated 0.01 * 1.1^3");
+    }
+
+    /// Winner-committed-and-forfeited escalates the bond by 10%.
+    /// Silent epochs around it don't add to the escalation — only
+    /// the forfeit itself does.
+    function test_winnerForfeit_bondEscalates() public {
+        uint256 bondBefore = fund.currentBond();
+
+        // Run a full commit-reveal cycle, then let the execution window
+        // expire without submitting → winner forfeit.
+        _runAuctionTo(runner1, 0.005 ether, bytes32("s1"));
+        assertEq(uint256(am.getPhase(1)), uint256(IAuctionManager.AuctionPhase.EXECUTION));
+        vm.warp(block.timestamp + EXEC_WIN + 1);
+        fund.syncPhase();
+
+        // Bond escalated by exactly 10%.
+        uint256 expected = bondBefore + (bondBefore * 1000) / 10000;
+        assertEq(fund.currentBond(), expected, "bond +10% after winner forfeit");
     }
 
     function test_missedEpochs_resetAfterSuccessfulExecution() public {

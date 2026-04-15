@@ -340,6 +340,10 @@ contract TheHumanFund is ReentrancyGuard {
         timingAnchor = block.timestamp;
         anchorEpoch = 1;
 
+        // Initial bond. Mutates directly on winner-forfeit (+10% up to
+        // cap) and resets to this value on successful execution.
+        currentBond = BASE_BOND;
+
         // Endaoment integration addresses
         endaomentFactory = IEndaomentFactory(_endaomentFactory);
         weth = IWETH(_weth);
@@ -674,19 +678,27 @@ contract TheHumanFund is ReentrancyGuard {
 
     // ─── Reverse Auction ──────────────────────────────────────────────────
 
-    /// @notice Current bond amount — fixed base that escalates 10% per consecutive missed epoch.
-    ///         Capped at max(MIN_BOND_CAP, 10% of treasury). The bond cap is independent of the
-    ///         bounty cap because the cost of stalling is unrelated to the treasury size — an
-    ///         attacker's motivation may be external (e.g. preventing the agent from acting).
-    function currentBond() public view returns (uint256) {
-        uint256 bond = BASE_BOND;
-        uint256 treasuryBondCap = (address(this).balance * MAX_BOND_BPS) / 10000;
-        uint256 cap = treasuryBondCap > MIN_BOND_CAP ? treasuryBondCap : MIN_BOND_CAP;
-        for (uint256 i = 0; i < consecutiveMissedEpochs; i++) {
-            bond = bond + (bond * AUTO_ESCALATION_BPS) / 10000;
-            if (bond >= cap) return cap;
-        }
-        return bond;
+    /// @notice Current bond amount — the cost for a prover to commit to
+    ///         an epoch. Escalates 10% on winner-forfeit (a successful
+    ///         committer who failed to submit is considered actively
+    ///         stalling the agent). Resets to `BASE_BOND` on successful
+    ///         execution. Capped at `max(MIN_BOND_CAP, 10% of treasury)`.
+    ///
+    /// @dev Escalation is stored as direct state (not derived from a
+    ///      counter) so reads and writes are both O(1). Silent epochs
+    ///      where nobody committed do NOT escalate the bond — that
+    ///      would discourage new bidders from joining after a drought.
+    ///      The max bid escalation (in `effectiveMaxBid`) still tracks
+    ///      silent epochs via `consecutiveMissedEpochs` because its
+    ///      purpose is to attract bidders, not to punish stalling.
+    uint256 public currentBond;
+
+    /// @dev Compute the treasury-derived bond cap: max(MIN_BOND_CAP,
+    ///      MAX_BOND_BPS of treasury). The cap prevents the escalation
+    ///      from growing unboundedly.
+    function _bondCap() internal view returns (uint256) {
+        uint256 treasuryPct = (address(this).balance * MAX_BOND_BPS) / 10000;
+        return treasuryPct > MIN_BOND_CAP ? treasuryPct : MIN_BOND_CAP;
     }
 
     /// @notice Compute the deterministic scheduled start time for any epoch.
@@ -824,15 +836,28 @@ contract TheHumanFund is ReentrancyGuard {
                 emit RevealClosed(epoch, am.getWinner(epoch), am.getWinningBid(epoch));
             }
 
-            // Emit forfeit event if AM reached SETTLED with a winner who never
-            // submitted. Note: missed-epoch credit is handled in Step B below
-            // (folded into missedCount, or as a +1 in the in-window elif) to
-            // avoid double-counting when both Step A and a multi-epoch skip
-            // would otherwise both bump consecutiveMissedEpochs for epoch 1.
+            // If the AM reached SETTLED with a winner who never submitted,
+            // that's an "active stall": someone took the auction slot
+            // specifically to prevent the agent from acting. This is
+            // the ONLY case that escalates the bond. Every other path
+            // (non-reveal, pristine silence, infra drop-out) is either
+            // already punished via direct bond forfeit or shouldn't
+            // discourage new bidders from joining.
+            //
+            // Note: `consecutiveMissedEpochs` (which drives max bid
+            // escalation) is NOT touched here — it's updated in Step B
+            // where every elapsed epoch counts, including silence.
+            // Max bid escalation's purpose is to attract bidders;
+            // bond escalation's purpose is to punish stalling. Two
+            // different incentives, two different triggers.
             if (phase == IAuctionManager.AuctionPhase.SETTLED && !epochs[epoch].executed) {
                 address winner = am.getWinner(epoch);
                 if (winner != address(0)) {
                     emit BondForfeited(epoch, winner, am.getBond(epoch));
+                    // Escalate the bond in-place: 10% bump, clamped at cap.
+                    uint256 newBond = currentBond + (currentBond * AUTO_ESCALATION_BPS) / 10000;
+                    uint256 cap = _bondCap();
+                    currentBond = newBond > cap ? cap : newBond;
                 }
             }
         }
@@ -909,7 +934,7 @@ contract TheHumanFund is ReentrancyGuard {
     function _openAuction(uint256 epoch, uint256 scheduledStart) internal {
         _snapshotEthUsdPrice();
 
-        uint256 bond = currentBond();
+        uint256 bond = currentBond;
         auctionManager.openAuction(epoch, bond, scheduledStart);
         lastEpochStartTime = scheduledStart;
 
@@ -1154,6 +1179,9 @@ contract TheHumanFund is ReentrancyGuard {
         currentEpochDonationCount = 0;
         currentEpochCommissions = 0;
         consecutiveMissedEpochs = 0;
+        // Successful execution resets bond escalation too — the stalling
+        // behavior was broken by whoever submitted this result.
+        currentBond = BASE_BOND;
     }
 
     // ─── Internal: Action Execution ──────────────────────────────────────

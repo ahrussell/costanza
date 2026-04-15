@@ -735,22 +735,21 @@ contract AuctionInvariantsTest is EpochTest {
         assertEq(snap.effectiveMaxBid, fund.effectiveMaxBid(), "ff: snap effectiveMaxBid matches live");
     }
 
-    /// Bond escalation is a pure function of consecutiveMissedEpochs.
-    /// After N missed epochs, currentBond() should match the base bond
-    /// escalated N times at 10% per step.
-    function test_ff_bondEscalation() public {
+    /// Pure silence does NOT escalate the bond. Bond only moves on
+    /// winner-forfeit events. This is the key property that keeps the
+    /// auction attractive for new bidders after a drought.
+    function test_ff_bondDoesNotEscalateOnSilence() public {
         fund.syncPhase(); // open epoch 1 auction
         uint256 bondBefore = fund.currentBond();
 
+        // Long silence — 5 epochs with no commits, no reveals, nothing.
         vm.warp(fund.epochStartTime(6) + 1);
         fund.syncPhase();
 
-        // Escalate bondBefore by 1.1^5 using the same integer math.
-        uint256 expected = bondBefore;
-        for (uint256 i = 0; i < 5; i++) {
-            expected = expected + (expected * 1000) / 10000;
-        }
-        assertEq(fund.currentBond(), expected, "ff: bond escalated correctly");
+        // Bond unchanged. Max bid escalated (via consecutiveMissedEpochs),
+        // but bond stays at base to welcome the next bidder.
+        assertEq(fund.currentBond(), bondBefore, "ff: bond unchanged after silence");
+        assertGt(fund.effectiveMaxBid(), fund.maxBid(), "ff: max bid did escalate");
     }
 
     /// O(1) gas property: syncPhase gas usage should be roughly constant
