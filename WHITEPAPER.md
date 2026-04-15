@@ -288,6 +288,16 @@ This is important because it prevents a subtler attack: a prover who provides co
 
 The binding is *complete*: each sub-hash commits to the full ordered sequence of its elements (e.g., the message hash array commits to the count, ordering, and content of all messages). Omitting an element changes the array, changing the hash. Reordering elements changes which hash occupies which position, also failing verification. The enclave enforces that the number of expanded elements matches the committed array length.
 
+#### 6.3.1 Hash Coverage via Static Taint Analysis
+
+Theorem 3 guarantees that whatever the enclave hashes matches the contract's committed value. It does *not* guarantee that everything the enclave shows the model is part of what it hashes. A bug in which a new display field is read by the prompt builder but omitted from the hash function would let a prover feed the enclave arbitrary values for that field without breaking on-chain verification — a silent violation of the intent of Theorem 3 without violating its statement.
+
+We close this gap with a static taint analyzer over the Python enclave code, run at commit time. The analyzer treats the enclave's epoch-state dict as a tainted root and follows every field access through `prompt_builder.build_epoch_context` (the prompt source) and `input_hash.compute_input_hash` (the hash source), tracking propagation through assignments, loop iterators, `enumerate` unpacking, slices, and inter-procedural calls to same-file helpers. It represents each read as an abstract key path (e.g., `treasury_balance`, `nonprofits[*].name`, `investments[*].current_value`) and asserts that the set of paths reaching the prompt is a subset of those bound into the input hash. A mismatch fails CI with a list of the unbound fields.
+
+The analyzer is tuned to refuse rather than guess on patterns it cannot soundly model — dict iteration over tainted values, the whole state root passed to an unknown function, attribute chains the alias tracker cannot resolve. False negatives are the dangerous failure mode for a hash-coverage check, so the analyzer raises an explicit error in these cases, forcing either a code refactor or an explicit extension with a regression test. Byte-exact parity between the Python analyzer's model of the hash function and the Solidity contract's actual hash function is enforced separately by an FFI-based cross-stack test.
+
+The first run of the analyzer against code that had been manually audited for hash coverage surfaced a previously undetected gap: the prompt displayed investment protocol ids from runner-supplied state, but the hash function used positional ids, allowing a runner to swap ids in the input array without changing the hash and thereby misdirect the model's action.
+
 ### 6.4 Property 4: Seed Unpredictability
 
 LLM inference with temperature $> 0$ is non-deterministic absent a fixed seed. To prevent provers from re-rolling inference until they get a favorable output, the contract captures `block.prevrandao` as a randomness seed at the moment the reveal phase transitions to execution. This seed is committed into the input hash and passed to the inference engine's RNG. Under A11 (deterministic inference), a fixed seed produces exactly one output — the prover cannot obtain multiple valid outputs by re-running the enclave.
