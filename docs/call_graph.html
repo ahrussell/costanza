@@ -33,7 +33,8 @@ header h1 { font-size: 14px; font-weight: 600; }
 .leg-item { display: flex; align-items: center; gap: 7px; padding: 4px 6px;
   border-radius: 5px; font-size: 12px; cursor: pointer; transition: background 0.12s; user-select: none; }
 .leg-item:hover { background: rgba(255,255,255,.05); }
-.leg-item.solo { background: rgba(255,255,255,.08); }
+.leg-item.hidden { opacity: 0.35; }
+.leg-item.hidden .leg-dot { opacity: 0.3; }
 .leg-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
 .leg-count { margin-left: auto; font-size: 10px; color: #8b949e; font-family: monospace; }
 .size-demo { padding: 10px 12px; border-bottom: 1px solid #30363d; }
@@ -186,28 +187,35 @@ document.getElementById('nodeCount').textContent=nodes.length;
 document.getElementById('edgeCount').textContent=links.length;
 
 // Legend
-let soloContract=null;
+const hiddenContracts=new Set();
 const leg=document.getElementById('legend');
 for(const [cid,meta] of Object.entries(CM)){
   const cnt=Object.keys(LOC[cid]).length;
   const div=document.createElement('div');
   div.className='leg-item'; div.dataset.cid=cid;
   div.innerHTML=`<div class="leg-dot" style="background:${meta.color}"></div><span style="font-size:11px">${meta.name}</span><span class="leg-count">${cnt}</span>`;
-  div.addEventListener('click',()=>setSolo(cid===soloContract?null:cid));
+  div.addEventListener('click',()=>toggleHide(cid));
   leg.appendChild(div);
 }
 
-function setSolo(cid){
-  soloContract=cid;
-  document.querySelectorAll('.leg-item').forEach(el=>el.classList.toggle('solo',el.dataset.cid===cid));
-  if(!cid){ applyFocus(null,null); return; }
-  nodeSel.classed('dim',n=>n.contract!==cid);
-  nodeSel.select('circle').attr('stroke',n=>n.contract===cid?n.color:'#333');
-  linkSel.classed('hi',false).classed('dim',l=>{
-    const sc=(l.source.contract||l.source.split?.('.')?.[0]||l.source);
-    const tc=(l.target.contract||l.target.split?.('.')?.[0]||l.target);
-    return sc!==cid&&tc!==cid;
+function toggleHide(cid){
+  if(hiddenContracts.has(cid)) hiddenContracts.delete(cid);
+  else hiddenContracts.add(cid);
+  document.querySelectorAll('.leg-item').forEach(el=>el.classList.toggle('hidden',hiddenContracts.has(el.dataset.cid)));
+  applyVisibility();
+}
+
+function applyVisibility(){
+  const intOn=document.getElementById('chkInt').checked;
+  nodeSel.style('display',n=>hiddenContracts.has(n.contract)?'none':null);
+  linkSel.style('display',l=>{
+    const sc=l.source.contract||(l.source.id||l.source).split('.')[0];
+    const tc=l.target.contract||(l.target.id||l.target).split('.')[0];
+    if(hiddenContracts.has(sc)||hiddenContracts.has(tc)) return 'none';
+    if(l.type==='int'&&!intOn) return 'none';
+    return null;
   });
+  updateHulls();
 }
 
 // SVG
@@ -237,8 +245,10 @@ const hullPaths=hullG.selectAll('path').data(Object.keys(CM)).enter().append('pa
   .attr('class','hull').attr('fill',cid=>CM[cid].color).attr('stroke',cid=>CM[cid].color);
 
 function updateHulls(){
+  hullPaths.style('display',cid=>hiddenContracts.has(cid)?'none':null);
   if(!document.getElementById('chkHull').checked){hullPaths.attr('d',null);return;}
   hullPaths.attr('d',cid=>{
+    if(hiddenContracts.has(cid)) return null;
     const pts=nodes.filter(n=>n.contract===cid).map(n=>[n.x,n.y]);
     if(pts.length<3){
       const p=pts[0]||[0,0];
@@ -310,16 +320,12 @@ function dragEnd(e,d){if(!e.active)sim.alphaTarget(0);d.fx=null;d.fy=null;}
 // Focus
 let focusedNode=null;
 function focusNode(d){
-  focusedNode=d; soloContract=null;
-  document.querySelectorAll('.leg-item').forEach(el=>el.classList.remove('solo'));
-  applyFocus(d,null);
-}
-function applyFocus(d,cid){
-  if(!d&&!cid){
+  focusedNode=d;
+  if(!d){
     nodeSel.classed('dim',false);
     nodeSel.select('circle').classed('sel',false).attr('stroke',n=>n.color);
-    linkSel.classed('hi',false).classed('dim',false)
-      .style('display',l=>l.type==='int'&&!document.getElementById('chkInt').checked?'none':null);
+    linkSel.classed('hi',false).classed('dim',false);
+    applyVisibility();
     return;
   }
   const connIds=new Set([d.id]);
@@ -330,8 +336,8 @@ function applyFocus(d,cid){
   });
   nodeSel.classed('dim',n=>!connIds.has(n.id));
   nodeSel.select('circle').classed('sel',n=>n.id===d.id).attr('stroke',n=>connIds.has(n.id)?n.color:'#333');
-  linkSel.classed('hi',l=>connLinks.has(l)).classed('dim',l=>!connLinks.has(l))
-    .style('display',l=>l.type==='int'&&!document.getElementById('chkInt').checked?'none':null);
+  linkSel.classed('hi',l=>connLinks.has(l)).classed('dim',l=>!connLinks.has(l));
+  applyVisibility();
 }
 
 // Tooltip
@@ -358,14 +364,14 @@ function moveTip(e){
 function hideTip(){tip.style.display='none';}
 
 // Controls
-document.getElementById('chkInt').addEventListener('change',function(){
-  linkSel.filter(l=>l.type==='int').style('display',this.checked?null:'none');
-});
+document.getElementById('chkInt').addEventListener('change',()=>applyVisibility());
 document.getElementById('chkLbl').addEventListener('change',function(){
   nodeSel.selectAll('text').style('opacity',d=>this.checked&&d.r>=10?1:0);
 });
 document.getElementById('chkHull').addEventListener('change',()=>updateHulls());
 document.getElementById('resetBtn').addEventListener('click',()=>{
+  hiddenContracts.clear();
+  document.querySelectorAll('.leg-item').forEach(el=>el.classList.remove('hidden'));
   focusNode(null);
   nodes.forEach(n=>{const m=CM[n.contract];n.x=m.cx*W()+(Math.random()-.5)*80;n.y=m.cy*H()+(Math.random()-.5)*80;n.vx=0;n.vy=0;n.fx=null;n.fy=null;});
   sim.alpha(.8).restart();
