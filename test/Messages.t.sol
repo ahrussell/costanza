@@ -24,6 +24,7 @@ contract ReentrantReferrer {
 
 contract MessagesTest is EpochTest {
     TheHumanFund public fund;
+    AuctionManager public am;
 
     address donor1 = address(0x2001);
     address donor2 = address(0x2002);
@@ -47,7 +48,7 @@ contract MessagesTest is EpochTest {
         // Deploy AuctionManager and set timing so syncPhase() can open auctions.
         // Needed for the missed-epoch tests that rely on _syncPhase's wall-clock
         // path to credit consecutiveMissedEpochs and advance the epoch.
-        AuctionManager am = new AuctionManager(address(fund));
+        am = new AuctionManager(address(fund));
         fund.setAuctionManager(address(am), 1200, 1200, 82800); // 20m / 20m / 23h
         _registerMockVerifier(fund);
     }
@@ -440,6 +441,178 @@ contract MessagesTest is EpochTest {
 
         assertEq(fund.messageCount(), 0);
         assertEq(fund.treasuryBalance(), 5.001 ether);
+    }
+
+    // ─── Mixed Driver Message Tests ─────────────────────────────────────
+
+    /// @dev Miss an epoch via manual driver: nextPhase through a full
+    ///      forfeit cycle (open → no-commit close → settle → advance).
+    function _missEpochManual() internal {
+        fund.nextPhase(); // open COMMIT
+        fund.nextPhase(); // COMMIT → SETTLED (0 commits)
+        fund.nextPhase(); // SETTLED → advance + open next
+    }
+
+    /// Messages survive missed epochs driven by nextPhase (manual).
+    function test_message_survives_missed_epoch_manual_driver() public {
+        vm.deal(donor1, 1 ether);
+        vm.prank(donor1);
+        fund.donateWithMessage{value: 0.01 ether}(0, "waiting");
+        assertEq(fund.messageCount(), 1);
+
+        // Miss 3 epochs via manual driver
+        for (uint256 i = 0; i < 3; i++) {
+            _missEpochManual();
+        }
+        assertEq(fund.messageHead(), 0, "head preserved across manual misses");
+
+        // Execute successfully — message consumed
+        speedrunEpoch(fund, abi.encodePacked(uint8(0)), "finally");
+        assertEq(fund.messageHead(), 1, "message consumed after manual misses");
+    }
+
+    /// Mixed driver: messages queued, manual open, wall-clock finishes.
+    function test_message_mixed_manualOpen_wallClockFinish() public {
+        vm.deal(donor1, 1 ether);
+        vm.prank(donor1);
+        fund.donateWithMessage{value: 0.01 ether}(0, "mixed test");
+
+        // Manual open (freezes snapshot with 1 message)
+        fund.nextPhase();
+        TheHumanFund.EpochSnapshot memory snap = fund.getEpochSnapshot(1);
+        assertEq(snap.messageCount, 1, "snapshot sees the message");
+
+        // Wall-clock completes the epoch. Use absolute times to avoid
+        // any evaluation-order issues with block.timestamp + offset.
+        uint256 bond = fund.currentBond();
+        address runner = EPOCH_TEST_RUNNER;
+        bytes32 salt = bytes32(uint256(0xF00D));
+        uint256 auctionStart = am.getStartTime(1);
+        uint256 commitEnd = auctionStart + am.commitWindow();
+        uint256 revealEnd = commitEnd + am.revealWindow();
+
+        vm.prank(runner);
+        fund.commit{value: bond}(keccak256(abi.encodePacked(runner, uint256(1), salt)));
+        vm.warp(commitEnd);
+        vm.prank(runner);
+        fund.reveal(1, salt);
+        vm.warp(revealEnd);
+        fund.syncPhase(); // close reveal → EXECUTION
+        vm.prank(runner);
+        fund.submitAuctionResult(
+            abi.encodePacked(uint8(0)), bytes("noop"), bytes("mock"),
+            EPOCH_TEST_VERIFIER_ID, -1, ""
+        );
+        assertEq(fund.messageHead(), 1, "mixed: message consumed");
+    }
+
+    /// messageHead monotonicity: across an arbitrary sequence of
+    /// successful + missed epochs, head never decreases.
+    function test_messageHead_monotonicity() public {
+        vm.deal(donor1, 10 ether);
+        bytes memory noop = abi.encodePacked(uint8(0));
+        uint256 prevHead = 0;
+
+        // Phase 1: send 3 messages, execute (head → 3)
+        for (uint256 i = 0; i < 3; i++) {
+            vm.prank(donor1);
+            fund.donateWithMessage{value: 0.01 ether}(0, "msg");
+        }
+        speedrunEpoch(fund, noop, "epoch 1");
+        assertGe(fund.messageHead(), prevHead, "monotonic after epoch 1");
+        prevHead = fund.messageHead();
+
+        // Phase 2: miss 2 epochs (head must not decrease)
+        _missEpochManual();
+        assertGe(fund.messageHead(), prevHead, "monotonic after miss 1");
+        _missEpochManual();
+        assertGe(fund.messageHead(), prevHead, "monotonic after miss 2");
+
+        // Phase 3: send 4 more, execute (head advances)
+        for (uint256 i = 0; i < 4; i++) {
+            vm.prank(donor1);
+            fund.donateWithMessage{value: 0.01 ether}(0, "more");
+        }
+        speedrunEpoch(fund, noop, "epoch 4");
+        assertGe(fund.messageHead(), prevHead, "monotonic after epoch 4");
+        prevHead = fund.messageHead();
+
+        // Phase 4: send 8 more, execute twice (cap=5 then remaining 3+4=7→5)
+        for (uint256 i = 0; i < 8; i++) {
+            vm.prank(donor1);
+            fund.donateWithMessage{value: 0.01 ether}(0, "batch");
+        }
+        speedrunEpoch(fund, noop, "epoch 5");
+        assertGe(fund.messageHead(), prevHead, "monotonic after epoch 5");
+        prevHead = fund.messageHead();
+        speedrunEpoch(fund, noop, "epoch 6");
+        assertGe(fund.messageHead(), prevHead, "monotonic after epoch 6");
+    }
+
+    /// 5-message cap via wall-clock driver (not speedrunEpoch).
+    function test_message_cap_wallClock_driver() public {
+        vm.deal(donor1, 1 ether);
+        for (uint256 i = 0; i < 7; i++) {
+            vm.prank(donor1);
+            fund.donateWithMessage{value: 0.01 ether}(0, "msg");
+        }
+
+        // Open auction via wall-clock
+        fund.syncPhase();
+        uint256 bond = fund.currentBond();
+        address runner = EPOCH_TEST_RUNNER;
+        bytes32 salt = bytes32(uint256(0xF00D));
+        uint256 auctionStart = am.getStartTime(1);
+        uint256 commitEnd = auctionStart + am.commitWindow();
+        uint256 revealEnd = commitEnd + am.revealWindow();
+
+        vm.prank(runner);
+        fund.commit{value: bond}(keccak256(abi.encodePacked(runner, uint256(1), salt)));
+        vm.warp(commitEnd);
+        vm.prank(runner);
+        fund.reveal(1, salt);
+        vm.warp(revealEnd);
+        fund.syncPhase(); // close reveal → EXECUTION
+        vm.prank(runner);
+        fund.submitAuctionResult(
+            abi.encodePacked(uint8(0)), bytes("noop"), bytes("mock"),
+            EPOCH_TEST_VERIFIER_ID, -1, ""
+        );
+
+        // Cap: only 5 consumed, 2 remain
+        assertEq(fund.messageHead(), 5, "wall-clock: cap at 5");
+        (address[] memory senders,,,) = fund.getUnreadMessages();
+        assertEq(senders.length, 2, "2 unread remain");
+    }
+
+    /// Messages accumulating across a mix of successful and missed epochs.
+    function test_messages_accumulate_across_mixed_lifecycle() public {
+        vm.deal(donor1, 10 ether);
+        bytes memory noop = abi.encodePacked(uint8(0));
+
+        // Send 3 messages, execute epoch 1 → head to 3
+        for (uint256 i = 0; i < 3; i++) {
+            vm.prank(donor1);
+            fund.donateWithMessage{value: 0.01 ether}(0, "batch1");
+        }
+        speedrunEpoch(fund, noop, "epoch 1");
+        assertEq(fund.messageHead(), 3);
+
+        // Send 4 more, miss an epoch, then execute
+        for (uint256 i = 0; i < 4; i++) {
+            vm.prank(donor1);
+            fund.donateWithMessage{value: 0.01 ether}(0, "batch2");
+        }
+        _missEpochManual();
+        // Messages survive the miss
+        assertEq(fund.messageHead(), 3, "miss didn't advance head");
+
+        speedrunEpoch(fund, noop, "epoch 3");
+        // head advances by min(4, 5) = 4 → head = 7
+        assertEq(fund.messageHead(), 7, "consumed batch2 after miss");
+        assertEq(fund.messageCount(), 7, "total count");
+        (address[] memory senders,,,) = fund.getUnreadMessages();
+        assertEq(senders.length, 0, "all read");
     }
 
     // ─── Fuzz Tests ────────────────────────────────────────────────────

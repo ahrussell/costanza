@@ -1140,4 +1140,323 @@ contract AuctionInvariantsTest is EpochTest {
         assertTrue(am.getRandomnessSeed(1) != 0, "seed captured at reveal close");
         assertTrue(fund.epochInputHashes(1) != bytes32(0), "input hash bound");
     }
+
+    // ══════════════════════════════════════════════════════════════════
+    // Additional coverage — gaps identified during audit
+    // ══════════════════════════════════════════════════════════════════
+
+    // ── I2: transition cleanup exactly-once under manual driver ──────
+
+    /// Non-revealer forfeit via manual driver: bond forfeited exactly
+    /// once, repeated nextPhase calls don't double-forfeit.
+    function test_I2_manualDriver_nonRevealerForfeit_exactlyOnce() public {
+        fund.nextPhase(); // open
+        uint256 bond = fund.currentBond();
+        uint256 treasuryBefore = address(fund).balance;
+
+        vm.prank(runner1);
+        fund.commit{value: bond}(_commitHash(runner1, 0.005 ether, bytes32("r1")));
+
+        fund.nextPhase(); // COMMIT → REVEAL
+        fund.nextPhase(); // REVEAL → SETTLED (0 reveals, bond forfeited)
+
+        assertEq(address(fund).balance, treasuryBefore + bond, "I2: one forfeit via manual");
+
+        // Advance to next epoch + open. Treasury should only gain from
+        // the one forfeit, not any phantom re-forfeit.
+        uint256 afterForfeit = address(fund).balance;
+        fund.nextPhase(); // SETTLED → advance + open
+        fund.nextPhase(); // close empty COMMIT
+        fund.nextPhase(); // advance again
+        assertEq(address(fund).balance, afterForfeit, "I2: no double-forfeit across epochs");
+    }
+
+    /// Winner forfeit via manual driver runs exactly once.
+    function test_I2_manualDriver_winnerForfeit_exactlyOnce() public {
+        fund.nextPhase(); // open
+        uint256 bond = fund.currentBond();
+        uint256 treasuryBefore = address(fund).balance;
+
+        vm.prank(runner1);
+        fund.commit{value: bond}(_commitHash(runner1, 0.005 ether, bytes32("r1")));
+        fund.nextPhase(); // COMMIT → REVEAL
+        vm.prank(runner1);
+        fund.reveal(0.005 ether, bytes32("r1"));
+        fund.nextPhase(); // REVEAL → EXECUTION
+
+        fund.nextPhase(); // EXECUTION → SETTLED (winner forfeit)
+        assertEq(address(fund).balance, treasuryBefore + bond, "I2: winner bond forfeited once");
+
+        uint256 afterForfeit = address(fund).balance;
+        fund.nextPhase(); // SETTLED → advance + open
+        assertEq(address(fund).balance, afterForfeit, "I2: no re-forfeit on advance");
+    }
+
+    // ── I3: full system wei conservation ─────────────────────────────
+
+    /// Total ETH across the entire system (fund + AM + all runners)
+    /// is conserved across a complete auction lifecycle.
+    function test_I3_fullSystemWeiConservation() public {
+        uint256 systemTotal = address(fund).balance + address(am).balance
+            + runner1.balance + runner2.balance;
+
+        fund.nextPhase(); // open
+        uint256 bond = fund.currentBond();
+
+        vm.prank(runner1);
+        fund.commit{value: bond}(_commitHash(runner1, 0.008 ether, bytes32("r1")));
+        vm.prank(runner2);
+        fund.commit{value: bond}(_commitHash(runner2, 0.005 ether, bytes32("r2")));
+        assertEq(_systemTotal(), systemTotal, "I3: conserved after commits");
+
+        fund.nextPhase(); // COMMIT → REVEAL
+        vm.prank(runner1);
+        fund.reveal(0.008 ether, bytes32("r1"));
+        vm.prank(runner2);
+        fund.reveal(0.005 ether, bytes32("r2"));
+        assertEq(_systemTotal(), systemTotal, "I3: conserved after reveals");
+
+        fund.nextPhase(); // REVEAL → EXECUTION (non-revealer bonds = 0 here)
+        assertEq(_systemTotal(), systemTotal, "I3: conserved after reveal close");
+
+        fund.nextPhase(); // EXECUTION → SETTLED (winner forfeit)
+        assertEq(_systemTotal(), systemTotal, "I3: conserved after forfeit");
+
+        // runner1 claims non-winner bond
+        vm.prank(runner1);
+        am.claimBond(1);
+        assertEq(_systemTotal(), systemTotal, "I3: conserved after claim");
+    }
+
+    function _systemTotal() internal view returns (uint256) {
+        return address(fund).balance + address(am).balance
+            + runner1.balance + runner2.balance;
+    }
+
+    // ── I5: freeze atomicity under manual driver ─────────────────────
+
+    /// Snapshot opened by nextPhase is immutable: subsequent mutations
+    /// (donations, inflows) do not change the frozen snapshot.
+    function test_I5_manualDriver_snapshotImmutable() public {
+        fund.nextPhase(); // opens epoch 1, freezes snapshot
+        bytes32 hashAtOpen = fund.computeInputHashForEpoch(1);
+
+        TheHumanFund.EpochSnapshot memory snapBefore = fund.getEpochSnapshot(1);
+        assertEq(snapBefore.balance, 10 ether, "I5: snapshot balance at open");
+
+        // Mutate live state
+        vm.deal(address(this), 2 ether);
+        (bool ok,) = address(fund).call{value: 2 ether}("");
+        require(ok);
+
+        // Snapshot unchanged
+        TheHumanFund.EpochSnapshot memory snapAfter = fund.getEpochSnapshot(1);
+        assertEq(snapAfter.balance, 10 ether, "I5: snapshot balance unchanged after donation");
+        assertEq(fund.computeInputHashForEpoch(1), hashAtOpen, "I5: hash stable");
+    }
+
+    // ── I6: seed stability under manual driver ───────────────────────
+
+    /// Seed captured via nextPhase is stable across repeated calls.
+    function test_I6_manualDriver_seedStableAfterCapture() public {
+        fund.nextPhase(); // open
+        uint256 bond = fund.currentBond();
+
+        vm.prank(runner1);
+        fund.commit{value: bond}(_commitHash(runner1, 0.005 ether, bytes32("r1")));
+        fund.nextPhase(); // COMMIT → REVEAL
+        vm.prank(runner1);
+        fund.reveal(0.005 ether, bytes32("r1"));
+        fund.nextPhase(); // REVEAL → EXECUTION (seed captured)
+
+        uint256 seed = am.getRandomnessSeed(1);
+        assertTrue(seed != 0, "I6: seed captured");
+
+        // Walk through forfeit + next epoch — seed must not change
+        fund.nextPhase(); // EXECUTION → SETTLED
+        fund.nextPhase(); // advance + open epoch 2
+        assertEq(am.getRandomnessSeed(1), seed, "I6: seed stable after epoch advance");
+    }
+
+    // ── Derived: no stuck states via manual driver ───────────────────
+
+    /// From any phase, a finite sequence of nextPhase calls reaches a
+    /// new epoch — no wall-clock needed.
+    function test_derived_noStuckStates_manualDriver() public {
+        uint256 bond;
+
+        // Case A: pristine IDLE
+        uint256 start = fund.currentEpoch();
+        _advanceOneEpochManual();
+        assertGt(fund.currentEpoch(), start, "A: advanced from IDLE");
+
+        // Case B: mid-COMMIT with commits
+        start = fund.currentEpoch();
+        bond = fund.currentBond();
+        vm.prank(runner1);
+        fund.commit{value: bond}(_commitHash(runner1, 0.005 ether, bytes32("stuck-b")));
+        _drainToNextEpochManual();
+        assertGt(fund.currentEpoch(), start, "B: advanced from mid-COMMIT");
+
+        // Case C: EXECUTION (commit + reveal, no submit)
+        start = fund.currentEpoch();
+        bond = fund.currentBond();
+        vm.prank(runner1);
+        fund.commit{value: bond}(_commitHash(runner1, 0.005 ether, bytes32("stuck-c")));
+        fund.nextPhase(); // COMMIT → REVEAL
+        vm.prank(runner1);
+        fund.reveal(0.005 ether, bytes32("stuck-c"));
+        fund.nextPhase(); // REVEAL → EXECUTION
+        fund.nextPhase(); // EXECUTION → SETTLED (forfeit)
+        fund.nextPhase(); // advance + open
+        assertGt(fund.currentEpoch(), start, "C: advanced from EXECUTION");
+    }
+
+    /// Helper: advance exactly one epoch from a fresh COMMIT via manual
+    /// forfeit (open → no-commit → settle → advance).
+    function _advanceOneEpochManual() internal {
+        fund.nextPhase(); // open COMMIT
+        fund.nextPhase(); // COMMIT → SETTLED (0 commits)
+        fund.nextPhase(); // SETTLED → advance + open
+    }
+
+    /// Helper: from inside a COMMIT with commits, drain to next epoch
+    /// via manual forfeit path.
+    function _drainToNextEpochManual() internal {
+        fund.nextPhase(); // COMMIT → REVEAL
+        fund.nextPhase(); // REVEAL → SETTLED (0 reveals, forfeit)
+        fund.nextPhase(); // SETTLED → advance + open
+    }
+
+    // ── Derived: nextPhase → resetAuction non-confiscation ───────────
+
+    /// Interleaving nextPhase and resetAuction: committer's bond is
+    /// never confiscated by the combination.
+    function test_derived_nextPhase_then_resetAuction_nonConfiscation() public {
+        fund.nextPhase(); // open
+        uint256 bond = fund.currentBond();
+        uint256 r1Before = runner1.balance;
+
+        vm.prank(runner1);
+        fund.commit{value: bond}(_commitHash(runner1, 0.005 ether, bytes32("r1")));
+
+        // Advance to REVEAL via nextPhase (commits stay intact)
+        fund.nextPhase(); // COMMIT → REVEAL
+
+        // Owner decides to abort via resetAuction instead of continuing
+        fund.resetAuction(COMMIT_WIN, REVEAL_WIN, EXEC_WIN);
+
+        // runner1's bond was refunded (resetAuction is non-confiscatory)
+        assertEq(runner1.balance, r1Before, "non-confiscation: bond refunded");
+    }
+
+    // ── Derived: driver equivalence full state ───────────────────────
+
+    /// Full state equivalence: treasury, AM balance, pendingBondRefunds
+    /// all match between manual and wall-clock drivers.
+    function test_derived_driverEquivalence_fullState() public {
+        // ── Manual path ──
+        uint256 snap = vm.snapshotState();
+        fund.nextPhase();
+        uint256 bond = fund.currentBond();
+        vm.prank(runner1);
+        fund.commit{value: bond}(_commitHash(runner1, 0.005 ether, bytes32("r1")));
+        vm.prank(runner2);
+        fund.commit{value: bond}(_commitHash(runner2, 0.003 ether, bytes32("r2")));
+        fund.nextPhase(); // COMMIT → REVEAL
+        vm.prank(runner1);
+        fund.reveal(0.005 ether, bytes32("r1"));
+        vm.prank(runner2);
+        fund.reveal(0.003 ether, bytes32("r2"));
+        fund.nextPhase(); // REVEAL → EXECUTION
+        fund.nextPhase(); // EXECUTION → SETTLED (forfeit)
+        fund.nextPhase(); // advance + open
+
+        uint256 mTreasury = address(fund).balance;
+        uint256 mAM = address(am).balance;
+        uint256 mPending = am.pendingBondRefunds();
+        uint256 mEpoch = fund.currentEpoch();
+
+        // ── Wall-clock path ──
+        vm.revertToState(snap);
+        fund.syncPhase();
+        bond = fund.currentBond();
+        vm.prank(runner1);
+        fund.commit{value: bond}(_commitHash(runner1, 0.005 ether, bytes32("r1")));
+        vm.prank(runner2);
+        fund.commit{value: bond}(_commitHash(runner2, 0.003 ether, bytes32("r2")));
+        vm.warp(block.timestamp + COMMIT_WIN);
+        vm.prank(runner1);
+        fund.reveal(0.005 ether, bytes32("r1"));
+        vm.prank(runner2);
+        fund.reveal(0.003 ether, bytes32("r2"));
+        vm.warp(block.timestamp + REVEAL_WIN);
+        fund.syncPhase();
+        vm.warp(block.timestamp + EXEC_WIN);
+        fund.syncPhase();
+
+        assertEq(address(fund).balance, mTreasury, "equiv: treasury");
+        assertEq(address(am).balance, mAM, "equiv: AM balance");
+        assertEq(am.pendingBondRefunds(), mPending, "equiv: pending refunds");
+        assertEq(fund.currentEpoch(), mEpoch, "equiv: epoch");
+    }
+
+    // ── Edge: forceClosePhase revert on IDLE/SETTLED ─────────────────
+
+    /// AM.forceClosePhase reverts if no auction is in-flight.
+    function test_edge_forceClosePhase_revertsWhenIdle() public {
+        vm.prank(address(fund));
+        vm.expectRevert(AuctionManager.WrongPhase.selector);
+        am.forceClosePhase();
+    }
+
+    function test_edge_forceClosePhase_revertsWhenSettled() public {
+        // Open, commit, drain to SETTLED via nextPhase (no wall-clock
+        // auto-open that would immediately transition to COMMIT).
+        fund.nextPhase(); // IDLE → COMMIT
+        fund.nextPhase(); // COMMIT → SETTLED (0 commits)
+        // AM is now SETTLED — forceClosePhase should revert.
+        vm.prank(address(fund));
+        vm.expectRevert(AuctionManager.WrongPhase.selector);
+        am.forceClosePhase();
+    }
+
+    // ── Edge: nextPhase with no AM ───────────────────────────────────
+
+    function test_edge_nextPhase_revertsWithNoAM() public {
+        // Deploy a bare fund with no AM
+        TheHumanFund bare = new TheHumanFund{value: 1 ether}(
+            1000, 0.01 ether,
+            address(0xBEEF), address(0xBEEF), address(0xBEEF), address(0xBEEF), address(0)
+        );
+        vm.expectRevert(TheHumanFund.InvalidParams.selector);
+        bare.nextPhase();
+    }
+
+    // ── Edge: partial phase close in _advanceToNow ───────────────────
+
+    /// Wall-clock past commit but not reveal: syncPhase closes COMMIT
+    /// only, leaving AM in REVEAL.
+    function test_edge_partialPhaseClose_commitOnly() public {
+        fund.syncPhase(); // open COMMIT
+        uint256 bond = fund.currentBond();
+
+        vm.prank(runner1);
+        fund.commit{value: bond}(_commitHash(runner1, 0.005 ether, bytes32("r1")));
+
+        // Warp past commit window but NOT past reveal window
+        vm.warp(block.timestamp + COMMIT_WIN + 1);
+        fund.syncPhase();
+
+        // Should be in REVEAL, not EXECUTION
+        assertEq(
+            uint8(am.getPhase(1)),
+            uint8(IAuctionManager.AuctionPhase.REVEAL),
+            "partial: stopped at REVEAL"
+        );
+
+        // Runner can still reveal
+        vm.prank(runner1);
+        fund.reveal(0.005 ether, bytes32("r1"));
+    }
 }

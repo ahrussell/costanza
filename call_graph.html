@@ -1,0 +1,1103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>The Human Fund — Contract Call Graph</title>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  background: #0d1117;
+  color: #e6edf3;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 20px;
+  background: #161b22;
+  border-bottom: 1px solid #30363d;
+  flex-shrink: 0;
+}
+header h1 { font-size: 15px; font-weight: 600; }
+header .subtitle { color: #8b949e; font-size: 13px; }
+.badge {
+  font-size: 11px; font-weight: 600; padding: 2px 8px;
+  border-radius: 10px; background: #1f6feb33; color: #58a6ff;
+  border: 1px solid #1f6feb66;
+}
+
+.layout { display: flex; flex: 1; overflow: hidden; }
+
+/* Sidebar */
+.sidebar {
+  width: 260px;
+  background: #161b22;
+  border-right: 1px solid #30363d;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.sidebar-header {
+  padding: 12px 14px 8px;
+  border-bottom: 1px solid #30363d;
+}
+.sidebar-header h3 {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #8b949e;
+}
+.legend { padding: 8px 14px; border-bottom: 1px solid #30363d; }
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px;
+  font-size: 13px;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: background 0.15s;
+}
+.legend-item:hover { background: rgba(255,255,255,0.05); }
+.legend-item.selected { background: rgba(255,255,255,0.08); }
+.legend-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+.legend-count { margin-left: auto; font-size: 11px; color: #8b949e; font-family: monospace; }
+
+.fn-panel { flex: 1; overflow-y: auto; padding: 10px 14px; }
+.fn-panel-title { font-size: 12px; color: #8b949e; margin-bottom: 8px; }
+.fn-group-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #8b949e;
+  margin: 10px 0 4px;
+}
+.fn-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  font-size: 12px;
+  font-family: 'SFMono-Regular', 'Consolas', monospace;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background 0.1s;
+  line-height: 1.5;
+}
+.fn-item:hover { background: rgba(255,255,255,0.06); }
+.fn-item.active { background: rgba(99,102,241,0.2); color: #a5b4fc; }
+.fn-vis {
+  font-size: 9px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 3px;
+  flex-shrink: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.vis-external { background: #1a3a4a; color: #56b6d8; }
+.vis-public   { background: #1a3a2a; color: #4caf7f; }
+.vis-internal { background: #2a2a2a; color: #8b949e; }
+.vis-owner    { background: #3a2a1a; color: #e6a45a; }
+
+.controls {
+  padding: 10px 14px;
+  border-top: 1px solid #30363d;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #8b949e;
+  cursor: pointer;
+  user-select: none;
+}
+.toggle-row input { cursor: pointer; accent-color: #4f86c6; }
+
+/* Graph */
+#graph-container {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+}
+svg#graph { width: 100%; height: 100%; }
+
+.contract-box {
+  cursor: pointer;
+}
+.contract-rect {
+  rx: 8;
+  stroke-width: 1.5;
+  stroke-opacity: 0.7;
+  transition: stroke-width 0.2s;
+}
+.contract-rect:hover, .contract-rect.selected {
+  stroke-width: 2.5;
+  stroke-opacity: 1;
+}
+.contract-name {
+  font-size: 13px;
+  font-weight: 700;
+  fill: white;
+  text-anchor: middle;
+  pointer-events: none;
+}
+.contract-sub {
+  font-size: 10px;
+  fill: rgba(255,255,255,0.5);
+  text-anchor: middle;
+  pointer-events: none;
+}
+
+/* Edges */
+.edge {
+  fill: none;
+  marker-end: url(#arrow);
+}
+.edge-cross {
+  stroke-width: 2;
+  opacity: 0.7;
+  transition: opacity 0.2s, stroke-width 0.2s;
+}
+.edge-cross:hover, .edge-cross.highlighted {
+  opacity: 1;
+  stroke-width: 3;
+}
+.edge-internal {
+  stroke-width: 1.5;
+  stroke-dasharray: 4 3;
+  opacity: 0.3;
+  transition: opacity 0.2s;
+}
+.edge-internal.hidden { display: none; }
+.edge-internal.highlighted { opacity: 0.9; display: block; }
+
+.edge-label {
+  font-size: 10px;
+  fill: #8b949e;
+  text-anchor: middle;
+  pointer-events: none;
+  dominant-baseline: central;
+}
+
+/* Tooltip */
+.tooltip {
+  position: absolute;
+  background: #1c2128;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 12px;
+  pointer-events: none;
+  max-width: 280px;
+  z-index: 100;
+  line-height: 1.6;
+}
+.tooltip-title { font-weight: 700; margin-bottom: 4px; font-family: monospace; }
+.tooltip-section { margin-top: 6px; }
+.tooltip-section-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: #8b949e;
+  letter-spacing: 0.06em;
+}
+.tooltip-fn {
+  font-family: monospace;
+  font-size: 11px;
+  color: #a5b4fc;
+  padding: 1px 0;
+}
+
+.info-placeholder {
+  padding: 20px 14px;
+  color: #8b949e;
+  font-size: 12px;
+  text-align: center;
+  line-height: 1.7;
+}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>The Human Fund</h1>
+  <span class="subtitle">Contract Call Graph</span>
+  <span class="badge">nextphase</span>
+  <span style="margin-left:auto; font-size:12px; color:#8b949e">Click a contract to explore • Scroll to zoom • Drag to pan</span>
+</header>
+
+<div class="layout">
+  <div class="sidebar">
+    <div class="sidebar-header">
+      <h3>Contracts</h3>
+    </div>
+    <div class="legend" id="legend"></div>
+    <div class="fn-panel" id="fn-panel">
+      <div class="info-placeholder">Click a contract to see its functions and call edges.</div>
+    </div>
+    <div class="controls">
+      <label class="toggle-row">
+        <input type="checkbox" id="toggle-internal" checked>
+        Show internal calls
+      </label>
+      <label class="toggle-row">
+        <input type="checkbox" id="toggle-labels" checked>
+        Show edge labels
+      </label>
+    </div>
+  </div>
+
+  <div id="graph-container">
+    <svg id="graph"></svg>
+    <div class="tooltip" id="tooltip" style="display:none"></div>
+  </div>
+</div>
+
+<script>
+// ─────────────────────────────────────────────────────────────────────────────
+// DATA
+// ─────────────────────────────────────────────────────────────────────────────
+
+const CONTRACTS = [
+  {
+    id: 'THF', name: 'TheHumanFund', color: '#3b82f6', file: 'src/TheHumanFund.sol',
+    functions: [
+      // Public entry points
+      { name: 'donate',                vis: 'external',  desc: 'Accept donation, pay referral commission' },
+      { name: 'donateWithMessage',     vis: 'external',  desc: 'Donate and store on-chain message' },
+      { name: 'mintReferralCode',      vis: 'external',  desc: 'Mint a new referral code' },
+      { name: 'claimCommission',       vis: 'external',  desc: 'Claim accumulated referral commission' },
+      { name: 'syncPhase',             vis: 'external',  desc: 'Advance auction phase to current time' },
+      { name: 'commit',                vis: 'external',  mod: 'payable', desc: 'Submit sealed bid hash + bond' },
+      { name: 'reveal',                vis: 'external',  desc: 'Reveal committed bid amount and salt' },
+      { name: 'submitAuctionResult',   vis: 'external',  mod: 'payable+nonReentrant', desc: 'Submit TEE inference result + TDX proof' },
+      { name: 'effectiveMaxBid',       vis: 'public',    mod: 'view', desc: 'Max bid with 10%/epoch escalation' },
+      { name: 'computeInputHash',      vis: 'external',  mod: 'view', desc: 'Returns frozen inputHash for current epoch' },
+      { name: 'computeInputHashForEpoch', vis: 'external', mod: 'view', desc: 'Returns inputHash for any stored epoch snapshot' },
+      { name: 'totalAssets',           vis: 'external',  mod: 'view', desc: 'Treasury balance + invested value' },
+      { name: 'treasuryBalance',       vis: 'external',  mod: 'view' },
+      { name: 'getEpochSnapshot',      vis: 'external',  mod: 'view' },
+      { name: 'getEpochRecord',        vis: 'external',  mod: 'view' },
+      { name: 'getNonprofit',          vis: 'external',  mod: 'view' },
+      { name: 'projectedEpoch',        vis: 'external',  mod: 'view' },
+      { name: 'epochStartTime',        vis: 'external',  mod: 'view' },
+      { name: 'messageCount',          vis: 'external',  mod: 'view' },
+      { name: 'getUnreadMessages',     vis: 'external',  mod: 'view' },
+      // Owner functions
+      { name: 'addNonprofit',          vis: 'owner',     desc: 'Register new nonprofit' },
+      { name: 'approveVerifier',       vis: 'owner',     desc: 'Add approved proof verifier' },
+      { name: 'revokeVerifier',        vis: 'owner' },
+      { name: 'setInvestmentManager',  vis: 'owner' },
+      { name: 'setWorldView',          vis: 'owner' },
+      { name: 'setAuctionManager',     vis: 'owner' },
+      { name: 'seedWorldView',         vis: 'owner',     desc: 'Bulk-initialize worldview slots' },
+      { name: 'freeze',                vis: 'owner',     desc: 'Sunset the contract (irreversible)' },
+      { name: 'freezeVerifier',        vis: 'owner',     desc: 'Permanently disable a verifier' },
+      { name: 'nextPhase',             vis: 'owner',     desc: 'Owner-forced phase advance (owner override)' },
+      { name: 'resetAuction',          vis: 'owner',     desc: 'Abort in-flight auction and reset timing' },
+      { name: 'withdrawAll',           vis: 'owner',     desc: 'Withdraw all assets (emergency)' },
+      { name: 'migrate',               vis: 'owner',     desc: 'Transfer all assets to new contract' },
+      { name: 'transferOwnership',     vis: 'owner' },
+      // Internal helpers
+      { name: '_payCommission',        vis: 'internal',  desc: 'Pay referral commission if applicable' },
+      { name: '_withdrawTo',           vis: 'internal',  desc: 'Pull from InvestmentManager + send ETH' },
+      { name: '_advanceToNow',         vis: 'internal',  desc: 'Loop _nextPhase until wall-clock time reached' },
+      { name: '_nextPhase',            vis: 'internal',  desc: 'Single phase transition step' },
+      { name: '_advanceEpochBy',       vis: 'internal',  desc: 'Skip multiple missed epochs (O(1))' },
+      { name: '_openNextAuction',      vis: 'internal',  desc: 'Snapshot state, open new auction on AM' },
+      { name: '_freezeEpochSnapshot',  vis: 'internal',  desc: 'Capture epoch snapshot into storage' },
+      { name: '_snapshotEthUsdPrice',  vis: 'internal',  desc: 'Pull Chainlink ETH/USD and store' },
+      { name: '_applyPolicyUpdate',    vis: 'internal',  desc: 'Write worldview slot from action params' },
+      { name: '_recordAndExecute',     vis: 'internal',  desc: 'Store epoch record and execute action' },
+      { name: '_executeAction',        vis: 'internal',  desc: 'Route action type to handler' },
+      { name: '_executeDonate',        vis: 'internal',  desc: 'Execute donate action via Endaoment' },
+      { name: '_executeSetCommissionRate', vis: 'internal' },
+      { name: '_computeInputHash',     vis: 'internal',  mod: 'view', desc: 'Hash snapshot + worldview state' },
+      { name: '_hashSnapshot',         vis: 'internal',  mod: 'pure' },
+      { name: '_hashSnapshotScalars',  vis: 'internal',  mod: 'pure' },
+      { name: '_liveHashNonprofits',   vis: 'internal',  mod: 'view' },
+      { name: '_liveHashUnreadMessages', vis: 'internal', mod: 'view' },
+      { name: '_liveHashRecentHistory', vis: 'internal', mod: 'view' },
+      { name: '_resetAuction',         vis: 'internal',  desc: 'Abort and re-time the AuctionManager' },
+      { name: '_epochStartTime',       vis: 'internal',  mod: 'view' },
+      { name: '_bondCap',              vis: 'internal',  mod: 'view', desc: 'Maximum bond = effectiveMaxBid' },
+      { name: '_requireNotSunset',     vis: 'internal',  mod: 'view', desc: 'Revert if freeze() was called' },
+      { name: '_minUsdcForDonation',   vis: 'internal',  mod: 'view' },
+    ]
+  },
+  {
+    id: 'AM', name: 'AuctionManager', color: '#22c55e', file: 'src/AuctionManager.sol',
+    functions: [
+      { name: 'syncPhase',        vis: 'external', mod: 'onlyFund', desc: 'Advance phase, called from THF' },
+      { name: 'openAuction',      vis: 'external', mod: 'onlyFund', desc: 'Open COMMIT window for new epoch' },
+      { name: 'commit',           vis: 'external', mod: 'payable+onlyFund', desc: 'Record sealed bid + bond' },
+      { name: 'recordReveal',     vis: 'external', mod: 'onlyFund', desc: 'Record revealed bid' },
+      { name: 'settleExecution',  vis: 'external', mod: 'onlyFund', desc: 'Capture prevrandao seed, settle winner' },
+      { name: 'setTiming',        vis: 'external', mod: 'onlyFund', desc: 'Update commit/reveal/exec window durations' },
+      { name: 'claimBond',        vis: 'external', mod: 'nonReentrant', desc: 'Claimer withdraws bond for epoch' },
+      { name: 'abortAuction',     vis: 'external', mod: 'onlyFund+nonReentrant', desc: 'Refund all bonds and reset' },
+      { name: 'forceClosePhase',  vis: 'external', mod: 'onlyFund+nonReentrant', desc: 'Force-close current phase' },
+      { name: 'getPhase',         vis: 'external', mod: 'view' },
+      { name: 'getWinner',        vis: 'external', mod: 'view' },
+      { name: 'getWinningBid',    vis: 'external', mod: 'view' },
+      { name: 'getBond',          vis: 'external', mod: 'view' },
+      { name: 'getStartTime',     vis: 'external', mod: 'view' },
+      { name: 'getRandomnessSeed', vis: 'external', mod: 'view' },
+      { name: 'getCommitters',    vis: 'external', mod: 'view' },
+      { name: 'didReveal',        vis: 'external', mod: 'view' },
+      { name: 'getBidRecord',     vis: 'external', mod: 'view' },
+      { name: 'executionDeadline', vis: 'external', mod: 'view' },
+      { name: 'commitWindow',     vis: 'public',   mod: 'view (immutable)' },
+      { name: 'revealWindow',     vis: 'public',   mod: 'view (immutable)' },
+      { name: 'executionWindow',  vis: 'public',   mod: 'view (immutable)' },
+      // Internal
+      { name: '_syncPhase',       vis: 'internal', desc: 'Inner phase advancement logic' },
+      { name: '_closeCommit',     vis: 'internal', desc: 'Close commit window, record history' },
+      { name: '_closeReveal',     vis: 'internal', desc: 'Close reveal, capture seed, pick winner' },
+      { name: '_doForfeit',       vis: 'internal', desc: 'Forfeit bond for non-revealer' },
+      { name: '_storeHistory',    vis: 'internal', desc: 'Persist current auction to history mapping' },
+      { name: '_clearCurrentAuction', vis: 'internal', desc: 'Reset current auction state' },
+      { name: '_executionDeadline', vis: 'internal', mod: 'view' },
+      { name: '_getWinner',       vis: 'internal', mod: 'view' },
+      { name: '_getBond',         vis: 'internal', mod: 'view' },
+    ]
+  },
+  {
+    id: 'IM', name: 'InvestmentManager', color: '#f59e0b', file: 'src/InvestmentManager.sol',
+    functions: [
+      { name: 'deposit',          vis: 'external', mod: 'payable+onlyFund+nonReentrant', desc: 'Deposit ETH into protocol adapter' },
+      { name: 'withdraw',         vis: 'external', mod: 'onlyFund+nonReentrant', desc: 'Withdraw ETH from protocol adapter' },
+      { name: 'withdrawAll',      vis: 'external', mod: 'onlyFund+nonReentrant', desc: 'Unwind all positions to recipient' },
+      { name: 'totalInvestedValue', vis: 'public', mod: 'view', desc: 'Sum of all adapter.balance() in ETH' },
+      { name: 'stateHash',        vis: 'external', mod: 'view', desc: 'Hash of protocol positions + total value' },
+      { name: 'epochStateHash',   vis: 'external', mod: 'view', desc: 'Hash from per-epoch snapshot arrays' },
+      { name: 'isProtocolActive', vis: 'external', mod: 'view' },
+      { name: 'getProtocolValue', vis: 'external', mod: 'view', desc: 'adapter.balance() for a protocol' },
+      { name: 'getPosition',      vis: 'external', mod: 'view' },
+      { name: 'getProtocol',      vis: 'external', mod: 'view' },
+      { name: 'addProtocol',      vis: 'external', mod: 'onlyAdmin' },
+      { name: 'setProtocolActive', vis: 'owner',   mod: 'onlyAdmin' },
+      { name: 'setBounds',        vis: 'owner',    mod: 'onlyAdmin', desc: 'Set max invested % and per-protocol % caps' },
+      { name: 'setAdmin',         vis: 'owner',    mod: 'onlyAdmin' },
+      { name: 'freezeInvestments', vis: 'owner',   mod: 'onlyAdmin', desc: 'Disable new deposits permanently' },
+      { name: 'freezeAdmin',      vis: 'owner',    mod: 'onlyAdmin', desc: 'Lock admin role permanently' },
+    ]
+  },
+  {
+    id: 'WV', name: 'WorldView', color: '#a855f7', file: 'src/WorldView.sol',
+    functions: [
+      { name: 'setPolicy',    vis: 'external', desc: 'Write a worldview slot (1-7, max 280 chars). Slot 0 reserved.' },
+      { name: 'getPolicy',    vis: 'external', mod: 'view' },
+      { name: 'getPolicies',  vis: 'external', mod: 'view', desc: 'Return all 8 slots' },
+      { name: 'stateHash',    vis: 'external', mod: 'view', desc: 'keccak256 of all policy slots' },
+    ]
+  },
+  {
+    id: 'TDX', name: 'TdxVerifier', color: '#ef4444', file: 'src/TdxVerifier.sol',
+    functions: [
+      { name: 'verify',           vis: 'external', mod: 'payable', desc: 'Verify TDX attestation quote via Automata DCAP' },
+      { name: 'approveImage',     vis: 'external', mod: 'owner', desc: 'Register a dm-verity platform key' },
+      { name: 'revokeImage',      vis: 'external', mod: 'owner' },
+      { name: 'freeze',           vis: 'external', desc: 'Permanently disable this verifier' },
+      { name: 'computeImageKey',  vis: 'external', mod: 'pure', desc: 'sha256(MRTD || RTMR[1] || RTMR[2])' },
+      { name: '_computeImageKey', vis: 'internal', mod: 'pure' },
+    ]
+  },
+  {
+    id: 'AAW', name: 'AaveV3WETHAdapter', color: '#64748b', file: 'src/adapters/AaveV3WETHAdapter.sol',
+    functions: [
+      { name: 'deposit',  vis: 'external', mod: 'payable+onlyManager', desc: 'ETH → WETH → aWETH via Aave V3 pool' },
+      { name: 'withdraw', vis: 'external', mod: 'onlyManager', desc: 'aWETH → WETH → ETH' },
+      { name: 'balance',  vis: 'external', mod: 'view', desc: 'aWETH balance in ETH terms' },
+      { name: 'name',     vis: 'external', mod: 'pure' },
+    ]
+  },
+  {
+    id: 'AAU', name: 'AaveV3USDCAdapter', color: '#64748b', file: 'src/adapters/AaveV3USDCAdapter.sol',
+    functions: [
+      { name: 'deposit',  vis: 'external', mod: 'payable+onlyManager', desc: 'ETH → USDC (Uniswap) → aUSDC (Aave)' },
+      { name: 'withdraw', vis: 'external', mod: 'onlyManager', desc: 'aUSDC → USDC → ETH (Uniswap)' },
+      { name: 'balance',  vis: 'external', mod: 'view', desc: 'aUSDC balance converted to ETH via Chainlink' },
+      { name: 'name',     vis: 'external', mod: 'pure' },
+    ]
+  },
+  {
+    id: 'CV3', name: 'CompoundV3USDCAdapter', color: '#64748b', file: 'src/adapters/CompoundV3USDCAdapter.sol',
+    functions: [
+      { name: 'deposit',  vis: 'external', mod: 'payable+onlyManager', desc: 'ETH → USDC (Uniswap) → Compound V3 comet' },
+      { name: 'withdraw', vis: 'external', mod: 'onlyManager', desc: 'comet → USDC → ETH (Uniswap)' },
+      { name: 'balance',  vis: 'external', mod: 'view', desc: 'USDC balance converted to ETH via Chainlink' },
+      { name: 'name',     vis: 'external', mod: 'pure' },
+    ]
+  },
+  {
+    id: 'MOR', name: 'MorphoWETHAdapter', color: '#64748b', file: 'src/adapters/MorphoWETHAdapter.sol',
+    functions: [
+      { name: 'deposit',  vis: 'external', mod: 'payable+onlyManager', desc: 'ETH → WETH → ERC-4626 vault deposit' },
+      { name: 'withdraw', vis: 'external', mod: 'onlyManager', desc: 'vault.redeem → WETH → ETH' },
+      { name: 'balance',  vis: 'external', mod: 'view', desc: 'shares → convertToAssets → ETH' },
+      { name: 'name',     vis: 'external', mod: 'view' },
+    ]
+  },
+  {
+    id: 'WST', name: 'WstETHAdapter', color: '#64748b', file: 'src/adapters/WstETHAdapter.sol',
+    functions: [
+      { name: 'deposit',      vis: 'external', mod: 'payable+onlyManager', desc: 'ETH → WETH → wstETH via Uniswap' },
+      { name: 'withdraw',     vis: 'external', mod: 'onlyManager', desc: 'wstETH → WETH → ETH via Uniswap' },
+      { name: 'balance',      vis: 'external', mod: 'view', desc: 'wstETH balance × wstETH/ETH rate' },
+      { name: 'name',         vis: 'external', mod: 'pure' },
+      { name: '_wstEthPerEth', vis: 'internal', mod: 'view', desc: 'Chainlink wstETH/ETH rate feed' },
+    ]
+  },
+  {
+    id: 'CBE', name: 'CbETHAdapter', color: '#64748b', file: 'src/adapters/CbETHAdapter.sol',
+    functions: [
+      { name: 'deposit',  vis: 'external', mod: 'payable+onlyManager', desc: 'ETH → WETH → cbETH via Uniswap' },
+      { name: 'withdraw', vis: 'external', mod: 'onlyManager', desc: 'cbETH → WETH → ETH via Uniswap' },
+      { name: 'balance',  vis: 'external', mod: 'view', desc: 'cbETH balance × exchangeRate()' },
+      { name: 'name',     vis: 'external', mod: 'pure' },
+    ]
+  },
+  {
+    id: 'SH', name: 'SwapHelper', color: '#475569', file: 'src/adapters/SwapHelper.sol',
+    functions: [
+      { name: '_swapEthToUsdc', vis: 'internal', desc: 'WETH deposit → Uniswap exactInputSingle → USDC' },
+      { name: '_swapUsdcToEth', vis: 'internal', desc: 'Uniswap exactInputSingle → WETH → ETH' },
+      { name: '_minUsdcForEth', vis: 'internal', mod: 'view', desc: 'Chainlink slippage floor (ETH→USDC)' },
+      { name: '_minEthForUsdc', vis: 'internal', mod: 'view', desc: 'Chainlink slippage floor (USDC→ETH)' },
+    ]
+  },
+];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CROSS-CONTRACT EDGES
+// Each edge: { source, target, calls: [{from, to, desc}], type: 'cross' }
+// source/target are contract IDs
+// ─────────────────────────────────────────────────────────────────────────────
+
+const CROSS_EDGES = [
+  {
+    source: 'THF', target: 'AM',
+    calls: [
+      { from: 'commit',             to: 'getBond',          desc: 'Validate bond amount' },
+      { from: 'commit',             to: 'commit',           desc: 'Record sealed bid + bond transfer' },
+      { from: 'reveal',             to: 'recordReveal',     desc: 'Record bid reveal' },
+      { from: 'submitAuctionResult', to: 'settleExecution', desc: 'Capture prevrandao seed, settle winner' },
+      { from: 'submitAuctionResult', to: 'getWinningBid',   desc: 'Get winning bid for bounty payment' },
+      { from: '_advanceToNow',      to: 'getPhase',         desc: 'Query current auction phase' },
+      { from: '_advanceToNow',      to: 'getStartTime',     desc: 'Query auction start time' },
+      { from: '_advanceToNow',      to: 'commitWindow',     desc: 'Read commit window duration' },
+      { from: '_advanceToNow',      to: 'revealWindow',     desc: 'Read reveal window duration' },
+      { from: '_advanceToNow',      to: 'executionDeadline', desc: 'Check execution deadline' },
+      { from: '_nextPhase',         to: 'getPhase',         desc: 'Check phase before transition' },
+      { from: '_nextPhase',         to: 'getWinner',        desc: 'Check if winner forfeited' },
+      { from: '_nextPhase',         to: 'getBond',          desc: 'Read bond for escalation calc' },
+      { from: '_nextPhase',         to: 'forceClosePhase',  desc: 'Force-close phase on AuctionManager' },
+      { from: '_nextPhase',         to: 'getRandomnessSeed', desc: 'Capture seed after reveal close' },
+      { from: '_openNextAuction',   to: 'openAuction',      desc: 'Open COMMIT window on new epoch' },
+      { from: '_resetAuction',      to: 'abortAuction',     desc: 'Abort in-flight auction, refund bonds' },
+      { from: '_resetAuction',      to: 'setTiming',        desc: 'Apply new timing params' },
+      { from: '_resetAuction',      to: 'commitWindow',     desc: 'Read window for retiming' },
+      { from: '_resetAuction',      to: 'revealWindow',     desc: 'Read window for retiming' },
+      { from: '_resetAuction',      to: 'executionWindow',  desc: 'Read window for retiming' },
+    ]
+  },
+  {
+    source: 'THF', target: 'IM',
+    calls: [
+      { from: '_freezeEpochSnapshot', to: 'getProtocolValue',  desc: 'Snapshot each protocol\'s ETH value' },
+      { from: '_freezeEpochSnapshot', to: 'isProtocolActive',  desc: 'Snapshot active/inactive flags' },
+      { from: '_freezeEpochSnapshot', to: 'epochStateHash',    desc: 'Snapshot investment state hash' },
+      { from: '_executeAction',       to: 'deposit',           desc: 'Execute invest action' },
+      { from: '_executeAction',       to: 'withdraw',          desc: 'Execute withdraw action' },
+      { from: '_withdrawTo',          to: 'withdrawAll',       desc: 'Unwind all positions for withdrawAll/migrate' },
+      { from: 'totalAssets',          to: 'totalInvestedValue', desc: 'Include invested ETH in total assets' },
+    ]
+  },
+  {
+    source: 'THF', target: 'WV',
+    calls: [
+      { from: 'seedWorldView',       to: 'setPolicy',   desc: 'Bulk-initialize worldview slots' },
+      { from: '_applyPolicyUpdate',  to: 'setPolicy',   desc: 'Write worldview slot from agent action' },
+      { from: '_freezeEpochSnapshot', to: 'stateHash',  desc: 'Include worldview hash in snapshot' },
+    ]
+  },
+  {
+    source: 'THF', target: 'TDX',
+    calls: [
+      { from: 'submitAuctionResult', to: 'verify',  desc: 'Verify TDX attestation proof' },
+      { from: 'freezeVerifier',      to: 'freeze',  desc: 'Permanently disable verifier' },
+    ]
+  },
+  {
+    source: 'IM', target: 'AAW',
+    calls: [
+      { from: 'deposit',            to: 'deposit', desc: 'Delegate ETH deposit' },
+      { from: 'withdraw',           to: 'withdraw', desc: 'Delegate ETH withdraw' },
+      { from: 'withdrawAll',        to: 'withdraw', desc: 'Unwind position (try-catch)' },
+      { from: 'totalInvestedValue', to: 'balance',  desc: 'Sum invested ETH' },
+      { from: 'getProtocolValue',   to: 'balance',  desc: 'Read position value' },
+    ]
+  },
+  {
+    source: 'IM', target: 'AAU',
+    calls: [
+      { from: 'deposit',            to: 'deposit', desc: 'Delegate ETH deposit' },
+      { from: 'withdraw',           to: 'withdraw', desc: 'Delegate ETH withdraw' },
+      { from: 'withdrawAll',        to: 'withdraw', desc: 'Unwind position (try-catch)' },
+      { from: 'totalInvestedValue', to: 'balance',  desc: 'Sum invested ETH' },
+      { from: 'getProtocolValue',   to: 'balance',  desc: 'Read position value' },
+    ]
+  },
+  {
+    source: 'IM', target: 'CV3',
+    calls: [
+      { from: 'deposit',            to: 'deposit', desc: 'Delegate ETH deposit' },
+      { from: 'withdraw',           to: 'withdraw', desc: 'Delegate ETH withdraw' },
+      { from: 'withdrawAll',        to: 'withdraw', desc: 'Unwind position (try-catch)' },
+      { from: 'totalInvestedValue', to: 'balance',  desc: 'Sum invested ETH' },
+      { from: 'getProtocolValue',   to: 'balance',  desc: 'Read position value' },
+    ]
+  },
+  {
+    source: 'IM', target: 'MOR',
+    calls: [
+      { from: 'deposit',            to: 'deposit', desc: 'Delegate ETH deposit' },
+      { from: 'withdraw',           to: 'withdraw', desc: 'Delegate ETH withdraw' },
+      { from: 'withdrawAll',        to: 'withdraw', desc: 'Unwind position (try-catch)' },
+      { from: 'totalInvestedValue', to: 'balance',  desc: 'Sum invested ETH' },
+      { from: 'getProtocolValue',   to: 'balance',  desc: 'Read position value' },
+    ]
+  },
+  {
+    source: 'IM', target: 'WST',
+    calls: [
+      { from: 'deposit',            to: 'deposit', desc: 'Delegate ETH deposit' },
+      { from: 'withdraw',           to: 'withdraw', desc: 'Delegate ETH withdraw' },
+      { from: 'withdrawAll',        to: 'withdraw', desc: 'Unwind position (try-catch)' },
+      { from: 'totalInvestedValue', to: 'balance',  desc: 'Sum invested ETH' },
+      { from: 'getProtocolValue',   to: 'balance',  desc: 'Read position value' },
+    ]
+  },
+  {
+    source: 'IM', target: 'CBE',
+    calls: [
+      { from: 'deposit',            to: 'deposit', desc: 'Delegate ETH deposit' },
+      { from: 'withdraw',           to: 'withdraw', desc: 'Delegate ETH withdraw' },
+      { from: 'withdrawAll',        to: 'withdraw', desc: 'Unwind position (try-catch)' },
+      { from: 'totalInvestedValue', to: 'balance',  desc: 'Sum invested ETH' },
+      { from: 'getProtocolValue',   to: 'balance',  desc: 'Read position value' },
+    ]
+  },
+  {
+    source: 'AAU', target: 'SH',
+    calls: [
+      { from: 'deposit',  to: '_swapEthToUsdc', desc: 'ETH → USDC swap before Aave supply' },
+      { from: 'withdraw', to: '_swapUsdcToEth', desc: 'USDC → ETH swap after Aave withdraw' },
+    ]
+  },
+  {
+    source: 'CV3', target: 'SH',
+    calls: [
+      { from: 'deposit',  to: '_swapEthToUsdc', desc: 'ETH → USDC swap before Compound supply' },
+      { from: 'withdraw', to: '_swapUsdcToEth', desc: 'USDC → ETH swap after Compound withdraw' },
+    ]
+  },
+];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// INTERNAL EDGES (within a single contract)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const INTERNAL_EDGES = {
+  THF: [
+    { from: 'donate',             to: '_requireNotSunset' },
+    { from: 'donate',             to: '_payCommission' },
+    { from: 'donateWithMessage',  to: '_requireNotSunset' },
+    { from: 'donateWithMessage',  to: '_payCommission' },
+    { from: 'syncPhase',          to: '_advanceToNow' },
+    { from: 'nextPhase',          to: '_nextPhase' },
+    { from: 'nextPhase',          to: '_advanceEpochBy' },
+    { from: 'resetAuction',       to: '_resetAuction' },
+    { from: 'commit',             to: '_requireNotSunset' },
+    { from: 'commit',             to: '_advanceToNow' },
+    { from: 'reveal',             to: '_advanceToNow' },
+    { from: 'submitAuctionResult', to: '_advanceToNow' },
+    { from: 'submitAuctionResult', to: '_applyPolicyUpdate' },
+    { from: 'submitAuctionResult', to: '_recordAndExecute' },
+    { from: 'computeInputHash',   to: '_computeInputHash' },
+    { from: 'computeInputHashForEpoch', to: '_computeInputHash' },
+    { from: 'withdrawAll',        to: '_withdrawTo' },
+    { from: 'migrate',            to: '_withdrawTo' },
+    { from: '_advanceToNow',      to: '_nextPhase' },
+    { from: '_advanceToNow',      to: '_advanceEpochBy' },
+    { from: '_advanceToNow',      to: '_epochStartTime' },
+    { from: '_nextPhase',         to: '_bondCap' },
+    { from: '_nextPhase',         to: '_openNextAuction' },
+    { from: '_openNextAuction',   to: '_snapshotEthUsdPrice' },
+    { from: '_openNextAuction',   to: '_freezeEpochSnapshot' },
+    { from: '_openNextAuction',   to: '_computeInputHash' },
+    { from: '_freezeEpochSnapshot', to: 'effectiveMaxBid' },
+    { from: '_freezeEpochSnapshot', to: '_liveHashNonprofits' },
+    { from: '_freezeEpochSnapshot', to: '_liveHashUnreadMessages' },
+    { from: '_freezeEpochSnapshot', to: '_liveHashRecentHistory' },
+    { from: '_recordAndExecute',  to: '_executeAction' },
+    { from: '_executeAction',     to: '_executeDonate' },
+    { from: '_executeAction',     to: '_executeSetCommissionRate' },
+    { from: '_executeDonate',     to: '_minUsdcForDonation' },
+    { from: '_computeInputHash',  to: '_hashSnapshot' },
+    { from: '_hashSnapshot',      to: '_hashSnapshotScalars' },
+    { from: '_applyPolicyUpdate', to: '_requireNotSunset' },
+  ],
+  AM: [
+    { from: 'syncPhase',       to: '_syncPhase' },
+    { from: 'forceClosePhase', to: '_closeCommit' },
+    { from: 'forceClosePhase', to: '_closeReveal' },
+    { from: 'forceClosePhase', to: '_doForfeit' },
+    { from: 'openAuction',     to: '_clearCurrentAuction' },
+    { from: 'abortAuction',    to: '_storeHistory' },
+    { from: 'abortAuction',    to: '_clearCurrentAuction' },
+    { from: 'claimBond',       to: '_getWinner' },
+    { from: 'claimBond',       to: '_getBond' },
+    { from: 'getWinner',       to: '_getWinner' },
+    { from: 'getBond',         to: '_getBond' },
+    { from: 'executionDeadline', to: '_executionDeadline' },
+    { from: '_syncPhase',      to: '_closeCommit' },
+    { from: '_syncPhase',      to: '_closeReveal' },
+    { from: '_syncPhase',      to: '_doForfeit' },
+    { from: '_closeCommit',    to: '_storeHistory' },
+    { from: '_closeReveal',    to: '_storeHistory' },
+    { from: '_doForfeit',      to: '_storeHistory' },
+  ],
+  IM: [
+    { from: 'deposit',  to: 'totalInvestedValue', desc: 'Bounds check before deposit' },
+    { from: 'stateHash', to: 'totalInvestedValue' },
+  ],
+  TDX: [
+    { from: 'verify',         to: '_computeImageKey' },
+    { from: 'computeImageKey', to: '_computeImageKey' },
+  ],
+  WST: [
+    { from: 'deposit',  to: '_wstEthPerEth' },
+    { from: 'withdraw', to: '_wstEthPerEth' },
+    { from: 'balance',  to: '_wstEthPerEth' },
+  ],
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LAYOUT — fixed positions (hierarchical)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const W = 1200, H = 760;
+const LAYOUT = {
+  THF: { x: 600,  y: 90  },   // row 0 center
+  AM:  { x: 170,  y: 310 },   // row 1
+  IM:  { x: 490,  y: 310 },
+  WV:  { x: 780,  y: 310 },
+  TDX: { x: 1020, y: 310 },
+  // row 2 — adapters
+  AAW: { x: 80,   y: 560 },
+  AAU: { x: 280,  y: 560 },
+  CV3: { x: 480,  y: 560 },
+  MOR: { x: 660,  y: 560 },
+  WST: { x: 840,  y: 560 },
+  CBE: { x: 1020, y: 560 },
+  SH:  { x: 380,  y: 720 },   // row 3 — shared utility
+};
+
+const CONTRACT_W = 160, CONTRACT_H = 56;
+const ADAPTER_W = 148, ADAPTER_H = 46;
+
+function contractBox(id) {
+  const pos = LAYOUT[id];
+  const isAdapter = ['AAW','AAU','CV3','MOR','WST','CBE','SH'].includes(id);
+  return {
+    x: pos.x, y: pos.y,
+    w: isAdapter ? ADAPTER_W : CONTRACT_W,
+    h: isAdapter ? ADAPTER_H : CONTRACT_H,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RENDER
+// ─────────────────────────────────────────────────────────────────────────────
+
+let selectedContract = null;
+let showInternalEdges = true;
+let showEdgeLabels = true;
+let highlightedFn = null;
+
+const svg = d3.select('#graph');
+const tooltip = document.getElementById('tooltip');
+
+// Zoom/pan
+const zoom = d3.zoom().scaleExtent([0.3, 3]).on('zoom', (e) => {
+  g.attr('transform', e.transform);
+});
+svg.call(zoom);
+
+const g = svg.append('g');
+
+// ── Arrow markers ────────────────────────────────────────────────────────────
+const defs = svg.append('defs');
+
+function addArrow(id, color) {
+  defs.append('marker')
+    .attr('id', id)
+    .attr('viewBox', '0 -4 10 8')
+    .attr('refX', 10).attr('refY', 0)
+    .attr('markerWidth', 7).attr('markerHeight', 7)
+    .attr('orient', 'auto')
+    .append('path')
+    .attr('d', 'M0,-4L10,0L0,4')
+    .attr('fill', color);
+}
+
+// Add arrows for each contract color
+CONTRACTS.forEach(c => addArrow('arrow-' + c.id, c.color));
+addArrow('arrow-internal', '#8b949e');
+
+// ── Compute edge path between two contract boxes ─────────────────────────────
+function edgePath(srcId, tgtId) {
+  const s = contractBox(srcId);
+  const t = contractBox(tgtId);
+  const sx = s.x, sy = s.y + s.h / 2;
+  const tx = t.x, ty = t.y + t.h / 2;
+
+  // Determine exit/entry sides
+  const dx = tx - sx, dy = ty - sy;
+
+  let x1, y1, x2, y2;
+  if (Math.abs(dy) > Math.abs(dx) * 0.8) {
+    // Primarily vertical
+    x1 = sx; y1 = dy > 0 ? s.y + s.h : s.y;
+    x2 = tx; y2 = dy > 0 ? t.y       : t.y + t.h;
+  } else {
+    // Primarily horizontal
+    x1 = dx > 0 ? s.x + s.w : s.x; y1 = sy;
+    x2 = dx > 0 ? t.x       : t.x + t.w; y2 = ty;
+  }
+
+  const cx1 = x1 + (x2 - x1) * 0.45;
+  const cy1 = y1 + (y2 - y1) * 0.1;
+  const cx2 = x1 + (x2 - x1) * 0.55;
+  const cy2 = y1 + (y2 - y1) * 0.9;
+
+  // Shorten end by 8px for arrowhead
+  const len = Math.hypot(x2 - cx2, y2 - cy2);
+  const ex = len > 8 ? x2 - (x2 - cx2) / len * 8 : x2;
+  const ey = len > 8 ? y2 - (y2 - cy2) / len * 8 : y2;
+
+  return `M${x1},${y1} C${cx1},${cy1} ${cx2},${cy2} ${ex},${ey}`;
+}
+
+// ── Cross-contract edges ──────────────────────────────────────────────────────
+const edgeGroup = g.append('g').attr('class', 'edges');
+
+const edgeElements = edgeGroup.selectAll('.edge-cross')
+  .data(CROSS_EDGES)
+  .enter()
+  .append('path')
+  .attr('class', 'edge edge-cross')
+  .attr('id', d => `edge-${d.source}-${d.target}`)
+  .attr('stroke', d => {
+    const c = CONTRACTS.find(c => c.id === d.source);
+    return c ? c.color : '#8b949e';
+  })
+  .attr('marker-end', d => `url(#arrow-${d.source})`)
+  .attr('d', d => edgePath(d.source, d.target))
+  .on('mouseenter', function(event, d) {
+    showEdgeTooltip(event, d);
+  })
+  .on('mousemove', function(event) {
+    tooltip.style.left = (event.pageX + 14) + 'px';
+    tooltip.style.top  = (event.pageY - 10) + 'px';
+  })
+  .on('mouseleave', function() {
+    tooltip.style.display = 'none';
+  });
+
+// Edge midpoint labels
+const labelGroup = g.append('g').attr('class', 'edge-labels');
+
+function edgeMidpoint(srcId, tgtId) {
+  const s = contractBox(srcId);
+  const t = contractBox(tgtId);
+  return { x: (s.x + t.x) / 2, y: (s.y + s.h/2 + t.y + t.h/2) / 2 };
+}
+
+const edgeLabelElements = labelGroup.selectAll('.edge-label')
+  .data(CROSS_EDGES)
+  .enter()
+  .append('text')
+  .attr('class', 'edge-label')
+  .attr('x', d => edgeMidpoint(d.source, d.target).x)
+  .attr('y', d => edgeMidpoint(d.source, d.target).y)
+  .text(d => d.calls.length + (d.calls.length === 1 ? ' call' : ' calls'));
+
+// ── Contract boxes ────────────────────────────────────────────────────────────
+const contractGroup = g.append('g').attr('class', 'contracts');
+
+const contractElements = contractGroup.selectAll('.contract-box')
+  .data(CONTRACTS)
+  .enter()
+  .append('g')
+  .attr('class', 'contract-box')
+  .attr('transform', d => `translate(${LAYOUT[d.id].x - contractBox(d.id).w/2}, ${LAYOUT[d.id].y - contractBox(d.id).h/2})`)
+  .on('click', function(event, d) {
+    event.stopPropagation();
+    selectContract(d.id === selectedContract ? null : d.id);
+  })
+  .on('mouseenter', function(event, d) {
+    if (selectedContract !== d.id) {
+      d3.select(this).select('.contract-rect').style('stroke-width', '2.5px');
+    }
+  })
+  .on('mouseleave', function(event, d) {
+    if (selectedContract !== d.id) {
+      d3.select(this).select('.contract-rect').style('stroke-width', '1.5px');
+    }
+  });
+
+contractElements.append('rect')
+  .attr('class', 'contract-rect')
+  .attr('width', d => contractBox(d.id).w)
+  .attr('height', d => contractBox(d.id).h)
+  .attr('fill', d => d.color + '22')
+  .attr('stroke', d => d.color)
+  .attr('stroke-width', 1.5)
+  .attr('rx', 8);
+
+contractElements.append('text')
+  .attr('class', 'contract-name')
+  .attr('x', d => contractBox(d.id).w / 2)
+  .attr('y', d => contractBox(d.id).h / 2 - 5)
+  .text(d => d.name);
+
+contractElements.append('text')
+  .attr('class', 'contract-sub')
+  .attr('x', d => contractBox(d.id).w / 2)
+  .attr('y', d => contractBox(d.id).h / 2 + 10)
+  .text(d => {
+    const pub = d.functions.filter(f => f.vis !== 'internal').length;
+    const priv = d.functions.filter(f => f.vis === 'internal').length;
+    return `${pub} ext · ${priv} internal`;
+  });
+
+// ── Legend ────────────────────────────────────────────────────────────────────
+const legend = document.getElementById('legend');
+CONTRACTS.forEach(c => {
+  const div = document.createElement('div');
+  div.className = 'legend-item';
+  div.dataset.id = c.id;
+  div.innerHTML = `
+    <div class="legend-dot" style="background:${c.color}"></div>
+    <span>${c.name}</span>
+    <span class="legend-count">${c.functions.length}</span>
+  `;
+  div.addEventListener('click', () => {
+    selectContract(c.id === selectedContract ? null : c.id);
+  });
+  legend.appendChild(div);
+});
+
+// ── Select / highlight ────────────────────────────────────────────────────────
+function selectContract(id) {
+  selectedContract = id;
+  highlightedFn = null;
+
+  // Update legend
+  document.querySelectorAll('.legend-item').forEach(el => {
+    el.classList.toggle('selected', el.dataset.id === id);
+  });
+
+  // Update contract box styling
+  contractElements.select('.contract-rect')
+    .style('stroke-width', d => d.id === id ? '3px' : '1.5px')
+    .attr('fill', d => {
+      if (!id) return d.color + '22';
+      if (d.id === id) return d.color + '44';
+      const edge = CROSS_EDGES.find(e => (e.source === id && e.target === d.id) || (e.target === id && e.source === d.id));
+      return edge ? d.color + '33' : d.color + '0a';
+    });
+
+  // Update edge visibility
+  edgeElements
+    .style('opacity', d => {
+      if (!id) return 0.6;
+      return (d.source === id || d.target === id) ? 1 : 0.1;
+    })
+    .style('stroke-width', d => {
+      return (d.source === id || d.target === id) ? '3px' : '1.5px';
+    });
+
+  edgeLabelElements
+    .style('opacity', d => {
+      if (!id) return showEdgeLabels ? 1 : 0;
+      return (d.source === id || d.target === id) ? (showEdgeLabels ? 1 : 0) : 0;
+    });
+
+  // Render sidebar
+  renderFnPanel(id);
+}
+
+function renderFnPanel(id) {
+  const panel = document.getElementById('fn-panel');
+  if (!id) {
+    panel.innerHTML = '<div class="info-placeholder">Click a contract to see its functions and call edges.</div>';
+    return;
+  }
+
+  const contract = CONTRACTS.find(c => c.id === id);
+  const color = contract.color;
+
+  const groups = [
+    { label: 'External / Public', vis: ['external', 'public'] },
+    { label: 'Owner / Admin', vis: ['owner'] },
+    { label: 'Internal', vis: ['internal'] },
+  ];
+
+  let html = `<div class="fn-panel-title" style="color:${color}">${contract.name}</div>`;
+  html += `<div style="font-size:11px;color:#8b949e;margin-bottom:4px;">${contract.file}</div>`;
+
+  groups.forEach(group => {
+    const fns = contract.functions.filter(f => group.vis.includes(f.vis));
+    if (!fns.length) return;
+    html += `<div class="fn-group-label">${group.label}</div>`;
+    fns.forEach(fn => {
+      const visClass = fn.vis === 'owner' ? 'vis-owner' : `vis-${fn.vis}`;
+      const modStr = fn.mod ? ` <span style="color:#8b949e;font-size:10px">${fn.mod}</span>` : '';
+      const callers = getCallers(id, fn.name);
+      const callees = getCallees(id, fn.name);
+      html += `
+        <div class="fn-item" data-fn="${fn.name}" title="${fn.desc || ''}"
+          onmouseenter="highlightFn('${id}','${fn.name}')"
+          onmouseleave="unhighlightFn()">
+          <span class="fn-vis ${visClass}">${fn.vis}</span>
+          <span>${fn.name}</span>${modStr}
+          ${callers.length || callees.length ? `<span style="margin-left:auto;font-size:10px;color:#8b949e">${callees.length > 0 ? '→'+callees.length : ''}${callers.length > 0 ? ' ←'+callers.length : ''}</span>` : ''}
+        </div>`;
+    });
+  });
+
+  panel.innerHTML = html;
+}
+
+function getCallers(contractId, fnName) {
+  const callers = [];
+  // Internal callers
+  const internalEdges = INTERNAL_EDGES[contractId] || [];
+  internalEdges.filter(e => e.to === fnName).forEach(e => {
+    callers.push({ contract: contractId, fn: e.from, type: 'internal' });
+  });
+  // Cross-contract callers
+  CROSS_EDGES.filter(e => e.target === contractId).forEach(e => {
+    e.calls.filter(c => c.to === fnName).forEach(c => {
+      callers.push({ contract: e.source, fn: c.from, type: 'cross' });
+    });
+  });
+  return callers;
+}
+
+function getCallees(contractId, fnName) {
+  const callees = [];
+  const internalEdges = INTERNAL_EDGES[contractId] || [];
+  internalEdges.filter(e => e.from === fnName).forEach(e => {
+    callees.push({ contract: contractId, fn: e.to, type: 'internal' });
+  });
+  CROSS_EDGES.filter(e => e.source === contractId).forEach(e => {
+    e.calls.filter(c => c.from === fnName).forEach(c => {
+      callees.push({ contract: e.target, fn: c.to, type: 'cross' });
+    });
+  });
+  return callees;
+}
+
+function highlightFn(contractId, fnName) {
+  highlightedFn = { contractId, fnName };
+
+  // Find which cross edges involve this function
+  const relevantEdges = new Set();
+  CROSS_EDGES.forEach(e => {
+    if (e.source === contractId) {
+      if (e.calls.some(c => c.from === fnName)) relevantEdges.add(`${e.source}-${e.target}`);
+    }
+    if (e.target === contractId) {
+      if (e.calls.some(c => c.to === fnName)) relevantEdges.add(`${e.source}-${e.target}`);
+    }
+  });
+
+  edgeElements
+    .style('opacity', d => relevantEdges.has(`${d.source}-${d.target}`) ? 1 : 0.05)
+    .style('stroke-width', d => relevantEdges.has(`${d.source}-${d.target}`) ? '3.5px' : '1.5px');
+}
+
+function unhighlightFn() {
+  if (!selectedContract) return;
+  highlightedFn = null;
+  selectContract(selectedContract); // re-apply contract highlight
+}
+
+// ── Edge tooltip ──────────────────────────────────────────────────────────────
+function showEdgeTooltip(event, d) {
+  const srcContract = CONTRACTS.find(c => c.id === d.source);
+  const tgtContract = CONTRACTS.find(c => c.id === d.target);
+
+  let html = `<div class="tooltip-title" style="color:${srcContract.color}">${srcContract.name} → ${tgtContract.name}</div>`;
+  html += `<div class="tooltip-section"><div class="tooltip-section-label">${d.calls.length} call${d.calls.length > 1 ? 's' : ''}</div>`;
+  d.calls.forEach(c => {
+    html += `<div class="tooltip-fn">${c.from} <span style="color:#8b949e">→</span> ${c.to}</div>`;
+    if (c.desc) html += `<div style="font-size:10px;color:#8b949e;padding-left:8px;margin-bottom:2px">${c.desc}</div>`;
+  });
+  html += '</div>';
+
+  tooltip.innerHTML = html;
+  tooltip.style.display = 'block';
+  tooltip.style.left = (event.pageX + 14) + 'px';
+  tooltip.style.top  = (event.pageY - 10) + 'px';
+}
+
+// ── Click outside to deselect ─────────────────────────────────────────────────
+svg.on('click', () => selectContract(null));
+
+// ── Toggles ───────────────────────────────────────────────────────────────────
+document.getElementById('toggle-internal').addEventListener('change', function() {
+  showInternalEdges = this.checked;
+  // (internal edges are only shown in fn-panel hover; no separate SVG lines)
+});
+
+document.getElementById('toggle-labels').addEventListener('change', function() {
+  showEdgeLabels = this.checked;
+  edgeLabelElements.style('opacity', d => {
+    if (!showEdgeLabels) return 0;
+    if (!selectedContract) return 1;
+    return (d.source === selectedContract || d.target === selectedContract) ? 1 : 0;
+  });
+});
+
+// Initial: center the graph
+const svgEl = document.getElementById('graph');
+const bbox = svgEl.getBoundingClientRect();
+const scaleX = bbox.width / (W + 80);
+const scaleY = bbox.height / (H + 80);
+const initialScale = Math.min(scaleX, scaleY, 1);
+const tx = (bbox.width  - W * initialScale) / 2;
+const ty = (bbox.height - H * initialScale) / 2;
+svg.call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(initialScale));
+</script>
+</body>
+</html>
