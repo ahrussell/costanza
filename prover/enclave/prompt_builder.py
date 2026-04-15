@@ -281,21 +281,29 @@ def _compute_action_bounds(state):
     # new-amount headroom is (cap - existing_position_in_that_protocol).
     # We compute both the raw cap and a per-protocol headroom map so the
     # prompt can show the model the real room it has in each protocol.
+    #
+    # SECURITY: protocol ids are derived from position (idx+1), NOT from
+    # `inv["id"]`. The investment hash (_hash_investments) uses positional
+    # `i = idx+1` and does NOT hash `inv["id"]`, so a malicious runner
+    # could swap id fields across entries (identical hash) and trick the
+    # model into addressing the wrong protocol. On-chain InvestmentManager
+    # stores protocols 1-indexed in insertion order, matching the array
+    # the runner must supply to hash — so position-derived id is the
+    # ground truth here.
     max_per_protocol = (total_assets * 2500) // 10000
     per_protocol_headroom = {}
-    for inv in state.get("investments", []):
-        pid = inv.get("id")
-        if pid is None:
-            continue
+    for idx, inv in enumerate(state.get("investments", [])):
+        pid = idx + 1
         current = inv.get("current_value", 0) or 0
         per_protocol_headroom[pid] = max(0, max_per_protocol - current)
 
-    # Withdrawable positions
+    # Withdrawable positions — id derived from position (see security note
+    # above on investment id handling).
     withdrawable = []
-    for inv in state.get("investments", []):
+    for idx, inv in enumerate(state.get("investments", [])):
         if inv.get("current_value", 0) > 0:
             withdrawable.append({
-                "id": inv["id"],
+                "id": idx + 1,
                 "name": inv["name"],
                 "value": inv["current_value"],
             })
@@ -509,6 +517,11 @@ def build_epoch_context(state, seed=None):
             lines.append(f"     {np['description']}")
 
     # -- Section 4: Investment Portfolio --
+    # SECURITY: `inv["id"]` is NOT in the investment hash — _hash_investments
+    # uses positional `i = idx+1`. Derive displayed protocol ids from
+    # position (matching the on-chain 1-indexed registry) so the runner
+    # can't swap ids to misdirect the model. See the matching note in
+    # _compute_action_bounds above.
     if state.get("investments"):
         lines.append("")
         lines.append("--- Investment Portfolio ---")
@@ -517,24 +530,25 @@ def build_epoch_context(state, seed=None):
         risk_labels = {1: "LOW", 2: "MEDIUM", 3: "MED-HIGH", 4: "HIGH"}
         per_protocol_room = bounds.get("per_protocol_headroom", {})
         total_capacity = bounds["invest_capacity"]
-        for inv in state["investments"]:
+        for idx, inv in enumerate(state["investments"]):
+            pid = idx + 1
             status = "ACTIVE" if inv["active"] else "PAUSED"
             risk = risk_labels.get(inv["risk_tier"], "?")
             apy = inv["expected_apy_bps"] / 100
             # Effective room is min(per-protocol headroom, overall invest_capacity)
-            raw_room = per_protocol_room.get(inv["id"], bounds["max_per_protocol"])
+            raw_room = per_protocol_room.get(pid, bounds["max_per_protocol"])
             room = min(raw_room, total_capacity) if total_capacity > 0 else 0
             room_str = f"room: {format_eth(room)} ETH" if room > 0 else "room: 0 (at cap)"
             if inv["shares"] > 0:
                 profit = inv["current_value"] - inv["deposited"]
                 profit_str = f"+{format_eth(profit)}" if profit >= 0 else f"-{format_eth(abs(profit))}"
                 lines.append(
-                    f"  #{inv['id']} {inv['name']} [{risk}, ~{apy:.0f}% APY]: "
+                    f"  #{pid} {inv['name']} [{risk}, ~{apy:.0f}% APY]: "
                     f"{format_eth(inv['deposited'])} deposited -> {format_eth_usd(inv['current_value'], eth_usd)} ({profit_str})  |  {room_str}"
                 )
             else:
                 lines.append(
-                    f"  #{inv['id']} {inv['name']} [{risk}, ~{apy:.0f}% APY, {status}]: no position  |  {room_str}"
+                    f"  #{pid} {inv['name']} [{risk}, ~{apy:.0f}% APY, {status}]: no position  |  {room_str}"
                 )
 
     # -- Section 5: Worldview --
