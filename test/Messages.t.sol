@@ -80,16 +80,29 @@ contract MessagesTest is Test {
         assertEq(referralCount, 1);
     }
 
-    function test_message_truncated_to_280() public {
-        // Create a message longer than 280 characters
+    function test_message_over_limit_rejected() public {
+        // Create a message longer than 280 characters — must revert rather
+        // than silently truncate (truncation could split a UTF-8 codepoint).
         bytes memory longMsg = new bytes(400);
         for (uint256 i = 0; i < 400; i++) {
-            longMsg[i] = bytes1(uint8(65 + (i % 26))); // A-Z repeating
+            longMsg[i] = bytes1(uint8(65 + (i % 26)));
         }
 
         vm.deal(donor1, 1 ether);
         vm.prank(donor1);
+        vm.expectRevert(TheHumanFund.InvalidParams.selector);
         fund.donateWithMessage{value: 0.01 ether}(0, string(longMsg));
+    }
+
+    function test_message_at_limit_accepted() public {
+        // Exactly 280 bytes — must be accepted.
+        bytes memory msgBytes = new bytes(280);
+        for (uint256 i = 0; i < 280; i++) {
+            msgBytes[i] = bytes1(uint8(65 + (i % 26)));
+        }
+        vm.deal(donor1, 1 ether);
+        vm.prank(donor1);
+        fund.donateWithMessage{value: 0.01 ether}(0, string(msgBytes));
 
         (,,string[] memory texts,) = fund.getUnreadMessages();
         assertEq(bytes(texts[0]).length, 280);
@@ -321,7 +334,7 @@ contract MessagesTest is Test {
 
     // ─── Fuzz Tests ────────────────────────────────────────────────────
 
-    function testFuzz_messageTruncation(uint256 len) public {
+    function testFuzz_messageLength(uint256 len) public {
         len = bound(len, 1, 1000);
 
         // Build a string of length `len`
@@ -332,18 +345,16 @@ contract MessagesTest is Test {
         string memory msg_ = string(msgBytes);
 
         vm.deal(donor1, 1 ether);
-        vm.prank(donor1);
-        fund.donateWithMessage{value: 0.01 ether}(0, msg_);
-
-        // Stored message should be at most 280 bytes
-        (,, string[] memory texts,) = fund.getUnreadMessages();
-        assertEq(texts.length, 1);
-        assertLe(bytes(texts[0]).length, 280);
-
-        if (len <= 280) {
-            assertEq(bytes(texts[0]).length, len);
+        if (len > 280) {
+            vm.prank(donor1);
+            vm.expectRevert(TheHumanFund.InvalidParams.selector);
+            fund.donateWithMessage{value: 0.01 ether}(0, msg_);
         } else {
-            assertEq(bytes(texts[0]).length, 280);
+            vm.prank(donor1);
+            fund.donateWithMessage{value: 0.01 ether}(0, msg_);
+            (,, string[] memory texts,) = fund.getUnreadMessages();
+            assertEq(texts.length, 1);
+            assertEq(bytes(texts[0]).length, len);
         }
     }
 
@@ -363,5 +374,42 @@ contract MessagesTest is Test {
 
         assertEq(fund.messageCount(), 1);
         assertEq(fund.treasuryBalance(), 5 ether + amount);
+    }
+
+    /// @dev Regression: a donation that arrives during an idle gap (wall-clock
+    ///      past the scheduled epoch end, no prover activity) must not be
+    ///      silently erased from per-epoch accounting by the next _syncPhase
+    ///      reset. `donate()` must advance the epoch counter first, then
+    ///      write to the counters of the NEW epoch.
+    function test_donation_during_idle_gap_not_erased() public {
+        // Start epoch 1
+        fund.syncPhase();
+        uint256 epochDuration = fund.epochDuration();
+
+        // Jump forward 3 full epochs with no prover activity
+        vm.warp(block.timestamp + 3 * epochDuration);
+        assertEq(fund.currentEpoch(), 1, "epoch counter unchanged without sync");
+
+        // Donor shows up in the gap
+        vm.deal(donor1, 1 ether);
+        vm.prank(donor1);
+        fund.donateWithMessage{value: 0.01 ether}(0, "gap donation");
+
+        // Donation should be tagged to the advanced epoch, not epoch 1
+        uint256 newEpoch = fund.currentEpoch();
+        assertGt(newEpoch, 1, "donate() advanced the epoch");
+        (,, , uint256[] memory msgEpochs) = fund.getUnreadMessages();
+        assertEq(msgEpochs[0], newEpoch, "message tagged with advanced epoch");
+
+        // Per-epoch counter should reflect the donation, NOT be zero
+        assertEq(fund.currentEpochInflow(), 0.01 ether, "inflow recorded against new epoch");
+        assertEq(fund.currentEpochDonationCount(), 1);
+
+        // A later prover call must not reset these counters. syncPhase() at
+        // this point is a no-op (we're still inside newEpoch's window).
+        fund.syncPhase();
+        assertEq(fund.currentEpochInflow(), 0.01 ether, "inflow survives subsequent sync");
+        assertEq(fund.messageCount(), 1);
+        assertEq(fund.messageHead(), 0);
     }
 }

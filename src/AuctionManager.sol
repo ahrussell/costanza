@@ -169,8 +169,12 @@ contract AuctionManager is IAuctionManager, ReentrancyGuard {
         if (!hasCommitted[epoch][runner]) revert Unauthorized();
         if (hasRevealed[epoch][runner]) revert AlreadyDone();
 
-        // Verify commitment
-        bytes32 expectedHash = keccak256(abi.encodePacked(bidAmount, salt));
+        // Verify commitment. The runner address is part of the preimage to
+        // prevent reveal front-running: if a commit hash only bound (bid, salt),
+        // an attacker could observe a legit runner's commit, submit the same
+        // hash under their own address, then front-run the legit reveal tx
+        // and steal the winning slot with the same (bid, salt) pair.
+        bytes32 expectedHash = keccak256(abi.encodePacked(runner, bidAmount, salt));
         if (expectedHash != bidCommits[epoch][runner]) revert InvalidParams();
 
         hasRevealed[epoch][runner] = true;

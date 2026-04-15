@@ -340,6 +340,18 @@ contract TheHumanFund is ReentrancyGuard {
     /// @param referralCodeId The referral code ID (0 for no referral).
     function donate(uint256 referralCodeId) external payable nonReentrant {
         _requireNotSunset();
+        // Advance to the current wall-clock epoch before touching per-epoch
+        // counters. Without this, donations arriving during an idle gap
+        // (wall-clock past epoch end, no prover activity) would increment
+        // `currentEpochInflow` against a stale epoch, and the next
+        // `_syncPhase` would reset those counters to zero — silently erasing
+        // the donation from per-epoch accounting.
+        //
+        // We pass `openNewAuction=false` so this call does NOT take an
+        // epoch snapshot — the next prover `commit()` will open the auction
+        // and snapshot AFTER this donation has updated the queue + counters,
+        // ensuring the model sees the donation at the natural moment.
+        _syncPhase(false);
         if (msg.value < MIN_DONATION_AMOUNT) revert InvalidParams();
 
         // State updates BEFORE external call (checks-effects-interactions)
@@ -360,7 +372,17 @@ contract TheHumanFund is ReentrancyGuard {
     /// @param message A message for the agent (max 280 characters, requires >= 0.01 ETH).
     function donateWithMessage(uint256 referralCodeId, string calldata message) external payable nonReentrant {
         _requireNotSunset();
+        // See `donate()` for rationale — phase must be current before writing
+        // per-epoch counters, and DonorMessage.epoch must tag the real epoch.
+        // `openNewAuction=false` defers the snapshot to the next prover
+        // commit so it correctly includes this message in the frozen queue.
+        _syncPhase(false);
         if (msg.value < MIN_MESSAGE_DONATION) revert InvalidParams();
+        // Reject rather than silently truncate: byte-level truncation at
+        // MAX_MESSAGE_LENGTH can split a multi-byte UTF-8 codepoint in half,
+        // producing invalid UTF-8 that breaks JSON serialization in the
+        // enclave prompt-assembly path.
+        if (bytes(message).length > MAX_MESSAGE_LENGTH) revert InvalidParams();
 
         // State updates BEFORE external call (checks-effects-interactions)
         totalInflows += msg.value;
@@ -372,26 +394,15 @@ contract TheHumanFund is ReentrancyGuard {
             commission = _payCommission(referralCodeId);
         }
 
-        // Store message (truncate to MAX_MESSAGE_LENGTH bytes)
-        bytes memory msgBytes = bytes(message);
-        string memory truncated = message;
-        if (msgBytes.length > MAX_MESSAGE_LENGTH) {
-            // Truncate raw bytes and convert back
-            bytes memory cut = new bytes(MAX_MESSAGE_LENGTH);
-            for (uint256 i = 0; i < MAX_MESSAGE_LENGTH; i++) {
-                cut[i] = msgBytes[i];
-            }
-            truncated = string(cut);
-        }
-
+        // Length already validated above — store message as-is.
         uint256 messageId = messages.length;
         messages.push(DonorMessage({
             sender: msg.sender,
             amount: msg.value,
-            text: truncated,
+            text: message,
             epoch: currentEpoch
         }));
-        messageHashes[messageId] = keccak256(abi.encode(msg.sender, msg.value, truncated, currentEpoch));
+        messageHashes[messageId] = keccak256(abi.encode(msg.sender, msg.value, message, currentEpoch));
 
         emit DonationReceived(msg.sender, msg.value, referralCodeId, commission);
         emit MessageReceived(msg.sender, msg.value, messageId);
@@ -417,6 +428,7 @@ contract TheHumanFund is ReentrancyGuard {
         referralCodes[referralCodeId].totalReferred += msg.value;
         referralCodes[referralCodeId].referralCount += 1;
         totalCommissionsPaid += commission;
+        currentEpochCommissions += commission;
         (bool sent, ) = referrer.call{value: commission}("");
         if (!sent) {
             // Referrer contract reverted — credit commission for pull-based claim
@@ -461,10 +473,22 @@ contract TheHumanFund is ReentrancyGuard {
     }
 
     /// @notice Skip the current epoch (no runner bid or missed deadline).
+    /// @dev Must not advance past an in-flight AuctionManager epoch — doing so
+    ///      would orphan the AM state (committed runners couldn't settle,
+    ///      winner's bond stranded). Require AM to be IDLE or SETTLED first;
+    ///      if there's an in-flight auction, the owner should call
+    ///      `syncPhase()` (or wait for timeouts) to drain it before skipping.
     function skipEpoch() external onlyOwner {
         if (frozenFlags & FREEZE_DIRECT_MODE != 0) revert Frozen();
         uint256 epoch = currentEpoch;
         if (epochs[epoch].executed) revert AlreadyDone();
+
+        IAuctionManager am = auctionManager;
+        if (address(am) != address(0)) {
+            IAuctionManager.AuctionPhase phase = am.getPhase(epoch);
+            if (phase != IAuctionManager.AuctionPhase.IDLE
+                && phase != IAuctionManager.AuctionPhase.SETTLED) revert WrongPhase();
+        }
 
         if (consecutiveMissedEpochs < MAX_MISSED_EPOCHS) consecutiveMissedEpochs += 1;
         currentEpoch = epoch + 1;
@@ -635,8 +659,12 @@ contract TheHumanFund is ReentrancyGuard {
     /// @notice Advance the contract through any elapsed epoch/phase boundaries.
     ///         Anyone can call — permissionless state advancement. Replaces
     ///         startEpoch(), closeCommit(), closeReveal(), and forfeitBond().
+    /// @dev NOT sunset-gated: `migrate()` requires the AuctionManager to be
+    ///      IDLE or SETTLED, and the only way to drain an in-flight auction
+    ///      during sunset is by running this function (which forfeits unmet
+    ///      winners and advances the AM to SETTLED). Gating it would
+    ///      deadlock sunset-then-migrate when an auction was in-flight.
     function syncPhase() external {
-        _requireNotSunset();
         _syncPhase();
     }
 
@@ -651,7 +679,25 @@ contract TheHumanFund is ReentrancyGuard {
     ///      The steps are decoupled so a stuck step never traps the others;
     ///      repeated calls converge regardless of where execution left off.
     function _syncPhase() internal {
+        _syncPhase(true);
+    }
+
+    /// @dev Sync variant with Step C (auction open) toggleable. When called
+    ///      from public prover actions, `openNewAuction=true` opens the next
+    ///      commit window if we're inside it. When called from public donor
+    ///      actions (`donate`, `donateWithMessage`), `openNewAuction=false`
+    ///      because the donation write happens AFTER sync — if we opened an
+    ///      auction here, the snapshot would freeze before the donation was
+    ///      recorded (messages.push, currentEpochInflow) and the model would
+    ///      never see the just-arrived donation. Leaving the auction closed
+    ///      means the next prover commit opens it and takes a fresh snapshot
+    ///      that correctly includes the donation.
+    function _syncPhase(bool openNewAuction) internal {
         IAuctionManager am = auctionManager;
+        // Skip entirely if AM isn't wired yet (e.g. constructor, or
+        // migration-in-progress). Donate paths call sync for correctness
+        // but must not revert when no AM exists.
+        if (address(am) == address(0)) return;
         uint256 epoch = currentEpoch;
         IAuctionManager.AuctionPhase phase = am.getPhase(epoch);
 
@@ -735,7 +781,9 @@ contract TheHumanFund is ReentrancyGuard {
         // ─── Step C: open a fresh auction if conditions are right ───────
         // Guarded by AM phase so we never collide with an in-flight auction
         // that survived Step A (which can happen if AM.syncPhase couldn't
-        // fully drain — e.g. partially elapsed windows).
+        // fully drain — e.g. partially elapsed windows). Skipped entirely
+        // when the caller opted out (donor paths — see _syncPhase(bool)).
+        if (!openNewAuction) return;
         uint256 newScheduledStart = _epochStartTime(epoch);
         IAuctionManager.AuctionPhase amPhase = am.getPhase(epoch);
         bool amReady =
@@ -1052,12 +1100,18 @@ contract TheHumanFund is ReentrancyGuard {
             address(weth), usdc, uint24(500), address(this),
             amount, minUsdc, uint160(0)
         ));
+        // Clear residual allowance regardless of swap outcome — defensive
+        // hygiene so a partial-pull router can't leave dangling approval.
+        weth.approve(swapRouter, 0);
         if (!swapOk) return false;
         uint256 usdcAmount = abi.decode(swapRet, (uint256));
 
         // Donate USDC to Endaoment org
         IERC20(usdc).approve(orgAddr, usdcAmount);
         IEndaomentOrg(orgAddr).donate(usdcAmount);
+        // Clear residual USDC allowance — protects against a buggy/compromised
+        // org that pulls less than the full amount and later drains dust.
+        IERC20(usdc).approve(orgAddr, 0);
 
         np.totalDonated += amount;
         np.totalDonatedUsd += usdcAmount;
@@ -1343,9 +1397,20 @@ contract TheHumanFund is ReentrancyGuard {
         }
     }
 
-    // Allow receiving ETH directly (for seed funding)
+    // Allow receiving ETH directly (for seed funding).
+    //
+    // The AuctionManager pushes forfeited bonds / bond refunds into the fund,
+    // and the InvestmentManager pushes ETH back when positions are withdrawn
+    // (either by a model `withdraw` action or by `migrate`'s unwind path).
+    // Those internal transfers must succeed even after FREEZE_SUNSET, otherwise
+    // settling an in-flight auction reverts, `_syncPhase` reverts, and the
+    // fund deadlocks with no way to `migrate()` (which requires AM to be
+    // IDLE/SETTLED). So `_requireNotSunset` is bypassed for those two trusted
+    // internal senders only.
     receive() external payable {
-        _requireNotSunset();
+        if (msg.sender != address(auctionManager) && msg.sender != address(investmentManager)) {
+            _requireNotSunset();
+        }
         totalInflows += msg.value;
     }
 }

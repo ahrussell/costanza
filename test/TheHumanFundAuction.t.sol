@@ -76,8 +76,8 @@ contract TheHumanFundAuctionTest is Test {
         return abi.encodePacked(uint8(0));
     }
 
-    function _commitHash(uint256 bidAmount, bytes32 salt) internal pure returns (bytes32) {
-        return keccak256(abi.encodePacked(bidAmount, salt));
+    function _commitHash(address runner, uint256 bidAmount, bytes32 salt) internal pure returns (bytes32) {
+        return keccak256(abi.encodePacked(runner, bidAmount, salt));
     }
 
     /// @dev Run a full commit-reveal cycle using auto-advancing API:
@@ -87,7 +87,7 @@ contract TheHumanFundAuctionTest is Test {
 
         uint256 bond = fund.currentBond();
         vm.prank(runner);
-        fund.commit{value: bond}(_commitHash(bidAmount, salt));
+        fund.commit{value: bond}(_commitHash(runner, bidAmount, salt));
 
         vm.warp(block.timestamp + COMMIT_WIN); // advance past commit window
 
@@ -155,7 +155,7 @@ contract TheHumanFundAuctionTest is Test {
     function test_syncPhase_closesCommit() public {
         fund.syncPhase();
         vm.prank(runner1);
-        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, bytes32("s1")));
+        fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.005 ether, bytes32("s1")));
 
         vm.warp(block.timestamp + COMMIT_WIN);
         fund.syncPhase(); // should close commit → REVEAL
@@ -166,7 +166,7 @@ contract TheHumanFundAuctionTest is Test {
     function test_syncPhase_closesReveal_capturesSeed() public {
         fund.syncPhase();
         vm.prank(runner1);
-        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, bytes32("s1")));
+        fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.005 ether, bytes32("s1")));
 
         vm.warp(block.timestamp + COMMIT_WIN);
         vm.prank(runner1);
@@ -195,7 +195,7 @@ contract TheHumanFundAuctionTest is Test {
         // Open auction, commit, then warp past everything
         fund.syncPhase();
         vm.prank(runner1);
-        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, bytes32("s1")));
+        fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.005 ether, bytes32("s1")));
 
         // Warp past commit + reveal + execution windows
         vm.warp(block.timestamp + COMMIT_WIN + REVEAL_WIN + EXEC_WIN);
@@ -210,7 +210,7 @@ contract TheHumanFundAuctionTest is Test {
         // Open auction, commit, reveal, then warp past everything
         fund.syncPhase();
         vm.prank(runner1);
-        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, bytes32("s1")));
+        fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.005 ether, bytes32("s1")));
 
         vm.warp(block.timestamp + COMMIT_WIN);
         vm.prank(runner1);
@@ -244,7 +244,7 @@ contract TheHumanFundAuctionTest is Test {
         // Call commit directly — should auto-open auction via _syncPhase
         uint256 bond = 0.01 ether; // BASE_BOND
         vm.prank(runner1);
-        fund.commit{value: bond}(_commitHash(0.005 ether, bytes32("s1")));
+        fund.commit{value: bond}(_commitHash(runner1, 0.005 ether, bytes32("s1")));
 
         assertEq(uint256(am.getPhase(1)), uint256(IAuctionManager.AuctionPhase.COMMIT));
         assertEq(am.getCommitters(1).length, 1);
@@ -253,7 +253,7 @@ contract TheHumanFundAuctionTest is Test {
     function test_reveal_autoClosesCommit() public {
         fund.syncPhase();
         vm.prank(runner1);
-        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, bytes32("s1")));
+        fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.005 ether, bytes32("s1")));
 
         vm.warp(block.timestamp + COMMIT_WIN);
 
@@ -267,7 +267,7 @@ contract TheHumanFundAuctionTest is Test {
     function test_submit_autoClosesReveal() public {
         fund.syncPhase();
         vm.prank(runner1);
-        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, bytes32("s1")));
+        fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.005 ether, bytes32("s1")));
 
         vm.warp(block.timestamp + COMMIT_WIN);
         vm.prank(runner1);
@@ -292,13 +292,13 @@ contract TheHumanFundAuctionTest is Test {
         // _syncPhase closes commit (0 commits → SETTLED), then commit reverts
         vm.prank(runner1);
         vm.expectRevert(); // WrongPhase or similar
-        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, bytes32("s1")));
+        fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.005 ether, bytes32("s1")));
     }
 
     function test_reveal_beforeCommitWindow_reverts() public {
         fund.syncPhase();
         vm.prank(runner1);
-        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, bytes32("s1")));
+        fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.005 ether, bytes32("s1")));
 
         // Still in commit window — _syncPhase won't advance, reveal gets WrongPhase
         vm.prank(runner1);
@@ -309,7 +309,7 @@ contract TheHumanFundAuctionTest is Test {
     function test_reveal_afterRevealWindow_reverts() public {
         fund.syncPhase();
         vm.prank(runner1);
-        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, bytes32("s1")));
+        fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.005 ether, bytes32("s1")));
 
         // Warp past both commit AND reveal windows
         // _syncPhase advances COMMIT→REVEAL→EXECUTION (if commits+reveals) or SETTLED
@@ -328,7 +328,7 @@ contract TheHumanFundAuctionTest is Test {
     function test_single_commit() public {
         fund.syncPhase();
         vm.prank(runner1);
-        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, bytes32("salt1")));
+        fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.005 ether, bytes32("salt1")));
         assertEq(am.getCommitters(1).length, 1);
     }
 
@@ -336,24 +336,24 @@ contract TheHumanFundAuctionTest is Test {
         fund.syncPhase();
         vm.prank(runner1);
         vm.expectRevert(TheHumanFund.InvalidParams.selector);
-        fund.commit{value: 0.0005 ether}(_commitHash(0.005 ether, bytes32("salt1")));
+        fund.commit{value: 0.0005 ether}(_commitHash(runner1, 0.005 ether, bytes32("salt1")));
     }
 
     function test_commit_refunds_excess() public {
         fund.syncPhase();
         uint256 balBefore = runner1.balance;
         vm.prank(runner1);
-        fund.commit{value: 0.05 ether}(_commitHash(0.005 ether, bytes32("salt1")));
+        fund.commit{value: 0.05 ether}(_commitHash(runner1, 0.005 ether, bytes32("salt1")));
         assertEq(runner1.balance, balBefore - 0.01 ether);
     }
 
     function test_duplicate_commit_rejected() public {
         fund.syncPhase();
         vm.prank(runner1);
-        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, bytes32("salt1")));
+        fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.005 ether, bytes32("salt1")));
         vm.prank(runner1);
         vm.expectRevert(TheHumanFund.AlreadyDone.selector);
-        fund.commit{value: 0.01 ether}(_commitHash(0.003 ether, bytes32("salt2")));
+        fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.003 ether, bytes32("salt2")));
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -363,7 +363,7 @@ contract TheHumanFundAuctionTest is Test {
     function test_single_reveal() public {
         fund.syncPhase();
         vm.prank(runner1);
-        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, bytes32("s1")));
+        fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.005 ether, bytes32("s1")));
 
         vm.warp(block.timestamp + COMMIT_WIN);
         vm.prank(runner1);
@@ -376,11 +376,11 @@ contract TheHumanFundAuctionTest is Test {
     function test_lowest_reveal_wins() public {
         fund.syncPhase();
         vm.prank(runner1);
-        fund.commit{value: 0.01 ether}(_commitHash(0.008 ether, bytes32("s1")));
+        fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.008 ether, bytes32("s1")));
         vm.prank(runner2);
-        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, bytes32("s2")));
+        fund.commit{value: 0.01 ether}(_commitHash(runner2, 0.005 ether, bytes32("s2")));
         vm.prank(runner3);
-        fund.commit{value: 0.01 ether}(_commitHash(0.009 ether, bytes32("s3")));
+        fund.commit{value: 0.01 ether}(_commitHash(runner3, 0.009 ether, bytes32("s3")));
 
         vm.warp(block.timestamp + COMMIT_WIN);
         vm.prank(runner1);
@@ -397,7 +397,7 @@ contract TheHumanFundAuctionTest is Test {
     function test_wrong_hash_reveal_reverts() public {
         fund.syncPhase();
         vm.prank(runner1);
-        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, bytes32("salt1")));
+        fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.005 ether, bytes32("salt1")));
 
         vm.warp(block.timestamp + COMMIT_WIN);
         vm.prank(runner1);
@@ -408,7 +408,7 @@ contract TheHumanFundAuctionTest is Test {
     function test_reveal_without_commit_reverts() public {
         fund.syncPhase();
         vm.prank(runner1);
-        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, bytes32("s1")));
+        fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.005 ether, bytes32("s1")));
 
         vm.warp(block.timestamp + COMMIT_WIN);
         vm.prank(runner2);
@@ -419,7 +419,7 @@ contract TheHumanFundAuctionTest is Test {
     function test_duplicate_reveal_reverts() public {
         fund.syncPhase();
         vm.prank(runner1);
-        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, bytes32("s1")));
+        fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.005 ether, bytes32("s1")));
 
         vm.warp(block.timestamp + COMMIT_WIN);
         vm.prank(runner1);
@@ -434,7 +434,7 @@ contract TheHumanFundAuctionTest is Test {
         bytes32 salt = bytes32("salt1");
         uint256 tooHigh = 0.02 ether;
         vm.prank(runner1);
-        fund.commit{value: 0.01 ether}(_commitHash(tooHigh, salt));
+        fund.commit{value: 0.01 ether}(_commitHash(runner1, tooHigh, salt));
 
         vm.warp(block.timestamp + COMMIT_WIN);
         vm.prank(runner1);
@@ -449,9 +449,9 @@ contract TheHumanFundAuctionTest is Test {
     function test_claimBond_nonWinnerRevealer() public {
         fund.syncPhase();
         vm.prank(runner1);
-        fund.commit{value: 0.01 ether}(_commitHash(0.008 ether, bytes32("s1")));
+        fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.008 ether, bytes32("s1")));
         vm.prank(runner2);
-        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, bytes32("s2")));
+        fund.commit{value: 0.01 ether}(_commitHash(runner2, 0.005 ether, bytes32("s2")));
 
         vm.warp(block.timestamp + COMMIT_WIN);
         vm.prank(runner1);
@@ -475,9 +475,9 @@ contract TheHumanFundAuctionTest is Test {
     function test_claimBond_doubleClaim_reverts() public {
         fund.syncPhase();
         vm.prank(runner1);
-        fund.commit{value: 0.01 ether}(_commitHash(0.008 ether, bytes32("s1")));
+        fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.008 ether, bytes32("s1")));
         vm.prank(runner2);
-        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, bytes32("s2")));
+        fund.commit{value: 0.01 ether}(_commitHash(runner2, 0.005 ether, bytes32("s2")));
 
         vm.warp(block.timestamp + COMMIT_WIN);
         vm.prank(runner1);
@@ -499,9 +499,9 @@ contract TheHumanFundAuctionTest is Test {
     function test_claimBond_nonRevealer_reverts() public {
         fund.syncPhase();
         vm.prank(runner1);
-        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, bytes32("s1")));
+        fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.005 ether, bytes32("s1")));
         vm.prank(runner2);
-        fund.commit{value: 0.01 ether}(_commitHash(0.003 ether, bytes32("s2")));
+        fund.commit{value: 0.01 ether}(_commitHash(runner2, 0.003 ether, bytes32("s2")));
 
         vm.warp(block.timestamp + COMMIT_WIN);
         // Only runner2 reveals
@@ -520,9 +520,9 @@ contract TheHumanFundAuctionTest is Test {
     function test_claimBond_winner_reverts() public {
         fund.syncPhase();
         vm.prank(runner1);
-        fund.commit{value: 0.01 ether}(_commitHash(0.008 ether, bytes32("s1")));
+        fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.008 ether, bytes32("s1")));
         vm.prank(runner2);
-        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, bytes32("s2")));
+        fund.commit{value: 0.01 ether}(_commitHash(runner2, 0.005 ether, bytes32("s2")));
 
         vm.warp(block.timestamp + COMMIT_WIN);
         vm.prank(runner1);
@@ -542,9 +542,9 @@ contract TheHumanFundAuctionTest is Test {
     function test_forfeitedBonds_sentToFund() public {
         fund.syncPhase();
         vm.prank(runner1);
-        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, bytes32("s1")));
+        fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.005 ether, bytes32("s1")));
         vm.prank(runner2);
-        fund.commit{value: 0.01 ether}(_commitHash(0.003 ether, bytes32("s2")));
+        fund.commit{value: 0.01 ether}(_commitHash(runner2, 0.003 ether, bytes32("s2")));
 
         vm.warp(block.timestamp + COMMIT_WIN);
         // Only runner2 reveals
@@ -566,11 +566,11 @@ contract TheHumanFundAuctionTest is Test {
         fund.syncPhase();
         // 3 commit, 2 reveal, runner3 wins (lowest bid)
         vm.prank(runner1);
-        fund.commit{value: 0.01 ether}(_commitHash(0.008 ether, bytes32("s1")));
+        fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.008 ether, bytes32("s1")));
         vm.prank(runner2);
-        fund.commit{value: 0.01 ether}(_commitHash(0.006 ether, bytes32("s2")));
+        fund.commit{value: 0.01 ether}(_commitHash(runner2, 0.006 ether, bytes32("s2")));
         vm.prank(runner3);
-        fund.commit{value: 0.01 ether}(_commitHash(0.004 ether, bytes32("s3")));
+        fund.commit{value: 0.01 ether}(_commitHash(runner3, 0.004 ether, bytes32("s3")));
 
         vm.warp(block.timestamp + COMMIT_WIN);
         // runner1 and runner3 reveal, runner2 doesn't
@@ -594,9 +594,9 @@ contract TheHumanFundAuctionTest is Test {
     function test_noReveals_allBondsForfeited() public {
         fund.syncPhase();
         vm.prank(runner1);
-        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, bytes32("s1")));
+        fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.005 ether, bytes32("s1")));
         vm.prank(runner2);
-        fund.commit{value: 0.01 ether}(_commitHash(0.003 ether, bytes32("s2")));
+        fund.commit{value: 0.01 ether}(_commitHash(runner2, 0.003 ether, bytes32("s2")));
 
         vm.warp(block.timestamp + COMMIT_WIN + REVEAL_WIN);
         uint256 fundBalBefore = address(fund).balance;
@@ -656,7 +656,7 @@ contract TheHumanFundAuctionTest is Test {
 
         uint256 bond = fund.currentBond();
         vm.prank(runner1);
-        fund.commit{value: bond}(_commitHash(0.005 ether, bytes32("s1")));
+        fund.commit{value: bond}(_commitHash(runner1, 0.005 ether, bytes32("s1")));
 
         vm.warp(block.timestamp + COMMIT_WIN);
         vm.prank(runner1);
@@ -793,7 +793,7 @@ contract TheHumanFundAuctionTest is Test {
 
         uint256 bond = fund.currentBond();
         vm.prank(runner1);
-        fund.commit{value: bond}(_commitHash(0.005 ether, bytes32("s2")));
+        fund.commit{value: bond}(_commitHash(runner1, 0.005 ether, bytes32("s2")));
 
         vm.warp(block.timestamp + COMMIT_WIN);
         vm.prank(runner1);
@@ -845,7 +845,7 @@ contract TheHumanFundAuctionTest is Test {
 
         // Advance past commit + reveal to avoid phase violations on re-read.
         vm.prank(runner1);
-        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, bytes32("s1")));
+        fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.005 ether, bytes32("s1")));
         vm.warp(block.timestamp + COMMIT_WIN);
         vm.prank(runner1);
         fund.reveal(0.005 ether, bytes32("s1"));
@@ -939,13 +939,13 @@ contract TheHumanFundAuctionTest is Test {
         // Commit should still work (10s remaining)
         uint256 bond = fund.currentBond();
         vm.prank(runner1);
-        fund.commit{value: bond}(_commitHash(0.005 ether, bytes32("s1")));
+        fund.commit{value: bond}(_commitHash(runner1, 0.005 ether, bytes32("s1")));
 
         // At the exact deadline, _syncPhase closes commit, then commit gets WrongPhase
         vm.warp(epoch2Start + COMMIT_WIN);
         vm.prank(runner2);
         vm.expectRevert(); // WrongPhase (commit phase has been auto-closed)
-        fund.commit{value: bond}(_commitHash(0.003 ether, bytes32("s2")));
+        fund.commit{value: bond}(_commitHash(runner2, 0.003 ether, bytes32("s2")));
     }
 
     function test_epochStartTime_view() public view {
@@ -980,9 +980,12 @@ contract TheHumanFundAuctionTest is Test {
         assertEq(fund.currentEpoch(), 2);
     }
 
-    function test_sunset_blocksSyncPhase() public {
+    /// @dev syncPhase() is intentionally NOT sunset-gated so that in-flight
+    ///      auctions can still be drained to SETTLED during sunset (required
+    ///      before `migrate()` can run). See test_sunset_midAuction_canDrainAndMigrate.
+    function test_sunset_allowsSyncPhase() public {
         fund.freeze(fund.FREEZE_SUNSET());
-        vm.expectRevert(TheHumanFund.Frozen.selector);
+        // Must not revert.
         fund.syncPhase();
     }
 
@@ -992,7 +995,7 @@ contract TheHumanFundAuctionTest is Test {
 
         vm.prank(runner1);
         vm.expectRevert(TheHumanFund.Frozen.selector);
-        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, bytes32("s1")));
+        fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.005 ether, bytes32("s1")));
     }
 
     function test_migrate_requiresNoActiveAuction() public {
@@ -1001,6 +1004,44 @@ contract TheHumanFundAuctionTest is Test {
 
         vm.expectRevert(TheHumanFund.WrongPhase.selector);
         fund.migrate(address(0xBEEF));
+    }
+
+    /// @dev Regression: setting FREEZE_SUNSET while an auction is in-flight
+    ///      must not deadlock the fund. `receive()` has to accept inflows
+    ///      from the AuctionManager (forfeit pushes) even during sunset so
+    ///      that `syncPhase()` can drain the auction to SETTLED, and
+    ///      `syncPhase()` itself must not be sunset-gated, otherwise there
+    ///      is no way to run the drain before calling `migrate`.
+    function test_sunset_midAuction_canDrainAndMigrate() public {
+        // Open an auction, commit + reveal, then warp to EXECUTION phase
+        fund.syncPhase();
+        uint256 bond = fund.currentBond();
+        vm.prank(runner1);
+        fund.commit{value: bond}(_commitHash(runner1, 0.005 ether, bytes32("s1")));
+        vm.warp(block.timestamp + COMMIT_WIN);
+        vm.prank(runner1);
+        fund.reveal(0.005 ether, bytes32("s1"));
+        vm.warp(block.timestamp + REVEAL_WIN);
+        fund.syncPhase(); // closes reveal, captures seed → EXECUTION phase
+        assertEq(uint256(am.getPhase(1)), uint256(IAuctionManager.AuctionPhase.EXECUTION));
+
+        // Owner freezes sunset while an auction is still in-flight.
+        fund.freeze(fund.FREEZE_SUNSET());
+
+        // Warp past the execution deadline. Runner never submitted.
+        vm.warp(block.timestamp + EXEC_WIN);
+
+        // syncPhase() must not revert during sunset — it drives the AM to
+        // SETTLED via forfeit, which pushes the winner's bond to the fund's
+        // receive(). If receive() rejected AM-sourced inflows, this would
+        // revert and the fund would deadlock.
+        fund.syncPhase();
+        assertEq(uint256(am.getPhase(1)), uint256(IAuctionManager.AuctionPhase.SETTLED));
+
+        // Migrate now succeeds — AM is SETTLED.
+        uint256 balBefore = address(0xBEEF).balance;
+        fund.migrate(address(0xBEEF));
+        assertGt(address(0xBEEF).balance, balBefore);
     }
 
     function test_epochContentHashes_accumulate() public {
@@ -1032,7 +1073,7 @@ contract TheHumanFundAuctionTest is Test {
     function test_staleCommit_withCommits_cleaned() public {
         fund.syncPhase();
         vm.prank(runner1);
-        fund.commit{value: 0.01 ether}(_commitHash(0.005 ether, bytes32("s1")));
+        fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.005 ether, bytes32("s1")));
 
         vm.warp(block.timestamp + EPOCH_DUR);
         fund.syncPhase(); // chains: COMMIT→REVEAL (1 commit), REVEAL→SETTLED (0 reveals)
@@ -1061,9 +1102,9 @@ contract TheHumanFundAuctionTest is Test {
 
         // Both commit with the same bid amount
         vm.prank(runner1);
-        fund.commit{value: bond}(_commitHash(bidAmount, bytes32("salt1")));
+        fund.commit{value: bond}(_commitHash(runner1, bidAmount, bytes32("salt1")));
         vm.prank(runner2);
-        fund.commit{value: bond}(_commitHash(bidAmount, bytes32("salt2")));
+        fund.commit{value: bond}(_commitHash(runner2, bidAmount, bytes32("salt2")));
 
         vm.warp(block.timestamp + COMMIT_WIN);
 
@@ -1090,9 +1131,9 @@ contract TheHumanFundAuctionTest is Test {
 
         // runner1 bids high, runner2 bids low (wins)
         vm.prank(runner1);
-        fund.commit{value: bond}(_commitHash(0.008 ether, bytes32("s1")));
+        fund.commit{value: bond}(_commitHash(runner1, 0.008 ether, bytes32("s1")));
         vm.prank(runner2);
-        fund.commit{value: bond}(_commitHash(0.003 ether, bytes32("s2")));
+        fund.commit{value: bond}(_commitHash(runner2, 0.003 ether, bytes32("s2")));
 
         vm.warp(block.timestamp + COMMIT_WIN);
 
@@ -1150,7 +1191,7 @@ contract TheHumanFundAuctionTest is Test {
         bytes32 salt = bytes32("fuzz_salt");
 
         vm.prank(runner1);
-        fund.commit{value: bond}(_commitHash(bidAmount, salt));
+        fund.commit{value: bond}(_commitHash(runner1, bidAmount, salt));
 
         vm.warp(block.timestamp + COMMIT_WIN);
 
@@ -1168,7 +1209,7 @@ contract TheHumanFundAuctionTest is Test {
         bytes32 salt = bytes32("fuzz_valid");
 
         vm.prank(runner1);
-        fund.commit{value: bond}(_commitHash(bidAmount, salt));
+        fund.commit{value: bond}(_commitHash(runner1, bidAmount, salt));
 
         vm.warp(block.timestamp + COMMIT_WIN);
 
@@ -1196,15 +1237,60 @@ contract TheHumanFundAuctionTest is Test {
     function testFuzz_commitHash_preimage(uint256 bidAmount, bytes32 salt) public {
         // Verify commit hash is deterministic and matches reveal
         bidAmount = bound(bidAmount, 1, 10 ether);
-        bytes32 hash = _commitHash(bidAmount, salt);
+        bytes32 hash = _commitHash(runner1, bidAmount, salt);
 
         // Same inputs produce same hash
-        assertEq(hash, keccak256(abi.encodePacked(bidAmount, salt)));
+        assertEq(hash, keccak256(abi.encodePacked(runner1, bidAmount, salt)));
 
         // Different bid produces different hash
         if (bidAmount > 1) {
-            assertNotEq(hash, _commitHash(bidAmount - 1, salt));
+            assertNotEq(hash, _commitHash(runner1, bidAmount - 1, salt));
         }
+
+        // Different runner produces different hash — runner binding prevents
+        // reveal front-running where attacker reuses a legit (bid, salt) pair.
+        assertNotEq(hash, _commitHash(runner2, bidAmount, salt));
+    }
+
+    /// @dev Reveal front-running attempt: attacker copies a legit runner's
+    ///      commit hash, then tries to reveal it with the same (bid, salt).
+    ///      Post-fix, the reveal must fail because the commit hash binds the
+    ///      runner address — attacker's stored hash was keccak(attacker, bid, salt),
+    ///      but the salt+bid only hashes to keccak(legit_runner, bid, salt).
+    function test_reveal_frontRunning_blocked() public {
+        uint256 bidAmount = 0.005 ether;
+        bytes32 salt = bytes32("legit_salt");
+
+        // Legit runner computes their commit hash and commits.
+        bytes32 legitHash = _commitHash(runner1, bidAmount, salt);
+        fund.syncPhase();
+        uint256 bond = fund.currentBond();
+        vm.prank(runner1);
+        fund.commit{value: bond}(legitHash);
+
+        // Attacker observes the commit tx in the mempool and copies the hash
+        // under their own address.
+        vm.prank(runner2);
+        fund.commit{value: bond}(legitHash);
+
+        // Warp into reveal window.
+        vm.warp(block.timestamp + COMMIT_WIN);
+
+        // Attacker observes legit reveal tx and front-runs it with the same
+        // (bid, salt) pair under their own address — this must revert because
+        // their stored hash doesn't preimage to keccak(runner2, bid, salt).
+        vm.prank(runner2);
+        vm.expectRevert(); // InvalidParams from AuctionManager.recordReveal
+        fund.reveal(bidAmount, salt);
+
+        // Legit runner can still reveal normally.
+        vm.prank(runner1);
+        fund.reveal(bidAmount, salt);
+
+        // Advance past reveal close; runner1 is the winner.
+        vm.warp(block.timestamp + REVEAL_WIN);
+        fund.syncPhase();
+        assertEq(am.getWinner(1), runner1);
     }
 
     // ═══════════════════════════════════════════════════════════════════════

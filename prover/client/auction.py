@@ -130,7 +130,11 @@ def commit_bid(chain: ChainClient, bid_wei: int, state_dir=None):
     salt = "0x" + secrets.token_hex(32)
     salt_bytes = bytes.fromhex(salt[2:])
 
-    commit_hash = Web3.keccak(bid_wei.to_bytes(32, "big") + salt_bytes)
+    # Commit hash preimage is (runner, bidAmount, salt) — runner binding
+    # prevents reveal front-running attacks where an attacker copies the
+    # commit hash under their own address and front-runs the legit reveal.
+    runner_bytes = bytes.fromhex(chain.account.address[2:])
+    commit_hash = Web3.keccak(runner_bytes + bid_wei.to_bytes(32, "big") + salt_bytes)
 
     bond = chain.get_current_bond()
     epoch = chain.contract.functions.currentEpoch().call()
