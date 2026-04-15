@@ -54,15 +54,20 @@ interface IAuctionManager {
     /// @notice Update auction timing parameters.
     function setTiming(uint256 _commitWindow, uint256 _revealWindow, uint256 _executionWindow) external;
 
+    /// @notice Abort the in-flight auction and refund all held bonds.
+    ///         Operator intervention path: NOT a forfeit event — committers
+    ///         get their bonds back regardless of phase. Non-revealer bonds
+    ///         already forfeited at reveal close are not unwound; non-winning
+    ///         revealer credits in `pendingBondRefunds` are left intact.
+    ///         See `AuctionManager.abortAuction` for the full refund matrix.
+    function abortAuction() external;
+
     // ─── Bond Claims (anyone) ───────────────────────────────────────────
 
     /// @notice Claim bond refund for a specific epoch.
-    ///         Eligible: non-winning revealers. Winners use settleExecution.
+    ///         Eligible: non-winning revealers. Winners are paid directly
+    ///         by `settleExecution` and don't need to claim.
     function claimBond(uint256 epoch) external;
-
-    /// @notice Claim the legacy accumulated bond balance (for backward compatibility
-    ///         with any bonds credited before the lazy-claim migration).
-    function claimLegacyBonds() external;
 
     // ─── Views ──────────────────────────────────────────────────────────
 

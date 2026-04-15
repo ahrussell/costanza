@@ -266,7 +266,7 @@ contract AuctionInvariantsTest is EpochTest {
     // [POST_REFACTOR] I7:
     //   - Set FREEZE_AUCTION.
     //   - Assert: fund.nextPhase() reverts with Frozen
-    //   - Assert: fund.resetAuction() reverts with Frozen
+    //   - Assert: fund.resetAuction(EPOCH_DUR, COMMIT_WIN, REVEAL_WIN, EXEC_WIN) reverts with Frozen
     //   - Assert: runner can still call commit() (no revert)
     //   - Assert: runner can still call reveal() (no revert)
     //   - Assert: fund.syncPhase() still advances phases
@@ -335,18 +335,235 @@ contract AuctionInvariantsTest is EpochTest {
     // ══════════════════════════════════════════════════════════════════
     // Derived: Operator non-confiscation
     //
-    // No sequence of owner `nextPhase` + `resetAuction` calls can move a
-    // bond from a non-forfeit state into `forfeited-to-treasury`. Manual
-    // intervention must always refund.
+    // No sequence of owner `resetAuction` calls can move a bond from a
+    // non-forfeit state into `forfeited-to-treasury`. Manual intervention
+    // must always refund.
     // ══════════════════════════════════════════════════════════════════
 
-    // [POST_REFACTOR] Operator non-confiscation:
-    //   - Commit as runner1 (bond held in AM).
-    //   - Warp into REVEAL window (don't reveal).
-    //   - Owner calls resetAuction() — bond must return to runner1, NOT
-    //     to treasury.
-    //   - Assert: runner1.balance increased by bond.
-    //   - Assert: treasury.balance unchanged (mod seed).
+    /// In COMMIT phase, resetAuction refunds the committer's bond
+    /// directly (push-to-address), not to treasury. This is the
+    /// primary non-confiscation property.
+    function test_resetAuction_commitPhase_refundsCommitter() public {
+        fund.syncPhase();
+        uint256 bond = fund.currentBond();
+        uint256 treasuryBefore = address(fund).balance;
+        uint256 runnerBefore = runner1.balance;
+
+        vm.prank(runner1);
+        fund.commit{value: bond}(_commitHash(runner1, 0.005 ether, bytes32("r1")));
+        // Fund balance temporarily excludes the bond (it sits in AM).
+        assertEq(address(fund).balance, treasuryBefore, "treasury unchanged by commit");
+
+        fund.resetAuction(EPOCH_DUR, COMMIT_WIN, REVEAL_WIN, EXEC_WIN);
+
+        // Runner got their bond back via direct push.
+        assertEq(runner1.balance, runnerBefore, "committer bond refunded");
+        // Treasury unchanged — no confiscation.
+        assertEq(address(fund).balance, treasuryBefore, "treasury unchanged by reset");
+    }
+
+    /// In REVEAL phase, resetAuction refunds ALL committers (both those
+    /// who revealed and those who didn't) — the reveal process hasn't
+    /// settled bonds yet, and operator intervention must not punish
+    /// late revealers.
+    function test_resetAuction_revealPhase_refundsAllCommitters() public {
+        fund.syncPhase();
+        uint256 bond = fund.currentBond();
+        uint256 r1Before = runner1.balance;
+        uint256 r2Before = runner2.balance;
+        uint256 treasuryBefore = address(fund).balance;
+
+        vm.prank(runner1);
+        fund.commit{value: bond}(_commitHash(runner1, 0.008 ether, bytes32("r1")));
+        vm.prank(runner2);
+        fund.commit{value: bond}(_commitHash(runner2, 0.005 ether, bytes32("r2")));
+
+        // Advance into REVEAL. runner1 reveals, runner2 doesn't.
+        vm.warp(block.timestamp + COMMIT_WIN);
+        vm.prank(runner1);
+        fund.reveal(0.008 ether, bytes32("r1"));
+
+        // We're in REVEAL with one revealer, one non-revealer. Owner aborts.
+        fund.resetAuction(EPOCH_DUR, COMMIT_WIN, REVEAL_WIN, EXEC_WIN);
+
+        // Both runners get their bonds back — even runner2 who didn't reveal.
+        // Under normal flow, runner2 would have forfeited at reveal close;
+        // under operator reset, they're refunded.
+        assertEq(runner1.balance, r1Before, "reveal-phase revealer refunded");
+        assertEq(runner2.balance, r2Before, "reveal-phase non-revealer refunded");
+        assertEq(address(fund).balance, treasuryBefore, "treasury unchanged");
+    }
+
+    /// In EXECUTION phase, the winner's bond is refunded. Non-winning
+    /// revealers already have their `pendingBondRefunds` credit intact
+    /// and can still claim via `claimBond(epoch)`. Non-revealer bonds
+    /// that were forfeited at reveal close remain in treasury — those
+    /// are closed transactions that operator intervention does not
+    /// retroactively unwind.
+    function test_resetAuction_executionPhase_refundsWinnerOnly() public {
+        fund.syncPhase();
+        uint256 bond = fund.currentBond();
+        uint256 r1Before = runner1.balance;
+        uint256 r2Before = runner2.balance;
+
+        vm.prank(runner1);
+        fund.commit{value: bond}(_commitHash(runner1, 0.008 ether, bytes32("r1")));
+        vm.prank(runner2);
+        fund.commit{value: bond}(_commitHash(runner2, 0.005 ether, bytes32("r2")));
+
+        vm.warp(block.timestamp + COMMIT_WIN);
+        vm.prank(runner1);
+        fund.reveal(0.008 ether, bytes32("r1"));
+        vm.prank(runner2);
+        fund.reveal(0.005 ether, bytes32("r2"));
+
+        // Warp to reveal close → AM enters EXECUTION with runner2 as winner.
+        vm.warp(block.timestamp + REVEAL_WIN);
+        fund.syncPhase();
+
+        uint256 treasuryBeforeReset = address(fund).balance;
+        fund.resetAuction(EPOCH_DUR, COMMIT_WIN, REVEAL_WIN, EXEC_WIN);
+
+        // runner2 (winner) refunded directly.
+        assertEq(runner2.balance, r2Before, "execution-phase winner refunded");
+        // runner1 (non-winning revealer) still has a claimable credit.
+        assertEq(runner1.balance, r1Before - bond, "non-winner balance deducted by commit");
+        // Treasury unchanged by the reset itself.
+        assertEq(address(fund).balance, treasuryBeforeReset, "treasury unchanged by reset");
+        // runner1 can still claim their bond.
+        vm.prank(runner1);
+        am.claimBond(1);
+        assertEq(runner1.balance, r1Before, "non-winner can still claim post-reset");
+    }
+
+    /// resetAuction from IDLE (no active auction) is a clean no-op on
+    /// the bond state — nothing to refund, but the epoch advances and
+    /// the timing is re-anchored.
+    function test_resetAuction_idle_noop_advancesEpoch() public {
+        uint256 startEpoch = fund.currentEpoch();
+        uint256 treasuryBefore = address(fund).balance;
+
+        fund.resetAuction(EPOCH_DUR, COMMIT_WIN, REVEAL_WIN, EXEC_WIN);
+
+        assertEq(fund.currentEpoch(), startEpoch + 1, "epoch advanced by 1");
+        assertEq(address(fund).balance, treasuryBefore, "treasury unchanged");
+        // Re-anchored: the new epoch starts now.
+        assertEq(fund.epochStartTime(fund.currentEpoch()), block.timestamp, "re-anchored");
+    }
+
+    /// resetAuction does NOT increment `consecutiveMissedEpochs` —
+    /// operator intervention is not a missed epoch.
+    function test_resetAuction_doesNotBumpMissedCounter() public {
+        fund.syncPhase();
+        uint256 bond = fund.currentBond();
+        vm.prank(runner1);
+        fund.commit{value: bond}(_commitHash(runner1, 0.005 ether, bytes32("r1")));
+
+        uint256 missedBefore = fund.consecutiveMissedEpochs();
+        fund.resetAuction(EPOCH_DUR, COMMIT_WIN, REVEAL_WIN, EXEC_WIN);
+        assertEq(fund.consecutiveMissedEpochs(), missedBefore, "reset does not count as a miss");
+    }
+
+    /// After resetAuction, syncPhase opens a fresh auction for the new
+    /// epoch (landing in COMMIT). Verifies the re-anchor leaves the
+    /// contract in a usable state.
+    function test_resetAuction_followedBySyncPhase_opensNewAuction() public {
+        fund.syncPhase();
+        uint256 bond = fund.currentBond();
+        vm.prank(runner1);
+        fund.commit{value: bond}(_commitHash(runner1, 0.005 ether, bytes32("r1")));
+
+        fund.resetAuction(EPOCH_DUR, COMMIT_WIN, REVEAL_WIN, EXEC_WIN);
+        uint256 newEpoch = fund.currentEpoch();
+
+        // syncPhase should open the new epoch's auction.
+        fund.syncPhase();
+        assertEq(
+            uint8(am.getPhase(newEpoch)),
+            uint8(IAuctionManager.AuctionPhase.COMMIT),
+            "new epoch in COMMIT"
+        );
+    }
+
+    /// FREEZE_AUCTION_CONFIG blocks resetAuction. This is the manual-only
+    /// freeze scope from invariant I7: the flag gates owner-side auction
+    /// manipulation, not participant-driven phase changes.
+    function test_resetAuction_blockedByFreezeAuctionConfig() public {
+        fund.freeze(fund.FREEZE_AUCTION_CONFIG());
+        vm.expectRevert(TheHumanFund.Frozen.selector);
+        fund.resetAuction(EPOCH_DUR, COMMIT_WIN, REVEAL_WIN, EXEC_WIN);
+    }
+
+    /// resetAuction is owner-only.
+    function test_resetAuction_onlyOwner() public {
+        vm.prank(address(0xDEAD));
+        vm.expectRevert(TheHumanFund.Unauthorized.selector);
+        fund.resetAuction(EPOCH_DUR, COMMIT_WIN, REVEAL_WIN, EXEC_WIN);
+    }
+
+    /// Emits AuctionReset(from, to) with the correct epoch pair.
+    function test_resetAuction_emitsEvent() public {
+        uint256 from = fund.currentEpoch();
+        vm.expectEmit(true, true, false, false);
+        emit TheHumanFund.AuctionReset(from, from + 1);
+        fund.resetAuction(EPOCH_DUR, COMMIT_WIN, REVEAL_WIN, EXEC_WIN);
+    }
+
+    /// The whole reason `resetAuction` takes timing parameters: apply
+    /// new auction timing atomically with the abort. After the reset,
+    /// subsequent phase windows must reflect the new durations, and
+    /// the in-flight epoch's input hash cannot diverge from what the
+    /// prover would compute (the drift bug from mainnet v1 —
+    /// commit bd883a9).
+    function test_resetAuction_changesAuctionTiming() public {
+        fund.syncPhase();
+        uint256 bond = fund.currentBond();
+        vm.prank(runner1);
+        fund.commit{value: bond}(_commitHash(runner1, 0.005 ether, bytes32("r1")));
+
+        // Change timing: bigger epoch, different phase splits.
+        uint256 newEpochDur  = 1000;
+        uint256 newCommitWin = 200;
+        uint256 newRevealWin = 100;
+        uint256 newExecWin   = 500;
+        fund.resetAuction(newEpochDur, newCommitWin, newRevealWin, newExecWin);
+
+        // New timing is live on the AM.
+        assertEq(am.commitWindow(), newCommitWin, "new commit window applied");
+        assertEq(am.revealWindow(), newRevealWin, "new reveal window applied");
+        assertEq(am.executionWindow(), newExecWin, "new exec window applied");
+
+        // Next syncPhase should open a fresh auction using the new windows.
+        fund.syncPhase();
+        uint256 newEpoch = fund.currentEpoch();
+        assertEq(
+            uint8(am.getPhase(newEpoch)),
+            uint8(IAuctionManager.AuctionPhase.COMMIT),
+            "new auction opened in COMMIT"
+        );
+
+        // The new epoch's commit window ends at start + newCommitWin.
+        // Warp almost to the end — should still be in COMMIT.
+        vm.warp(block.timestamp + newCommitWin - 1);
+        vm.prank(runner1);
+        fund.commit{value: fund.currentBond()}(_commitHash(runner1, 0.004 ether, bytes32("r2")));
+
+        // Warp past the new commit window — should transition on next sync.
+        vm.warp(block.timestamp + 2);
+        fund.syncPhase();
+        assertEq(
+            uint8(am.getPhase(newEpoch)),
+            uint8(IAuctionManager.AuctionPhase.REVEAL),
+            "new commit window boundary respected"
+        );
+    }
+
+    /// resetAuction rejects invalid timing (windows exceeding duration).
+    function test_resetAuction_rejectsInvalidTiming() public {
+        vm.expectRevert(TheHumanFund.InvalidParams.selector);
+        // commit + reveal + exec = 500, but epochDuration = 100.
+        fund.resetAuction(100, 200, 200, 100);
+    }
 
     // ══════════════════════════════════════════════════════════════════
     // Multi-epoch fast-forward — O(1) preservation

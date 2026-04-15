@@ -301,6 +301,7 @@ contract TheHumanFund is ReentrancyGuard {
     event PermissionFrozen(uint256 indexed flag);
     event Sunset(address indexed destination);
     event OwnershipTransferred(address indexed newOwner);
+    event AuctionReset(uint256 indexed fromEpoch, uint256 indexed toEpoch);
 
     // ─── Modifiers ───────────────────────────────────────────────────────
 
@@ -701,6 +702,74 @@ contract TheHumanFund is ReentrancyGuard {
     ///      deadlock sunset-then-migrate when an auction was in-flight.
     function syncPhase() external {
         _syncPhase();
+    }
+
+    /// @notice Owner-only reset: abort any in-flight auction, apply new
+    ///         auction timing parameters, advance one epoch, and re-anchor
+    ///         timing to now. This is the ONLY safe way to change auction
+    ///         timing while the contract is live.
+    /// @dev Why `setAuctionTiming` alone is unsafe: changing `epochDuration`
+    ///      mid-epoch bricked mainnet v1 (commit bd883a9) because
+    ///      `epochBaseInputHashes[epoch]` was bound to the old duration at
+    ///      auction open, so the prover's TEE input hash diverged after
+    ///      the timing change and `submitAuctionResult` reverted with
+    ///      `ProofFailed`. `resetAuction` avoids this by aborting the
+    ///      in-flight auction, refunding all held bonds (operator
+    ///      intervention is NOT a forfeit), applying the new timing
+    ///      atomically, and advancing to a fresh epoch whose snapshot
+    ///      will be opened at the new timing values.
+    /// @dev `consecutiveMissedEpochs` is NOT incremented — the reset
+    ///      wasn't anyone's fault, and we don't want auto-escalation to
+    ///      spike as a side effect of recovery.
+    /// @dev Gated by `FREEZE_AUCTION_CONFIG`, matching the same "owner
+    ///      can't reshape the auction state machine" semantics as
+    ///      `setAuctionTiming` and `setAuctionManager`.
+    /// @param _epochDuration  New epoch duration (use current value for a
+    ///                        pure reset with no timing change).
+    /// @param _commitWindow   New commit window duration.
+    /// @param _revealWindow   New reveal window duration.
+    /// @param _executionWindow New execution window duration.
+    function resetAuction(
+        uint256 _epochDuration,
+        uint256 _commitWindow,
+        uint256 _revealWindow,
+        uint256 _executionWindow
+    ) external onlyOwner {
+        if (frozenFlags & FREEZE_AUCTION_CONFIG != 0) revert Frozen();
+        if (_commitWindow + _revealWindow + _executionWindow > _epochDuration) revert InvalidParams();
+        IAuctionManager am = auctionManager;
+        if (address(am) == address(0)) revert InvalidParams();
+
+        uint256 fromEpoch = currentEpoch;
+
+        // Abort the in-flight auction and refund all held bonds. Safe to
+        // call even if there's no active auction (AM treats IDLE/SETTLED
+        // as a no-op).
+        am.abortAuction();
+
+        // Apply the new timing atomically. This is the whole point of
+        // `resetAuction` existing — change timing without leaving any
+        // in-flight auction bound to the old windows.
+        epochDuration = _epochDuration;
+        am.setTiming(_commitWindow, _revealWindow, _executionWindow);
+
+        // Advance one epoch. The aborted epoch is closed; the next one
+        // will be opened by the first syncPhase() call after this.
+        currentEpoch = fromEpoch + 1;
+        currentEpochInflow = 0;
+        currentEpochDonationCount = 0;
+        currentEpochCommissions = 0;
+
+        // Re-anchor timing so the new epoch's scheduled start is now.
+        // This satisfies invariant I4 (schedule coherence) under the
+        // manual driver: after resetAuction, _epochStartTime(currentEpoch)
+        // == block.timestamp, so syncPhase() can open a fresh auction
+        // immediately at the new timing.
+        timingAnchor = block.timestamp;
+        anchorEpoch = currentEpoch;
+        lastEpochStartTime = block.timestamp;
+
+        emit AuctionReset(fromEpoch, currentEpoch);
     }
 
     /// @dev Core phase synchronization. Called before every prover action.

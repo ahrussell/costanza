@@ -284,12 +284,17 @@ property has been regressed.
 - [x] Invariants doc (`docs/AUCTION_INVARIANTS.md`)
 - [x] `speedrunEpoch` abstraction + migration of 5 test files
 - [x] Invariant tests (`test/AuctionInvariants.t.sol`)
-- [ ] Commit 1: reuse `FREEZE_AUCTION_CONFIG` (folded into 3+4)
+- [x] Fast-forward regression tests (7 tests — commit 2.5 prep)
+- [x] **Commit 4**: `resetAuction()` — landed first (no dependencies on
+      commits 2/3). Includes `AuctionManager.abortAuction()`, 9 new
+      tests covering all phase cases + non-confiscation property.
+      Also removed `claimLegacyBonds` / `claimableBonds` mapping —
+      winners now get bond via direct push in `settleExecution`.
+- [ ] Commit 1: reuse `FREEZE_AUCTION_CONFIG` (folded into 3)
 - [ ] Commit 2: `_nextPhase` / `_stepPhase` extraction
-- [ ] Commit 2.5: fast-forward preservation + tests
+- [ ] Commit 2.5: fast-forward preservation in `_nextPhase`
 - [ ] Commit 3: owner `nextPhase()`
-- [ ] Commit 4: `resetAuction()`
-- [ ] Commit 5: composed `migrate()`
+- [ ] Commit 5: composed `migrate()` (`resetAuction` now available)
 - [ ] Commit 6: `_openNextAuction` genesis bootstrap
 - [ ] Commit 7: remove direct mode (test churn)
 - [ ] Commit 8: prover client update

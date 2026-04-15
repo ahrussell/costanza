@@ -29,9 +29,6 @@ contract AuctionManager is IAuctionManager, ReentrancyGuard {
 
     address public immutable fund;
 
-    /// @notice Legacy claimable bond balances (from before lazy-claim migration).
-    mapping(address => uint256) public claimableBonds;
-
     /// @notice Aggregate pending bond refunds owed to non-winning revealers.
     ///         Incremented O(1) at reveal close; decremented per claimBond(epoch) call.
     uint256 public override pendingBondRefunds;
@@ -196,13 +193,16 @@ contract AuctionManager is IAuctionManager, ReentrancyGuard {
         if (caller != currentWinner) revert Unauthorized();
         if (block.timestamp >= _executionDeadline()) revert TimingError();
 
-        address winner = currentWinner;
         uint256 bondRefund = currentBondAmount;
         currentPhase = AuctionPhase.SETTLED;
         _storeHistory(false);
 
-        // Credit bond to the winner (pull-based via legacy claimable)
-        claimableBonds[winner] += bondRefund;
+        // Push bond directly to winner. If the push fails, the whole
+        // submitAuctionResult tx reverts — the winner's own contract is
+        // at fault (e.g. non-payable fallback), and they can retry after
+        // fixing it.
+        (bool sent, ) = payable(caller).call{value: bondRefund}("");
+        if (!sent) revert TransferFailed();
     }
 
     // ─── Configuration ──────────────────────────────────────────────────
@@ -233,13 +233,69 @@ contract AuctionManager is IAuctionManager, ReentrancyGuard {
         if (!sent) revert TransferFailed();
     }
 
-    /// @inheritdoc IAuctionManager
-    function claimLegacyBonds() external override nonReentrant {
-        uint256 amount = claimableBonds[msg.sender];
-        if (amount == 0) revert InvalidParams();
-        claimableBonds[msg.sender] = 0;
-        (bool sent, ) = payable(msg.sender).call{value: amount}("");
-        if (!sent) revert TransferFailed();
+    // ─── Owner-Driven Reset ─────────────────────────────────────────────
+
+    /// @notice Abort the in-flight auction and refund all held bonds.
+    ///         Callable only by the fund (via its owner `resetAuction`
+    ///         entry point). This is operator intervention, NOT a forfeit
+    ///         event — committers get their bonds back regardless of
+    ///         phase.
+    ///
+    /// Per-phase refund matrix:
+    ///  - IDLE / SETTLED: no active auction, no-op.
+    ///  - COMMIT:  all committers' bonds are held here → refund all.
+    ///  - REVEAL:  all committers' bonds are held here → refund all
+    ///             (reveals haven't settled yet; both revealers and
+    ///             non-revealers get their bond back).
+    ///  - EXECUTION: non-revealer bonds were already forfeited to the
+    ///             fund at reveal close and are NOT unwound here. Non-
+    ///             winning revealers already have a `pendingBondRefunds`
+    ///             credit and will claim via `claimBond` as normal. The
+    ///             only bond still held by the AM is the winner's — that
+    ///             is what we refund.
+    ///
+    /// @dev Refunds are direct push. If any committer's push fails (e.g.
+    ///      a malicious fallback), the entire reset reverts. The operator
+    ///      must investigate and either remove the griefer (by a direct
+    ///      admin action outside this contract) or accept that recovery
+    ///      requires off-chain coordination. In practice the committer
+    ///      set is small and operator-controlled, so this is acceptable.
+    function abortAuction() external onlyFund nonReentrant {
+        AuctionPhase phase = currentPhase;
+        uint256 bond = currentBondAmount;
+
+        if (phase == AuctionPhase.COMMIT || phase == AuctionPhase.REVEAL) {
+            // Refund every committer. In REVEAL phase we don't distinguish
+            // revealers from non-revealers — this is an abort, everyone
+            // gets their bond back.
+            address[] memory list = committers;
+            for (uint256 i = 0; i < list.length; i++) {
+                if (bond > 0) {
+                    (bool sent, ) = payable(list[i]).call{value: bond}("");
+                    if (!sent) revert TransferFailed();
+                }
+            }
+        } else if (phase == AuctionPhase.EXECUTION) {
+            address winner = currentWinner;
+            if (winner != address(0) && bond > 0) {
+                (bool sent, ) = payable(winner).call{value: bond}("");
+                if (!sent) revert TransferFailed();
+            }
+        }
+        // IDLE/SETTLED: nothing to refund.
+
+        // Record history so the epoch is visibly "closed" in auctionHistory,
+        // then clear working state. Mark as not-forfeited — this is an
+        // operator abort, not a winner failure.
+        if (phase != AuctionPhase.IDLE && phase != AuctionPhase.SETTLED) {
+            _storeHistory(false);
+        }
+        _clearCurrentAuction();
+        // After a reset, there is no active auction. Zero out the tag so
+        // getX(epoch) lookups route through auctionHistory instead of the
+        // just-cleared live fields. The next openAuction() will set this
+        // to the new epoch.
+        currentAuctionEpoch = 0;
     }
 
     // ─── Internal: Phase Transitions ────────────────────────────────────
