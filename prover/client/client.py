@@ -453,11 +453,9 @@ def _run_tee_inference(chain, config, auction, saved, state_dir):
         saved.pop("tee_result_path", None)
 
     logger.info("Starting TEE inference...")
+    # After the pure-`_hashSnapshot` refactor, read_contract_state already
+    # pulls scalars from the frozen EpochSnapshot — no overlay needed.
     epoch_state = chain.read_contract_state()
-    # Overlay frozen EpochSnapshot values for fields that drift post-auction-open
-    # (balance, inflows, message queue, investment current values, effective_max_bid).
-    # The enclave hashes the flat state directly; the contract verifies by hash equality.
-    chain.apply_snapshot_overrides(epoch_state)
 
     prompt_path = Path(config["system_prompt_path"])
     system_prompt = prompt_path.read_text().strip()

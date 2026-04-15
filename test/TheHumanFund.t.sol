@@ -365,15 +365,23 @@ contract TheHumanFundTest is Test {
     }
 
     function test_epoch_content_hash_included_in_input_hash() public {
-        bytes32 hash1 = fund.computeInputHash();
+        // Run two epochs and verify that their frozen snapshot hashes
+        // differ — proving the historyHash sub-hash (which rolls in
+        // epochContentHashes) is bound into _hashSnapshot.
+        fund.submitEpochAction(abi.encodePacked(uint8(0)), bytes("reasoning 1"), -1, "");
+        fund.syncPhase();
+        bytes32 hash1 = fund.computeInputHashForEpoch(1);
 
-        // Submit epoch (creates epochContentHash + advances epoch)
-        fund.submitEpochAction(abi.encodePacked(uint8(0)), bytes("reasoning"), -1, "");
+        // Advance to epoch 2 so submitEpochAction targets a fresh epoch.
+        vm.warp(fund.epochStartTime(2) + 1);
         fund.syncPhase();
 
-        bytes32 hash2 = fund.computeInputHash();
+        fund.submitEpochAction(abi.encodePacked(uint8(0)), bytes("reasoning 2"), -1, "");
+        bytes32 hash2 = fund.computeInputHashForEpoch(2);
 
-        // Input hash should differ (history changed + epoch number changed)
+        // Epoch 2's snapshot differs from epoch 1's in at least:
+        //   - snap.epoch (1 vs 2)
+        //   - snap.historyHash (epoch 2 has one prior content hash to roll in)
         assertTrue(hash1 != hash2);
     }
 

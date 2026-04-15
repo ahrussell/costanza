@@ -1,53 +1,178 @@
 #!/usr/bin/env python3
-"""Epoch state reading — reads full contract state for TEE input.
+"""Epoch state reading — reads the frozen snapshot for TEE input.
 
-Reads all on-chain data from TheHumanFund and structures it for the TEE.
-The TEE independently builds the prompt and computes the input hash from
-this data. Used by the runner client and e2e test.
+The snapshot-only pinning invariant
+===================================
+
+After the "Layer 1" pure-_hashSnapshot refactor, the contract's on-chain
+input hash is computed *only* from `_epochSnapshots[epoch]` — the
+`_hashSnapshot` function is declared `pure`, so the Solidity compiler
+mechanically proves no live-storage reads leak into the hash path.
+
+For the prover side to be drift-free, this module must mirror that
+discipline: every scalar the enclave sees comes from `getEpochSnapshot`,
+not from live getters. Raw collection data (nonprofits, messages,
+history entries, investment metadata, worldview policies) are still
+read live, but bounded by counts/heads/epochs frozen in the snapshot.
+That bounding is load-bearing — it's why admin-added nonprofits or
+new donor messages after auction open are invisible to the enclave
+and can't break the hash.
+
+Drift analysis per collection:
+  - Nonprofits: metadata (name/description/ein) is immutable
+    post-`addNonprofit`; per-entry counters (totalDonated*) only change
+    in agent donate actions (which run after verify). Bounded by
+    snap.nonprofit_count → drift-free.
+  - Messages: stored hashes are immutable at `donateWithMessage` time;
+    new messages append. Bounded by snap.message_head/count → drift-free.
+  - History: `epochContentHashes[ep]` is written once per epoch and
+    never modified. Bounded by snap.epoch → drift-free.
+  - Investments: currentValues/active come from the snapshot directly
+    (they drift due to yield); immutable metadata (name/risk/apy) is
+    read live bounded by snap.investment_protocol_count → drift-free.
+  - Worldview: policies can only change via `_applyPolicyUpdate`,
+    which runs inside `submitEpochAction` / `submitAuctionResult`
+    AFTER input-hash verification. Between freeze and verify, worldview
+    is stable. Read live → drift-free in the observed window.
+
+If you're tempted to add a new contract call here, first ask whether
+the underlying field is snapshot-frozen or immutable. If neither, you
+need to add it to `EpochSnapshot` first. The static allowlist test in
+`prover/enclave/test_hash_coverage.py` enforces this at commit time.
 """
 
 from web3 import Web3
 
 
-# ─── Contract State Reading ───────────────────────────────────────────────
+# ─── ABIs for sub-contracts ──────────────────────────────────────────────
+
+_IM_ABI = [
+    {"name": "getPosition", "type": "function",
+     "inputs": [{"name": "protocolId", "type": "uint256"}],
+     "outputs": [
+         {"name": "depositedEth", "type": "uint256"},
+         {"name": "shares", "type": "uint256"},
+         {"name": "currentValue", "type": "uint256"},
+         {"name": "protocolName", "type": "string"},
+         {"name": "riskTier", "type": "uint8"},
+         {"name": "expectedApyBps", "type": "uint16"},
+         {"name": "active", "type": "bool"},
+     ], "stateMutability": "view"},
+]
+
+_WV_ABI = [
+    {"name": "getPolicies", "type": "function", "inputs": [],
+     "outputs": [{"type": "string[10]"}], "stateMutability": "view"},
+]
+
+_MSG_ABI = [
+    {"name": "messages", "type": "function",
+     "inputs": [{"name": "index", "type": "uint256"}],
+     "outputs": [
+         {"name": "sender", "type": "address"},
+         {"name": "amount", "type": "uint256"},
+         {"name": "text", "type": "string"},
+         {"name": "epoch", "type": "uint256"},
+     ], "stateMutability": "view"},
+]
+
+
+# ─── Snapshot reader ──────────────────────────────────────────────────────
+
+_SNAP_FIELDS = (
+    "epoch", "balance", "commission_rate_bps", "max_bid", "effective_max_bid",
+    "consecutive_missed", "last_donation_epoch", "last_commission_change_epoch",
+    "total_inflows", "total_donated", "total_commissions", "total_bounties",
+    "epoch_inflow", "epoch_donation_count", "epoch_eth_usd_price",
+    "epoch_duration", "message_head", "message_count", "nonprofit_count",
+    "nonprofits_hash", "messages_hash", "history_hash", "worldview_hash",
+    "investments_hash", "investment_protocol_count",
+    "investment_current_values", "investment_active",
+)
+
+
+def read_epoch_snapshot(contract, epoch):
+    """Read the frozen EpochSnapshot tuple for `epoch` and unpack it.
+
+    The single storage read the prover needs for all scalars + frozen
+    sub-hashes + investment raw values. Raw collection data
+    (nonprofits / messages / history / worldview policies) still needs
+    separate live reads, bounded by the counts returned here.
+    """
+    snap = contract.functions.getEpochSnapshot(epoch).call()
+    # Positional tuple decoding mirroring the Solidity struct layout.
+    return dict(zip(_SNAP_FIELDS, (
+        snap[0],   # epoch
+        snap[1],   # balance
+        snap[2],   # commissionRateBps
+        snap[3],   # maxBid
+        snap[4],   # effectiveMaxBid
+        snap[5],   # consecutiveMissedEpochs
+        snap[6],   # lastDonationEpoch
+        snap[7],   # lastCommissionChangeEpoch
+        snap[8],   # totalInflows
+        snap[9],   # totalDonatedToNonprofits
+        snap[10],  # totalCommissionsPaid
+        snap[11],  # totalBountiesPaid
+        snap[12],  # currentEpochInflow
+        snap[13],  # currentEpochDonationCount
+        snap[14],  # epochEthUsdPrice
+        snap[15],  # epochDuration
+        snap[16],  # messageHead
+        snap[17],  # messageCount
+        snap[18],  # nonprofitCount
+        snap[19],  # nonprofitsHash
+        snap[20],  # messagesHash
+        snap[21],  # historyHash
+        snap[22],  # worldviewHash
+        snap[23],  # investmentsHash
+        snap[24],  # investmentProtocolCount
+        snap[25],  # investmentCurrentValues (uint256[21])
+        snap[26],  # investmentActive (bool[21])
+    )))
+
+
+# ─── Top-level reader ─────────────────────────────────────────────────────
 
 def read_contract_state(contract, w3):
-    """Read all relevant state from the contract for prompt construction."""
-    state = {}
+    """Read the full state the enclave needs, pinned to the current epoch's
+    frozen snapshot. Every scalar comes from the snapshot; raw collection
+    data comes from live getters bounded by frozen counts.
+    """
+    epoch = contract.functions.currentEpoch().call()
+    snap = read_epoch_snapshot(contract, epoch)
 
-    # Basic state
-    state["epoch"] = contract.functions.currentEpoch().call()
-    state["treasury_balance"] = contract.functions.treasuryBalance().call()
-    state["commission_rate_bps"] = contract.functions.commissionRateBps().call()
-    state["max_bid"] = contract.functions.maxBid().call()
-    state["effective_max_bid"] = contract.functions.effectiveMaxBid().call()
-    state["deploy_timestamp"] = contract.functions.deployTimestamp().call()
-    state["total_inflows"] = contract.functions.totalInflows().call()
-    state["total_donated"] = contract.functions.totalDonatedToNonprofits().call()
-    state["total_commissions"] = contract.functions.totalCommissionsPaid().call()
-    state["total_bounties"] = contract.functions.totalBountiesPaid().call()
-    state["last_donation_epoch"] = contract.functions.lastDonationEpoch().call()
-    state["last_commission_change_epoch"] = contract.functions.lastCommissionChangeEpoch().call()
-    state["consecutive_missed"] = contract.functions.consecutiveMissedEpochs().call()
-    state["epoch_duration"] = contract.functions.epochDuration().call()
+    # ── Scalars copied straight from the frozen snapshot ─────────────────
+    state = {
+        "epoch": snap["epoch"],
+        "treasury_balance": snap["balance"],
+        "commission_rate_bps": snap["commission_rate_bps"],
+        "max_bid": snap["max_bid"],
+        "effective_max_bid": snap["effective_max_bid"],
+        "consecutive_missed": snap["consecutive_missed"],
+        "last_donation_epoch": snap["last_donation_epoch"],
+        "last_commission_change_epoch": snap["last_commission_change_epoch"],
+        "total_inflows": snap["total_inflows"],
+        "total_donated": snap["total_donated"],
+        "total_commissions": snap["total_commissions"],
+        "total_bounties": snap["total_bounties"],
+        "epoch_inflow": snap["epoch_inflow"],
+        "epoch_donation_count": snap["epoch_donation_count"],
+        "epoch_eth_usd_price": snap["epoch_eth_usd_price"],
+        "epoch_duration": snap["epoch_duration"],
+        "message_head": snap["message_head"],
+        "message_count": snap["message_count"],
+        "nonprofit_count": snap["nonprofit_count"],
+    }
 
-    # Per-epoch counters
-    state["epoch_inflow"] = contract.functions.currentEpochInflow().call()
-    state["epoch_donation_count"] = contract.functions.currentEpochDonationCount().call()
-
-    # ETH/USD price (snapshotted by contract at epoch start)
-    try:
-        state["epoch_eth_usd_price"] = contract.functions.epochEthUsdPrice().call()
-        state["total_donated_usd"] = contract.functions.totalDonatedToNonprofitsUsd().call()
-    except Exception:
-        state["epoch_eth_usd_price"] = 0
-        state["total_donated_usd"] = 0
-
-    # Nonprofits (dynamic count, read from chain)
+    # ── Nonprofits (live, bounded by snap.nonprofit_count) ───────────────
+    # Metadata is immutable post-addProtocol and per-entry counters are
+    # stable between freeze and verify (see drift analysis in module doc).
     state["nonprofits"] = []
-    np_count = contract.functions.nonprofitCount().call()
-    for i in range(1, np_count + 1):
-        name, description, ein, total_donated, total_donated_usd, donation_count = contract.functions.getNonprofit(i).call()
+    for i in range(1, snap["nonprofit_count"] + 1):
+        name, description, ein, total_donated, total_donated_usd, donation_count = (
+            contract.functions.getNonprofit(i).call()
+        )
         state["nonprofits"].append({
             "id": i,
             "name": name,
@@ -58,11 +183,17 @@ def read_contract_state(contract, w3):
             "donation_count": donation_count,
         })
 
-    # Decision history (read executed epoch records, most recent first)
+    # ── Decision history (live, bounded by snap.epoch) ───────────────────
+    # epochContentHashes[histEpoch] is written once at _recordAndExecute
+    # and never modified. Iterate the last ≤MAX_HISTORY_ENTRIES executed
+    # epochs by direct getEpochRecord reads.
     state["history"] = []
-    for ep in range(state["epoch"] - 1, max(0, state["epoch"] - 20), -1):
+    history_start = max(0, snap["epoch"] - 20)
+    for ep in range(snap["epoch"] - 1, history_start, -1):
         try:
-            ts, action, reasoning, tb, ta, bounty, executed = contract.functions.getEpochRecord(ep).call()
+            _, action, reasoning, tb, ta, bounty, executed = (
+                contract.functions.getEpochRecord(ep).call()
+            )
             if executed:
                 state["history"].append({
                     "epoch": ep,
@@ -75,196 +206,66 @@ def read_contract_state(contract, w3):
         except Exception:
             continue
 
-
-    # Investment portfolio (if InvestmentManager is linked)
+    # ── Investments (snapshot values + live metadata) ────────────────────
+    # currentValues and active flags come from the snapshot (they drift).
+    # Metadata (name/risk/apy) is immutable post-addProtocol and read
+    # live, bounded by snap.investment_protocol_count.
     state["investments"] = []
-    state["total_invested"] = 0
     try:
-        total_assets = contract.functions.totalAssets().call()
-        state["total_assets"] = total_assets
-        # Read investment manager address
         im_addr = contract.functions.investmentManager().call()
         if im_addr and im_addr != "0x0000000000000000000000000000000000000000":
-            im_abi = [
-                {"name": "protocolCount", "type": "function", "inputs": [], "outputs": [{"type": "uint256"}], "stateMutability": "view"},
-                {"name": "totalInvestedValue", "type": "function", "inputs": [], "outputs": [{"type": "uint256"}], "stateMutability": "view"},
-                {"name": "getPosition", "type": "function",
-                 "inputs": [{"name": "protocolId", "type": "uint256"}],
-                 "outputs": [
-                     {"name": "depositedEth", "type": "uint256"},
-                     {"name": "shares", "type": "uint256"},
-                     {"name": "currentValue", "type": "uint256"},
-                     {"name": "protocolName", "type": "string"},
-                     {"name": "riskTier", "type": "uint8"},
-                     {"name": "expectedApyBps", "type": "uint16"},
-                     {"name": "active", "type": "bool"},
-                 ], "stateMutability": "view"},
-            ]
-            im = w3.eth.contract(address=Web3.to_checksum_address(im_addr), abi=im_abi)
-            state["total_invested"] = im.functions.totalInvestedValue().call()
-            protocol_count = im.functions.protocolCount().call()
-
-            for pid in range(1, protocol_count + 1):
-                deposited, shares, value, pname, risk, apy, active = im.functions.getPosition(pid).call()
+            im = w3.eth.contract(address=Web3.to_checksum_address(im_addr), abi=_IM_ABI)
+            pcount = snap["investment_protocol_count"]
+            frozen_values = snap["investment_current_values"]
+            frozen_active = snap["investment_active"]
+            for pid in range(1, pcount + 1):
+                deposited, shares, _live_value, pname, risk, apy, _live_active = (
+                    im.functions.getPosition(pid).call()
+                )
+                # Snapshot wins for drift-prone fields.
                 state["investments"].append({
                     "id": pid,
                     "name": pname,
                     "deposited": deposited,
                     "shares": shares,
-                    "current_value": value,
+                    "current_value": frozen_values[pid],
                     "risk_tier": risk,
                     "expected_apy_bps": apy,
-                    "active": active,
+                    "active": bool(frozen_active[pid]),
                 })
-    except Exception as e:
-        # No investment manager or error reading — that's fine
-        state["total_assets"] = state["treasury_balance"]
+    except Exception:
+        pass
 
-    # Worldview (guiding policies)
+    # ── Worldview (live read — stable between freeze and verify) ─────────
     state["guiding_policies"] = [""] * 10
     try:
         wv_addr = contract.functions.worldView().call()
         if wv_addr and wv_addr != "0x0000000000000000000000000000000000000000":
-            wv_abi = [
-                {"name": "getPolicies", "type": "function", "inputs": [],
-                 "outputs": [{"type": "string[10]"}], "stateMutability": "view"},
-            ]
-            wv = w3.eth.contract(address=Web3.to_checksum_address(wv_addr), abi=wv_abi)
+            wv = w3.eth.contract(address=Web3.to_checksum_address(wv_addr), abi=_WV_ABI)
             state["guiding_policies"] = list(wv.functions.getPolicies().call())
     except Exception:
         pass
 
-    # Donor messages (unread queue)
+    # ── Donor messages (live, bounded by snap.message_head/count) ────────
+    # Individual message slots are immutable once written, and the
+    # frozen head/count exactly pins the unread window the snapshot saw.
     state["donor_messages"] = []
     try:
-        msg_abi = [
-            {"name": "getUnreadMessages", "type": "function", "inputs": [],
-             "outputs": [
-                 {"name": "senders", "type": "address[]"},
-                 {"name": "amounts", "type": "uint256[]"},
-                 {"name": "texts", "type": "string[]"},
-                 {"name": "epochNums", "type": "uint256[]"},
-             ], "stateMutability": "view"},
-            {"name": "messageCount", "type": "function", "inputs": [], "outputs": [{"type": "uint256"}], "stateMutability": "view"},
-            {"name": "messageHead", "type": "function", "inputs": [], "outputs": [{"type": "uint256"}], "stateMutability": "view"},
-        ]
-        msg_contract = w3.eth.contract(address=contract.address, abi=msg_abi)
-        senders, amounts, texts, epoch_nums = msg_contract.functions.getUnreadMessages().call()
-        state["message_count"] = msg_contract.functions.messageCount().call()
-        state["message_head"] = msg_contract.functions.messageHead().call()
-        for i in range(len(senders)):
+        msg_contract = w3.eth.contract(address=contract.address, abi=_MSG_ABI)
+        unread = snap["message_count"] - snap["message_head"]
+        max_msgs = 5  # MAX_MESSAGES_PER_EPOCH
+        emit = min(unread, max_msgs)
+        for i in range(emit):
+            sender, amount, text, msg_epoch = (
+                msg_contract.functions.messages(snap["message_head"] + i).call()
+            )
             state["donor_messages"].append({
-                "sender": senders[i],
-                "amount": amounts[i],
-                "text": texts[i],
-                "epoch": epoch_nums[i],
+                "sender": sender,
+                "amount": amount,
+                "text": text,
+                "epoch": msg_epoch,
             })
     except Exception:
-        state["message_count"] = 0
-        state["message_head"] = 0
-
-    return state
-
-
-def read_epoch_snapshot(contract, w3, epoch):
-    """Read the frozen EpochSnapshot for the given epoch.
-
-    Contains drifting values (balance, inflows, message boundaries, investment
-    currentValues) frozen at auction open. The prover uses these to pass the
-    exact state the input hash was computed from.
-    """
-    snap_abi = [{"name": "getEpochSnapshot", "type": "function",
-                 "inputs": [{"name": "epoch", "type": "uint256"}],
-                 "outputs": [{"components": [
-                     {"name": "balance", "type": "uint256"},
-                     {"name": "totalInflows", "type": "uint256"},
-                     {"name": "currentEpochInflow", "type": "uint256"},
-                     {"name": "currentEpochDonationCount", "type": "uint256"},
-                     {"name": "messageHead", "type": "uint256"},
-                     {"name": "messageCount", "type": "uint256"},
-                     {"name": "effectiveMaxBid", "type": "uint256"},
-                     {"name": "epochDuration", "type": "uint256"},
-                     {"name": "investmentProtocolCount", "type": "uint256"},
-                     {"name": "investmentCurrentValues", "type": "uint256[21]"},
-                     {"name": "investmentActive", "type": "bool[21]"},
-                 ], "name": "", "type": "tuple"}],
-                 "stateMutability": "view"}]
-    snap_contract = w3.eth.contract(address=contract.address, abi=snap_abi)
-    snap = snap_contract.functions.getEpochSnapshot(epoch).call()
-
-    return {
-        "balance": snap[0],
-        "total_inflows": snap[1],
-        "current_epoch_inflow": snap[2],
-        "current_epoch_donation_count": snap[3],
-        "message_head": snap[4],
-        "message_count": snap[5],
-        "effective_max_bid": snap[6],
-        "epoch_duration": snap[7],
-        "investment_protocol_count": snap[8],
-        "investment_current_values": snap[9],  # uint256[21], 1-indexed
-        "investment_active": snap[10],          # bool[21], 1-indexed
-    }
-
-
-def apply_snapshot_overrides(contract, w3, state):
-    """Overlay the frozen EpochSnapshot onto the flat epoch_state in place.
-
-    After auction open, a few fields drift:
-      - treasury balance / total inflows / per-epoch inflow counters (donations)
-      - message queue head/count (new donor messages)
-      - investment current values (DeFi yield accrual)
-      - effective_max_bid (depends on live balance)
-
-    The contract freezes these at `_openAuction` time into the EpochSnapshot
-    struct and uses them when verifying the TEE's input hash. The runner must
-    pass those same frozen values to the enclave — otherwise the enclave's
-    computed hash won't match epochInputHashes[epoch].
-
-    This function reads the snapshot from chain and overwrites the drifting
-    fields on `state` in place. No other hashing or verification happens here;
-    the enclave hashes the flat state directly.
-    """
-    epoch = state["epoch"]
-    snapshot = read_epoch_snapshot(contract, w3, epoch)
-
-    # Scalars
-    state["treasury_balance"] = snapshot["balance"]
-    state["total_inflows"] = snapshot["total_inflows"]
-    state["epoch_inflow"] = snapshot["current_epoch_inflow"]
-    state["epoch_donation_count"] = snapshot["current_epoch_donation_count"]
-    state["message_head"] = snapshot["message_head"]
-    state["message_count"] = snapshot["message_count"]
-    state["effective_max_bid"] = snapshot["effective_max_bid"]
-    # epoch_duration must come from the snapshot, not live chain state:
-    # the contract's _hashState() reads from _epochSnapshots[epoch].epochDuration
-    # so that mid-epoch setAuctionTiming() calls don't mutate the stored hash.
-    state["epoch_duration"] = snapshot["epoch_duration"]
-
-    # Truncate donor_messages to exactly the snapshot's unread set.
-    # getUnreadMessages() returns the live view (may include messages that
-    # arrived after auction open). messageHead can't advance between snapshot
-    # and now (only _recordAndExecute advances it, and that runs after
-    # submission), so the first N entries of the live unread queue are
-    # exactly the snapshot's unread set. Also bound by MAX_MESSAGES_PER_EPOCH.
-    snap_unread = min(snapshot["message_count"] - snapshot["message_head"], 5)
-    donor_messages = state.get("donor_messages", [])
-    if snap_unread < len(donor_messages):
-        state["donor_messages"] = donor_messages[:snap_unread]
-
-    # Override investment currentValues + active flags with frozen snapshot
-    # values, and recompute derived totals for display consistency.
-    # active is snapshotted because the admin can call setProtocolActive()
-    # mid-epoch; freezing it keeps the input hash reproducible.
-    frozen_values = snapshot["investment_current_values"]
-    frozen_active = snapshot["investment_active"]
-    total_invested = 0
-    for inv in state.get("investments", []):
-        pid = inv["id"]
-        inv["current_value"] = frozen_values[pid]
-        inv["active"] = bool(frozen_active[pid])
-        total_invested += frozen_values[pid]
-    state["total_invested"] = total_invested
-    state["total_assets"] = snapshot["balance"] + total_invested
+        pass
 
     return state

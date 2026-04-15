@@ -63,42 +63,75 @@ contract TheHumanFund is ReentrancyGuard {
         uint256 epoch;         // epoch when the message was received
     }
 
-    /// @dev Frozen state snapshot taken at auction open. Records values that can
-    ///      drift between auction open and execution (due to donations, messages,
-    ///      or DeFi yield accrual). The prover reads these to reproduce the exact
-    ///      state the input hash was computed from.
+    /// @dev Frozen state snapshot taken at auction open. This is the SINGLE
+    ///      SOURCE OF TRUTH for the enclave's input hash: `_hashSnapshot` is
+    ///      declared `pure`, so the Solidity compiler mechanically proves the
+    ///      contract can only hash values that live on this struct (plus its
+    ///      immediate sub-hashes, which are themselves frozen bytes32s). No
+    ///      storage reads are possible during input-hash computation.
+    ///
+    ///      Every field the enclave shows the model must be either
+    ///        (a) a direct field on this struct, OR
+    ///        (b) bound transitively via one of the frozen sub-hashes
+    ///            (nonprofitsHash / messagesHash / historyHash /
+    ///            worldviewHash / investmentsHash), which are computed live
+    ///            at `_freezeEpochSnapshot()` time and stored here.
+    ///
+    ///      The prover mirrors this snapshot via `getEpochSnapshot(epoch)`
+    ///      and passes its contents to the enclave. The enclave rebuilds
+    ///      the same hash and binds it into REPORTDATA; on-chain verification
+    ///      checks the stored hash against the TEE quote.
     struct EpochSnapshot {
-        // Scalar values that drift due to donations arriving after auction open
+        // ── Scalars (drift-prone or owner-mutable live state) ────────────
+        uint256 epoch;                         // redundant with mapping key, but hashed for clarity
         uint256 balance;
+        uint256 commissionRateBps;
+        uint256 maxBid;
+        // effectiveMaxBid is derived from balance + consecutiveMissedEpochs;
+        // frozen here so the enclave doesn't have to re-derive the formula.
+        uint256 effectiveMaxBid;
+        uint256 consecutiveMissedEpochs;
+        uint256 lastDonationEpoch;
+        uint256 lastCommissionChangeEpoch;
         uint256 totalInflows;
+        uint256 totalDonatedToNonprofits;
+        uint256 totalCommissionsPaid;
+        uint256 totalBountiesPaid;
         uint256 currentEpochInflow;
         uint256 currentEpochDonationCount;
-        // Message queue boundaries at auction open
+        uint256 epochEthUsdPrice;
+        // epochDuration frozen at auction open. The owner can change the
+        // live epochDuration mid-epoch via setAuctionTiming (e.g. to extend
+        // a phase window for a stuck runner). Hashing the snapshotted value
+        // keeps the base hash reproducible regardless of owner adjustments.
+        uint256 epochDuration;
+        // Message queue boundaries at auction open (used alongside messagesHash).
         uint256 messageHead;
         uint256 messageCount;
-        // effectiveMaxBid frozen at auction open (depends on live balance, so
-        // it drifts after donations). Included in _hashState() so the enclave
-        // hashes a single authoritative value instead of re-deriving a formula
-        // that can diverge from Solidity.
-        uint256 effectiveMaxBid;
-        // epochDuration frozen at auction open. The owner can change the live
-        // epochDuration mid-epoch via setAuctionTiming (e.g. to extend a
-        // phase window for a stuck runner). Hashing the snapshotted value —
-        // rather than the live one — keeps epochBaseInputHashes[epoch]
-        // reproducible for the enclave regardless of owner adjustments.
-        uint256 epochDuration;
-        // Investment position currentValues at auction open (drift with DeFi yields).
+        // Nonprofit count at auction open (used alongside nonprofitsHash).
+        // Admin-added nonprofits mid-auction are invisible to this snapshot.
+        uint256 nonprofitCount;
+
+        // ── Sub-hashes (computed LIVE at freeze time, then frozen) ───────
+        // These are the byte-exact rolling hashes of nonprofit / message /
+        // history / worldview / investment state, captured at the instant
+        // freeze runs (when live state is authoritative). The pure
+        // `_hashSnapshot` function reads them as plain bytes32 inputs.
+        bytes32 nonprofitsHash;
+        bytes32 messagesHash;
+        bytes32 historyHash;
+        bytes32 worldviewHash;
+        bytes32 investmentsHash;
+
+        // ── Investment raw values (prover display + drift-handling) ──────
+        // Investment position currentValues drift with DeFi yields between
+        // blocks; active flags can toggle via admin setProtocolActive().
         // Indexed 1..investmentProtocolCount, matching InvestmentManager.
-        // depositedEth and shares don't drift (only changed by execute actions).
+        // name / riskTier / expectedApyBps are immutable post-addProtocol
+        // and read live by the prover, bounded by investmentProtocolCount.
+        // All of this is transitively bound via investmentsHash.
         uint256 investmentProtocolCount;
         uint256[21] investmentCurrentValues;  // 1-indexed, [0] unused, max 20 protocols
-        // Protocol `active` flag at auction open. Admin can toggle
-        // setProtocolActive() mid-epoch, so we must freeze this alongside
-        // currentValues to keep the input hash reproducible. name,
-        // riskTier, and expectedApyBps are immutable post-addProtocol,
-        // so they don't need freezing — live reads at hash time equal
-        // the at-auction-open values as long as we loop only up to the
-        // snapshotted protocolCount.
         bool[21] investmentActive;
     }
 
@@ -797,10 +830,10 @@ contract TheHumanFund is ReentrancyGuard {
         lastEpochStartTime = scheduledStart;
 
         // Freeze drifting state into snapshot so the prover can reproduce the input hash.
-        // At this instant, live state == snapshot values, so _computeInputHash() is consistent.
+        // At this instant, live state == snapshot values, so _computeInputHash is consistent.
         _freezeEpochSnapshot(epoch);
 
-        bytes32 baseInputHash = _computeInputHash();
+        bytes32 baseInputHash = _computeInputHash(epoch);
         epochBaseInputHashes[epoch] = baseInputHash;
 
         emit AuctionOpened(epoch, baseInputHash, effectiveMaxBid(), bond);
@@ -809,26 +842,45 @@ contract TheHumanFund is ReentrancyGuard {
     /// @dev Freeze all drifting state into `_epochSnapshots[epoch]`. Called from
     ///      `_openAuction` at auction open, and from `submitEpochAction` (direct
     ///      mode) where there's no auction but `_recordAndExecute` still reads
-    ///      the snapshot for bounds like messageHead advancement. Must be called
-    ///      at a moment when live state represents what should be hashed.
+    ///      the snapshot. Must be called at a moment when live state represents
+    ///      what should be hashed — anything that isn't frozen here is invisible
+    ///      to `_hashSnapshot` (by compiler enforcement).
+    ///
+    ///      Phases:
+    ///        1. Copy every scalar the enclave needs
+    ///        2. Snapshot investment raw values (so the prover can display them)
+    ///        3. Compute all sub-hashes LIVE (nonprofits / messages / history /
+    ///           worldview / investments) and freeze them as bytes32 fields
     function _freezeEpochSnapshot(uint256 epoch) internal {
         EpochSnapshot storage snap = _epochSnapshots[epoch];
+
+        // ── 1. Scalars ───────────────────────────────────────────────────
+        snap.epoch = epoch;
         snap.balance = address(this).balance;
+        snap.commissionRateBps = commissionRateBps;
+        snap.maxBid = maxBid;
+        snap.effectiveMaxBid = effectiveMaxBid();
+        snap.consecutiveMissedEpochs = consecutiveMissedEpochs;
+        snap.lastDonationEpoch = lastDonationEpoch;
+        snap.lastCommissionChangeEpoch = lastCommissionChangeEpoch;
         snap.totalInflows = totalInflows;
+        snap.totalDonatedToNonprofits = totalDonatedToNonprofits;
+        snap.totalCommissionsPaid = totalCommissionsPaid;
+        snap.totalBountiesPaid = totalBountiesPaid;
         snap.currentEpochInflow = currentEpochInflow;
         snap.currentEpochDonationCount = currentEpochDonationCount;
+        snap.epochEthUsdPrice = epochEthUsdPrice;
+        snap.epochDuration = epochDuration;
         snap.messageHead = messageHead;
         snap.messageCount = messages.length;
-        snap.effectiveMaxBid = effectiveMaxBid();
-        snap.epochDuration = epochDuration;
+        snap.nonprofitCount = nonprofitCount;
 
-        // Snapshot investment currentValues (drift with DeFi yields between
-        // blocks) and active flags (admin can toggle mid-epoch via
-        // setProtocolActive). protocolCount is frozen too so any protocols
-        // added mid-epoch are ignored until the next auction open. name /
-        // riskTier / expectedApyBps are immutable post-addProtocol, so live
-        // reads at hash time equal at-auction-open values as long as we
-        // loop only up to the snapshotted protocolCount.
+        // ── 2. Investment raw values ─────────────────────────────────────
+        // currentValues drift with DeFi yields; active flags can toggle via
+        // admin setProtocolActive(). protocolCount is frozen so any
+        // protocols added mid-epoch are ignored until the next auction
+        // open. name / riskTier / expectedApyBps are immutable
+        // post-addProtocol and bound transitively via investmentsHash.
         if (address(investmentManager) != address(0)) {
             uint256 pCount = investmentManager.protocolCount();
             snap.investmentProtocolCount = pCount;
@@ -837,6 +889,25 @@ contract TheHumanFund is ReentrancyGuard {
                 snap.investmentActive[i] = investmentManager.isProtocolActive(i);
             }
         }
+
+        // ── 3. Sub-hashes (computed LIVE at this instant) ────────────────
+        // These helpers read live storage, but they run exactly once per
+        // epoch — RIGHT NOW, when live state == the at-freeze values we
+        // want to bind. The resulting bytes32s are stored on the snapshot
+        // and consumed by the pure `_hashSnapshot` later.
+        snap.nonprofitsHash = _liveHashNonprofits();
+        snap.messagesHash = _liveHashUnreadMessages();
+        snap.historyHash = _liveHashRecentHistory(epoch);
+        snap.worldviewHash = address(worldView) != address(0)
+            ? worldView.stateHash()
+            : bytes32(0);
+        snap.investmentsHash = address(investmentManager) != address(0)
+            ? investmentManager.epochStateHash(
+                snap.investmentCurrentValues,
+                snap.investmentActive,
+                snap.investmentProtocolCount
+              )
+            : bytes32(0);
     }
 
     // ─── Prover Actions (auto-sync before each) ─────────────────────────
@@ -1161,88 +1232,79 @@ contract TheHumanFund is ReentrancyGuard {
     ///      The TEE is a dumb signer: it hashes whatever it's given. The contract
     ///      is the verifier that checks the hash matches real on-chain state.
     ///      All heavy data (reasoning, messages) uses pre-cached hashes.
-    function _computeInputHash() internal view returns (bytes32) {
-        bytes32 stateHash = _hashState();
-        bytes32 nonprofitHash = _hashNonprofits();
-        // Pass the snapshot arrays to the InvestmentManager's hashing
-        // function so drift-prone fields (currentValue, active) are bound
-        // to the at-auction-open values and immutable protocol metadata
-        // (name, riskTier, expectedApyBps) is read live but bounded by
-        // the snapshotted protocolCount.
-        EpochSnapshot storage investSnap = _epochSnapshots[currentEpoch];
-        bytes32 investHash = address(investmentManager) != address(0)
-            ? investmentManager.epochStateHash(
-                investSnap.investmentCurrentValues,
-                investSnap.investmentActive,
-                investSnap.investmentProtocolCount
-              )
-            : bytes32(0);
-        bytes32 worldviewHash = address(worldView) != address(0)
-            ? worldView.stateHash()
-            : bytes32(0);
-        bytes32 msgHash = _hashUnreadMessages();
-        bytes32 histHash = _hashRecentHistory();
+    /// @dev Compute the input hash for a given epoch's frozen snapshot.
+    ///      Reads one mapping slot (the snapshot), then delegates to
+    ///      `_hashSnapshot` which is `pure` — the compiler mechanically
+    ///      proves no other storage is read.
+    function _computeInputHash(uint256 epoch) internal view returns (bytes32) {
+        return _hashSnapshot(_epochSnapshots[epoch]);
+    }
+
+    /// @dev THE ONE TRUE INPUT HASH. `pure` by compiler decree: no storage
+    ///      reads, no live contract calls, no hidden drift. Everything the
+    ///      enclave sees must flow through the struct argument. If you
+    ///      want to add a new field to the prompt, you must first add it
+    ///      to `EpochSnapshot` and populate it in `_freezeEpochSnapshot`.
+    function _hashSnapshot(EpochSnapshot memory snap) internal pure returns (bytes32) {
+        bytes32 scalarHash = _hashSnapshotScalars(snap);
         return keccak256(abi.encode(
-            stateHash,
-            nonprofitHash,
-            investHash,
-            worldviewHash,
-            msgHash,
-            histHash
+            scalarHash,
+            snap.nonprofitsHash,
+            snap.investmentsHash,
+            snap.worldviewHash,
+            snap.messagesHash,
+            snap.historyHash
         ));
     }
 
-    /// @dev Hash current state variables (all cheap SLOADs).
-    ///      Split into two halves to avoid stack-too-deep.
-    ///      effectiveMaxBid() is read live — at auction-open time (when
-    ///      _computeInputHash runs) it equals snap.effectiveMaxBid, which
-    ///      is what the prover passes to the enclave afterward. Binding it
-    ///      directly here eliminates any need for the enclave to re-derive
-    ///      the escalation formula.
-    ///      epochDuration is read from the EpochSnapshot (not live) so that
-    ///      owner-triggered mid-epoch timing changes via setAuctionTiming()
-    ///      do not mutate epochBaseInputHashes[epoch] after it's been stored.
-    ///      At _openAuction() time, snap.epochDuration is populated BEFORE
-    ///      _computeInputHash() is called, so the stored hash is computed
-    ///      against the correct frozen value.
-    function _hashState() internal view returns (bytes32) {
+    /// @dev Scalar portion of the snapshot hash. Split in halves to avoid
+    ///      stack-too-deep with ~20 fields.
+    function _hashSnapshotScalars(EpochSnapshot memory snap) internal pure returns (bytes32) {
         bytes32 h1 = keccak256(abi.encode(
-            currentEpoch,
-            address(this).balance,
-            commissionRateBps,
-            maxBid,
-            effectiveMaxBid(),
-            consecutiveMissedEpochs,
-            lastDonationEpoch,
-            lastCommissionChangeEpoch,
-            totalInflows
+            snap.epoch,
+            snap.balance,
+            snap.commissionRateBps,
+            snap.maxBid,
+            snap.effectiveMaxBid,
+            snap.consecutiveMissedEpochs,
+            snap.lastDonationEpoch,
+            snap.lastCommissionChangeEpoch,
+            snap.totalInflows
         ));
-        EpochSnapshot storage snap = _epochSnapshots[currentEpoch];
         return keccak256(abi.encode(
             h1,
-            totalDonatedToNonprofits,
-            totalCommissionsPaid,
-            totalBountiesPaid,
-            currentEpochInflow,
-            currentEpochDonationCount,
-            epochEthUsdPrice,
+            snap.totalDonatedToNonprofits,
+            snap.totalCommissionsPaid,
+            snap.totalBountiesPaid,
+            snap.currentEpochInflow,
+            snap.currentEpochDonationCount,
+            snap.epochEthUsdPrice,
             snap.epochDuration,
-            // Snapshot message boundaries so the display "(X of Y unread)"
-            // cannot be manipulated by the runner. messageHead and
-            // messageCount are populated in _freezeEpochSnapshot at
-            // auction open and equal the live values at that instant.
             snap.messageHead,
-            snap.messageCount
+            snap.messageCount,
+            snap.nonprofitCount
         ));
     }
 
-    /// @dev Hash nonprofit state using rolling hash (O(n) memory instead of O(n^2)).
-    function _hashNonprofits() internal view returns (bytes32) {
+    // ─── Live sub-hashers — called ONLY from _freezeEpochSnapshot ───────
+    //
+    // These helpers read live storage, which is exactly what we need at
+    // freeze time (when live state == the at-freeze values we want to bind).
+    // They are NEVER called from the input-hash path — `_hashSnapshot` is
+    // `pure` and physically cannot invoke them. Their outputs are stored
+    // as bytes32 fields on the snapshot and re-read from there.
+    //
+    // The rolling-hash shapes below are duplicated byte-for-byte in the
+    // Python mirror (`prover/enclave/input_hash.py`) and tested for parity
+    // via the FFI cross-stack test.
+
+    /// @dev Live rolling hash of the current nonprofit registry.
+    function _liveHashNonprofits() internal view returns (bytes32) {
         if (nonprofitCount == 0) return bytes32(0);
         bytes32 rolling;
         for (uint256 i = 1; i <= nonprofitCount; i++) {
             Nonprofit storage np = nonprofits[i];
-            // `i` is included in the hash so the enclave can safely use
+            // `i` is included per-entry so the enclave can safely use
             // np["id"] from runner-supplied state. Without this, a runner
             // could swap id fields across entries (identical content hash)
             // and trick the model into donating to the wrong nonprofit.
@@ -1254,8 +1316,8 @@ contract TheHumanFund is ReentrancyGuard {
         return rolling;
     }
 
-    /// @dev Hash unread messages using rolling hash.
-    function _hashUnreadMessages() internal view returns (bytes32) {
+    /// @dev Live rolling hash of the unread-messages queue.
+    function _liveHashUnreadMessages() internal view returns (bytes32) {
         uint256 unread = messages.length - messageHead;
         uint256 count = unread > MAX_MESSAGES_PER_EPOCH ? MAX_MESSAGES_PER_EPOCH : unread;
         if (count == 0) return bytes32(0);
@@ -1267,9 +1329,11 @@ contract TheHumanFund is ReentrancyGuard {
         return rolling;
     }
 
-    /// @dev Hash the last N epoch content hashes using rolling hash.
-    function _hashRecentHistory() internal view returns (bytes32) {
-        uint256 epoch = currentEpoch;
+    /// @dev Live rolling hash of recent epoch content hashes.
+    ///      Takes the epoch as a parameter because the caller may be
+    ///      freezing for a future epoch (direct mode) that isn't
+    ///      currentEpoch yet.
+    function _liveHashRecentHistory(uint256 epoch) internal view returns (bytes32) {
         if (epoch == 0) return bytes32(0);
 
         uint256 count = epoch > MAX_HISTORY_ENTRIES ? MAX_HISTORY_ENTRIES : epoch;
@@ -1322,7 +1386,15 @@ contract TheHumanFund is ReentrancyGuard {
     ///      Note: after auction open, live state may drift due to donations/messages/yields.
     ///      Use getEpochSnapshot() to read the frozen values that the input hash was computed from.
     function computeInputHash() external view returns (bytes32) {
-        return _computeInputHash();
+        return _computeInputHash(currentEpoch);
+    }
+
+    /// @notice Compute the input hash for a specific epoch's frozen snapshot.
+    /// @dev Drift-free: reads only from the frozen snapshot struct and
+    ///      delegates to the pure `_hashSnapshot`. Returns zero for epochs
+    ///      whose snapshot was never populated.
+    function computeInputHashForEpoch(uint256 epoch) external view returns (bytes32) {
+        return _computeInputHash(epoch);
     }
 
     /// @notice Get the frozen state snapshot for an epoch.

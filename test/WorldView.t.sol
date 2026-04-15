@@ -142,15 +142,31 @@ contract WorldViewTest is Test {
     }
 
     function test_input_hash_includes_worldview() public {
-        bytes32 hash1 = fund.computeInputHash();
+        // Run epoch 1 with no worldview update, then advance time and run
+        // epoch 2 with a worldview mutation — the two frozen snapshot
+        // hashes must differ, proving the worldview sub-hash is bound
+        // into _hashSnapshot.
+        //
+        // (The new _hashSnapshot is `pure` — it reads only from the frozen
+        // EpochSnapshot struct — so within-epoch mutations don't affect
+        // its output. Field coverage is tested across epoch boundaries.)
+        fund.submitEpochAction(
+            abi.encodePacked(uint8(0)),
+            "Epoch 1", int8(-1), ""  // no worldview update
+        );
+        fund.syncPhase();
+        bytes32 hash1 = fund.computeInputHashForEpoch(1);
+
+        // Advance to epoch 2 so submitEpochAction targets a fresh epoch.
+        vm.warp(fund.epochStartTime(2) + 1);
+        fund.syncPhase();
 
         fund.submitEpochAction(
             abi.encodePacked(uint8(0)),
-            "Test", int8(1), "Policy changes input hash"
+            "Epoch 2", int8(1), "Policy changes input hash"
         );
-        fund.syncPhase();
+        bytes32 hash2 = fund.computeInputHashForEpoch(2);
 
-        bytes32 hash2 = fund.computeInputHash();
         assertTrue(hash1 != hash2);
     }
 

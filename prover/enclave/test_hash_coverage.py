@@ -575,52 +575,49 @@ def test_prompt_builder_only_reads_hashed_keys():
 # ─── Test 2: epoch-state call allowlist ───────────────────────────────────
 
 # Every contract function that prover/client/epoch_state.py is allowed to
-# call. Adding a new one is a deliberate act — it means thinking about drift
-# (does the value change between enclave-read and on-chain verify?) and,
-# ideally, freezing the field into EpochSnapshot and reading from there.
+# call. Adding a new one is a deliberate act — every entry here is a
+# potential drift source unless the underlying field is either (a) frozen
+# into the EpochSnapshot or (b) immutable post-deployment.
 #
-# This list is the CURRENT state, not the end goal. The end goal (see
-# "Layer 1" discussion in the planning thread) is to fold everything into
-# `getEpochSnapshot` and shrink this list to just that one call plus
-# `currentEpoch`. Until then, this test catches accidental additions.
+# This list was MUCH longer before the pure-`_hashSnapshot` refactor.
+# Now every scalar comes through `getEpochSnapshot`; the remaining calls
+# are for raw collection data (nonprofits, history, investments,
+# worldview, messages) that the enclave needs to hash the sub-hashes
+# and display to the model, bounded by frozen counts.
 _EPOCH_STATE_ALLOWED_CALLS: Set[str] = {
-    # --- TheHumanFund live getters (TODO: fold into getEpochSnapshot) ---
+    # --- THE ONE TRUE PINNED CALL ---------------------------------------
+    # Returns the frozen EpochSnapshot struct — single source of truth
+    # for every scalar + sub-hash the enclave needs.
+    "getEpochSnapshot",
+    # currentEpoch is needed to know which snapshot to read.
     "currentEpoch",
-    "treasuryBalance",
-    "commissionRateBps",
-    "maxBid",
-    "effectiveMaxBid",
-    "deployTimestamp",
-    "totalInflows",
-    "totalDonatedToNonprofits",
-    "totalCommissionsPaid",
-    "totalBountiesPaid",
-    "lastDonationEpoch",
-    "lastCommissionChangeEpoch",
-    "consecutiveMissedEpochs",
-    "epochDuration",
-    "currentEpochInflow",
-    "currentEpochDonationCount",
-    "epochEthUsdPrice",
-    "totalDonatedToNonprofitsUsd",
-    "nonprofitCount",
+
+    # --- Raw collection data (bounded by frozen snapshot counts) --------
+    # Nonprofit metadata is immutable post-addNonprofit; per-entry
+    # counters (totalDonated*) are stable between freeze and verify.
+    # Bounded by snap.nonprofit_count.
     "getNonprofit",
+    # Historical epoch records — written once, never modified.
+    # Bounded by snap.epoch.
     "getEpochRecord",
-    "totalAssets",
+    # Donor message slots — written once at donateWithMessage time,
+    # never modified. Bounded by snap.message_head / snap.message_count.
+    "messages",
+
+    # --- Sub-contract addresses (immutable once set) --------------------
     "investmentManager",
     "worldView",
-    # --- The one true pinned call (end-goal: the ONLY entry here) ---
-    "getEpochSnapshot",
-    # --- InvestmentManager helpers (TODO: drop, use frozen snapshot) ---
-    "protocolCount",
-    "totalInvestedValue",
+
+    # --- InvestmentManager helpers (bounded by snap.investment_protocol_count) ---
+    # Position metadata (name/risk/apy) is immutable post-addProtocol;
+    # drift-prone currentValue/active come from the snapshot arrays.
     "getPosition",
-    # --- WorldView helpers (TODO: drop, use frozen snapshot) ---
+
+    # --- WorldView helpers (stable between freeze and verify) ----------
+    # Policies can only change via _applyPolicyUpdate inside
+    # submit{EpochAction,AuctionResult}, which runs AFTER input-hash
+    # verification. Live read is drift-free in the observed window.
     "getPolicies",
-    # --- Donor message helpers (TODO: drop, use frozen snapshot) ---
-    "getUnreadMessages",
-    "messageCount",
-    "messageHead",
 }
 
 

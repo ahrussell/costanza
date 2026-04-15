@@ -546,14 +546,15 @@ def run_dmverity_inference(w3, fund_addr, fund_abi, am_addr, am_abi, epoch, seed
     """
     print(f"\n  4d. Running dm-verity inference...")
 
-    # Read contract state using prover.client.epoch_state
+    # Read contract state using prover.client.epoch_state. After the
+    # pure-`_hashSnapshot` refactor, read_contract_state already pulls
+    # scalars from the frozen EpochSnapshot — no overlay needed.
     sys.path.insert(0, str(PROJECT_ROOT))
-    from prover.client.epoch_state import read_contract_state, apply_snapshot_overrides
+    from prover.client.epoch_state import read_contract_state
     from prover.client.tee_clients.gcp import GCPTEEClient
 
     fund = w3.eth.contract(address=fund_addr, abi=fund_abi)
     state = read_contract_state(fund, w3)
-    apply_snapshot_overrides(fund, w3, state)
 
     # Choose machine type based on --cpu flag
     machine_type = GCP_MACHINE_TYPE_CPU if not USE_GPU else GCP_MACHINE_TYPE_GPU

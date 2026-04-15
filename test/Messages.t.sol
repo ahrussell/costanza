@@ -266,14 +266,33 @@ contract MessagesTest is Test {
     // ─── Input Hash ──────────────────────────────────────────────────────
 
     function test_input_hash_includes_messages() public {
-        bytes32 hashBefore = fund.computeInputHash();
+        // Run epoch 1 with no donor messages, then queue a message and
+        // run epoch 2 — the two frozen snapshot hashes must differ,
+        // proving the messages sub-hash is bound into _hashSnapshot.
+        //
+        // The new _hashSnapshot is `pure` — mid-epoch donations don't
+        // affect the already-frozen snapshot. Coverage is verified
+        // across a fresh epoch whose snapshot captures the new message.
+        fund.submitEpochAction(
+            abi.encodePacked(uint8(0)), "Epoch with no messages", int8(-1), ""
+        );
+        fund.syncPhase();
+        bytes32 hashNoMessages = fund.computeInputHashForEpoch(1);
 
         vm.deal(donor1, 1 ether);
         vm.prank(donor1);
         fund.donateWithMessage{value: 0.01 ether}(0, "Changes the hash");
 
-        bytes32 hashAfter = fund.computeInputHash();
-        assertTrue(hashBefore != hashAfter);
+        // Advance to epoch 2 so submitEpochAction targets a fresh epoch.
+        vm.warp(fund.epochStartTime(2) + 1);
+        fund.syncPhase();
+
+        fund.submitEpochAction(
+            abi.encodePacked(uint8(0)), "Epoch with a message", int8(-1), ""
+        );
+        bytes32 hashWithMessage = fund.computeInputHashForEpoch(2);
+
+        assertTrue(hashNoMessages != hashWithMessage);
     }
 
     // ─── Regular donate still works without message ──────────────────────

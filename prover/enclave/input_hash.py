@@ -93,19 +93,17 @@ def _bytes32(value) -> bytes:
 # ─── Leaf hashes (mirror contract helpers exactly) ────────────────────────
 
 def _hash_state(s: dict) -> bytes:
-    """Replicate TheHumanFund._hashState().
+    """Replicate TheHumanFund._hashSnapshotScalars().
 
-    Solidity splits into two halves to avoid stack-too-deep with ~15 fields.
-    We do the same so the byte-exact hash matches.
+    Mirrors the 2-half keccak layout the contract uses to avoid
+    stack-too-deep with ~20 fields. Every field listed here must be
+    frozen into the EpochSnapshot struct on the Solidity side — the
+    contract's `_hashSnapshot` is declared `pure`, so the compiler
+    mechanically proves no live-storage reads slip into the hash path.
 
-    The `effective_max_bid` field is included directly (see contract change
-    that adds it to _hashState alongside maxBid + consecutiveMissedEpochs).
-    This eliminates any Python/Solidity formula-drift class of bug: the
-    enclave is a dumb hasher, it never re-derives anything.
-
-    `message_head` and `message_count` are frozen in the EpochSnapshot at
-    auction open (by _freezeEpochSnapshot) and included here so the
-    prompt's "(X of Y unread)" display cannot be manipulated by the runner.
+    Python's view is slightly different: it reads a flat state dict
+    assembled by the runner. The bytes-equivalence to Solidity is
+    enforced by the cross-stack FFI test.
     """
     h1 = _keccak256(_abi_encode(
         ("uint256", s["epoch"]),
@@ -129,6 +127,10 @@ def _hash_state(s: dict) -> bytes:
         ("uint256", s.get("epoch_duration", DEFAULT_EPOCH_DURATION)),
         ("uint256", s.get("message_head", 0)),
         ("uint256", s.get("message_count", 0)),
+        # nonprofit_count is a new snapshot field added with the pure
+        # _hashSnapshot refactor. Bounds the nonprofit rolling hash on
+        # both sides so admin-added nonprofits mid-auction are invisible.
+        ("uint256", s.get("nonprofit_count", len(s.get("nonprofits", [])))),
     ))
 
 
