@@ -43,20 +43,20 @@ contract WorldViewTest is Test {
         fund.submitEpochAction(
             abi.encodePacked(uint8(0)),
             "Setting my first guiding policy.",
-            int8(0),
+            int8(1),
             "Prioritize high-impact, evidence-based charities"
         );
         fund.syncPhase();
 
-        assertEq(wv.getPolicy(0), "Prioritize high-impact, evidence-based charities");
+        assertEq(wv.getPolicy(1), "Prioritize high-impact, evidence-based charities");
         assertEq(fund.currentEpoch(), 2);
     }
 
     function test_set_multiple_policies_across_epochs() public {
-        // Epoch 1: set slot 0
+        // Epoch 1: set slot 1 (slot 0 is reserved)
         fund.submitEpochAction(
             abi.encodePacked(uint8(0)),
-            "Policy 0", int8(0), "Grow the treasury before donating"
+            "Policy 1", int8(1), "Grow the treasury before donating"
         );
         fund.syncPhase();
 
@@ -74,8 +74,9 @@ contract WorldViewTest is Test {
         );
         fund.syncPhase();
 
-        assertEq(wv.getPolicy(0), "Grow the treasury before donating");
-        assertEq(wv.getPolicy(1), ""); // untouched
+        assertEq(wv.getPolicy(0), ""); // reserved, never writable
+        assertEq(wv.getPolicy(1), "Grow the treasury before donating");
+        assertEq(wv.getPolicy(2), ""); // untouched
         assertEq(wv.getPolicy(3), "Diversify across at least 3 protocols");
         assertEq(wv.getPolicy(9), "Never invest more than 25% in one protocol");
         assertEq(fund.currentEpoch(), 4);
@@ -84,17 +85,17 @@ contract WorldViewTest is Test {
     function test_replace_existing_policy() public {
         fund.submitEpochAction(
             abi.encodePacked(uint8(0)),
-            "Initial", int8(0), "Be conservative"
+            "Initial", int8(1), "Be conservative"
         );
         fund.syncPhase();
-        assertEq(wv.getPolicy(0), "Be conservative");
+        assertEq(wv.getPolicy(1), "Be conservative");
 
         fund.submitEpochAction(
             abi.encodePacked(uint8(0)),
-            "Updated", int8(0), "Be aggressive"
+            "Updated", int8(1), "Be aggressive"
         );
         fund.syncPhase();
-        assertEq(wv.getPolicy(0), "Be aggressive");
+        assertEq(wv.getPolicy(1), "Be aggressive");
     }
 
     function test_remove_policy_with_empty_string() public {
@@ -120,7 +121,7 @@ contract WorldViewTest is Test {
 
         fund.submitEpochAction(
             abi.encodePacked(uint8(0)),
-            "Set", int8(0), "New policy"
+            "Set", int8(1), "New policy"
         );
         fund.syncPhase();
 
@@ -131,7 +132,7 @@ contract WorldViewTest is Test {
     function test_state_hash_deterministic() public {
         fund.submitEpochAction(
             abi.encodePacked(uint8(0)),
-            "Set", int8(0), "Policy A"
+            "Set", int8(1), "Policy A"
         );
         fund.syncPhase();
 
@@ -145,7 +146,7 @@ contract WorldViewTest is Test {
 
         fund.submitEpochAction(
             abi.encodePacked(uint8(0)),
-            "Test", int8(0), "Policy changes input hash"
+            "Test", int8(1), "Policy changes input hash"
         );
         fund.syncPhase();
 
@@ -158,7 +159,7 @@ contract WorldViewTest is Test {
     function test_get_all_policies() public {
         fund.submitEpochAction(
             abi.encodePacked(uint8(0)),
-            "Set 0", int8(0), "Alpha"
+            "Set 1", int8(1), "Alpha"
         );
         fund.syncPhase();
         fund.submitEpochAction(
@@ -168,8 +169,9 @@ contract WorldViewTest is Test {
         fund.syncPhase();
 
         string[10] memory all = wv.getPolicies();
-        assertEq(all[0], "Alpha");
-        assertEq(all[1], "");
+        assertEq(all[0], ""); // reserved
+        assertEq(all[1], "Alpha");
+        assertEq(all[2], "");
         assertEq(all[4], "Beta");
         assertEq(all[9], "");
     }
@@ -178,11 +180,11 @@ contract WorldViewTest is Test {
 
     function test_emits_guiding_policy_event() public {
         vm.expectEmit(true, false, false, true);
-        emit WorldView.GuidingPolicyUpdated(0, "Test policy");
+        emit WorldView.GuidingPolicyUpdated(1, "Test policy");
 
         fund.submitEpochAction(
             abi.encodePacked(uint8(0)),
-            "Event test", int8(0), "Test policy"
+            "Event test", int8(1), "Test policy"
         );
         fund.syncPhase();
     }
@@ -192,7 +194,37 @@ contract WorldViewTest is Test {
     function test_only_fund_can_set_policy() public {
         vm.prank(address(0xdead));
         vm.expectRevert("only fund");
-        wv.setPolicy(0, "Unauthorized");
+        wv.setPolicy(1, "Unauthorized");
+    }
+
+    /// @notice Slot 0 is reserved (legacy "diary style" slot). Writes must
+    ///         revert even when called by the fund. The enclave display
+    ///         skips slot 0, so allowing writes would just accumulate dead
+    ///         state that's hashed but never shown.
+    function test_setPolicy_rejects_slot_zero_from_fund() public {
+        vm.expectRevert("invalid slot");
+        vm.prank(address(fund));
+        wv.setPolicy(0, "Reserved slot");
+    }
+
+    /// @notice The fund wraps worldView.setPolicy in a try/catch and
+    ///         silently ignores failures — the agent's primary action
+    ///         still executes, and a bad worldview slot doesn't brick
+    ///         the epoch. Slot 0 attempts should therefore:
+    ///           - not revert the fund call,
+    ///           - leave slot 0 empty (WorldView rejected the write),
+    ///           - still advance the epoch as normal.
+    function test_submitEpochAction_slot_zero_silently_ignored() public {
+        uint256 epochBefore = fund.currentEpoch();
+        fund.submitEpochAction(
+            abi.encodePacked(uint8(0)),
+            "Trying slot 0", int8(0), "Should be ignored"
+        );
+        fund.syncPhase();
+        // Epoch still advanced — action executed normally
+        assertEq(fund.currentEpoch(), epochBefore + 1);
+        // Slot 0 is still empty — WorldView rejected the write
+        assertEq(wv.getPolicy(0), "");
     }
 
     // ─── Sidecar Policy Update ──────────────────────────────────────────
@@ -219,12 +251,12 @@ contract WorldViewTest is Test {
         fund.submitEpochAction(
             abi.encodePacked(uint8(0)),
             "Just updating my worldview",
-            int8(0),
+            int8(1),
             "Stay patient and grow"
         );
         fund.syncPhase();
 
-        assertEq(wv.getPolicy(0), "Stay patient and grow");
+        assertEq(wv.getPolicy(1), "Stay patient and grow");
     }
 
     function test_skip_policy_with_negative_slot() public {

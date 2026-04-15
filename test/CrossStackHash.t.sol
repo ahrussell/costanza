@@ -136,6 +136,10 @@ contract CrossStackHashTest is Test {
             ',"last_commission_change_epoch":', vm.toString(fund.lastCommissionChangeEpoch()),
             ',"total_inflows":', vm.toString(fund.totalInflows())
         );
+        // message_head and message_count are read from the EpochSnapshot (frozen
+        // at auction open) by _hashState(). For tests that haven't opened an
+        // auction yet, the snapshot is all zeros, so we emit 0 to match.
+        TheHumanFund.EpochSnapshot memory snap = fund.getEpochSnapshot(fund.currentEpoch());
         scalars = string.concat(scalars,
             ',"total_donated":', vm.toString(fund.totalDonatedToNonprofits()),
             ',"total_commissions":', vm.toString(fund.totalCommissionsPaid()),
@@ -143,10 +147,9 @@ contract CrossStackHashTest is Test {
             ',"epoch_inflow":', vm.toString(fund.currentEpochInflow()),
             ',"epoch_donation_count":', vm.toString(fund.currentEpochDonationCount()),
             ',"epoch_eth_usd_price":', vm.toString(fund.epochEthUsdPrice()),
-            // epoch_duration is read from _epochSnapshots[currentEpoch] in _hashState(),
-            // not from the live storage slot. For tests that haven't opened an auction
-            // yet, the snapshot is all zeros, so we emit 0 here to match.
-            ',"epoch_duration":', vm.toString(fund.getEpochSnapshot(fund.currentEpoch()).epochDuration)
+            ',"epoch_duration":', vm.toString(snap.epochDuration),
+            ',"message_head":', vm.toString(snap.messageHead),
+            ',"message_count":', vm.toString(snap.messageCount)
         );
 
         // Nonprofits
@@ -222,7 +225,7 @@ contract CrossStackHashTest is Test {
         for (uint256 i = 0; i < count; i++) {
             uint256 histEpoch = epoch - 1 - i;
             (, bytes memory action, bytes memory reasoning,
-             uint256 tb, uint256 ta, , bool executed) = fund.getEpochRecord(histEpoch);
+             uint256 tb, uint256 ta, uint256 bountyPaid, bool executed) = fund.getEpochRecord(histEpoch);
             if (!executed) continue;
             if (!first) result = string.concat(result, ",");
             first = false;
@@ -231,7 +234,8 @@ contract CrossStackHashTest is Test {
                 ',"action":"0x', _bytesToHex(action),
                 '","reasoning":"', string(reasoning),
                 '","treasury_before":', vm.toString(tb),
-                ',"treasury_after":', vm.toString(ta), '}'
+                ',"treasury_after":', vm.toString(ta),
+                ',"bounty_paid":', vm.toString(bountyPaid), '}'
             );
         }
         return string.concat(result, "]");

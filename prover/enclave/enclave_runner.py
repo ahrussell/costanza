@@ -35,7 +35,7 @@ import time
 from pathlib import Path
 
 from .inference import run_three_pass_inference, truncate_reasoning
-from .action_encoder import parse_action, encode_action_bytes
+from .action_encoder import parse_action, encode_action_bytes, validate_and_clamp_action
 from .input_hash import compute_input_hash, _keccak256
 from .attestation import get_tdx_quote, compute_report_data
 from .prompt_builder import build_epoch_context, build_full_prompt
@@ -360,40 +360,52 @@ def main():
         llama_proc = start_llama_server()
         wait_for_llama_server()
 
-        max_retries = 3
-        action_json = None
-        inference = None
+        # run_three_pass_inference internally retries just Pass 3 (the cheap
+        # action-JSON pass) with an incrementing seed if parse_action fails.
+        # If it still can't parse after its own retries, parsed_action will
+        # be None and we fall back to a no-action result with a system note
+        # so Costanza can see what happened next epoch.
+        inference = run_three_pass_inference(
+            full_prompt, seed=llama_seed, llama_url=LLAMA_SERVER_URL
+        )
+        action_json = inference.get("parsed_action")
+        system_notes = []  # list[str] of clamp / fallback notices for the diary
 
-        for attempt in range(1, max_retries + 1):
-            # Vary seed on retry to avoid repeating the same unparseable output
-            attempt_seed = (llama_seed + attempt - 1) if llama_seed >= 0 else -1
-            log(f"  Attempt {attempt}/{max_retries} (seed={attempt_seed})...")
-            try:
-                inference = run_three_pass_inference(
-                    full_prompt, seed=attempt_seed, llama_url=LLAMA_SERVER_URL
-                )
-            except Exception as e:
-                log(f"  Inference error: {e}")
-                if attempt == max_retries:
-                    raise RuntimeError(f"Inference failed after {max_retries} attempts: {e}")
-                continue
+        if action_json is None:
+            log(f"  Action parse FAILED after {inference.get('action_attempts', '?')} attempts — falling back to no action")
+            action_json = {"action": "noop", "params": {}}
+            system_notes.append(
+                "model failed to output valid JSON after several attempts — "
+                "defaulting to no action this epoch"
+            )
+        else:
+            log(f"  Action: {action_json['action']} (parsed after {inference.get('action_attempts', 1)} attempt(s))")
 
-            action_json = parse_action(inference["text"])
-            if action_json:
-                log(f"  Action: {action_json['action']}")
-                break
-            log(f"  Could not parse action from output")
+            # Clamp amounts to the per-epoch bounds the prompt displayed.
+            # Fixes issue #10 — model overshoots by 10-20% and the contract
+            # silently rejects. Clamping here lets the action land.
+            action_json, clamp_notes = validate_and_clamp_action(action_json, epoch_state)
+            if clamp_notes:
+                for n in clamp_notes:
+                    log(f"  Clamp: {n}")
+                system_notes.extend(clamp_notes)
 
-        if not action_json:
-            raise RuntimeError("Could not parse action after retries")
-
-        # Step 6: Encode action and compute hashes
+        # Step 6: Encode action + append system notes to reasoning.
+        # CRITICAL: system notes MUST be appended BEFORE truncate_reasoning()
+        # because the contract's REPORTDATA is sha256(inputHash || outputHash)
+        # where outputHash covers the reasoning. Editing reasoning after
+        # hashing would break attestation.
         log("")
         log("Step 6: Encoding action...")
-        reasoning = truncate_reasoning(inference["reasoning"])
+        reasoning = inference["reasoning"]
+        if system_notes:
+            reasoning = reasoning.rstrip() + "\n\n" + "\n".join(
+                f"[System note: {n}]" for n in system_notes
+            )
+        reasoning = truncate_reasoning(reasoning)
         action_bytes = encode_action_bytes(action_json)
         log(f"  Action bytes: {len(action_bytes)} bytes")
-        log(f"  Reasoning: {len(reasoning)} chars")
+        log(f"  Reasoning: {len(reasoning)} chars ({len(system_notes)} system notes appended)")
 
         # Step 7: Get TDX attestation quote
         log("")

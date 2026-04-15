@@ -186,6 +186,7 @@ def read_epoch_snapshot(contract, w3, epoch):
                      {"name": "epochDuration", "type": "uint256"},
                      {"name": "investmentProtocolCount", "type": "uint256"},
                      {"name": "investmentCurrentValues", "type": "uint256[21]"},
+                     {"name": "investmentActive", "type": "bool[21]"},
                  ], "name": "", "type": "tuple"}],
                  "stateMutability": "view"}]
     snap_contract = w3.eth.contract(address=contract.address, abi=snap_abi)
@@ -202,6 +203,7 @@ def read_epoch_snapshot(contract, w3, epoch):
         "epoch_duration": snap[7],
         "investment_protocol_count": snap[8],
         "investment_current_values": snap[9],  # uint256[21], 1-indexed
+        "investment_active": snap[10],          # bool[21], 1-indexed
     }
 
 
@@ -250,13 +252,17 @@ def apply_snapshot_overrides(contract, w3, state):
     if snap_unread < len(donor_messages):
         state["donor_messages"] = donor_messages[:snap_unread]
 
-    # Override investment currentValues with frozen snapshot values and
-    # recompute derived totals for display consistency.
+    # Override investment currentValues + active flags with frozen snapshot
+    # values, and recompute derived totals for display consistency.
+    # active is snapshotted because the admin can call setProtocolActive()
+    # mid-epoch; freezing it keeps the input hash reproducible.
     frozen_values = snapshot["investment_current_values"]
+    frozen_active = snapshot["investment_active"]
     total_invested = 0
     for inv in state.get("investments", []):
         pid = inv["id"]
         inv["current_value"] = frozen_values[pid]
+        inv["active"] = bool(frozen_active[pid])
         total_invested += frozen_values[pid]
     state["total_invested"] = total_invested
     state["total_assets"] = snapshot["balance"] + total_invested

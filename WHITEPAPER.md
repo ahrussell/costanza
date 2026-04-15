@@ -1059,7 +1059,7 @@ The six leaf hashes that make up $\textit{baseInputHash}$:
 | State scalars | Two-stage `keccak256(abi.encode(...))` over 16 scalar fields (epoch, balance, commission rate, maxBid, **effectiveMaxBid**, consecutive missed, last donation/commission epochs, total inflows/donated/commissions/bounties, per-epoch inflow/count, ETH/USD price, epoch duration) | `_hashState()` |
 | Nonprofits | Rolling `keccak256(rolling \|\| itemHash)` where $\textit{itemHash} = \text{Keccak256}(\text{abi.encode}(\textit{name}, \textit{desc}, \textit{ein}, \textit{totalDonated}, \textit{totalDonatedUsd}, \textit{donationCount}))$ | `_hashNonprofits()` |
 | Investments | `keccak256(abi.encodePacked(\\forall i: pid_i \|\| deposited_i \|\| shares_i \|\| currentValue_i, protocolCount, totalInvested))` | `InvestmentManager.stateHash()` |
-| Worldview | `keccak256(abi.encode(\textit{policies}_0, \ldots, \textit{policies}_9))` over 10 policy slots | `WorldView.stateHash()` |
+| Worldview | `keccak256(abi.encode(\textit{policies}_0, \ldots, \textit{policies}_9))` over 10 policy slots (slot 0 reserved; writes rejected in `WorldView.setPolicy`, always hashes as the empty string) | `WorldView.stateHash()` |
 | Donor messages | Rolling `keccak256(rolling \|\| perMsgHash)` where $\textit{perMsgHash} = \text{Keccak256}(\text{abi.encode}(\textit{sender}, \textit{amount}, \textit{text}, \textit{epoch}))$ | `_hashUnreadMessages()` |
 | Epoch history | Rolling `keccak256(rolling \|\| contentHash)` over the last 10 slots, where $\textit{contentHash} = \text{Keccak256}(\text{abi.encode}(\text{Keccak256}(\textit{reasoning}), \text{Keccak256}(\textit{action}), \textit{treasuryBefore}, \textit{treasuryAfter}))$ — unexecuted slots contribute a zero leaf | `_hashRecentHistory()` |
 

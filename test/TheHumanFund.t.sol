@@ -356,9 +356,10 @@ contract TheHumanFundTest is Test {
         bytes32 contentHash = fund.epochContentHashes(1);
         assertTrue(contentHash != bytes32(0));
 
-        // Verify it matches the expected formula
+        // Verify it matches the expected formula.
+        // bountyPaid is 0 for this direct submitEpochAction call (no auction bounty).
         bytes32 expected = keccak256(abi.encode(
-            keccak256(reasoning), keccak256(action), treasuryBefore, treasuryBefore // noop: before == after
+            keccak256(reasoning), keccak256(action), treasuryBefore, treasuryBefore, uint256(0)
         ));
         assertEq(contentHash, expected);
     }
@@ -455,7 +456,7 @@ contract TheHumanFundTest is Test {
         vm.expectRevert(TheHumanFund.Frozen.selector);
         uint256[] memory slots = new uint256[](1);
         string[] memory policies = new string[](1);
-        slots[0] = 0;
+        slots[0] = 1; // slot 0 is reserved; use slot 1
         policies[0] = "test";
         fund.seedWorldView(slots, policies);
     }

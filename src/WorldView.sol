@@ -4,7 +4,11 @@ pragma solidity ^0.8.20;
 import "./interfaces/IWorldView.sol";
 
 /// @title WorldView
-/// @notice Stores the agent's 10 guiding policies. Only the fund contract can update them.
+/// @notice Stores the agent's guiding policies. Only the fund contract can
+///         update them. Slots 1-9 are writable; slot 0 is reserved (legacy
+///         "diary style" slot, unused in the live prompt). The storage array
+///         and stateHash() still cover all 10 slots for byte-exact hash
+///         equivalence with the enclave's _hash_worldview mirror.
 contract WorldView is IWorldView {
     uint256 public constant NUM_POLICIES = 10;
     uint256 public constant MAX_POLICY_LENGTH = 280;
@@ -19,11 +23,16 @@ contract WorldView is IWorldView {
     }
 
     /// @notice Set a guiding policy. Only callable by the fund contract.
-    /// @param slot Policy slot (0-9).
+    /// @param slot Policy slot (1-9). Slot 0 is reserved (legacy "diary style"
+    ///             slot, unused in the live prompt) and cannot be written.
     /// @param policy The policy text (truncated to 280 bytes if longer).
     function setPolicy(uint256 slot, string calldata policy) external override {
         require(msg.sender == fund, "only fund");
-        require(slot < NUM_POLICIES, "invalid slot");
+        // Slot 0 is reserved. It was once a "diary style" slot but the prompt
+        // now derives voice from the system prompt + anchors, and the display
+        // loops over slots 1..7. Reject writes to slot 0 to keep the contract
+        // state clean and prevent the agent from filling an unused slot.
+        require(slot > 0 && slot < NUM_POLICIES, "invalid slot");
 
         string memory p = policy;
         if (bytes(policy).length > MAX_POLICY_LENGTH) {

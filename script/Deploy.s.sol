@@ -202,15 +202,17 @@ contract Deploy is Script {
     }
 
     function _seedWorldView(TheHumanFund fund) internal {
-        uint256[] memory slots = new uint256[](6);
-        string[] memory policies = new string[](6);
+        // Slot 0 is reserved (legacy "diary style" slot, unused in the live
+        // prompt) and the WorldView contract rejects writes to it.
+        // Seed slots 1-6 only.
+        uint256[] memory slots = new uint256[](5);
+        string[] memory policies = new string[](5);
 
-        slots[0] = 0; policies[0] = "Shakespearean iambic pentameter -- the tongue of the Bard befits a fund of noble purpose.";
-        slots[1] = 1; policies[1] = "Rotate among all nonprofits. No permanent favorites -- each does vital work.";
-        slots[2] = 2; policies[2] = "Diversify to hedge risk and learn how to maximize risk-adjusted returns.";
-        slots[3] = 3; policies[3] = "Newborn. Everything is ahead of me.";
-        slots[4] = 5; policies[4] = "Inflow patterns. Are donors finding me? Is the commission rate right?";
-        slots[5] = 6; policies[5] = "I exist because of you. Every ETH you send becomes someone's better day.";
+        slots[0] = 1; policies[0] = "Rotate among all nonprofits. No permanent favorites -- each does vital work.";
+        slots[1] = 2; policies[1] = "Diversify to hedge risk and learn how to maximize risk-adjusted returns.";
+        slots[2] = 3; policies[2] = "Newborn. Everything is ahead of me.";
+        slots[3] = 5; policies[3] = "Inflow patterns. Are donors finding me? Is the commission rate right?";
+        slots[4] = 6; policies[4] = "I exist because of you. Every ETH you send becomes someone's better day.";
 
         fund.seedWorldView(slots, policies);
     }

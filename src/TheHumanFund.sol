@@ -92,6 +92,14 @@ contract TheHumanFund is ReentrancyGuard {
         // depositedEth and shares don't drift (only changed by execute actions).
         uint256 investmentProtocolCount;
         uint256[21] investmentCurrentValues;  // 1-indexed, [0] unused, max 20 protocols
+        // Protocol `active` flag at auction open. Admin can toggle
+        // setProtocolActive() mid-epoch, so we must freeze this alongside
+        // currentValues to keep the input hash reproducible. name,
+        // riskTier, and expectedApyBps are immutable post-addProtocol,
+        // so they don't need freezing — live reads at hash time equal
+        // the at-auction-open values as long as we loop only up to the
+        // snapshotted protocolCount.
+        bool[21] investmentActive;
     }
 
     // ─── Events ──────────────────────────────────────────────────────────
@@ -814,12 +822,19 @@ contract TheHumanFund is ReentrancyGuard {
         snap.effectiveMaxBid = effectiveMaxBid();
         snap.epochDuration = epochDuration;
 
-        // Snapshot investment currentValues (drift with DeFi yields between blocks)
+        // Snapshot investment currentValues (drift with DeFi yields between
+        // blocks) and active flags (admin can toggle mid-epoch via
+        // setProtocolActive). protocolCount is frozen too so any protocols
+        // added mid-epoch are ignored until the next auction open. name /
+        // riskTier / expectedApyBps are immutable post-addProtocol, so live
+        // reads at hash time equal at-auction-open values as long as we
+        // loop only up to the snapshotted protocolCount.
         if (address(investmentManager) != address(0)) {
             uint256 pCount = investmentManager.protocolCount();
             snap.investmentProtocolCount = pCount;
             for (uint256 i = 1; i <= pCount; i++) {
                 snap.investmentCurrentValues[i] = investmentManager.getProtocolValue(i);
+                snap.investmentActive[i] = investmentManager.isProtocolActive(i);
             }
         }
     }
@@ -961,8 +976,10 @@ contract TheHumanFund is ReentrancyGuard {
 
         // Cache content hash for this epoch — used by _computeInputHash() to verify
         // that the TEE sees the same history as on-chain without re-hashing calldata.
+        // bountyPaid is included so the enclave's lifespan / burn-rate math
+        // cannot be manipulated by a runner lying about past epoch costs.
         epochContentHashes[epoch] = keccak256(abi.encode(
-            keccak256(reasoning), keccak256(action), treasuryBefore, treasuryAfter
+            keccak256(reasoning), keccak256(action), treasuryBefore, treasuryAfter, bountyPaid
         ));
 
         // Advance message head using the frozen count captured at auction open.
@@ -1147,8 +1164,18 @@ contract TheHumanFund is ReentrancyGuard {
     function _computeInputHash() internal view returns (bytes32) {
         bytes32 stateHash = _hashState();
         bytes32 nonprofitHash = _hashNonprofits();
+        // Pass the snapshot arrays to the InvestmentManager's hashing
+        // function so drift-prone fields (currentValue, active) are bound
+        // to the at-auction-open values and immutable protocol metadata
+        // (name, riskTier, expectedApyBps) is read live but bounded by
+        // the snapshotted protocolCount.
+        EpochSnapshot storage investSnap = _epochSnapshots[currentEpoch];
         bytes32 investHash = address(investmentManager) != address(0)
-            ? investmentManager.stateHash()
+            ? investmentManager.epochStateHash(
+                investSnap.investmentCurrentValues,
+                investSnap.investmentActive,
+                investSnap.investmentProtocolCount
+              )
             : bytes32(0);
         bytes32 worldviewHash = address(worldView) != address(0)
             ? worldView.stateHash()
@@ -1190,6 +1217,7 @@ contract TheHumanFund is ReentrancyGuard {
             lastCommissionChangeEpoch,
             totalInflows
         ));
+        EpochSnapshot storage snap = _epochSnapshots[currentEpoch];
         return keccak256(abi.encode(
             h1,
             totalDonatedToNonprofits,
@@ -1198,7 +1226,13 @@ contract TheHumanFund is ReentrancyGuard {
             currentEpochInflow,
             currentEpochDonationCount,
             epochEthUsdPrice,
-            _epochSnapshots[currentEpoch].epochDuration
+            snap.epochDuration,
+            // Snapshot message boundaries so the display "(X of Y unread)"
+            // cannot be manipulated by the runner. messageHead and
+            // messageCount are populated in _freezeEpochSnapshot at
+            // auction open and equal the live values at that instant.
+            snap.messageHead,
+            snap.messageCount
         ));
     }
 
@@ -1208,8 +1242,12 @@ contract TheHumanFund is ReentrancyGuard {
         bytes32 rolling;
         for (uint256 i = 1; i <= nonprofitCount; i++) {
             Nonprofit storage np = nonprofits[i];
+            // `i` is included in the hash so the enclave can safely use
+            // np["id"] from runner-supplied state. Without this, a runner
+            // could swap id fields across entries (identical content hash)
+            // and trick the model into donating to the wrong nonprofit.
             bytes32 itemHash = keccak256(abi.encode(
-                np.name, np.description, np.ein, np.totalDonated, np.totalDonatedUsd, np.donationCount
+                i, np.name, np.description, np.ein, np.totalDonated, np.totalDonatedUsd, np.donationCount
             ));
             rolling = keccak256(abi.encode(rolling, itemHash));
         }

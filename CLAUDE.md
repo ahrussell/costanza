@@ -303,7 +303,7 @@ The agent outputs exactly one action per epoch as JSON, with an optional worldvi
 | `withdraw` | `protocol_id` (1-8), `amount_eth` | up to full position value |
 | `noop` | none | -- |
 
-Worldview updates (slots 0-7, max 280 chars) happen alongside the action — they don't consume it.
+Worldview updates (slots 1-7, max 280 chars) happen alongside the action — they don't consume it. Slot 0 is reserved (legacy "diary style" slot) and WorldView rejects writes to it.
 
 Output format:
 ```
@@ -311,7 +311,7 @@ Output format:
 [Private analytical reasoning — scratch pad for tradeoffs and planning]
 </think>
 <diary>
-[Public diary entry — published on-chain, written in the literary style from worldview slot [0]]
+[Public diary entry — published on-chain, written in Costanza's voice (see prover/prompts/system.txt + voice_anchors.txt)]
 </diary>
 {"action": "...", "params": {...}}
 ```

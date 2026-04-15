@@ -102,6 +102,10 @@ def _hash_state(s: dict) -> bytes:
     that adds it to _hashState alongside maxBid + consecutiveMissedEpochs).
     This eliminates any Python/Solidity formula-drift class of bug: the
     enclave is a dumb hasher, it never re-derives anything.
+
+    `message_head` and `message_count` are frozen in the EpochSnapshot at
+    auction open (by _freezeEpochSnapshot) and included here so the
+    prompt's "(X of Y unread)" display cannot be manipulated by the runner.
     """
     h1 = _keccak256(_abi_encode(
         ("uint256", s["epoch"]),
@@ -123,6 +127,8 @@ def _hash_state(s: dict) -> bytes:
         ("uint256", s["epoch_donation_count"]),
         ("uint256", s["epoch_eth_usd_price"]),
         ("uint256", s.get("epoch_duration", DEFAULT_EPOCH_DURATION)),
+        ("uint256", s.get("message_head", 0)),
+        ("uint256", s.get("message_count", 0)),
     ))
 
 
@@ -132,16 +138,24 @@ def _hash_nonprofits(nonprofits: list) -> bytes:
     Rolling hash:
         rolling = 0
         for each nonprofit i in 1..nonprofitCount:
-            item = keccak256(abi.encode(name, description, ein,
+            item = keccak256(abi.encode(i, name, description, ein,
                              totalDonated, totalDonatedUsd, donationCount))
             rolling = keccak256(abi.encode(rolling, item))
+
+    `i` is hashed per-entry so the enclave can safely use np["id"] from
+    runner-supplied state. Without this, a runner could swap id fields
+    across entries (identical content hash) and trick the model into
+    donating to the wrong nonprofit.
     """
     if not nonprofits:
         return b"\x00" * 32
     rolling = b"\x00" * 32
-    for np in nonprofits:
+    for idx, np in enumerate(nonprofits):
+        # Position-based id (1-indexed), matches Solidity loop `i`.
+        i = idx + 1
         ein = _bytes32(np.get("ein", b"\x00" * 32))
         item_hash = _keccak256(_abi_encode(
+            ("uint256", i),
             ("string", np["name"]),
             ("string", np.get("description", "")),
             ("bytes32", ein),
@@ -157,33 +171,68 @@ def _hash_nonprofits(nonprofits: list) -> bytes:
 
 
 def _hash_investments(investments: list) -> bytes:
-    """Replicate InvestmentManager.stateHash().
+    """Replicate InvestmentManager.epochStateHash().
 
-    Solidity:
-        bytes memory packed;
-        for (i = 1; i <= protocolCount; i++) {
-            packed = abi.encodePacked(packed, i, depositedEth, shares, currentValue);
+    Solidity (rolling hash for consistency with _hashNonprofits):
+        rolling = 0;
+        totalValue = 0;
+        for (i = 1; i <= snapshotProtocolCount; i++) {
+            itemHash = keccak256(abi.encode(
+                i,
+                depositedEth,
+                shares,
+                snapshotCurrentValues[i],
+                snapshotActive[i],
+                name,
+                riskTier,
+                expectedApyBps
+            ));
+            rolling = keccak256(abi.encode(rolling, itemHash));
+            totalValue += snapshotCurrentValues[i];
         }
-        return keccak256(abi.encodePacked(packed, protocolCount, totalInvestedValue));
+        return keccak256(abi.encode(rolling, snapshotProtocolCount, totalValue));
 
-    The runner passes `investments[]` with every slot from 1..protocolCount
-    (including zeroed positions). `current_value` must be the snapshot value
-    frozen at auction open (not live), so drift between snapshot time and
-    inference time does not perturb the hash.
+    The runner passes `investments[]` with every slot from 1..protocolCount,
+    including zeroed positions. Drifting fields (current_value, active)
+    come from the EpochSnapshot frozen at auction open. Immutable metadata
+    (name, risk_tier, expected_apy_bps) is read from the contract's
+    protocol registry by the client and passed through; it's bound into
+    the hash here so any runner tampering is caught on-chain.
     """
     if not investments:
         return b"\x00" * 32
-    packed = b""
+    rolling = b"\x00" * 32
     total_value = 0
-    for inv in investments:
-        pid = inv["id"]
-        deposited = inv["deposited"]
-        shares = inv["shares"]
-        current_value = inv["current_value"]
+    for idx, inv in enumerate(investments):
+        # Position-based id (1-indexed), matches Solidity loop `i`.
+        i = idx + 1
+        deposited = int(inv.get("deposited", 0) or 0)
+        shares = int(inv.get("shares", 0) or 0)
+        current_value = int(inv.get("current_value", 0) or 0)
+        active = bool(inv.get("active", False))
+        name = inv.get("name", "")
+        risk_tier = int(inv.get("risk_tier", 0) or 0)
+        expected_apy_bps = int(inv.get("expected_apy_bps", 0) or 0)
         total_value += current_value
-        packed += _u256_packed(pid) + _u256_packed(deposited) + _u256_packed(shares) + _u256_packed(current_value)
-    packed += _u256_packed(len(investments)) + _u256_packed(total_value)
-    return _keccak256(packed)
+        item_hash = _keccak256(_abi_encode(
+            ("uint256", i),
+            ("uint256", deposited),
+            ("uint256", shares),
+            ("uint256", current_value),
+            ("bool", active),
+            ("string", name),
+            ("uint8", risk_tier),
+            ("uint16", expected_apy_bps),
+        ))
+        rolling = _keccak256(_abi_encode(
+            ("bytes32", rolling),
+            ("bytes32", item_hash),
+        ))
+    return _keccak256(_abi_encode(
+        ("bytes32", rolling),
+        ("uint256", len(investments)),
+        ("uint256", total_value),
+    ))
 
 
 def _hash_worldview(policies: list) -> bytes:
@@ -193,6 +242,11 @@ def _hash_worldview(policies: list) -> bytes:
         return keccak256(abi.encode(
             policies[0], policies[1], ..., policies[9]
         ));
+
+    All 10 slots are included for byte-exact hash equivalence with the
+    contract. Slot 0 is reserved (legacy "diary style" slot) and the
+    contract rejects writes to it, so in practice it always hashes as
+    the empty string — but it must still appear in the hash input.
 
     Zero-length worldview → b'\\x00' * 32 (matches bytes32(0) sentinel).
     """
@@ -290,7 +344,11 @@ def _hash_history(history: list, current_epoch: int) -> bytes:
 
 
 def _content_hash_for_entry(entry: dict) -> bytes:
-    """keccak256(abi.encode(keccak256(reasoning), keccak256(action), tb, ta))."""
+    """keccak256(abi.encode(keccak256(reasoning), keccak256(action), tb, ta, bountyPaid)).
+
+    bountyPaid is hashed so the enclave's lifespan / burn-rate math cannot
+    be manipulated by a runner lying about past epoch costs.
+    """
     action_data = entry["action"]
     if isinstance(action_data, str):
         action_data = bytes.fromhex(action_data.replace("0x", ""))
@@ -311,6 +369,7 @@ def _content_hash_for_entry(entry: dict) -> bytes:
         ("bytes32", _keccak256(action_data)),
         ("uint256", entry["treasury_before"]),
         ("uint256", entry["treasury_after"]),
+        ("uint256", int(entry.get("bounty_paid", 0) or 0)),
     ))
 
 

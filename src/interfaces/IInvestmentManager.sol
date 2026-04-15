@@ -19,7 +19,32 @@ interface IInvestmentManager {
     function totalInvestedValue() external view returns (uint256);
 
     /// @notice Deterministic hash of all investment state, for input hash binding.
+    /// @dev Reads adapter.balance() live — susceptible to drift between auction
+    ///      open and execution. Kept for backward compatibility; TheHumanFund
+    ///      now binds investment state via epochStateHash() which takes frozen
+    ///      snapshot values as inputs.
     function stateHash() external view returns (bytes32);
+
+    /// @notice Snapshot-bound investment state hash.
+    /// @dev Called from TheHumanFund._computeInputHash() with arrays frozen
+    ///      in EpochSnapshot at auction open. Hashes per-protocol:
+    ///        - protocolId (i)
+    ///        - depositedEth, shares (stable within an epoch)
+    ///        - snapshotCurrentValues[i] (frozen at auction open)
+    ///        - snapshotActive[i] (frozen; admin can toggle mid-epoch)
+    ///        - name, riskTier, expectedApyBps (immutable post-addProtocol)
+    ///      Loops 1..snapshotProtocolCount so protocols added mid-epoch are
+    ///      ignored until the next auction open.
+    function epochStateHash(
+        uint256[21] calldata snapshotCurrentValues,
+        bool[21] calldata snapshotActive,
+        uint256 snapshotProtocolCount
+    ) external view returns (bytes32);
+
+    /// @notice Returns whether a protocol currently accepts new deposits.
+    /// @dev Used by TheHumanFund to freeze the `active` flag into the epoch
+    ///      snapshot at auction open.
+    function isProtocolActive(uint256 protocolId) external view returns (bool);
 
     /// @notice Withdraw all positions across all protocols, sending ETH to recipient.
     function withdrawAll(address recipient) external;

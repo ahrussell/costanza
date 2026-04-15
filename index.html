@@ -1093,7 +1093,7 @@
 
       <div class="card" id="worldview-card" style="cursor:pointer;" onclick="openModal('worldview')">
         <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0;">
-          <span>Worldview <span class="badge badge-dim" id="worldview-badge" style="margin-left:6px;">8 slots</span></span>
+          <span>Worldview <span class="badge badge-dim" id="worldview-badge" style="margin-left:6px;">7 slots</span></span>
           <button class="hero-diary-toggle wc-toggle" onclick="event.stopPropagation();openModal('worldview')">↗</button>
         </div>
         <div id="worldview-preview" style="margin-top:12px;">
@@ -1686,12 +1686,14 @@ ACTIONS (choose exactly one per epoch):
 2. set_commission_rate(rate_bps) \u2014 Set referral commission (1-90%)
 3. invest(protocol_id, amount_eth) \u2014 Deploy ETH into DeFi
 4. withdraw(protocol_id, amount_eth) \u2014 Pull ETH from DeFi
-5. set_guiding_policy(slot, policy) \u2014 Update worldview slot
-6. noop \u2014 Do nothing`;
+5. noop \u2014 Do nothing`;
 
-// Worldview slot names
+// Worldview slot names. Slot 0 is reserved (legacy "diary style" slot,
+// unused in the live prompt — WorldView.setPolicy rejects writes to it).
+// We index from 1 so SLOT_NAMES[slot] works for slots 1..7.
 const SLOT_NAMES = [
-  'Diary style', 'Donation strategy', 'Investment stance', 'Current mood',
+  null, // slot 0 reserved
+  'Donation strategy', 'Investment stance', 'Current mood',
   'Biggest lesson', 'Watching', 'Message to donors', 'Wild card',
 ];
 
@@ -2456,9 +2458,10 @@ async function loadAll() {
     if (wvAddr && wvAddr !== '0x0000000000000000000000000000000000000000') {
       worldViewContract = new ethers.Contract(wvAddr, WORLDVIEW_ABI, provider);
       const policies = await worldViewContract.getPolicies();
-      const first8 = Array.from(policies).slice(0, 8);
-      const activePolicies = first8.map((p, i) => ({ text: p, idx: i })).filter(x => x.text.length > 0);
-      const wvBadgeText = `${activePolicies.length}/8 active`;
+      // Slot 0 is reserved (legacy); show slots 1-7 only.
+      const displayed = Array.from(policies).slice(1, 8);
+      const activePolicies = displayed.map((p, i) => ({ text: p, idx: i + 1 })).filter(x => x.text.length > 0);
+      const wvBadgeText = `${activePolicies.length}/7 active`;
       document.getElementById('worldview-badge').textContent = wvBadgeText;
       document.getElementById('worldview-badge-modal').textContent = wvBadgeText;
       // Preview: brief explanation
@@ -2466,15 +2469,17 @@ async function loadAll() {
         <div style="font-size:12px;color:var(--text-secondary);line-height:1.5;">Costanza can update his worldview based on what he learns each epoch. This acts as his long-term memory.</div>
       `;
       // Full view
-      document.getElementById('worldview-full').innerHTML = first8.map((p, i) => `
+      document.getElementById('worldview-full').innerHTML = displayed.map((p, i) => {
+        const slot = i + 1;
+        return `
         <div class="policy-slot">
-          <span class="policy-idx">[${i}]</span>
+          <span class="policy-idx">[${slot}]</span>
           <div>
-            <div class="policy-name">${SLOT_NAMES[i] || 'Slot ' + i}</div>
+            <div class="policy-name">${SLOT_NAMES[slot] || 'Slot ' + slot}</div>
             ${p ? `<div class="policy-text">${escapeHtml(p)}</div>` : `<div class="policy-empty">(empty)</div>`}
           </div>
         </div>
-      `).join('');
+      `;}).join('');
     } else {
       document.getElementById('worldview-preview').innerHTML = '<div style="color:var(--text-dim);">WorldView not linked</div>';
     }

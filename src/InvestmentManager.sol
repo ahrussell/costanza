@@ -301,7 +301,9 @@ contract InvestmentManager is IInvestmentManager, ReentrancyGuard {
     }
 
     /// @notice Deterministic hash of all investment state.
-    /// @dev Included in TheHumanFund's _computeInputHash() for TEE attestation binding.
+    /// @dev Reads adapter.balance() live — susceptible to drift between auction
+    ///      open and execution. TheHumanFund uses epochStateHash() instead;
+    ///      this is kept for external callers / backward compatibility.
     function stateHash() external view override returns (bytes32) {
         bytes memory packed;
         for (uint256 i = 1; i <= protocolCount; i++) {
@@ -318,6 +320,48 @@ contract InvestmentManager is IInvestmentManager, ReentrancyGuard {
             );
         }
         return keccak256(abi.encodePacked(packed, protocolCount, totalInvestedValue()));
+    }
+
+    /// @notice Snapshot-bound state hash used by TheHumanFund._computeInputHash().
+    /// @dev Drift-prone fields (currentValue, active) come from the EpochSnapshot
+    ///      frozen at auction open. Immutable fields (name, riskTier,
+    ///      expectedApyBps) are read live — they cannot change post-addProtocol.
+    ///      Protocols added after the snapshot are ignored by looping only up
+    ///      to snapshotProtocolCount.
+    function epochStateHash(
+        uint256[21] calldata snapshotCurrentValues,
+        bool[21] calldata snapshotActive,
+        uint256 snapshotProtocolCount
+    ) external view override returns (bytes32) {
+        bytes32 rolling;
+        uint256 totalValue = 0;
+        for (uint256 i = 1; i <= snapshotProtocolCount; i++) {
+            ProtocolInfo storage proto = protocols[i];
+            Position storage pos = positions[i];
+            uint256 currentValue = snapshotCurrentValues[i];
+            totalValue += currentValue;
+            bytes32 itemHash = keccak256(abi.encode(
+                i,
+                pos.depositedEth,
+                pos.shares,
+                currentValue,
+                snapshotActive[i],
+                proto.name,
+                proto.riskTier,
+                proto.expectedApyBps
+            ));
+            rolling = keccak256(abi.encode(rolling, itemHash));
+        }
+        return keccak256(abi.encode(rolling, snapshotProtocolCount, totalValue));
+    }
+
+    /// @notice Whether a protocol currently accepts new deposits.
+    /// @dev Reads the live `active` flag. Used by TheHumanFund to freeze the
+    ///      active flag into the epoch snapshot at auction open. Returns
+    ///      false for non-existent protocols.
+    function isProtocolActive(uint256 protocolId) external view override returns (bool) {
+        ProtocolInfo storage proto = protocols[protocolId];
+        return proto.exists && proto.active;
     }
 
     /// @notice Get the current value of a position (from adapter.balance()).
