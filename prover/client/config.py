@@ -39,6 +39,8 @@ Examples:
                         help="Directory for persistent state (default: ~/.humanfund)")
     parser.add_argument("--verbose", "-v", action="store_true",
                         help="Verbose output")
+    parser.add_argument("--no-lock", action="store_true",
+                        help="Skip flock (needed for Docker on macOS)")
 
     parsed = parser.parse_args(args)
 
@@ -59,6 +61,7 @@ Examples:
         "bid_margin": parsed.bid_margin,
         "state_dir": parsed.state_dir,
         "verbose": parsed.verbose,
+        "no_lock": parsed.no_lock,
     }
 
     # Verifier ID: 1 = TdxVerifier, 2 = MockVerifier (testnet)

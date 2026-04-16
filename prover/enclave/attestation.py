@@ -39,7 +39,13 @@ def get_tdx_quote(report_data: bytes, allow_mock: bool = False) -> bytes:
         RuntimeError: If configfs-tsm is not available (not on TDX hardware).
     """
     if os.path.isdir(CONFIGFS_TSM_BASE):
-        return _get_quote_configfs_tsm(report_data)
+        try:
+            return _get_quote_configfs_tsm(report_data)
+        except (OSError, RuntimeError) as e:
+            if not allow_mock:
+                raise
+            print(f"  TDX configfs-tsm present but failed: {e}")
+            print(f"  Falling back to mock attestation (--mock flag)")
 
     # Mock mode — only allowed when explicitly passed via CLI flag
     if allow_mock:

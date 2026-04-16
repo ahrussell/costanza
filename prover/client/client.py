@@ -459,10 +459,11 @@ def _run_tee_inference(chain, config, auction, saved, state_dir):
         saved.pop("tee_completed", None)
         saved.pop("tee_result_path", None)
 
-    logger.info("Starting TEE inference...")
-    # After the pure-`_hashSnapshot` refactor, read_contract_state already
-    # pulls scalars from the frozen EpochSnapshot — no overlay needed.
-    epoch_state = chain.read_contract_state()
+    logger.info("Starting TEE inference for epoch %d...", auction["epoch"])
+    # Pin to the auction's epoch — don't let a syncPhase advance cause us
+    # to read the wrong epoch's snapshot (especially with MockVerifier
+    # which won't catch hash mismatches).
+    epoch_state = chain.read_contract_state(epoch=auction["epoch"])
 
     prompt_path = Path(config["system_prompt_path"])
     system_prompt = prompt_path.read_text().strip()
@@ -621,15 +622,17 @@ def main():
 
     config = load_config()
 
-    # Acquire exclusive lock
-    lock_path = Path(config["state_dir"]) / ".runner.lock"
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    lock_fd = open(lock_path, "w")
-    try:
-        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        logger.info("Another runner instance is active, exiting")
-        sys.exit(0)
+    # Acquire exclusive lock (skip with --no-lock for Docker on macOS)
+    lock_fd = None
+    if not config.get("no_lock"):
+        lock_path = Path(config["state_dir"]) / ".runner.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_fd = open(lock_path, "w")
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            logger.info("Another runner instance is active, exiting")
+            sys.exit(0)
 
     try:
         run(config)
@@ -643,7 +646,8 @@ def main():
         notify_error(config.get("ntfy_channel"), "?", msg)
         sys.exit(1)
     finally:
-        lock_fd.close()
+        if lock_fd:
+            lock_fd.close()
 
 
 if __name__ == "__main__":

@@ -183,14 +183,15 @@ class ChainClient:
             logger.warning("ETH/USD price fetch failed, using $2000 fallback", exc_info=True)
             return 2000 * 10**8  # fallback: $2000 in 8-decimal format
 
-    def read_contract_state(self):
+    def read_contract_state(self, epoch=None):
         """Read the full epoch state the enclave needs.
 
         After the pure-`_hashSnapshot` refactor, this reads scalars from
         the frozen `EpochSnapshot` directly — no separate overlay pass.
+        If epoch is specified, reads that epoch's snapshot instead of currentEpoch().
         """
         from .epoch_state import read_contract_state
-        return read_contract_state(self.contract, self.w3)
+        return read_contract_state(self.contract, self.w3, epoch=epoch)
 
     def get_epoch_timing(self):
         """Read epoch timing from contract.

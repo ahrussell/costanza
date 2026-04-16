@@ -334,11 +334,14 @@ def validate_and_clamp_action(action_json: dict, state: dict):
         if requested_wei > max_wei:
             clamped_eth = max_wei / 1e18
             params["amount_eth"] = clamped_eth
-            notes.append(
-                f"donation amount clamped from {_fmt_eth(requested_wei)} ETH to "
-                f"{_fmt_eth(max_wei)} ETH — the contract caps donations at 10% "
-                f"of liquid treasury per epoch"
-            )
+            # Only note the clamp if the change is meaningful (>1 wei avoids
+            # float→int rounding noise that produces "clamped from X to X")
+            if requested_wei - max_wei > 1:
+                notes.append(
+                    f"donation amount clamped from {_fmt_eth(requested_wei)} ETH to "
+                    f"{_fmt_eth(max_wei)} ETH — the contract caps donations at 10% "
+                    f"of liquid treasury per epoch"
+                )
 
     elif action == "invest":
         requested_eth = _parse_eth_amount(

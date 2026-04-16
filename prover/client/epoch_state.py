@@ -41,7 +41,10 @@ need to add it to `EpochSnapshot` first. The static allowlist test in
 `prover/enclave/test_hash_coverage.py` enforces this at commit time.
 """
 
+import logging
 from web3 import Web3
+
+logger = logging.getLogger(__name__)
 
 
 # ─── ABIs for sub-contracts ──────────────────────────────────────────────
@@ -134,12 +137,17 @@ def read_epoch_snapshot(contract, epoch):
 
 # ─── Top-level reader ─────────────────────────────────────────────────────
 
-def read_contract_state(contract, w3):
-    """Read the full state the enclave needs, pinned to the current epoch's
+def read_contract_state(contract, w3, epoch=None):
+    """Read the full state the enclave needs, pinned to a specific epoch's
     frozen snapshot. Every scalar comes from the snapshot; raw collection
     data comes from live getters bounded by frozen counts.
+
+    If epoch is not specified, reads currentEpoch(). Callers in the
+    execution path should pass the auction's epoch explicitly to avoid
+    reading the wrong snapshot after a syncPhase advance.
     """
-    epoch = contract.functions.currentEpoch().call()
+    if epoch is None:
+        epoch = contract.functions.currentEpoch().call()
     snap = read_epoch_snapshot(contract, epoch)
 
     # ── Scalars copied straight from the frozen snapshot ─────────────────
@@ -255,6 +263,8 @@ def read_contract_state(contract, w3):
         unread = snap["message_count"] - snap["message_head"]
         max_msgs = 3  # MAX_MESSAGES_PER_EPOCH
         emit = min(unread, max_msgs)
+        logger.info("Messages: head=%d count=%d unread=%d emit=%d",
+                     snap["message_head"], snap["message_count"], unread, emit)
         for i in range(emit):
             sender, amount, text, msg_epoch = (
                 msg_contract.functions.messages(snap["message_head"] + i).call()
@@ -265,7 +275,7 @@ def read_contract_state(contract, w3):
                 "text": text,
                 "epoch": msg_epoch,
             })
-    except Exception:
-        pass
+    except Exception as e:
+        logger.error("Failed to read donor messages: %s", e)
 
     return state

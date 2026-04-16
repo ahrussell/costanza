@@ -98,8 +98,9 @@ class GCPPersistentTEEClient(TEEClient):
         if check and result.returncode != 0:
             raise RuntimeError(
                 f"SSH command failed (exit {result.returncode}):\n"
-                f"  cmd: {remote_cmd[:120]}\n"
-                f"  stderr: {stderr[:400]}"
+                f"  cmd: {remote_cmd[:200]}\n"
+                f"  stderr (last 800): {stderr[-800:]}\n"
+                f"  stdout (last 800): {stdout[-800:]}"
             )
         return stdout, stderr
 
@@ -156,12 +157,26 @@ class GCPPersistentTEEClient(TEEClient):
                 time.sleep(15)
         raise RuntimeError(f"SSH not available on {VM_NAME} after {timeout}s")
 
+    def _sync_code_if_needed(self):
+        """Copy enclave + prompts to the VM only if not already present."""
+        try:
+            stdout, _ = self._ssh(
+                f"test -f {REMOTE_PROVER_DIR}/enclave/enclave_runner.py && echo present",
+                timeout=20, check=False,
+            )
+            if "present" in stdout:
+                logger.info("Enclave code already present on VM, skipping sync.")
+                return
+        except Exception:
+            pass
+        self._sync_code()
+
     def _sync_code(self):
         """Copy enclave + prompts to the VM."""
         logger.info("Syncing enclave code to %s...", VM_NAME)
 
-        # Ensure target directory exists
-        self._ssh(f"mkdir -p {REMOTE_PROVER_DIR}", timeout=30)
+        # Ensure target directory exists (sudo for /opt paths)
+        self._ssh(f"sudo mkdir -p {REMOTE_PROVER_DIR} && sudo chmod 777 {REMOTE_PROVER_DIR}", timeout=30)
 
         # Copy enclave module (includes __init__.py and all .py files)
         for subdir in ["enclave", "prompts"]:
@@ -198,10 +213,12 @@ class GCPPersistentTEEClient(TEEClient):
                 cmd = cmd[:3] + ["--project", self.project] + cmd[3:]
             subprocess.run(cmd, capture_output=True, text=True, timeout=30)
 
-        # Install Python deps for the enclave
+        # Install Python deps for the enclave (skip if already present)
         logger.info("  Installing enclave Python deps...")
         self._ssh(
-            "pip3 install --quiet pycryptodome eth_abi requests 2>&1 | tail -3",
+            "python3 -c 'import Crypto; import eth_abi' 2>/dev/null"
+            " || sudo pip3 install --break-system-packages --ignore-installed typing_extensions"
+            " --quiet pycryptodome eth_abi requests 2>&1 | tail -3",
             timeout=120,
         )
         logger.info("Code sync complete.")
@@ -213,7 +230,8 @@ class GCPPersistentTEEClient(TEEClient):
         self._ssh("pkill -f llama-server || true", timeout=15, check=False)
         time.sleep(2)
         self._ssh(
-            f"nohup {LLAMA_SERVER_BIN} -m {MODEL_PATH} -c 16384 -ngl 99"
+            f"nohup env LD_LIBRARY_PATH=/opt/humanfund/bin"
+            f" {LLAMA_SERVER_BIN} -m {MODEL_PATH} -c 16384 -ngl 99"
             f" --host 127.0.0.1 --port {LLAMA_SERVER_PORT}"
             f" > /tmp/llama-server.log 2>&1 &",
             timeout=15,
@@ -263,7 +281,7 @@ class GCPPersistentTEEClient(TEEClient):
         if not self._vm_exists():
             self._create_vm()
             self._wait_for_ssh()
-            self._sync_code()
+            self._sync_code_if_needed()
             self._start_llama_server()
             self._wait_for_llama_ready()
         else:
@@ -276,7 +294,7 @@ class GCPPersistentTEEClient(TEEClient):
                 )
             if not self._is_llama_running():
                 logger.info("VM running but llama-server not ready — restarting...")
-                self._sync_code()
+                self._sync_code_if_needed()
                 self._start_llama_server()
                 self._wait_for_llama_ready()
             else:

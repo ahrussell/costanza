@@ -404,18 +404,27 @@ def main():
                     log(f"  Clamp: {n}")
                 system_notes.extend(clamp_notes)
 
-        # Step 6: Encode action + append system notes to reasoning.
-        # CRITICAL: system notes MUST be appended BEFORE truncate_reasoning()
+        # Step 6: Encode action + inject system notes into the diary.
+        # CRITICAL: system notes MUST be injected BEFORE truncate_reasoning()
         # because the contract's REPORTDATA is sha256(inputHash || outputHash)
         # where outputHash covers the reasoning. Editing reasoning after
         # hashing would break attestation.
+        #
+        # Notes go inside the <diary> block so the model sees them in
+        # future epochs' decision history.
         log("")
         log("Step 6: Encoding action...")
         reasoning = inference["reasoning"]
         if system_notes:
-            reasoning = reasoning.rstrip() + "\n\n" + "\n".join(
+            notes_block = "\n\n" + "\n".join(
                 f"[System note: {n}]" for n in system_notes
             )
+            # Insert before </diary> if present, otherwise append
+            diary_close_idx = reasoning.rfind("</diary>")
+            if diary_close_idx >= 0:
+                reasoning = reasoning[:diary_close_idx] + notes_block + "\n" + reasoning[diary_close_idx:]
+            else:
+                reasoning = reasoning.rstrip() + notes_block
         reasoning = truncate_reasoning(reasoning)
         action_bytes = encode_action_bytes(action_json)
         log(f"  Action bytes: {len(action_bytes)} bytes")

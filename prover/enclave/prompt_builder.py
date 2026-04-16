@@ -225,8 +225,11 @@ def _compute_action_bounds(state):
     balance = state["treasury_balance"]
     total_invested, total_assets = _derive_trusted_aggregates(state)
 
-    # Donate bounds
-    max_donate = (balance * 1000) // 10000  # 10% of liquid treasury
+    # Donate bounds — use 95% of the theoretical max to account for the
+    # bounty payment that reduces treasury between snapshot and execution.
+    # Without this margin the model hits the exact cap and the contract
+    # rejects because treasuryBalance() is post-bounty.
+    max_donate = (balance * 1000) // 10000 * 95 // 100  # ~9.5% of treasury
 
     # Commission bounds
     current_commission = state["commission_rate_bps"]
