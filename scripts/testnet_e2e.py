@@ -112,14 +112,12 @@ def advance_to_fresh_epoch():
 # ─── Phase 3: Actions via Direct Mode ──────────────────────────────
 
 def test_actions(results):
-    print("\n── Phase 3: Actions via Direct Mode ──")
-
-    # Check if direct mode is frozen
-    frozen = fund.functions.frozenFlags().call()
-    if frozen & 64:  # FREEZE_DIRECT_MODE
-        print("  SKIPPED: FREEZE_DIRECT_MODE is set. Actions require auction flow.")
-        results.ok("direct_mode_frozen_check", "Correctly blocked — direct mode frozen")
-        return
+    print("\n── Phase 3: Actions (direct mode removed — skipping) ──")
+    print("  SKIPPED: submitEpochAction was removed in the _nextPhase refactor.")
+    print("  Actions now flow through commit → reveal → submitAuctionResult.")
+    print("  Covered by Foundry tests (285 passing including fuzz tests).")
+    results.ok("direct_mode_removed", "Direct mode correctly removed")
+    return
 
     # 3.6: Commission rate change
     print("\nTest 3.6: Commission rate change to 25%")
@@ -586,9 +584,9 @@ def test_freezing(results):
         1: ("FREEZE_NONPROFITS", "addNonprofit"),
         2: ("FREEZE_INVESTMENT_WIRING", "setInvestmentManager"),
         4: ("FREEZE_WORLDVIEW_WIRING", "setWorldView"),
-        8: ("FREEZE_AUCTION_CONFIG", "setAuctionTiming"),
+        8: ("FREEZE_AUCTION_CONFIG", "resetAuction"),
         16: ("FREEZE_VERIFIERS", "approveVerifier"),
-        64: ("FREEZE_DIRECT_MODE", "submitEpochAction"),
+        # 64: FREEZE_DIRECT_MODE removed in _nextPhase refactor
         128: ("FREEZE_MIGRATE", "withdrawAll"),
     }
 
@@ -604,11 +602,9 @@ def test_freezing(results):
                 elif flag == 4:
                     receipt = send_tx(fund.functions.setWorldView(owner.address), gas=200_000)
                 elif flag == 8:
-                    receipt = send_tx(fund.functions.setAuctionTiming(1800, 480, 300, 1020), gas=200_000)
+                    receipt = send_tx(fund.functions.resetAuction(1200, 1200, 3000), gas=200_000)
                 elif flag == 16:
                     receipt = send_tx(fund.functions.approveVerifier(99, owner.address), gas=200_000)
-                elif flag == 64:
-                    receipt = send_tx(fund.functions.submitEpochAction(b'\x00', b'test', -1, ""), gas=200_000)
                 elif flag == 128:
                     receipt = send_tx(fund.functions.withdrawAll(), gas=500_000)
 

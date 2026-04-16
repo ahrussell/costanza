@@ -143,9 +143,6 @@ def _try_claim_bonds(chain, ntfy, state_dir):
     Uses a separate claim_tracker.json that survives epoch state clears.
     """
     try:
-        # Claim legacy bonds (pre-v2 accumulated balance)
-        chain.claim_legacy_bonds()
-
         # Load claim tracking state (separate from epoch state)
         claim_file = Path(state_dir) / "claim_tracker.json"
         try:

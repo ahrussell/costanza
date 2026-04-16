@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "forge-std/Test.sol";
 import "../src/InvestmentManager.sol";
 import "../src/TheHumanFund.sol";
 import "../src/AuctionManager.sol";
 import "../src/interfaces/IProtocolAdapter.sol";
+import "./helpers/EpochTest.sol";
 
 /// @notice Mock adapter that simulates a DeFi protocol with configurable exchange rate.
 contract MockAdapter is IProtocolAdapter {
@@ -50,7 +50,7 @@ contract MockAdapter is IProtocolAdapter {
     receive() external payable {}
 }
 
-contract InvestmentManagerTest is Test {
+contract InvestmentManagerTest is EpochTest {
     TheHumanFund fund;
     InvestmentManager im;
     MockAdapter adapterA;
@@ -64,7 +64,7 @@ contract InvestmentManagerTest is Test {
         // Deploy fund with 10 ETH
         fund = new TheHumanFund{value: 10 ether}(
             1000, 0.0001 ether,
-            address(0xBEEF), address(0xBEEF), address(0xBEEF), address(0xBEEF), address(0)
+            address(0xBEEF), address(0)
         );
 
         fund.addNonprofit("NP1", "Nonprofit 1", bytes32("EIN-1"));
@@ -79,7 +79,7 @@ contract InvestmentManagerTest is Test {
 
         // Deploy AuctionManager so syncPhase() works
         AuctionManager _am = new AuctionManager(address(fund));
-        fund.setAuctionManager(address(_am));
+        fund.setAuctionManager(address(_am), 1200, 1200, 82800);
 
         // Deploy mock adapters
         adapterA = new MockAdapter("Aave Mock");
@@ -92,6 +92,7 @@ contract InvestmentManagerTest is Test {
         im.addProtocol(address(adapterB), "Lido wstETH", "Stake ETH via Lido", 2, 380);     // protocol 2
         im.addProtocol(address(adapterC), "Compound V3 USDC", "Lend USDC on Compound", 1, 450); // protocol 3
         vm.stopPrank();
+        _registerMockVerifier(fund);
     }
 
     // ─── Protocol Registry ───────────────────────────────────────────────
@@ -128,8 +129,7 @@ contract InvestmentManagerTest is Test {
     function test_deposit() public {
         // Fund submits an invest action (action type 4)
         bytes memory action = abi.encodePacked(uint8(3), abi.encode(uint256(1), uint256(1 ether)));
-        fund.submitEpochAction(action, "test invest", -1, "");
-        fund.syncPhase();
+        speedrunEpoch(fund, action, "test invest");
 
         // Check position
         (uint256 deposited, uint256 shares, uint256 value, , , , ) = im.getPosition(1);
@@ -141,13 +141,11 @@ contract InvestmentManagerTest is Test {
     function test_depositMultipleProtocols() public {
         // Invest in protocol 1
         bytes memory action1 = abi.encodePacked(uint8(3), abi.encode(uint256(1), uint256(1 ether)));
-        fund.submitEpochAction(action1, "invest 1", -1, "");
-        fund.syncPhase();
+        speedrunEpoch(fund, action1, "invest 1");
 
         // Invest in protocol 2
         bytes memory action2 = abi.encodePacked(uint8(3), abi.encode(uint256(2), uint256(0.5 ether)));
-        fund.submitEpochAction(action2, "invest 2", -1, "");
-        fund.syncPhase();
+        speedrunEpoch(fund, action2, "invest 2");
 
         assertEq(im.totalInvestedValue(), 1.5 ether);
     }
@@ -157,11 +155,10 @@ contract InvestmentManagerTest is Test {
         // Try to invest 9 ETH — should fail silently (noop via try/catch)
         bytes memory action = abi.encodePacked(uint8(3), abi.encode(uint256(1), uint256(9 ether)));
         uint256 balBefore = address(fund).balance;
-        fund.submitEpochAction(action, "too much", -1, "");
-        fund.syncPhase();
+        speedrunEpoch(fund, action, "too much");
 
-        // Fund balance should be unchanged (action was rejected)
-        assertEq(address(fund).balance, balBefore);
+        // Fund balance should be unchanged (action was rejected) minus bounty
+        assertEq(address(fund).balance, balBefore - 1); // -1 wei bounty
         assertEq(im.totalInvestedValue(), 0);
     }
 
@@ -170,34 +167,30 @@ contract InvestmentManagerTest is Test {
         // Try to invest 3 ETH in one protocol
         bytes memory action = abi.encodePacked(uint8(3), abi.encode(uint256(1), uint256(3 ether)));
         uint256 balBefore = address(fund).balance;
-        fund.submitEpochAction(action, "too much per protocol", -1, "");
-        fund.syncPhase();
+        speedrunEpoch(fund, action, "too much per protocol");
 
-        assertEq(address(fund).balance, balBefore);
+        assertEq(address(fund).balance, balBefore - 1); // -1 wei bounty
     }
 
     function test_depositBreaksMinReserve() public {
         // Min reserve is 20%. If treasury is 10 ETH, min liquid = 2 ETH.
         // If we invest 2 ETH first (ok), then try another 7 ETH (would leave only 1 ETH)
         bytes memory action1 = abi.encodePacked(uint8(3), abi.encode(uint256(1), uint256(2 ether)));
-        fund.submitEpochAction(action1, "invest ok", -1, "");
-        fund.syncPhase();
+        speedrunEpoch(fund, action1, "invest ok");
         assertEq(im.totalInvestedValue(), 2 ether);
 
         // Now try 7 ETH more — total invested would be 9 ETH, fund has 1 ETH = 10% < 20%
         bytes memory action2 = abi.encodePacked(uint8(3), abi.encode(uint256(2), uint256(7 ether)));
         uint256 balBefore = address(fund).balance;
-        fund.submitEpochAction(action2, "breaks reserve", -1, "");
-        fund.syncPhase();
-        assertEq(address(fund).balance, balBefore); // unchanged
+        speedrunEpoch(fund, action2, "breaks reserve");
+        assertEq(address(fund).balance, balBefore - 1); // -1 wei bounty
     }
 
     function test_depositToInvalidProtocol() public {
         bytes memory action = abi.encodePacked(uint8(3), abi.encode(uint256(99), uint256(1 ether)));
         uint256 balBefore = address(fund).balance;
-        fund.submitEpochAction(action, "bad protocol", -1, "");
-        fund.syncPhase();
-        assertEq(address(fund).balance, balBefore); // noop
+        speedrunEpoch(fund, action, "bad protocol");
+        assertEq(address(fund).balance, balBefore - 1); // -1 wei bounty
     }
 
     function test_depositToPausedProtocol() public {
@@ -206,9 +199,8 @@ contract InvestmentManagerTest is Test {
 
         bytes memory action = abi.encodePacked(uint8(3), abi.encode(uint256(1), uint256(1 ether)));
         uint256 balBefore = address(fund).balance;
-        fund.submitEpochAction(action, "paused protocol", -1, "");
-        fund.syncPhase();
-        assertEq(address(fund).balance, balBefore); // noop
+        speedrunEpoch(fund, action, "paused protocol");
+        assertEq(address(fund).balance, balBefore - 1); // -1 wei bounty
     }
 
     // ─── Withdraw ────────────────────────────────────────────────────────
@@ -216,8 +208,7 @@ contract InvestmentManagerTest is Test {
     function test_withdraw() public {
         // Invest first
         bytes memory invest = abi.encodePacked(uint8(3), abi.encode(uint256(1), uint256(2 ether)));
-        fund.submitEpochAction(invest, "invest", -1, "");
-        fund.syncPhase();
+        speedrunEpoch(fund, invest, "invest");
         assertEq(im.totalInvestedValue(), 2 ether);
 
         // Fund the adapter so it can pay out
@@ -226,8 +217,7 @@ contract InvestmentManagerTest is Test {
         // Withdraw
         uint256 balBefore = address(fund).balance;
         bytes memory withdraw_ = abi.encodePacked(uint8(4), abi.encode(uint256(1), uint256(1 ether)));
-        fund.submitEpochAction(withdraw_, "withdraw", -1, "");
-        fund.syncPhase();
+        speedrunEpoch(fund, withdraw_, "withdraw");
 
         // Fund balance should increase by ~1 ETH
         assertGt(address(fund).balance, balBefore);
@@ -236,15 +226,13 @@ contract InvestmentManagerTest is Test {
 
     function test_withdrawAll() public {
         bytes memory invest = abi.encodePacked(uint8(3), abi.encode(uint256(1), uint256(2 ether)));
-        fund.submitEpochAction(invest, "invest", -1, "");
-        fund.syncPhase();
+        speedrunEpoch(fund, invest, "invest");
 
         vm.deal(address(adapterA), 2 ether);
 
         // Withdraw more than balance — should withdraw everything
         bytes memory withdraw_ = abi.encodePacked(uint8(4), abi.encode(uint256(1), uint256(10 ether)));
-        fund.submitEpochAction(withdraw_, "withdraw all", -1, "");
-        fund.syncPhase();
+        speedrunEpoch(fund, withdraw_, "withdraw all");
 
         (uint256 deposited, uint256 shares, , , , , ) = im.getPosition(1);
         assertEq(shares, 0);
@@ -255,16 +243,14 @@ contract InvestmentManagerTest is Test {
         // Try to withdraw when nothing invested — should noop
         bytes memory action = abi.encodePacked(uint8(4), abi.encode(uint256(1), uint256(1 ether)));
         uint256 balBefore = address(fund).balance;
-        fund.submitEpochAction(action, "withdraw empty", -1, "");
-        fund.syncPhase();
-        assertEq(address(fund).balance, balBefore);
+        speedrunEpoch(fund, action, "withdraw empty");
+        assertEq(address(fund).balance, balBefore - 1); // -1 wei bounty
     }
 
     function test_withdrawFromPausedProtocolStillWorks() public {
         // Invest
         bytes memory invest = abi.encodePacked(uint8(3), abi.encode(uint256(1), uint256(1 ether)));
-        fund.submitEpochAction(invest, "invest", -1, "");
-        fund.syncPhase();
+        speedrunEpoch(fund, invest, "invest");
 
         // Pause protocol
         vm.prank(admin);
@@ -276,8 +262,7 @@ contract InvestmentManagerTest is Test {
         // Withdraw should still work even though protocol is paused
         bytes memory withdraw_ = abi.encodePacked(uint8(4), abi.encode(uint256(1), uint256(1 ether)));
         uint256 balBefore = address(fund).balance;
-        fund.submitEpochAction(withdraw_, "withdraw from paused", -1, "");
-        fund.syncPhase();
+        speedrunEpoch(fund, withdraw_, "withdraw from paused");
         assertGt(address(fund).balance, balBefore);
     }
 
@@ -285,8 +270,7 @@ contract InvestmentManagerTest is Test {
 
     function test_valueWithGains() public {
         bytes memory invest = abi.encodePacked(uint8(3), abi.encode(uint256(1), uint256(2 ether)));
-        fund.submitEpochAction(invest, "invest", -1, "");
-        fund.syncPhase();
+        speedrunEpoch(fund, invest, "invest");
 
         // Simulate 10% gain
         adapterA.setExchangeRate(11000);
@@ -298,8 +282,7 @@ contract InvestmentManagerTest is Test {
 
     function test_valueWithLoss() public {
         bytes memory invest = abi.encodePacked(uint8(3), abi.encode(uint256(1), uint256(2 ether)));
-        fund.submitEpochAction(invest, "invest", -1, "");
-        fund.syncPhase();
+        speedrunEpoch(fund, invest, "invest");
 
         // Simulate 20% loss
         adapterA.setExchangeRate(8000);
@@ -312,8 +295,7 @@ contract InvestmentManagerTest is Test {
 
     function test_stateHashDeterministic() public {
         bytes memory invest = abi.encodePacked(uint8(3), abi.encode(uint256(1), uint256(1 ether)));
-        fund.submitEpochAction(invest, "invest", -1, "");
-        fund.syncPhase();
+        speedrunEpoch(fund, invest, "invest");
 
         bytes32 hash1 = im.stateHash();
         bytes32 hash2 = im.stateHash();
@@ -324,8 +306,7 @@ contract InvestmentManagerTest is Test {
         bytes32 hashBefore = im.stateHash();
 
         bytes memory invest = abi.encodePacked(uint8(3), abi.encode(uint256(1), uint256(1 ether)));
-        fund.submitEpochAction(invest, "invest", -1, "");
-        fund.syncPhase();
+        speedrunEpoch(fund, invest, "invest");
 
         bytes32 hashAfter = im.stateHash();
         assertTrue(hashBefore != hashAfter);
@@ -337,11 +318,10 @@ contract InvestmentManagerTest is Test {
         assertEq(fund.totalAssets(), 10 ether);
 
         bytes memory invest = abi.encodePacked(uint8(3), abi.encode(uint256(1), uint256(2 ether)));
-        fund.submitEpochAction(invest, "invest", -1, "");
-        fund.syncPhase();
+        speedrunEpoch(fund, invest, "invest");
 
-        // Total assets should still be 10 ETH (8 liquid + 2 invested)
-        assertEq(fund.totalAssets(), 10 ether);
+        // Total assets should still be ~10 ETH (8 liquid + 2 invested) minus bounty
+        assertEq(fund.totalAssets(), 10 ether - 1); // -1 wei bounty
     }
 
     // ─── No InvestmentManager ────────────────────────────────────────────
@@ -350,16 +330,16 @@ contract InvestmentManagerTest is Test {
         // Deploy a fresh fund without InvestmentManager
         TheHumanFund fund2 = new TheHumanFund{value: 1 ether}(
             1000, 0.0001 ether,
-            address(0xBEEF), address(0xBEEF), address(0xBEEF), address(0xBEEF), address(0)
+            address(0xBEEF), address(0)
         );
         AuctionManager am2 = new AuctionManager(address(fund2));
-        fund2.setAuctionManager(address(am2));
+        fund2.setAuctionManager(address(am2), 1200, 1200, 82800);
+        _registerMockVerifier(fund2);
 
         bytes memory action = abi.encodePacked(uint8(3), abi.encode(uint256(1), uint256(0.1 ether)));
         uint256 balBefore = address(fund2).balance;
-        fund2.submitEpochAction(action, "invest without IM", -1, "");
-        fund2.syncPhase();
-        assertEq(address(fund2).balance, balBefore); // noop
+        speedrunEpoch(fund2, action, "invest without IM");
+        assertEq(address(fund2).balance, balBefore - 1); // noop, -1 wei bounty
     }
 
     // ─── Bounds Management ───────────────────────────────────────────────
@@ -398,11 +378,9 @@ contract InvestmentManagerTest is Test {
     function test_withdrawAll_basic() public {
         // Invest in two protocols
         bytes memory action1 = abi.encodePacked(uint8(3), abi.encode(uint256(1), uint256(2 ether)));
-        fund.submitEpochAction(action1, "invest 1", -1, "");
-        fund.syncPhase();
+        speedrunEpoch(fund, action1, "invest 1");
         bytes memory action2 = abi.encodePacked(uint8(3), abi.encode(uint256(2), uint256(1 ether)));
-        fund.submitEpochAction(action2, "invest 2", -1, "");
-        fund.syncPhase();
+        speedrunEpoch(fund, action2, "invest 2");
 
         assertEq(im.totalInvestedValue(), 3 ether);
 
@@ -448,8 +426,7 @@ contract InvestmentManagerTest is Test {
     function test_withdrawAll_withGains() public {
         // Invest 2 ETH
         bytes memory action = abi.encodePacked(uint8(3), abi.encode(uint256(1), uint256(2 ether)));
-        fund.submitEpochAction(action, "invest", -1, "");
-        fund.syncPhase();
+        speedrunEpoch(fund, action, "invest");
 
         // Simulate 50% gain
         adapterA.setExchangeRate(15000);
@@ -458,16 +435,15 @@ contract InvestmentManagerTest is Test {
         uint256 ownerBalBefore = address(owner).balance;
         fund.withdrawAll();
 
-        // Owner gets: 3 ETH from investment (2 * 1.5) + 8 ETH liquid = 11 ETH
+        // Owner gets: 3 ETH from investment (2 * 1.5) + 8 ETH liquid - 1 wei bounty
         uint256 received = address(owner).balance - ownerBalBefore;
-        assertEq(received, 11 ether);
+        assertEq(received, 11 ether - 1); // -1 wei bounty
     }
 
     function test_withdrawAll_skipsEmptyProtocols() public {
         // Only invest in protocol 1, leave 2 and 3 empty
         bytes memory action = abi.encodePacked(uint8(3), abi.encode(uint256(1), uint256(1 ether)));
-        fund.submitEpochAction(action, "invest", -1, "");
-        fund.syncPhase();
+        speedrunEpoch(fund, action, "invest");
         vm.deal(address(adapterA), 1 ether);
 
         // Should succeed without reverting on empty protocols
@@ -534,8 +510,7 @@ contract InvestmentManagerTest is Test {
         uint256 minReserve = (totalAssets * 2000) / 10000;
 
         bytes memory action = abi.encodePacked(uint8(3), abi.encode(uint256(1), amount));
-        fund.submitEpochAction(action, bytes("invest fuzz"), -1, "");
-        fund.syncPhase();
+        speedrunEpoch(fund, action, bytes("invest fuzz"));
 
         // After action, check invariants
         uint256 invested = im.totalInvestedValue();
@@ -556,18 +531,15 @@ contract InvestmentManagerTest is Test {
 
         // Invest in protocol 1
         bytes memory action1 = abi.encodePacked(uint8(3), abi.encode(uint256(1), a1));
-        fund.submitEpochAction(action1, bytes("invest 1"), -1, "");
-        fund.syncPhase();
+        speedrunEpoch(fund, action1, bytes("invest 1"));
 
         // Invest in protocol 2
         bytes memory action2 = abi.encodePacked(uint8(3), abi.encode(uint256(2), a2));
-        fund.submitEpochAction(action2, bytes("invest 2"), -1, "");
-        fund.syncPhase();
+        speedrunEpoch(fund, action2, bytes("invest 2"));
 
         // Invest in protocol 3
         bytes memory action3 = abi.encodePacked(uint8(3), abi.encode(uint256(3), a3));
-        fund.submitEpochAction(action3, bytes("invest 3"), -1, "");
-        fund.syncPhase();
+        speedrunEpoch(fund, action3, bytes("invest 3"));
 
         // After all investments, min reserve must hold
         uint256 liquid = address(fund).balance;

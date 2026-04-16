@@ -124,7 +124,7 @@ def sync_phase(chain: ChainClient):
 def commit_bid(chain: ChainClient, bid_wei: int, state_dir=None):
     """Generate salt, compute commit hash, submit bid with bond.
 
-    The contract's commit() calls _syncPhase() first, which opens the
+    The contract's commit() calls _advanceToNow() first, which opens the
     auction if needed. Returns the saved state dict.
     """
     salt = "0x" + secrets.token_hex(32)
@@ -161,7 +161,7 @@ def commit_bid(chain: ChainClient, bid_wei: int, state_dir=None):
 def reveal_bid(chain: ChainClient, state: dict):
     """Reveal a previously committed bid.
 
-    The contract's reveal() calls _syncPhase() first, which closes
+    The contract's reveal() calls _advanceToNow() first, which closes
     the commit window if needed. Returns True on success.
     """
     bid_amount = state.get("bid_amount")
@@ -191,7 +191,7 @@ def submit_result(chain: ChainClient, action_bytes: bytes, reasoning: bytes,
                   proof: bytes, verifier_id=1, policy_slot=-1, policy_text=""):
     """Submit auction result with attestation proof.
 
-    The contract's submitAuctionResult() calls _syncPhase() first,
+    The contract's submitAuctionResult() calls _advanceToNow() first,
     which closes the reveal window and captures the seed if needed.
 
     Raises:

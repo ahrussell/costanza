@@ -31,7 +31,7 @@ Drift analysis per collection:
     (they drift due to yield); immutable metadata (name/risk/apy) is
     read live bounded by snap.investment_protocol_count → drift-free.
   - Worldview: policies can only change via `_applyPolicyUpdate`,
-    which runs inside `submitEpochAction` / `submitAuctionResult`
+    which runs inside `submitAuctionResult`
     AFTER input-hash verification. Between freeze and verify, worldview
     is stable. Read live → drift-free in the observed window.
 

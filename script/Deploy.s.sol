@@ -52,13 +52,15 @@ contract Deploy is Script {
         // ETH/USD feed (required for price snapshots; adapters also use it)
         address ethUsdFeedAddr = vm.envOr("ETH_USD_FEED", address(0));
 
+        // Deploy DonationExecutor (stateless — handles ETH→USDC→Endaoment)
+        DonationExecutor donExec = new DonationExecutor(
+            endaomentFactory, wethAddr, usdcAddr, swapRouterAddr, ethUsdFeedAddr
+        );
+
         TheHumanFund fund = new TheHumanFund{value: seedAmount}(
             1000,               // 10% initial commission
             0.01 ether,         // initial max bid
-            endaomentFactory,
-            wethAddr,
-            usdcAddr,
-            swapRouterAddr,
+            address(donExec),
             ethUsdFeedAddr
         );
 
@@ -69,7 +71,8 @@ contract Deploy is Script {
         fund.approveVerifier(1, address(tdxVerifier));  // ID 1 = Intel TDX
 
         AuctionManager am = new AuctionManager(address(fund));
-        fund.setAuctionManager(address(am));
+        // Production timing: 20m commit / 20m reveal / 50m exec = 90m epoch
+        fund.setAuctionManager(address(am), 20 minutes, 20 minutes, 50 minutes);
 
         InvestmentManager im = new InvestmentManager(address(fund), deployer);
         fund.setInvestmentManager(address(im));
@@ -79,9 +82,6 @@ contract Deploy is Script {
 
         // Seed initial worldview
         _seedWorldView(fund);
-
-        // Freeze direct submission — auctions are the only submission path.
-        fund.freeze(fund.FREEZE_DIRECT_MODE());
 
         // ─── 2. DeFi adapters ───────────────────────────────────────────
         // Only deployed if DeFi addresses are provided (mainnet/fork).
@@ -111,7 +111,7 @@ contract Deploy is Script {
         console.log("");
         console.log("Post-deployment:");
         console.log("  1. Register image:     tdxVerifier.approveImage(imageKey)");
-        console.log("  2. Set epoch timing:   fund.setAuctionTiming(epochDuration, commitWindow, revealWindow, executionWindow)");
+        console.log("  2. Adjust timing if needed: fund.resetAuction(commitWindow, revealWindow, executionWindow)");
         console.log("  Direct mode: FROZEN    (auction is the only submission path)");
         if (ethUsdFeedAddr == address(0)) {
             console.log("");

@@ -5,10 +5,8 @@ import "./interfaces/IProofVerifier.sol";
 import "./interfaces/IInvestmentManager.sol";
 import "./interfaces/IAuctionManager.sol";
 import "./interfaces/IWorldView.sol";
-import "./interfaces/IEndaoment.sol";
 import "./interfaces/IAggregatorV3.sol";
-import "./adapters/IWETH.sol";
-import "./adapters/SwapHelper.sol"; // for ISwapRouter, IERC20
+import "./DonationExecutor.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /// @title The Human Fund
@@ -100,10 +98,10 @@ contract TheHumanFund is ReentrancyGuard {
         uint256 currentEpochInflow;
         uint256 currentEpochDonationCount;
         uint256 epochEthUsdPrice;
-        // epochDuration frozen at auction open. The owner can change the
-        // live epochDuration mid-epoch via setAuctionTiming (e.g. to extend
-        // a phase window for a stuck runner). Hashing the snapshotted value
-        // keeps the base hash reproducible regardless of owner adjustments.
+        // epochDuration frozen at auction open. The only path that can
+        // change live epochDuration is `resetAuction`, which aborts the
+        // in-flight auction atomically — so by construction no in-flight
+        // snapshot can drift from live.
         uint256 epochDuration;
         // Message queue boundaries at auction open (used alongside messagesHash).
         uint256 messageHead;
@@ -228,11 +226,8 @@ contract TheHumanFund is ReentrancyGuard {
     uint256 public nonprofitCount;
     mapping(uint256 => Nonprofit) public nonprofits;
 
-    // Endaoment integration (Base mainnet addresses passed via constructor)
-    IEndaomentFactory public immutable endaomentFactory;
-    IWETH public immutable weth;
-    address public immutable usdc;
-    address public immutable swapRouter;
+    // Donation execution (ETH → WETH → USDC → Endaoment pipeline)
+    DonationExecutor public immutable donationExecutor;
 
     // Chainlink ETH/USD price feed
     IAggregatorV3 public immutable ethUsdFeed;
@@ -293,7 +288,7 @@ contract TheHumanFund is ReentrancyGuard {
     uint256 public constant FREEZE_AUCTION_CONFIG      = 1 << 3;
     uint256 public constant FREEZE_VERIFIERS           = 1 << 4;
     // FREEZE_PROMPT (1 << 5) removed — prompt verified via dm-verity image key
-    uint256 public constant FREEZE_DIRECT_MODE         = 1 << 6;
+    // FREEZE_DIRECT_MODE (1 << 6) removed — direct mode deleted in _nextPhase refactor
     uint256 public constant FREEZE_MIGRATE              = 1 << 7;
     uint256 public constant FREEZE_SUNSET               = 1 << 8;
     uint256 public frozenFlags;
@@ -301,6 +296,7 @@ contract TheHumanFund is ReentrancyGuard {
     event PermissionFrozen(uint256 indexed flag);
     event Sunset(address indexed destination);
     event OwnershipTransferred(address indexed newOwner);
+    event AuctionReset(uint256 indexed fromEpoch, uint256 indexed toEpoch);
 
     // ─── Modifiers ───────────────────────────────────────────────────────
 
@@ -318,10 +314,7 @@ contract TheHumanFund is ReentrancyGuard {
     constructor(
         uint256 _initialCommissionBps,
         uint256 _initialMaxBid,
-        address _endaomentFactory,
-        address _weth,
-        address _usdc,
-        address _swapRouter,
+        address _donationExecutor,
         address _ethUsdFeed
     ) payable {
         if (_initialCommissionBps < MIN_COMMISSION_BPS || _initialCommissionBps > MAX_COMMISSION_BPS) revert InvalidParams();
@@ -334,16 +327,16 @@ contract TheHumanFund is ReentrancyGuard {
         maxBid = _initialMaxBid;
         nextReferralCodeId = 1;
 
-        // Default epoch duration (can be overridden via setAuctionTiming)
+        // Default epoch duration (overwritten by setAuctionManager when AM timing is set)
         epochDuration = 24 hours;
         timingAnchor = block.timestamp;
         anchorEpoch = 1;
 
-        // Endaoment integration addresses
-        endaomentFactory = IEndaomentFactory(_endaomentFactory);
-        weth = IWETH(_weth);
-        usdc = _usdc;
-        swapRouter = _swapRouter;
+        // Initial bond. Mutates directly on winner-forfeit (+10% up to
+        // cap) and resets to this value on successful execution.
+        currentBond = BASE_BOND;
+
+        donationExecutor = DonationExecutor(_donationExecutor);
         ethUsdFeed = IAggregatorV3(_ethUsdFeed);
 
         if (msg.value > 0) {
@@ -384,7 +377,7 @@ contract TheHumanFund is ReentrancyGuard {
         if (msg.value < MIN_DONATION_AMOUNT) revert InvalidParams();
 
         // ─── Effects ─ all state writes BEFORE any external call (CEI) ──
-        // Note: we do NOT call _syncPhase here. Donations arriving during
+        // Note: we do NOT call _advanceToNow here. Donations arriving during
         // an idle gap (wall-clock past epoch end, no prover activity) will
         // be credited to `totalInflows` but lost from `currentEpochInflow`
         // when the next prover sync resets the per-epoch counter. This is
@@ -508,32 +501,6 @@ contract TheHumanFund is ReentrancyGuard {
         if (!sent) revert TransferFailed();
     }
 
-    // ─── Owner: Direct Epoch Submission ───────────────────────────────────
-
-    /// @notice Submit the AI agent's action with an optional worldview update.
-    /// @param action The encoded action blob.
-    /// @param reasoning The agent's chain-of-thought reasoning.
-    /// @param policySlot The worldview slot to update (0-9), or -1 to skip.
-    /// @param policyText The policy text (max 280 chars). Ignored if policySlot is -1.
-    function submitEpochAction(
-        bytes calldata action,
-        bytes calldata reasoning,
-        int8 policySlot,
-        string calldata policyText
-    ) external onlyOwner {
-        if (frozenFlags & FREEZE_DIRECT_MODE != 0) revert Frozen();
-        uint256 epoch = currentEpoch;
-        if (epochs[epoch].executed) revert AlreadyDone();
-        _snapshotEthUsdPrice();
-        _applyPolicyUpdate(policySlot, policyText);
-        // Direct mode never opens an auction, so the epoch snapshot is empty.
-        // Freeze the full snapshot here so `_recordAndExecute` (and any future
-        // reader) sees a complete, consistent view. In direct mode there is no
-        // window between "snapshot" and "execute" — they run in the same tx.
-        _freezeEpochSnapshot(epoch);
-        _recordAndExecute(epoch, action, reasoning, 0);
-    }
-
     // ─── Owner: Proof Verifier Registry ──────────────────────────────────
 
     event VerifierApproved(uint8 indexed verifierId, address verifier);
@@ -585,13 +552,17 @@ contract TheHumanFund is ReentrancyGuard {
     function migrate(address destination) external onlyOwner {
         if (frozenFlags & FREEZE_MIGRATE != 0) revert Frozen();
         if (frozenFlags & FREEZE_SUNSET == 0) revert InvalidParams();
-        // Ensure no auction is in flight
+        // Drain any in-flight auction first (refunds all held bonds —
+        // operator intervention is never a forfeit). Composed out of
+        // `_resetAuction` so the abort + re-anchor path is defined
+        // once and shared with the public `resetAuction` entry point.
         IAuctionManager am = auctionManager;
-        uint256 epoch = currentEpoch;
-        if (address(am) != address(0) && epoch > 0) {
-            IAuctionManager.AuctionPhase phase = am.getPhase(epoch);
-            if (phase != IAuctionManager.AuctionPhase.IDLE
-                && phase != IAuctionManager.AuctionPhase.SETTLED) revert WrongPhase();
+        if (address(am) != address(0)) {
+            _resetAuction(
+                am.commitWindow(),
+                am.revealWindow(),
+                am.executionWindow()
+            );
         }
         _withdrawTo(destination);
         emit Sunset(destination);
@@ -613,10 +584,32 @@ contract TheHumanFund is ReentrancyGuard {
         worldView = IWorldView(_wv);
     }
 
-    /// @notice Set the auction manager contract address.
-    function setAuctionManager(address _am) external onlyOwner {
+    /// @notice Set (or replace) the auction manager and configure its
+    ///         phase timing. Re-anchors the epoch schedule to now so the
+    ///         new AM's windows take effect from this block.
+    /// @dev This is the only entry point for wiring a fresh AM. For
+    ///      mid-life timing changes after auctions have run, use
+    ///      `resetAuction` instead (it also refunds any in-flight bonds).
+    /// @dev `epochDuration` is derived from the sum of phase windows —
+    ///      there is no independent timing parameter to drift.
+    function setAuctionManager(
+        address _am,
+        uint256 _commitWindow,
+        uint256 _revealWindow,
+        uint256 _executionWindow
+    ) external onlyOwner {
         if (frozenFlags & FREEZE_AUCTION_CONFIG != 0) revert Frozen();
+        if (_am == address(0)) revert InvalidParams();
+        if (_commitWindow == 0 || _revealWindow == 0 || _executionWindow == 0) revert InvalidParams();
+
         auctionManager = IAuctionManager(_am);
+        IAuctionManager(_am).setTiming(_commitWindow, _revealWindow, _executionWindow);
+        epochDuration = _commitWindow + _revealWindow + _executionWindow;
+
+        // Re-anchor the schedule so the new AM's first epoch starts now.
+        timingAnchor = block.timestamp;
+        anchorEpoch = currentEpoch;
+        lastEpochStartTime = block.timestamp;
     }
 
     // setApprovedPromptHash removed — prompt verified via dm-verity image key
@@ -636,7 +629,7 @@ contract TheHumanFund is ReentrancyGuard {
 
     /// @notice Permanently freeze a permission group. Once frozen, methods guarded
     ///         by that flag will revert with Frozen(). Cannot be undone.
-    /// @param flag The permission flag (e.g., FREEZE_NONPROFITS, FREEZE_DIRECT_MODE).
+    /// @param flag The permission flag (e.g., FREEZE_NONPROFITS, FREEZE_AUCTION_CONFIG).
     function freeze(uint256 flag) external onlyOwner {
         frozenFlags |= flag;
         emit PermissionFrozen(flag);
@@ -651,42 +644,53 @@ contract TheHumanFund is ReentrancyGuard {
 
     // ─── Reverse Auction ──────────────────────────────────────────────────
 
-    /// @notice Set auction timing parameters (owner-only, for testnet tuning).
-    function setAuctionTiming(
-        uint256 _epochDuration,
-        uint256 _commitWindow,
-        uint256 _revealWindow,
-        uint256 _executionWindow
-    ) external onlyOwner {
-        if (frozenFlags & FREEZE_AUCTION_CONFIG != 0) revert Frozen();
-        if (_commitWindow + _revealWindow + _executionWindow > _epochDuration) revert InvalidParams();
-        // Re-anchor before changing duration so _epochStartTime uses the old value
-        if (anchorEpoch > 0 && currentEpoch >= anchorEpoch) {
-            timingAnchor = _epochStartTime(currentEpoch);
-            anchorEpoch = currentEpoch;
-        }
-        epochDuration = _epochDuration;
-        auctionManager.setTiming(_commitWindow, _revealWindow, _executionWindow);
-    }
+    /// @notice Current bond amount — the cost for a prover to commit to
+    ///         an epoch. Escalates 10% on winner-forfeit (a successful
+    ///         committer who failed to submit is considered actively
+    ///         stalling the agent). Resets to `BASE_BOND` on successful
+    ///         execution. Capped at `max(MIN_BOND_CAP, 10% of treasury)`.
+    ///
+    /// @dev Escalation is stored as direct state (not derived from a
+    ///      counter) so reads and writes are both O(1). Silent epochs
+    ///      where nobody committed do NOT escalate the bond — that
+    ///      would discourage new bidders from joining after a drought.
+    ///      The max bid escalation (in `effectiveMaxBid`) still tracks
+    ///      silent epochs via `consecutiveMissedEpochs` because its
+    ///      purpose is to attract bidders, not to punish stalling.
+    uint256 public currentBond;
 
-    /// @notice Current bond amount — fixed base that escalates 10% per consecutive missed epoch.
-    ///         Capped at max(MIN_BOND_CAP, 10% of treasury). The bond cap is independent of the
-    ///         bounty cap because the cost of stalling is unrelated to the treasury size — an
-    ///         attacker's motivation may be external (e.g. preventing the agent from acting).
-    function currentBond() public view returns (uint256) {
-        uint256 bond = BASE_BOND;
-        uint256 treasuryBondCap = (address(this).balance * MAX_BOND_BPS) / 10000;
-        uint256 cap = treasuryBondCap > MIN_BOND_CAP ? treasuryBondCap : MIN_BOND_CAP;
-        for (uint256 i = 0; i < consecutiveMissedEpochs; i++) {
-            bond = bond + (bond * AUTO_ESCALATION_BPS) / 10000;
-            if (bond >= cap) return cap;
-        }
-        return bond;
+    /// @dev Compute the treasury-derived bond cap: max(MIN_BOND_CAP,
+    ///      MAX_BOND_BPS of treasury). The cap prevents the escalation
+    ///      from growing unboundedly.
+    function _bondCap() internal view returns (uint256) {
+        uint256 treasuryPct = (address(this).balance * MAX_BOND_BPS) / 10000;
+        return treasuryPct > MIN_BOND_CAP ? treasuryPct : MIN_BOND_CAP;
     }
 
     /// @notice Compute the deterministic scheduled start time for any epoch.
     function _epochStartTime(uint256 epoch) internal view returns (uint256) {
         return timingAnchor + (epoch - anchorEpoch) * epochDuration;
+    }
+
+    /// @dev Advance `currentEpoch` by `count`, resetting per-epoch
+    ///      counters. Shared by the single-epoch and multi-epoch
+    ///      branches of `_advanceToNow` Step B so the bookkeeping is
+    ///      defined in exactly one place.
+    /// @param count The number of epochs to advance past.
+    /// @param missCount How many of those elapsed epochs to credit
+    ///      toward `consecutiveMissedEpochs`. Usually equal to `count`;
+    ///      one less when the current epoch was successfully executed
+    ///      (that one doesn't count as a miss). See call site.
+    function _advanceEpochBy(uint256 count, uint256 missCount) internal {
+        if (missCount > 0) {
+            uint256 newMissed = consecutiveMissedEpochs + missCount;
+            if (newMissed > MAX_MISSED_EPOCHS) newMissed = MAX_MISSED_EPOCHS;
+            consecutiveMissedEpochs = newMissed;
+        }
+        currentEpoch += count;
+        currentEpochInflow = 0;
+        currentEpochDonationCount = 0;
+        currentEpochCommissions = 0;
     }
 
     // ─── Phase Sync ────────────────────────────────────────────────────
@@ -700,33 +704,187 @@ contract TheHumanFund is ReentrancyGuard {
     ///      winners and advances the AM to SETTLED). Gating it would
     ///      deadlock sunset-then-migrate when an auction was in-flight.
     function syncPhase() external {
-        _syncPhase();
+        _advanceToNow();
     }
 
-    /// @dev Core phase synchronization. Called before every prover action.
-    ///      Three independent steps, each safe to run in isolation:
-    ///        A. Drain the in-flight auction to a terminal state and handle
-    ///           per-epoch side effects (seed binding, forfeit credit).
-    ///        B. Arithmetically advance currentEpoch past any fully elapsed
-    ///           epochs (O(1), no loop).
-    ///        C. Open a fresh auction for the current epoch IFF the AM is in
-    ///           a clean terminal state and we are inside the commit window.
-    ///      The steps are decoupled so a stuck step never traps the others;
-    ///      repeated calls converge regardless of where execution left off.
-    function _syncPhase() internal {
+    /// @notice Owner-only manual advance: walk the state machine exactly
+    ///         one step, then re-anchor timing to now if a new auction
+    ///         was opened. Useful for debugging stuck auctions in prod
+    ///         and for test ergonomics (no vm.warp needed).
+    ///
+    ///         Transitions:
+    ///           IDLE / SETTLED → advance epoch (if needed), open auction
+    ///           COMMIT         → REVEAL  (or SETTLED if 0 commits)
+    ///           REVEAL         → EXECUTION (or SETTLED if 0 reveals)
+    ///           EXECUTION      → SETTLED (forfeits winner bond)
+    ///
+    ///         Normal auction consequences apply: non-revealers forfeit
+    ///         bonds at reveal close, winners forfeit at execution close.
+    ///         This preserves **driver equivalence** — manual and wall-
+    ///         clock drivers produce the same state for the same scenario.
+    ///         For a non-confiscatory abort (refund all bonds), use
+    ///         `resetAuction` instead.
+    ///
+    /// @dev Gated by `FREEZE_AUCTION_CONFIG` (invariant I7).
+    /// @dev Re-anchors timing only on epoch advance / auction open,
+    ///      satisfying I4 (schedule coherence).
+    function nextPhase() external onlyOwner {
+        if (frozenFlags & FREEZE_AUCTION_CONFIG != 0) revert Frozen();
         IAuctionManager am = auctionManager;
-        // Defensive no-op if AM isn't wired yet — prevents reverts in
-        // constructor-time or migration-in-progress paths.
-        if (address(am) == address(0)) return;
+        if (address(am) == address(0)) revert InvalidParams();
+
         uint256 epoch = currentEpoch;
         IAuctionManager.AuctionPhase phase = am.getPhase(epoch);
 
-        // ─── Step A: drain the in-flight auction ────────────────────────
-        if (phase != IAuctionManager.AuctionPhase.IDLE && phase != IAuctionManager.AuctionPhase.SETTLED) {
-            (phase, ) = am.syncPhase(epoch);
+        if (phase == IAuctionManager.AuctionPhase.COMMIT
+            || phase == IAuctionManager.AuctionPhase.REVEAL
+            || phase == IAuctionManager.AuctionPhase.EXECUTION
+        ) {
+            // Close one in-flight phase. scheduledStart is unused for
+            // phase closes (only matters when opening an auction).
+            _nextPhase(0);
+        } else {
+            // IDLE or SETTLED — advance epoch if needed, then open.
+            if (phase == IAuctionManager.AuctionPhase.SETTLED) {
+                uint256 missCount = epochs[epoch].executed ? 0 : 1;
+                _advanceEpochBy(1, missCount);
+            }
+            // Re-anchor: epochStartTime(currentEpoch) == block.timestamp.
+            timingAnchor = block.timestamp;
+            anchorEpoch = currentEpoch;
+            lastEpochStartTime = block.timestamp;
+            _nextPhase(block.timestamp);
+        }
+    }
 
-            // If the AM transitioned past REVEAL (seed was captured), bind the input hash.
-            // We can detect this by checking: seed is non-zero but epochInputHashes not yet set.
+    /// @notice Owner-only reset: abort any in-flight auction, apply new
+    ///         auction timing parameters, advance one epoch, and re-anchor
+    ///         timing to now. This is the ONLY safe way to change auction
+    ///         timing while the contract is live.
+    /// @dev Why this exists: mainnet v1 was bricked (commit bd883a9) when
+    ///      `epochDuration` was changed mid-epoch — the frozen snapshot's
+    ///      `epochBaseInputHashes[epoch]` was bound to the old duration,
+    ///      so the prover's TEE input hash diverged after the change and
+    ///      `submitAuctionResult` reverted. `resetAuction` avoids this by
+    ///      aborting the in-flight auction first (refunding all held
+    ///      bonds — operator intervention is NOT a forfeit), applying
+    ///      new timing atomically, and advancing to a fresh epoch whose
+    ///      snapshot will be opened at the new timing values.
+    /// @dev `epochDuration` is derived from `cw + rw + xw` — no separate
+    ///      parameter that could drift.
+    /// @dev `consecutiveMissedEpochs` is NOT incremented — the reset
+    ///      wasn't anyone's fault, and we don't want auto-escalation to
+    ///      spike as a side effect of recovery.
+    /// @dev Gated by `FREEZE_AUCTION_CONFIG`.
+    /// @param _commitWindow    New commit window duration (seconds).
+    /// @param _revealWindow    New reveal window duration (seconds).
+    /// @param _executionWindow New execution window duration (seconds).
+    function resetAuction(
+        uint256 _commitWindow,
+        uint256 _revealWindow,
+        uint256 _executionWindow
+    ) external onlyOwner {
+        if (frozenFlags & FREEZE_AUCTION_CONFIG != 0) revert Frozen();
+        _resetAuction(_commitWindow, _revealWindow, _executionWindow);
+    }
+
+    /// @dev Internal core of `resetAuction`. Aborts any in-flight auction
+    ///      (refunding held bonds), applies new timing, advances one epoch,
+    ///      and re-anchors the schedule to now. Callers are responsible for
+    ///      their own authorization and freeze gating. Shared by
+    ///      `resetAuction` (auction-config gated) and `migrate` (sunset
+    ///      gated) so the drain path lives in exactly one place.
+    function _resetAuction(
+        uint256 _commitWindow,
+        uint256 _revealWindow,
+        uint256 _executionWindow
+    ) internal {
+        if (_commitWindow == 0 || _revealWindow == 0 || _executionWindow == 0) revert InvalidParams();
+        IAuctionManager am = auctionManager;
+        if (address(am) == address(0)) revert InvalidParams();
+
+        uint256 fromEpoch = currentEpoch;
+
+        // Abort the in-flight auction and refund all held bonds. Safe to
+        // call even if there's no active auction (AM treats IDLE as a no-op).
+        am.abortAuction();
+
+        // Apply the new timing atomically. epochDuration is derived from
+        // the sum — it cannot drift from the phase windows.
+        am.setTiming(_commitWindow, _revealWindow, _executionWindow);
+        epochDuration = _commitWindow + _revealWindow + _executionWindow;
+
+        // Advance one epoch. The aborted epoch is closed; the next one
+        // will be opened by the first syncPhase() call after this.
+        currentEpoch = fromEpoch + 1;
+        currentEpochInflow = 0;
+        currentEpochDonationCount = 0;
+        currentEpochCommissions = 0;
+
+        // Re-anchor timing so the new epoch's scheduled start is now.
+        // This satisfies invariant I4 (schedule coherence) under the
+        // manual driver: after resetAuction, _epochStartTime(currentEpoch)
+        // == block.timestamp, so syncPhase() can open a fresh auction
+        // immediately at the new timing.
+        timingAnchor = block.timestamp;
+        anchorEpoch = currentEpoch;
+        lastEpochStartTime = block.timestamp;
+
+        emit AuctionReset(fromEpoch, currentEpoch);
+    }
+
+    // ─── Single-Step Primitive ────────────────────────────────────────
+
+    /// @dev Execute exactly one state-machine transition. Does NOT consult
+    ///      wall-clock or loop — the caller decides when to invoke this
+    ///      and how many times.
+    ///
+    ///      Transitions handled:
+    ///        COMMIT    → REVEAL  (or SETTLED if 0 commits)
+    ///        REVEAL    → EXECUTION (or SETTLED if 0 reveals; captures
+    ///                    seed + binds input hash)
+    ///        EXECUTION → SETTLED (forfeits winner bond; escalates
+    ///                    `currentBond` if winner existed — active stall)
+    ///        IDLE / SETTLED → open auction for `currentEpoch` using
+    ///                    `scheduledStart` as the phase-window origin.
+    ///
+    ///      Epoch advancement is NOT part of this primitive — callers
+    ///      handle it themselves so the wall-clock driver can preserve
+    ///      O(1) fast-forward through missed epochs.
+    ///
+    /// @param scheduledStart The start time to record for a newly-opened
+    ///        auction. Only meaningful when the AM is IDLE or SETTLED.
+    ///        Wall-clock driver passes `_epochStartTime(epoch)`; manual
+    ///        driver passes `block.timestamp`.
+    /// @return phase The AM phase for `currentEpoch` after the transition.
+    function _nextPhase(uint256 scheduledStart) internal returns (IAuctionManager.AuctionPhase phase) {
+        IAuctionManager am = auctionManager;
+        uint256 epoch = currentEpoch;
+        phase = am.getPhase(epoch);
+
+        // ── Case 1: in-flight auction — close one phase ─────────────
+        if (phase == IAuctionManager.AuctionPhase.COMMIT
+            || phase == IAuctionManager.AuctionPhase.REVEAL
+            || phase == IAuctionManager.AuctionPhase.EXECUTION
+        ) {
+            // Bond escalation on winner forfeit — the ONLY trigger for
+            // bond escalation. Must run BEFORE forceClosePhase (which
+            // transitions EXECUTION → SETTLED and pushes the bond to
+            // the fund, clearing the AM's winner field).
+            if (phase == IAuctionManager.AuctionPhase.EXECUTION && !epochs[epoch].executed) {
+                address winner = am.getWinner(epoch);
+                if (winner != address(0)) {
+                    emit BondForfeited(epoch, winner, am.getBond(epoch));
+                    uint256 newBond = currentBond + (currentBond * AUTO_ESCALATION_BPS) / 10000;
+                    uint256 cap = _bondCap();
+                    currentBond = newBond > cap ? cap : newBond;
+                }
+            }
+
+            am.forceClosePhase();
+
+            // If we just closed REVEAL, seed was captured — bind
+            // the input hash so provers can verify their output.
             uint256 seed = am.getRandomnessSeed(epoch);
             if (seed != 0 && epochInputHashes[epoch] == bytes32(0)) {
                 epochInputHashes[epoch] = keccak256(abi.encodePacked(
@@ -736,76 +894,104 @@ contract TheHumanFund is ReentrancyGuard {
                 emit RevealClosed(epoch, am.getWinner(epoch), am.getWinningBid(epoch));
             }
 
-            // Emit forfeit event if AM reached SETTLED with a winner who never
-            // submitted. Note: missed-epoch credit is handled in Step B below
-            // (folded into missedCount, or as a +1 in the in-window elif) to
-            // avoid double-counting when both Step A and a multi-epoch skip
-            // would otherwise both bump consecutiveMissedEpochs for epoch 1.
-            if (phase == IAuctionManager.AuctionPhase.SETTLED && !epochs[epoch].executed) {
-                address winner = am.getWinner(epoch);
-                if (winner != address(0)) {
-                    emit BondForfeited(epoch, winner, am.getBond(epoch));
-                }
+            return am.getPhase(epoch);
+        }
+
+        // ── Case 2: terminal state — open next auction ──────────────
+        // IDLE = pristine (no auction yet for this epoch).
+        // SETTLED = prior auction completed.
+        // Both mean "the AM is at rest" — open a new auction.
+        if (frozenFlags & FREEZE_SUNSET != 0) return phase;
+        _openNextAuction(epoch, scheduledStart);
+        return am.getPhase(epoch);
+    }
+
+    // ─── Wall-Clock Driver ─────────────────────────────────────────────
+
+    /// @dev Advance through all elapsed phases and epochs to reach
+    ///      wall-clock-consistent state. Called before every prover
+    ///      action (commit, reveal, submit, syncPhase).
+    ///
+    ///      Three independent steps:
+    ///        A. Close any in-flight auction phases whose wall-clock
+    ///           deadlines have passed, via `_nextPhase`. At most three
+    ///           calls (COMMIT → REVEAL → EXECUTION → SETTLED).
+    ///        B. Arithmetically advance `currentEpoch` past any fully
+    ///           elapsed epochs (O(1), no loop — preserves bounded gas
+    ///           even if the contract is untouched for months).
+    ///        C. Open a fresh auction for the current epoch IFF the AM
+    ///           is at rest and we're inside the commit window.
+    ///
+    ///      The steps are decoupled so a stuck step never traps the
+    ///      others; repeated calls converge regardless of where
+    ///      execution left off.
+    function _advanceToNow() internal {
+        IAuctionManager am = auctionManager;
+        if (address(am) == address(0)) return;
+        uint256 epoch = currentEpoch;
+
+        // ─── Step A: drain in-flight auction phases ─────────────────
+        IAuctionManager.AuctionPhase phase = am.getPhase(epoch);
+        if (phase != IAuctionManager.AuctionPhase.IDLE
+            && phase != IAuctionManager.AuctionPhase.SETTLED
+        ) {
+            uint256 startTime = am.getStartTime(epoch);
+            uint256 cw = am.commitWindow();
+            uint256 rw = am.revealWindow();
+
+            if (phase == IAuctionManager.AuctionPhase.COMMIT
+                && block.timestamp >= startTime + cw
+            ) {
+                _nextPhase(0);
+                phase = am.getPhase(epoch);
+            }
+            if (phase == IAuctionManager.AuctionPhase.REVEAL
+                && block.timestamp >= startTime + cw + rw
+            ) {
+                _nextPhase(0);
+                phase = am.getPhase(epoch);
+            }
+            if (phase == IAuctionManager.AuctionPhase.EXECUTION
+                && block.timestamp >= am.executionDeadline()
+            ) {
+                _nextPhase(0);
+                phase = am.getPhase(epoch);
             }
         }
 
-        // ─── Step B: arithmetic advance through elapsed epochs ──────────
-        // This step runs unconditionally. It is safe even when Step A was
-        // skipped (pristine IDLE epoch that fully elapsed) because it only
-        // looks at wall-clock vs scheduledStart, not at AM state.
+        // ─── Step B: O(1) arithmetic advance through elapsed epochs ─
+        // Safe even when Step A was skipped (pristine IDLE epoch that
+        // fully elapsed) because it checks wall-clock vs scheduled
+        // start, not AM state.
         bool epochDone = (phase == IAuctionManager.AuctionPhase.SETTLED)
             || (phase == IAuctionManager.AuctionPhase.IDLE)
             || epochs[epoch].executed;
 
         if (epochDone) {
             uint256 scheduledStart = _epochStartTime(epoch);
+            uint256 advance;
             if (block.timestamp >= scheduledStart + epochDuration) {
-                // Whole epoch(s) have elapsed since this epoch started.
-                uint256 missedCount = (block.timestamp - scheduledStart) / epochDuration;
-
-                // Credit consecutive-missed escalation for elapsed epochs that
-                // had an auction opened (whether or not anyone bid) and that
-                // weren't successfully executed. A pristine IDLE epoch (no
-                // auction ever opened) doesn't count — there was nothing to
-                // miss — but an opened-then-empty epoch does, because the
-                // escalation raises effectiveMaxBid to attract bidders next
-                // time.
-                if (phase != IAuctionManager.AuctionPhase.IDLE && !epochs[epoch].executed) {
-                    uint256 newMissed = consecutiveMissedEpochs + missedCount;
-                    if (newMissed > MAX_MISSED_EPOCHS) newMissed = MAX_MISSED_EPOCHS;
-                    consecutiveMissedEpochs = newMissed;
-                }
-
-                currentEpoch += missedCount;
-                epoch = currentEpoch;
-                currentEpochInflow = 0;
-                currentEpochDonationCount = 0;
-                currentEpochCommissions = 0;
+                advance = (block.timestamp - scheduledStart) / epochDuration;
             } else if (phase == IAuctionManager.AuctionPhase.SETTLED || epochs[epoch].executed) {
-                // Epoch completed in-window (settled with no commits, settled
-                // with a forfeited winner, or successfully executed). Credit a
-                // missed epoch if a winner failed to deliver, then advance.
-                if (phase != IAuctionManager.AuctionPhase.IDLE && !epochs[epoch].executed) {
-                    if (consecutiveMissedEpochs < MAX_MISSED_EPOCHS) {
-                        consecutiveMissedEpochs += 1;
-                    }
-                }
-                currentEpoch += 1;
+                advance = 1;
+            }
+
+            if (advance > 0) {
+                // missCount = advance - (executed ? 1 : 0):
+                //   advance=1, executed=true  → 0 (pure success catch-up)
+                //   advance=1, executed=false → 1 (forfeit or silence)
+                //   advance=N, executed=false → N (prolonged silence)
+                //   advance=N, executed=true  → N-1 (success + silence)
+                uint256 missCount = advance;
+                if (epochs[epoch].executed) missCount -= 1;
+                _advanceEpochBy(advance, missCount);
                 epoch = currentEpoch;
-                currentEpochInflow = 0;
-                currentEpochDonationCount = 0;
-                currentEpochCommissions = 0;
             }
         }
 
-        // ─── Step C: open a fresh auction if conditions are right ───────
-        // Guarded by AM phase so we never collide with an in-flight auction
-        // that survived Step A (which can happen if AM.syncPhase couldn't
-        // fully drain — e.g. partially elapsed windows). Skipped entirely
-        // when FREEZE_SUNSET is set: post-sunset we want the AM to finish
-        // draining to SETTLED so `migrate()` can run; opening a new auction
-        // would block migrate for ~90min until the new auction's
-        // commit+reveal+exec windows all time out.
+        // ─── Step C: open a fresh auction if conditions are right ───
+        // Skipped under FREEZE_SUNSET so the AM drains to terminal
+        // state and `migrate()` can proceed without waiting ~90min.
         if (frozenFlags & FREEZE_SUNSET != 0) return;
         uint256 newScheduledStart = _epochStartTime(epoch);
         IAuctionManager.AuctionPhase amPhase = am.getPhase(epoch);
@@ -816,16 +1002,26 @@ contract TheHumanFund is ReentrancyGuard {
             block.timestamp >= newScheduledStart &&
             block.timestamp < newScheduledStart + am.commitWindow();
         if (amReady && inCommitWindow) {
-            _openAuction(epoch, newScheduledStart);
+            _nextPhase(newScheduledStart);
         }
     }
 
-    /// @dev Open an auction for the given epoch. Snapshots price and drifting state,
-    ///      then computes input hash (which reads the same live state at this instant).
-    function _openAuction(uint256 epoch, uint256 scheduledStart) internal {
+    /// @dev Open the next auction for `epoch`. The single freeze site:
+    ///      this is the ONLY path that calls `_freezeEpochSnapshot`.
+    ///      Every action flows through the auction state machine.
+    ///      Steps:
+    ///        1. Snapshot ETH/USD price
+    ///        2. Call AuctionManager.openAuction with current bond
+    ///        3. Freeze the full epoch snapshot (drifting state → storage)
+    ///        4. Compute & store the base input hash off the snapshot
+    ///        5. Emit AuctionOpened
+    ///      At this instant live state == snapshot values, so the input
+    ///      hash computed here is consistent with what the prover will
+    ///      reproduce off the frozen snapshot.
+    function _openNextAuction(uint256 epoch, uint256 scheduledStart) internal {
         _snapshotEthUsdPrice();
 
-        uint256 bond = currentBond();
+        uint256 bond = currentBond;
         auctionManager.openAuction(epoch, bond, scheduledStart);
         lastEpochStartTime = scheduledStart;
 
@@ -840,9 +1036,8 @@ contract TheHumanFund is ReentrancyGuard {
     }
 
     /// @dev Freeze all drifting state into `_epochSnapshots[epoch]`. Called from
-    ///      `_openAuction` at auction open, and from `submitEpochAction` (direct
-    ///      mode) where there's no auction but `_recordAndExecute` still reads
-    ///      the snapshot. Must be called at a moment when live state represents
+    ///      `_openNextAuction` at auction open. Must be called at a moment
+    ///      when live state represents
     ///      what should be hashed — anything that isn't frozen here is invisible
     ///      to `_hashSnapshot` (by compiler enforcement).
     ///
@@ -916,7 +1111,7 @@ contract TheHumanFund is ReentrancyGuard {
     ///         Auto-syncs phase first (opens auction if needed).
     function commit(bytes32 commitHash) external payable {
         _requireNotSunset();
-        _syncPhase();
+        _advanceToNow();
 
         uint256 epoch = currentEpoch;
         uint256 bond = auctionManager.getBond(epoch);
@@ -938,7 +1133,7 @@ contract TheHumanFund is ReentrancyGuard {
     /// @notice Reveal a previously committed bid.
     ///         Auto-syncs phase first (closes commit window if needed).
     function reveal(uint256 bidAmount, bytes32 salt) external {
-        _syncPhase();
+        _advanceToNow();
 
         if (bidAmount == 0 || bidAmount > effectiveMaxBid()) revert InvalidParams();
         auctionManager.recordReveal(currentEpoch, msg.sender, bidAmount, salt);
@@ -955,7 +1150,7 @@ contract TheHumanFund is ReentrancyGuard {
         int8 policySlot,
         string calldata policyText
     ) external payable nonReentrant {
-        _syncPhase();
+        _advanceToNow();
 
         uint256 epoch = currentEpoch;
 
@@ -1070,6 +1265,9 @@ contract TheHumanFund is ReentrancyGuard {
         currentEpochDonationCount = 0;
         currentEpochCommissions = 0;
         consecutiveMissedEpochs = 0;
+        // Successful execution resets bond escalation too — the stalling
+        // behavior was broken by whoever submitted this result.
+        currentBond = BASE_BOND;
     }
 
     // ─── Internal: Action Execution ──────────────────────────────────────
@@ -1138,7 +1336,9 @@ contract TheHumanFund is ReentrancyGuard {
         }
     }
 
-    /// @dev Returns false if parameters are out of bounds (action becomes noop).
+    /// @dev Bounds-check then delegate to DonationExecutor for the
+    ///      ETH → WETH → USDC → Endaoment pipeline. State updates
+    ///      (nonprofit totals, global counters) stay here on the fund.
     function _executeDonate(uint256 epoch, uint256 nonprofitId, uint256 amount) internal returns (bool) {
         if (nonprofitId < 1 || nonprofitId > nonprofitCount) return false;
         if (amount == 0) return false;
@@ -1149,39 +1349,17 @@ contract TheHumanFund is ReentrancyGuard {
         Nonprofit storage np = nonprofits[nonprofitId];
         if (!np.exists) return false;
 
-        // Compute Endaoment org address from EIN (deterministic via CREATE2)
-        address orgAddr = endaomentFactory.computeOrgAddress(np.ein);
-
-        // Deploy org if not yet deployed on this chain (one-time cost)
-        if (orgAddr.code.length == 0) {
-            endaomentFactory.deployOrg(np.ein);
+        // Delegate the DeFi pipeline to DonationExecutor.
+        // Guard + try/catch so a misconfigured or absent executor
+        // results in a noop (ActionRejected) rather than a revert.
+        if (address(donationExecutor).code.length == 0) return false;
+        uint256 usdcAmount;
+        try donationExecutor.executeDonate{value: amount}(np.ein) returns (uint256 result) {
+            usdcAmount = result;
+        } catch {
+            return false;
         }
-
-        // Compute slippage floor from Chainlink ETH/USD price (defense against sandwich attacks)
-        uint256 minUsdc = _minUsdcForDonation(amount);
-        if (minUsdc == 0) return false; // Oracle unavailable — reject donation rather than swap unprotected
-
-        // Swap ETH → USDC via Uniswap V3 SwapRouter02 (7-field struct, no deadline —
-        // SwapRouter02 dropped the deadline field when it added multicall support).
-        weth.deposit{value: amount}();
-        weth.approve(swapRouter, amount);
-        (bool swapOk, bytes memory swapRet) = swapRouter.call(abi.encodeWithSignature(
-            "exactInputSingle((address,address,uint24,address,uint256,uint256,uint160))",
-            address(weth), usdc, uint24(500), address(this),
-            amount, minUsdc, uint160(0)
-        ));
-        // Clear residual allowance regardless of swap outcome — defensive
-        // hygiene so a partial-pull router can't leave dangling approval.
-        weth.approve(swapRouter, 0);
-        if (!swapOk) return false;
-        uint256 usdcAmount = abi.decode(swapRet, (uint256));
-
-        // Donate USDC to Endaoment org
-        IERC20(usdc).approve(orgAddr, usdcAmount);
-        IEndaomentOrg(orgAddr).donate(usdcAmount);
-        // Clear residual USDC allowance — protects against a buggy/compromised
-        // org that pulls less than the full amount and later drains dust.
-        IERC20(usdc).approve(orgAddr, 0);
+        if (usdcAmount == 0) return false;
 
         np.totalDonated += amount;
         np.totalDonatedUsd += usdcAmount;
@@ -1192,23 +1370,6 @@ contract TheHumanFund is ReentrancyGuard {
 
         emit NonprofitDonation(epoch, nonprofitId, amount, usdcAmount);
         return true;
-    }
-
-    /// @dev Minimum USDC expected for `ethAmount` wei, with 3% slippage tolerance.
-    ///      Reads FRESH from oracle (not cached epochEthUsdPrice) to prevent stale-price
-    ///      sandwich attacks when execution is hours after epoch start.
-    uint256 private constant DONATION_SLIPPAGE_BPS = 300;
-    function _minUsdcForDonation(uint256 ethAmount) internal view returns (uint256) {
-        if (address(ethUsdFeed) == address(0)) return 0;
-        try ethUsdFeed.latestRoundData() returns (
-            uint80, int256 answer, uint256, uint256 updatedAt, uint80
-        ) {
-            if (answer <= 0 || block.timestamp - updatedAt > PRICE_STALENESS_THRESHOLD) return 0;
-            uint256 expected = (ethAmount * uint256(answer)) / 1e20;
-            return (expected * (10000 - DONATION_SLIPPAGE_BPS)) / 10000;
-        } catch {
-            return 0;
-        }
     }
 
     /// @dev Returns false if parameters are out of bounds (action becomes noop).
@@ -1445,7 +1606,7 @@ contract TheHumanFund is ReentrancyGuard {
         uint256 scheduledStart = _epochStartTime(currentEpoch);
         if (block.timestamp < scheduledStart + epochDuration) return currentEpoch;
 
-        // Mirrors _syncPhase() O(1) epoch advancement
+        // Mirrors _advanceToNow() O(1) epoch advancement
         uint256 elapsed = (block.timestamp - scheduledStart) / epochDuration;
         return currentEpoch + elapsed;
     }
@@ -1495,7 +1656,7 @@ contract TheHumanFund is ReentrancyGuard {
     // and the InvestmentManager pushes ETH back when positions are withdrawn
     // (either by a model `withdraw` action or by `migrate`'s unwind path).
     // Those internal transfers must succeed even after FREEZE_SUNSET, otherwise
-    // settling an in-flight auction reverts, `_syncPhase` reverts, and the
+    // settling an in-flight auction reverts, `_advanceToNow` reverts, and the
     // fund deadlocks with no way to `migrate()` (which requires AM to be
     // IDLE/SETTLED). So `_requireNotSunset` is bypassed for those two trusted
     // internal senders only.

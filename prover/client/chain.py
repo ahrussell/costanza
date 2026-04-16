@@ -4,7 +4,7 @@
 Wraps web3.py calls to TheHumanFund contract for:
 - Reading auction state (phase, bonds, timing)
 - Reading epoch state (treasury, nonprofits, investments, etc.)
-- Submitting transactions (startEpoch, commit, reveal, closeCommit, etc.)
+- Submitting transactions (syncPhase, commit, reveal, submitAuctionResult, etc.)
 """
 
 import json
@@ -232,24 +232,11 @@ class ChainClient:
         logger.info("claimBond(%d) confirmed: gas=%s", epoch, receipt.get("gasUsed", "?"))
         return receipt
 
-    def claim_legacy_bonds(self):
-        """Claim legacy accumulated bonds from the AuctionManager.
-
-        Returns the receipt, or None if no balance.
-        """
-        balance = self.am.functions.claimableBonds(self.account.address).call()
-        if balance == 0:
-            return None
-        receipt = self.send_tx(self.am.functions.claimLegacyBonds(), gas=100_000)
-        logger.info("claimLegacyBonds() confirmed: %d wei, gas=%s",
-                     balance, receipt.get("gasUsed", "?"))
-        return receipt
-
     def send_tx(self, fn, value=0, gas=None):
         """Build, sign, and send a transaction.
 
         Args:
-            fn: Contract function call (e.g., self.contract.functions.startEpoch())
+            fn: Contract function call (e.g., self.contract.functions.syncPhase())
             value: ETH value to send in wei.
             gas: Gas limit (estimated if not provided).
 

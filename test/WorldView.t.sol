@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "forge-std/Test.sol";
 import "../src/TheHumanFund.sol";
 import "../src/AuctionManager.sol";
 import "../src/WorldView.sol";
 import "./helpers/MockEndaoment.sol";
+import "./helpers/EpochTest.sol";
 
-contract WorldViewTest is Test {
+contract WorldViewTest is EpochTest {
     TheHumanFund public fund;
     WorldView public wv;
 
@@ -18,9 +18,12 @@ contract WorldViewTest is Test {
         MockEndaomentFactory mf = new MockEndaomentFactory();
 
         MockChainlinkFeed mfeed = new MockChainlinkFeed(2000e8, 8);
+        DonationExecutor donExec = new DonationExecutor(
+            address(mf), address(mw), address(mu), address(mr), address(mfeed)
+        );
         fund = new TheHumanFund{value: 5 ether}(
             1000, 0.005 ether,
-            address(mf), address(mw), address(mu), address(mr), address(mfeed)
+            address(donExec), address(mfeed)
         );
 
         fund.addNonprofit("GiveDirectly", "Cash transfers", bytes32("EIN-GD"));
@@ -31,22 +34,23 @@ contract WorldViewTest is Test {
 
         // Deploy AuctionManager so syncPhase() works
         AuctionManager am = new AuctionManager(address(fund));
-        fund.setAuctionManager(address(am));
+        fund.setAuctionManager(address(am), 1200, 1200, 82800);
 
         wv = new WorldView(address(fund));
         fund.setWorldView(address(wv));
+        _registerMockVerifier(fund);
     }
 
     // ─── Basic Policy Setting (via sidecar) ───────────────────────────
 
     function test_set_guiding_policy() public {
-        fund.submitEpochAction(
+        speedrunEpoch(
+            fund,
             abi.encodePacked(uint8(0)),
             "Setting my first guiding policy.",
             int8(1),
             "Prioritize high-impact, evidence-based charities"
         );
-        fund.syncPhase();
 
         assertEq(wv.getPolicy(1), "Prioritize high-impact, evidence-based charities");
         assertEq(fund.currentEpoch(), 2);
@@ -54,25 +58,25 @@ contract WorldViewTest is Test {
 
     function test_set_multiple_policies_across_epochs() public {
         // Epoch 1: set slot 1 (slot 0 is reserved)
-        fund.submitEpochAction(
+        speedrunEpoch(
+            fund,
             abi.encodePacked(uint8(0)),
             "Policy 1", int8(1), "Grow the treasury before donating"
         );
-        fund.syncPhase();
 
         // Epoch 2: set slot 3
-        fund.submitEpochAction(
+        speedrunEpoch(
+            fund,
             abi.encodePacked(uint8(0)),
             "Policy 3", int8(3), "Diversify across at least 3 protocols"
         );
-        fund.syncPhase();
 
         // Epoch 3: set slot 9 (last slot)
-        fund.submitEpochAction(
+        speedrunEpoch(
+            fund,
             abi.encodePacked(uint8(0)),
             "Policy 9", int8(9), "Never invest more than 25% in one protocol"
         );
-        fund.syncPhase();
 
         assertEq(wv.getPolicy(0), ""); // reserved, never writable
         assertEq(wv.getPolicy(1), "Grow the treasury before donating");
@@ -83,34 +87,34 @@ contract WorldViewTest is Test {
     }
 
     function test_replace_existing_policy() public {
-        fund.submitEpochAction(
+        speedrunEpoch(
+            fund,
             abi.encodePacked(uint8(0)),
             "Initial", int8(1), "Be conservative"
         );
-        fund.syncPhase();
         assertEq(wv.getPolicy(1), "Be conservative");
 
-        fund.submitEpochAction(
+        speedrunEpoch(
+            fund,
             abi.encodePacked(uint8(0)),
             "Updated", int8(1), "Be aggressive"
         );
-        fund.syncPhase();
         assertEq(wv.getPolicy(1), "Be aggressive");
     }
 
     function test_remove_policy_with_empty_string() public {
-        fund.submitEpochAction(
+        speedrunEpoch(
+            fund,
             abi.encodePacked(uint8(0)),
             "Set", int8(5), "Temporary policy"
         );
-        fund.syncPhase();
         assertEq(wv.getPolicy(5), "Temporary policy");
 
-        fund.submitEpochAction(
+        speedrunEpoch(
+            fund,
             abi.encodePacked(uint8(0)),
             "Clear", int8(5), ""
         );
-        fund.syncPhase();
         assertEq(wv.getPolicy(5), "");
     }
 
@@ -119,22 +123,22 @@ contract WorldViewTest is Test {
     function test_state_hash_changes_with_policy() public {
         bytes32 hash1 = wv.stateHash();
 
-        fund.submitEpochAction(
+        speedrunEpoch(
+            fund,
             abi.encodePacked(uint8(0)),
             "Set", int8(1), "New policy"
         );
-        fund.syncPhase();
 
         bytes32 hash2 = wv.stateHash();
         assertTrue(hash1 != hash2);
     }
 
     function test_state_hash_deterministic() public {
-        fund.submitEpochAction(
+        speedrunEpoch(
+            fund,
             abi.encodePacked(uint8(0)),
             "Set", int8(1), "Policy A"
         );
-        fund.syncPhase();
 
         bytes32 hash1 = wv.stateHash();
         bytes32 hash2 = wv.stateHash();
@@ -150,18 +154,15 @@ contract WorldViewTest is Test {
         // (The new _hashSnapshot is `pure` — it reads only from the frozen
         // EpochSnapshot struct — so within-epoch mutations don't affect
         // its output. Field coverage is tested across epoch boundaries.)
-        fund.submitEpochAction(
+        speedrunEpoch(
+            fund,
             abi.encodePacked(uint8(0)),
             "Epoch 1", int8(-1), ""  // no worldview update
         );
-        fund.syncPhase();
         bytes32 hash1 = fund.computeInputHashForEpoch(1);
 
-        // Advance to epoch 2 so submitEpochAction targets a fresh epoch.
-        vm.warp(fund.epochStartTime(2) + 1);
-        fund.syncPhase();
-
-        fund.submitEpochAction(
+        speedrunEpoch(
+            fund,
             abi.encodePacked(uint8(0)),
             "Epoch 2", int8(1), "Policy changes input hash"
         );
@@ -173,16 +174,16 @@ contract WorldViewTest is Test {
     // ─── getPolicies ───────────────────────────────────────────────────
 
     function test_get_all_policies() public {
-        fund.submitEpochAction(
+        speedrunEpoch(
+            fund,
             abi.encodePacked(uint8(0)),
             "Set 1", int8(1), "Alpha"
         );
-        fund.syncPhase();
-        fund.submitEpochAction(
+        speedrunEpoch(
+            fund,
             abi.encodePacked(uint8(0)),
             "Set 4", int8(4), "Beta"
         );
-        fund.syncPhase();
 
         string[10] memory all = wv.getPolicies();
         assertEq(all[0], ""); // reserved
@@ -195,14 +196,25 @@ contract WorldViewTest is Test {
     // ─── Event Emission ────────────────────────────────────────────────
 
     function test_emits_guiding_policy_event() public {
-        vm.expectEmit(true, false, false, true);
-        emit WorldView.GuidingPolicyUpdated(1, "Test policy");
-
-        fund.submitEpochAction(
+        vm.recordLogs();
+        speedrunEpoch(
+            fund,
             abi.encodePacked(uint8(0)),
             "Event test", int8(1), "Test policy"
         );
-        fund.syncPhase();
+
+        // GuidingPolicyUpdated is emitted among auction events. Find it.
+        Vm.Log[] memory entries = vm.getRecordedLogs();
+        bytes32 topic = keccak256("GuidingPolicyUpdated(uint256,string)");
+        bool found = false;
+        for (uint256 i = 0; i < entries.length; i++) {
+            if (entries[i].topics[0] == topic) {
+                assertEq(entries[i].topics[1], bytes32(uint256(1)), "slot 1");
+                found = true;
+                break;
+            }
+        }
+        assertTrue(found, "GuidingPolicyUpdated event must be emitted");
     }
 
     // ─── Only Fund Can Set ─────────────────────────────────────────────
@@ -230,13 +242,13 @@ contract WorldViewTest is Test {
     ///           - not revert the fund call,
     ///           - leave slot 0 empty (WorldView rejected the write),
     ///           - still advance the epoch as normal.
-    function test_submitEpochAction_slot_zero_silently_ignored() public {
+    function test_epochAction_slot_zero_silently_ignored() public {
         uint256 epochBefore = fund.currentEpoch();
-        fund.submitEpochAction(
+        speedrunEpoch(
+            fund,
             abi.encodePacked(uint8(0)),
             "Trying slot 0", int8(0), "Should be ignored"
         );
-        fund.syncPhase();
         // Epoch still advanced — action executed normally
         assertEq(fund.currentEpoch(), epochBefore + 1);
         // Slot 0 is still empty — WorldView rejected the write
@@ -248,13 +260,13 @@ contract WorldViewTest is Test {
     function test_policy_update_alongside_action() public {
         // Donate AND update worldview in the same epoch
         bytes memory donateAction = abi.encodePacked(uint8(1), abi.encode(uint256(1), uint256(0.1 ether)));
-        fund.submitEpochAction(
+        speedrunEpoch(
+            fund,
             donateAction,
             "Donating and recording my strategy",
             int8(2),
             "Invest conservatively in bear markets"
         );
-        fund.syncPhase();
 
         // Both should have happened
         (,,, uint256 donated,,) = fund.getNonprofit(1);
@@ -264,26 +276,26 @@ contract WorldViewTest is Test {
 
     function test_policy_update_with_noop() public {
         // Noop action but still update worldview
-        fund.submitEpochAction(
+        speedrunEpoch(
+            fund,
             abi.encodePacked(uint8(0)),
             "Just updating my worldview",
             int8(1),
             "Stay patient and grow"
         );
-        fund.syncPhase();
 
         assertEq(wv.getPolicy(1), "Stay patient and grow");
     }
 
     function test_skip_policy_with_negative_slot() public {
         // Slot -1 means no policy update
-        fund.submitEpochAction(
+        speedrunEpoch(
+            fund,
             abi.encodePacked(uint8(0)),
             "No policy change",
             int8(-1),
             "This should be ignored"
         );
-        fund.syncPhase();
 
         assertEq(wv.getPolicy(0), "");
     }

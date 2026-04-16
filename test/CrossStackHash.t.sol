@@ -5,13 +5,14 @@ import "forge-std/Test.sol";
 import "../src/TheHumanFund.sol";
 import "../src/AuctionManager.sol";
 import "./helpers/MockEndaoment.sol";
+import "./helpers/EpochTest.sol";
 
 /// @title CrossStackHashTest
 /// @notice Verifies that the Solidity _computeInputHash() and the Python
 ///         compute_input_hash() produce identical results for the same state.
 ///         This is critical: if they diverge, TEE attestation will fail at runtime.
 ///         Uses vm.ffi() to call the Python implementation and compares outputs.
-contract CrossStackHashTest is Test {
+contract CrossStackHashTest is EpochTest {
     TheHumanFund public fund;
     MockEndaomentFactory public mockFactory;
     MockWETH public mockWeth;
@@ -29,10 +30,7 @@ contract CrossStackHashTest is Test {
         fund = new TheHumanFund{value: 5 ether}(
             1000,                       // 10% commission
             0.005 ether,                // initial max bid
-            address(mockFactory),
-            address(mockWeth),
-            address(mockUsdc),
-            address(mockRouter),
+            address(0xBEEF),            // donationExecutor (mock)
             address(mockFeed)
         );
 
@@ -47,24 +45,24 @@ contract CrossStackHashTest is Test {
         // Wire an AuctionManager so `syncPhase` can advance currentEpoch
         // across elapsed epochs — the multi-epoch test needs this.
         AuctionManager am = new AuctionManager(address(fund));
-        fund.setAuctionManager(address(am));
+        fund.setAuctionManager(address(am), 1200, 1200, 82800);
+        _registerMockVerifier(fund);
     }
 
-    // Every cross-stack test forces a freeze via `submitEpochAction`
-    // (which always calls `_freezeEpochSnapshot` as its first step,
-    // regardless of auction timing), then compares the snapshot hash
-    // against Python's hash of the JSON-serialized snapshot state.
+    // Every cross-stack test freezes the snapshot via `syncPhase`
+    // (which opens the auction and calls `_freezeEpochSnapshot`),
+    // then compares the snapshot hash against Python's hash of the
+    // JSON-serialized snapshot state.
     //
-    // The new `_hashSnapshot` is `pure` — it reads only from the frozen
+    // `_hashSnapshot` is `pure` — it reads only from the frozen
     // EpochSnapshot. For Solidity and Python to agree, we freeze with
     // live state == the desired test state, then read the frozen
     // snapshot on both sides.
 
     /// @notice Core cross-stack test: compare Solidity and Python hash outputs.
     function test_cross_stack_hash_matches_initial_state() public {
-        // Execute epoch 1 with a noop; this freezes epoch 1's snapshot.
-        bytes memory noopAction = abi.encodePacked(uint8(0));
-        fund.submitEpochAction(noopAction, "initial", -1, "");
+        // syncPhase opens epoch 1 auction, which freezes the snapshot.
+        fund.syncPhase();
         _assertCrossStackMatch(1, "initial state");
     }
 
@@ -73,22 +71,20 @@ contract CrossStackHashTest is Test {
         vm.deal(address(0xDEAD), 1 ether);
         vm.prank(address(0xDEAD));
         fund.donate{value: 0.5 ether}(0);
-        bytes memory noopAction = abi.encodePacked(uint8(0));
-        fund.submitEpochAction(noopAction, "donation", -1, "");
+        // syncPhase opens epoch 1 auction, freezing the post-donation state.
+        fund.syncPhase();
         _assertCrossStackMatch(1, "after donation");
     }
 
     /// @notice Test after epoch execution — content hashes and epoch state change.
     function test_cross_stack_hash_after_epoch() public {
-        // Execute epoch 1 (freezes epoch 1, records executed=true).
+        // Execute epoch 1 via the real auction path (freezes + executes).
         bytes memory noopAction = abi.encodePacked(uint8(0));
-        fund.submitEpochAction(noopAction, "epoch 1", -1, "");
+        speedrunEpoch(fund, noopAction, "epoch 1");
 
-        // Advance currentEpoch to 2, then execute it — freezes epoch 2's
-        // snapshot whose history-hash rolls in epoch 1's content hash.
-        vm.warp(fund.epochStartTime(2) + 1);
-        fund.syncPhase();
-        fund.submitEpochAction(noopAction, "epoch 2", -1, "");
+        // speedrunEpoch left us at epoch 2 with an open auction (snapshot
+        // frozen for epoch 2, whose history-hash rolls in epoch 1's
+        // content hash).
         _assertCrossStackMatch(2, "after epoch");
     }
 
@@ -97,8 +93,8 @@ contract CrossStackHashTest is Test {
         vm.deal(address(0xBEEF), 1 ether);
         vm.prank(address(0xBEEF));
         fund.donateWithMessage{value: 0.1 ether}(0, "Hello from a donor!");
-        bytes memory noopAction = abi.encodePacked(uint8(0));
-        fund.submitEpochAction(noopAction, "with msg", -1, "");
+        // syncPhase opens epoch 1 auction, freezing the post-message state.
+        fund.syncPhase();
         _assertCrossStackMatch(1, "with messages");
     }
 
