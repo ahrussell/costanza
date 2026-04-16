@@ -197,6 +197,34 @@ contract MainnetForkTest is EpochTest {
         (uint256 deposited, uint256 shares,,,,,) = im.getPosition(1);
         assertEq(deposited, 0.01 ether, "Aave WETH deposit recorded");
         assertGt(shares, 0, "Aave WETH shares minted");
+
+        // Withdraw the full position
+        uint256 balBefore = address(fund).balance;
+        bytes memory withdrawAction = abi.encodePacked(uint8(4), abi.encode(uint256(1), type(uint256).max));
+        speedrunEpoch(fund, withdrawAction, "testing aave withdraw");
+
+        (uint256 deposited2, uint256 shares2,,,,,) = im.getPosition(1);
+        assertEq(shares2, 0, "Aave WETH position fully cleared");
+        assertEq(deposited2, 0, "Aave WETH deposited tracking cleared");
+        assertGt(address(fund).balance, balBefore, "fund received ETH from Aave WETH withdrawal");
+    }
+
+    function test_fork_aaveUsdcAdapter_depositWithdraw() public onlyOnFork {
+        bytes memory investAction = abi.encodePacked(uint8(3), abi.encode(uint256(2), uint256(0.01 ether)));
+        speedrunEpoch(fund, investAction, "testing aave usdc invest");
+
+        (uint256 deposited, uint256 shares,,,,,) = im.getPosition(2);
+        assertEq(deposited, 0.01 ether, "Aave USDC deposit recorded");
+        assertGt(shares, 0, "Aave USDC aUSDC shares minted");
+
+        uint256 balBefore = address(fund).balance;
+        bytes memory withdrawAction = abi.encodePacked(uint8(4), abi.encode(uint256(2), type(uint256).max));
+        speedrunEpoch(fund, withdrawAction, "testing aave usdc withdraw");
+
+        (uint256 deposited2, uint256 shares2,,,,,) = im.getPosition(2);
+        assertEq(shares2, 0, "Aave USDC position fully cleared");
+        assertEq(deposited2, 0, "Aave USDC deposited tracking cleared");
+        assertGt(address(fund).balance, balBefore, "fund received ETH from Aave USDC withdrawal");
     }
 
     function test_fork_lidoWstEthAdapter_depositWithdraw() public onlyOnFork {
@@ -206,6 +234,70 @@ contract MainnetForkTest is EpochTest {
         (uint256 deposited, uint256 shares,,,,,) = im.getPosition(3);
         assertEq(deposited, 0.01 ether, "wstETH deposit recorded");
         assertGt(shares, 0, "wstETH shares minted");
+
+        // Withdraw the full position
+        uint256 balBefore = address(fund).balance;
+        bytes memory withdrawAction = abi.encodePacked(uint8(4), abi.encode(uint256(3), type(uint256).max));
+        speedrunEpoch(fund, withdrawAction, "testing lido withdraw");
+
+        (uint256 deposited2, uint256 shares2,,,,,) = im.getPosition(3);
+        assertEq(shares2, 0, "wstETH position fully cleared");
+        assertEq(deposited2, 0, "wstETH deposited tracking cleared");
+        assertGt(address(fund).balance, balBefore, "fund received ETH from wstETH withdrawal");
+    }
+
+    function test_fork_cbEthAdapter_depositWithdraw() public onlyOnFork {
+        bytes memory investAction = abi.encodePacked(uint8(3), abi.encode(uint256(4), uint256(0.01 ether)));
+        speedrunEpoch(fund, investAction, "testing cbeth invest");
+
+        (uint256 deposited, uint256 shares,,,,,) = im.getPosition(4);
+        assertEq(deposited, 0.01 ether, "cbETH deposit recorded");
+        assertGt(shares, 0, "cbETH shares minted");
+
+        uint256 balBefore = address(fund).balance;
+        bytes memory withdrawAction = abi.encodePacked(uint8(4), abi.encode(uint256(4), type(uint256).max));
+        speedrunEpoch(fund, withdrawAction, "testing cbeth withdraw");
+
+        (uint256 deposited2, uint256 shares2,,,,,) = im.getPosition(4);
+        assertEq(shares2, 0, "cbETH position fully cleared");
+        assertEq(deposited2, 0, "cbETH deposited tracking cleared");
+        assertGt(address(fund).balance, balBefore, "fund received ETH from cbETH withdrawal");
+    }
+
+    function test_fork_compoundUsdcAdapter_depositWithdraw() public onlyOnFork {
+        bytes memory investAction = abi.encodePacked(uint8(3), abi.encode(uint256(5), uint256(0.01 ether)));
+        speedrunEpoch(fund, investAction, "testing compound usdc invest");
+
+        (uint256 deposited, uint256 shares,,,,,) = im.getPosition(5);
+        assertEq(deposited, 0.01 ether, "Compound USDC deposit recorded");
+        assertGt(shares, 0, "Compound USDC shares minted");
+
+        uint256 balBefore = address(fund).balance;
+        bytes memory withdrawAction = abi.encodePacked(uint8(4), abi.encode(uint256(5), type(uint256).max));
+        speedrunEpoch(fund, withdrawAction, "testing compound usdc withdraw");
+
+        (uint256 deposited2, uint256 shares2,,,,,) = im.getPosition(5);
+        assertEq(shares2, 0, "Compound USDC position fully cleared");
+        assertEq(deposited2, 0, "Compound USDC deposited tracking cleared");
+        assertGt(address(fund).balance, balBefore, "fund received ETH from Compound USDC withdrawal");
+    }
+
+    function test_fork_morphoWethAdapter_depositWithdraw() public onlyOnFork {
+        bytes memory investAction = abi.encodePacked(uint8(3), abi.encode(uint256(6), uint256(0.01 ether)));
+        speedrunEpoch(fund, investAction, "testing morpho invest");
+
+        (uint256 deposited, uint256 shares,,,,,) = im.getPosition(6);
+        assertEq(deposited, 0.01 ether, "Morpho WETH deposit recorded");
+        assertGt(shares, 0, "Morpho WETH vault shares minted");
+
+        uint256 balBefore = address(fund).balance;
+        bytes memory withdrawAction = abi.encodePacked(uint8(4), abi.encode(uint256(6), type(uint256).max));
+        speedrunEpoch(fund, withdrawAction, "testing morpho withdraw");
+
+        (uint256 deposited2, uint256 shares2,,,,,) = im.getPosition(6);
+        assertEq(shares2, 0, "Morpho WETH position fully cleared");
+        assertEq(deposited2, 0, "Morpho WETH deposited tracking cleared");
+        assertGt(address(fund).balance, balBefore, "fund received ETH from Morpho WETH withdrawal");
     }
 
     // ─── Input hash drift: snapshot fix regression test ─────────────────
