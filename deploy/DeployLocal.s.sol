@@ -6,6 +6,7 @@ import "../src/TheHumanFund.sol";
 import "../src/AuctionManager.sol";
 import "../src/TdxVerifier.sol";
 import "../src/interfaces/IAutomataDcapAttestation.sol";
+// Note: DeployLocal sits in deploy/ (one level), so ../src/ is correct.
 
 /// @dev Mock DCAP verifier for local testing — accepts any quote and returns
 ///      crafted output with the caller-provided REPORTDATA.

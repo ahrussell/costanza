@@ -27,5 +27,5 @@ node_modules/
 
 .claude/
 
-# Testnet-only deploy scripts and mock contracts (not for production)
-testnet/
+# Testnet deploy env (secrets)
+.env.testnet-deploy

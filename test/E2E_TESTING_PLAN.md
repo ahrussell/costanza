@@ -17,7 +17,7 @@
 
 ### Artifacts
 - **Fuzz tests**: `test/TheHumanFund.t.sol`, `test/TheHumanFundAuction.t.sol`, `test/InvestmentManager.t.sol`, `test/Messages.t.sol`
-- **Testnet script**: `scripts/testnet_e2e.py` (run with `--phase {donors,multiprover,edge,freeze,actions,all}`)
+- **Testnet script**: `deploy/testnet/e2e.py` (run with `--phase {donors,multiprover,edge,freeze,actions,all}`)
 - **196 total Foundry tests** (175 original + 21 fuzz)
 
 ### DCAP Investigation
@@ -57,7 +57,7 @@ Not deployed — InvestmentManager had 0 protocols registered. Investment bounds
 Contract deployed with 30m epochs: 8m commit, 5m reveal, 17m execution.
 
 ### Test Harness
-`scripts/testnet_e2e.py` — Python orchestration script using web3.py, reads chain state, submits from multiple wallets, checks assertions, outputs structured pass/fail.
+`deploy/testnet/e2e.py` — Python orchestration script using web3.py, reads chain state, submits from multiple wallets, checks assertions, outputs structured pass/fail.
 
 ---
 

@@ -2,17 +2,17 @@
 pragma solidity ^0.8.20;
 
 import "forge-std/Script.sol";
-import "../src/TheHumanFund.sol";
-import "../src/AuctionManager.sol";
-import "../src/TdxVerifier.sol";
-import "../src/InvestmentManager.sol";
-import "../src/WorldView.sol";
-import "../src/adapters/AaveV3WETHAdapter.sol";
-import "../src/adapters/AaveV3USDCAdapter.sol";
-import "../src/adapters/WstETHAdapter.sol";
-import "../src/adapters/CbETHAdapter.sol";
-import "../src/adapters/CompoundV3USDCAdapter.sol";
-import "../src/adapters/MorphoWETHAdapter.sol";
+import "../../src/TheHumanFund.sol";
+import "../../src/AuctionManager.sol";
+import "../../src/TdxVerifier.sol";
+import "../../src/InvestmentManager.sol";
+import "../../src/WorldView.sol";
+import "../../src/adapters/AaveV3WETHAdapter.sol";
+import "../../src/adapters/AaveV3USDCAdapter.sol";
+import "../../src/adapters/WstETHAdapter.sol";
+import "../../src/adapters/CbETHAdapter.sol";
+import "../../src/adapters/CompoundV3USDCAdapter.sol";
+import "../../src/adapters/MorphoWETHAdapter.sol";
 
 /// @title Deploy
 /// @notice Deploys the full Human Fund system: core contracts, adapters, and links everything.

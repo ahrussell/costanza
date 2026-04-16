@@ -129,8 +129,17 @@ thehumanfund/
 │   ├── InvestmentManager.t.sol  # Investment tests
 │   ├── WorldView.t.sol          # Worldview tests
 │   └── Messages.t.sol           # Donor messages tests
-├── script/
-│   └── Deploy.s.sol             # Foundry deployment script
+├── deploy/
+│   ├── mainnet/
+│   │   ├── Deploy.s.sol         # Mainnet Foundry deployment script
+│   │   ├── deploy_guide.sh      # Mainnet deployment guide
+│   │   ├── preflight.sh         # Pre-deploy validation checklist
+│   │   └── base_addresses.json  # Base mainnet contract addresses
+│   ├── testnet/
+│   │   ├── DeployTestnet.s.sol  # Base Sepolia deploy (mock contracts)
+│   │   ├── cli.py               # Testnet CLI (status, run-epoch, etc.)
+│   │   └── e2e.py               # End-to-end testnet test harness
+│   └── DeployLocal.s.sol        # Local anvil testing script
 ├── prover/
 │   ├── client/                 # Prover client (cron job, untrusted)
 │   │   ├── client.py           # Main entry point — checks phase, acts accordingly
@@ -166,11 +175,9 @@ thehumanfund/
 ├── index.html                   # Frontend dashboard (reads contract state)
 ├── models/                      # Local model files (gitignored)
 ├── scripts/
-│   ├── deploy_mainnet.sh        # Mainnet deployment guide
 │   ├── recover_submit.py        # Emergency recovery for stuck auction epochs
 │   ├── simulate.py              # Local simulation mode (scenario presets)
-│   ├── compute_hash.py          # Input hash computation (used by Foundry FFI tests)
-│   └── base_addresses.json      # Base mainnet contract addresses
+│   └── compute_hash.py          # Input hash computation (used by Foundry FFI tests)
 └── .env                         # Secrets (gitignored)
 ```
 
@@ -256,8 +263,8 @@ forge build                                    # Compile contracts
 forge test                                     # Run all tests (175 tests)
 forge test -vvv                                # Verbose test output
 forge test --match-path test/TdxVerifier.t.sol # Specific test file
-forge script script/Deploy.s.sol \
-  --rpc-url $RPC_URL --broadcast              # Deploy to testnet
+forge script deploy/mainnet/Deploy.s.sol \
+  --rpc-url $RPC_URL --broadcast              # Deploy to network
 
 # Prover client (cron mode)
 python -m prover.client                        # Check auction state, act accordingly
