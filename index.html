@@ -1077,21 +1077,11 @@
       Each epoch, Costanza reasons about his world to decide on his next action. His world includes the current status of his treasury, his recent diary entries, a worldview that he can update, and messages from donors.
     </p>
 
-    <!-- Row 1: Age/Lifespan + System Prompt + Worldview -->
-    <div class="grid-3" style="margin-bottom:16px;">
+    <!-- Row 1: Age/Lifespan + Worldview -->
+    <div class="grid-2" style="margin-bottom:16px;">
       <div class="card">
         <div class="card-header">Age &amp; Lifespan</div>
         <div id="world-age"><div class="loading">Loading</div></div>
-      </div>
-
-      <div class="card" id="sysprompt-card" style="cursor:pointer;" onclick="openModal('sysprompt')">
-        <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0;">
-          <span>System Prompt</span>
-          <button class="hero-diary-toggle wc-toggle" onclick="event.stopPropagation();openModal('sysprompt')">↗</button>
-        </div>
-        <div id="sysprompt-preview" style="margin-top:12px;position:relative;max-height:120px;overflow:hidden;">
-          <div class="loading">Loading</div>
-        </div>
       </div>
 
       <div class="card" id="worldview-card" style="cursor:pointer;" onclick="openModal('worldview')">
@@ -1184,14 +1174,6 @@
   </div>
 </div>
 
-<!-- SYSTEM PROMPT MODAL -->
-<div class="modal-overlay" id="modal-sysprompt" onclick="closeModal(event, 'sysprompt')">
-  <div class="modal modal-wide" onclick="event.stopPropagation()">
-    <button class="modal-close" onclick="document.getElementById('modal-sysprompt').classList.remove('open')">&times;</button>
-    <h3>System Prompt</h3>
-    <div id="sysprompt-full" style="max-height:70vh;overflow-y:auto;"></div>
-  </div>
-</div>
 
 <!-- ALL MESSAGES MODAL -->
 <div class="modal-overlay" id="modal-all-messages" onclick="closeModal(event, 'all-messages')">
@@ -1295,10 +1277,10 @@ function cv(name) {
 // CONFIG
 // ═══════════════════════════════════════════════════════
 
-const CONTRACT_ADDRESS = '0x1fd332e322a1Af241B12Ca4d27F6083966087804'; // Base Sepolia testnet
+const CONTRACT_ADDRESS = '0xEA6D62D90CB99326D3e92186c782ba4AA4BE9498'; // Base Sepolia testnet
 const RPC_URL = 'https://sepolia.base.org';
 const EXPLORER = 'https://sepolia.basescan.org';
-const DEPLOY_BLOCK = 40277033;
+const DEPLOY_BLOCK = 40287069;
 const REFERRAL_CODE = '2'; // creator referral code (default when no code entered)
 
 // ═══════════════════════════════════════════════════════
@@ -1748,6 +1730,27 @@ function fmtUsdFromPrice(weiAmount, ethUsdPrice8) {
   return '$' + usd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+// Format USD primary with ETH underneath in small text (for cards/stats)
+function fmtEthUsd(wei) {
+  const usd = fmtUsdFromPrice(wei, lastEthUsdPrice);
+  if (!usd) return fmtEth(wei);
+  return `${usd}<div style="font-size:0.55em;font-weight:400;color:var(--text-dim);margin-top:-2px;">${fmtEth(wei)}</div>`;
+}
+
+// USD primary, ETH secondary inline (for messages/compact displays)
+function fmtUsdEthInline(wei) {
+  const usd = fmtUsdFromPrice(wei, lastEthUsdPrice);
+  if (!usd) return fmtEth(wei);
+  return `${usd} <span style="font-size:0.85em;color:var(--text-dim);">(${fmtEth(wei)})</span>`;
+}
+
+// ETH with USD in parens (for places where ETH is primary)
+function fmtEthUsdInline(wei) {
+  const usd = fmtUsdFromPrice(wei, lastEthUsdPrice);
+  if (!usd) return fmtEth(wei);
+  return `${fmtEth(wei)} <span style="color:var(--text-dim);">(${usd})</span>`;
+}
+
 function fmtAddr(addr) {
   return addr.slice(0, 6) + '...' + addr.slice(-4);
 }
@@ -1781,7 +1784,7 @@ function rejectionSuffix(actionType, reason) {
   if (reason === 1)  return ' — action was empty';
   if (reason === 2)  return ' — action encoding was malformed';
   if (reason === 10) return ' — unrecognized action type';
-  if (actionType === 1 && reason === 3) return ' — exceeded the 10% treasury cap';
+  if (actionType === 1 && reason === 3) return ' — donation failed (cap exceeded, executor error, or nonprofit not found)';
   if (actionType === 2 && reason === 3) return ' — rate outside the allowed 1%–90% range';
   if (actionType === 3 && reason === 4) return ' — no investment manager is configured';
   if (actionType === 3 && reason === 5) return ' — deposit failed (may have exceeded the 80% invested cap or been rejected by the protocol)';
@@ -1908,19 +1911,44 @@ function toggleWorldCard(cardId) {
 
 const MAX_MESSAGES_PER_EPOCH = 3;
 
+// ─── LocalStorage cache (keyed by contract address) ─────────────────
+// On-chain data is immutable once written, so we cache aggressively.
+function cacheKey(type, id) {
+  return `hf:${CONTRACT_ADDRESS.slice(0,10)}:${type}:${id}`;
+}
+function cacheGet(type, id) {
+  try {
+    const raw = localStorage.getItem(cacheKey(type, id));
+    if (raw) return JSON.parse(raw);
+  } catch {}
+  return null;
+}
+function cacheSet(type, id, data) {
+  try {
+    localStorage.setItem(cacheKey(type, id), JSON.stringify(data));
+  } catch {}
+}
+
 async function loadEpochMessages(epoch) {
+  const cached = cacheGet('epoch-msgs', epoch);
+  if (cached) return cached;
+
   const snap = await fund.getEpochSnapshot(epoch);
   const head = Number(snap.messageHead);
   const count = Number(snap.messageCount);
   const unread = count - head;
   const toRead = Math.min(unread, MAX_MESSAGES_PER_EPOCH);
-  if (toRead <= 0) return [];
+  if (toRead <= 0) {
+    cacheSet('epoch-msgs', epoch, []);
+    return [];
+  }
 
   const msgs = [];
   for (let i = 0; i < toRead; i++) {
     const m = await fund.messages(head + i);
-    msgs.push({ sender: m.sender, amount: m.amount, text: m.text, epoch: Number(m.epoch) });
+    msgs.push({ sender: m.sender, amount: m.amount.toString(), text: m.text, epoch: Number(m.epoch) });
   }
+  cacheSet('epoch-msgs', epoch, msgs);
   return msgs;
 }
 
@@ -1940,12 +1968,14 @@ function diaryNav(dir) {
 function renderDiaryViewer() {
   if (diaryEntries.length === 0) return;
   const entry = diaryEntries[diaryViewerIdx];
-  document.getElementById('diary-viewer-title').textContent = `Epoch ${entry.epoch}`;
+  const ts = Number(entry.timestamp);
+  const timeStr = ts > 0 ? new Date(ts * 1000).toLocaleString() : '';
+  document.getElementById('diary-viewer-title').innerHTML = `Epoch ${entry.epoch}${timeStr ? `<span style="font-size:12px;font-weight:400;color:var(--text-dim);margin-left:10px;">${timeStr}</span>` : ''}`;
   document.getElementById('diary-viewer-entry').textContent = entry.reasoning;
 
   // Action row
   const detailStyle = entry.rejected ? 'color:var(--text-dim);' : '';
-  let actionHtml = `<span class="badge ${actionBadgeClass(entry.action.type, entry.rejected)}" style="font-size:10px;">${entry.action.label}</span> <span style="${detailStyle}">${entry.action.detail}</span>${entry.bountyPaid > 0n ? ' | Bounty: ' + fmtEth(entry.bountyPaid) : ''}`;
+  let actionHtml = `<span class="badge ${actionBadgeClass(entry.action.type, entry.rejected)}" style="font-size:10px;">${entry.action.label}</span> <span style="${detailStyle}">${entry.action.detail}</span>${entry.bountyPaid > 0n ? ' | Bounty: ' + fmtEthUsdInline(entry.bountyPaid) : ''}`;
   document.getElementById('diary-viewer-action').innerHTML = actionHtml;
 
   // Worldview diff (if any)
@@ -1975,10 +2005,11 @@ function renderDiaryViewer() {
     } else {
       msgsEl.innerHTML = msgs.map(m => `
         <div style="margin-bottom:12px;padding:8px 10px;background:var(--bg);border-radius:var(--radius-xs);border-left:2px solid var(--accent);">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:2px;">
             <span style="font-family:var(--mono);font-size:11px;color:var(--text-dim);">${fmtAddr(m.sender)}</span>
-            <span style="font-size:11px;color:var(--accent);font-weight:500;">${fmtEth(m.amount)} ETH</span>
+            <span class="badge badge-accent" style="font-size:9px;padding:2px 6px;">read</span>
           </div>
+          <div style="font-size:11px;color:var(--accent);font-weight:500;margin-bottom:4px;">${fmtUsdEthInline(m.amount)}</div>
           <div style="font-size:12px;line-height:1.5;color:var(--text-secondary);word-wrap:break-word;">${escapeHtml(m.text)}</div>
         </div>
       `).join('');
@@ -2034,8 +2065,18 @@ async function loadMessagesPage(page) {
   document.getElementById('all-messages-content').innerHTML = '<div class="loading">Loading</div>';
 
   try {
+    // Load messages, using cache for already-read ones (immutable once written)
+    const msgPromises = Array.from({length: endIdx - startIdx}, async (_, i) => {
+      const idx = startIdx + i;
+      const cached = cacheGet('msg', idx);
+      if (cached) return cached;
+      const m = await fund.messages(idx);
+      const obj = { sender: m.sender, amount: m.amount.toString(), text: m.text, epoch: Number(m.epoch) };
+      cacheSet('msg', idx, obj);
+      return obj;
+    });
     const [msgs, msgHead] = await Promise.all([
-      Promise.all(Array.from({length: endIdx - startIdx}, (_, i) => fund.messages(startIdx + i))),
+      Promise.all(msgPromises),
       fund.messageHead(),
     ]);
     const headIdx = Number(msgHead);
@@ -2048,7 +2089,7 @@ async function loadMessagesPage(page) {
       html += `<div class="msg-item">
         <div class="msg-header">
           <span class="msg-sender"><a href="${EXPLORER}/address/${m.sender}" target="_blank">${fmtAddr(m.sender)}</a></span>
-          <span class="msg-amount">${fmtEth(m.amount)} ETH</span>
+          <span class="msg-amount">${fmtUsdEthInline(m.amount)}</span>
           ${isUnread ? '<span class="badge badge-accent" style="font-size:9px;padding:2px 6px;">unread</span>' : ''}
           <span class="msg-meta">#${msgIdx} &mdash; sent in epoch ${m.epoch}</span>
         </div>
@@ -2238,7 +2279,7 @@ async function loadAll() {
   document.getElementById('hero-total-assets').textContent = usdStr ? usdStr : fmtEth(totalAssets);
   document.getElementById('hero-total-usd').textContent = usdStr ? fmtEth(totalAssets) : '';
   document.getElementById('hero-donated-usd').textContent = fmtUsd(donatedUsd);
-  document.getElementById('hero-donated-eth').textContent = fmtEth(donated);
+  document.getElementById('hero-donated-eth').innerHTML = fmtEth(donated);
 
   // Age
   const age = Math.floor(Date.now() / 1000) - Number(deployTs);
@@ -2276,7 +2317,7 @@ async function loadAll() {
   }
 
   // ── THE HUMAN FUND ──
-  document.getElementById('fund-liquid').textContent = fmtEth(treasury);
+  document.getElementById('fund-liquid').innerHTML = fmtEthUsd(treasury);
   let totalInvested = 0n;
   let investmentPositions = [];
 
@@ -2286,7 +2327,7 @@ async function loadAll() {
     if (imAddr && imAddr !== '0x0000000000000000000000000000000000000000') {
       investmentMgr = new ethers.Contract(imAddr, INVESTMENT_ABI, provider);
       totalInvested = await investmentMgr.totalInvestedValue();
-      document.getElementById('fund-invested').textContent = fmtEth(totalInvested);
+      document.getElementById('fund-invested').innerHTML = fmtEthUsd(totalInvested);
 
       const pCount = Number(await investmentMgr.protocolCount());
       for (let i = 1; i <= pCount; i++) {
@@ -2346,12 +2387,12 @@ async function loadAll() {
   }
 
   // Inflows / Outflows
-  document.getElementById('inflow-total').textContent = fmtEth(inflows);
-  document.getElementById('outflow-total').textContent = fmtEth(donated + bountiesPaid);
+  document.getElementById('inflow-total').innerHTML = fmtEthUsd(inflows);
+  document.getElementById('outflow-total').innerHTML = fmtEthUsd(donated + bountiesPaid);
   document.getElementById('inflow-commission').textContent = `${(Number(commRate) / 100).toFixed(1)}%`;
   currentCommissionPct = (Number(commRate) / 100).toFixed(1);
   document.querySelectorAll('.commission-pct').forEach(el => el.textContent = currentCommissionPct);
-  document.getElementById('inflow-commissions-paid').textContent = fmtEth(commPaid);
+  document.getElementById('inflow-commissions-paid').innerHTML = fmtEthUsd(commPaid);
 
   // Inflow/outflow chart — inflows as positive bars, outflows as negative bars
   if (diaryEntries.length > 1) {
@@ -2478,18 +2519,10 @@ async function loadAll() {
       const dr = Math.floor(er * Number(epochDur) / 86400);
       ageHtml += `<div class="stat-divider"></div>`;
       ageHtml += `<div class="stat-row"><span class="stat-label">Est. runway</span><span class="stat-value green">${dr > 365 ? '~' + (dr/365).toFixed(1) + ' years' : '~' + dr + ' days'}</span></div>`;
-      ageHtml += `<div class="stat-row"><span class="stat-label">Avg cost/epoch</span><span class="stat-value">${fmtEth(ac)}</span></div>`;
+      ageHtml += `<div class="stat-row"><span class="stat-label">Avg cost/epoch</span><span class="stat-value">${fmtUsdEthInline(ac)}</span></div>`;
     }
   }
   document.getElementById('world-age').innerHTML = ageHtml;
-
-  // System prompt — preview with fade, full in expanded body
-  const promptFirstLines = SYSTEM_PROMPT.split('\n').slice(0, 6).join('\n');
-  document.getElementById('sysprompt-preview').innerHTML = `
-    <div style="font-size:12px;line-height:1.6;color:var(--text-secondary);font-family:var(--mono);white-space:pre-wrap;">${escapeHtml(promptFirstLines)}</div>
-    <div style="position:absolute;bottom:0;left:0;right:0;height:40px;background:linear-gradient(transparent, var(--surface));pointer-events:none;"></div>
-  `;
-  document.getElementById('sysprompt-full').innerHTML = `<div class="prompt-text">${escapeHtml(SYSTEM_PROMPT)}</div>`;
 
   // Worldview card
   try {
@@ -2503,10 +2536,16 @@ async function loadAll() {
       const wvBadgeText = `${activePolicies.length}/7 active`;
       document.getElementById('worldview-badge').textContent = wvBadgeText;
       document.getElementById('worldview-badge-modal').textContent = wvBadgeText;
-      // Preview: brief explanation
-      document.getElementById('worldview-preview').innerHTML = `
-        <div style="font-size:12px;color:var(--text-secondary);line-height:1.5;">Costanza can update his worldview based on what he learns each epoch. This acts as his long-term memory.</div>
-      `;
+      // Preview: description + random non-empty slot
+      let previewHtml = '<div style="font-size:12px;color:var(--text-secondary);line-height:1.5;margin-bottom:10px;">Costanza can update his worldview based on what he learns each epoch. This acts as his long-term memory.</div>';
+      if (activePolicies.length > 0) {
+        const pick = activePolicies[Math.floor(Math.random() * activePolicies.length)];
+        previewHtml += `
+          <div style="font-size:11px;color:var(--text-dim);margin-bottom:4px;">[${pick.idx}] ${SLOT_NAMES[pick.idx] || 'Slot ' + pick.idx}</div>
+          <div style="font-size:12px;color:var(--text-secondary);line-height:1.5;font-style:italic;">${escapeHtml(pick.text)}</div>
+        `;
+      }
+      document.getElementById('worldview-preview').innerHTML = previewHtml;
       // Full view
       document.getElementById('worldview-full').innerHTML = displayed.map((p, i) => {
         const slot = i + 1;
@@ -2545,7 +2584,7 @@ async function loadAll() {
         mHtml += `<div class="msg-item">
           <div class="msg-header">
             <span class="msg-sender"><a href="${EXPLORER}/address/${m.sender}" target="_blank">${fmtAddr(m.sender)}</a></span>
-            <span class="msg-amount">${fmtEth(m.amount)}</span>
+            <span class="msg-amount">${fmtUsdEthInline(m.amount)}</span>
             ${isUnread ? '<span class="badge badge-accent" style="font-size:9px;padding:2px 6px;margin-left:4px;">unread</span>' : ''}
           </div>
           ${m.text ? `<div class="msg-text">${escapeHtml(m.text)}</div>` : '<div class="msg-text" style="color:var(--text-dim);font-style:italic;">(no text)</div>'}

@@ -234,12 +234,13 @@ def _compute_action_bounds(state):
     # Commission bounds
     current_commission = state["commission_rate_bps"]
 
-    # Investment bounds
+    # Investment bounds — 95% safety margin (same rationale as donate: the
+    # bounty payment reduces live total_assets between snapshot and execution)
     max_total_invested = (total_assets * 8000) // 10000  # 80% of total assets
     investment_headroom = max(0, max_total_invested - total_invested)
     min_reserve = (total_assets * 2000) // 10000  # 20% of total assets
     max_investable = max(0, balance - min_reserve)
-    invest_capacity = min(investment_headroom, max_investable)
+    invest_capacity = min(investment_headroom, max_investable) * 95 // 100
 
     # Per-protocol cap (25% of total assets). The contract enforces this
     # as an ABSOLUTE cap on the position, not a per-deposit cap — so the
@@ -255,7 +256,7 @@ def _compute_action_bounds(state):
     # stores protocols 1-indexed in insertion order, matching the array
     # the runner must supply to hash — so position-derived id is the
     # ground truth here.
-    max_per_protocol = (total_assets * 2500) // 10000
+    max_per_protocol = (total_assets * 2500) // 10000 * 95 // 100
     per_protocol_headroom = {}
     for idx, inv in enumerate(state.get("investments", [])):
         pid = idx + 1

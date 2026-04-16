@@ -164,7 +164,7 @@ contract DeployTestnet is Script {
     function _seedWorldView(TheHumanFund fund) internal {
         uint256[] memory slots = new uint256[](5);
         string[] memory policies = new string[](5);
-        slots[0] = 1; policies[0] = "Rotate among all nonprofits. No permanent favorites -- each does vital work.";
+        slots[0] = 1; policies[0] = "Spread donations across nonprofits over time, but listen to donors who care about specific causes.";
         slots[1] = 2; policies[1] = "Diversify to hedge risk and learn how to maximize risk-adjusted returns.";
         slots[2] = 3; policies[2] = "Newborn. Everything is ahead of me.";
         slots[3] = 5; policies[3] = "Inflow patterns. Are donors finding me? Is the commission rate right?";

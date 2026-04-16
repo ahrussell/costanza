@@ -239,8 +239,14 @@ def cmd_client(cfg):
         "--env-file", str(env_file),
         "-v", os.path.expanduser("~/.config/gcloud") + ":/root/.config/gcloud",
         "-v", os.path.expanduser("~/.humanfund") + ":/root/.humanfund",
-        "humanfund-prover", "--verbose", "--no-lock",
     ]
+    # Pass through capture state dir if set
+    capture_dir = os.environ.get("CAPTURE_STATE_DIR")
+    if capture_dir:
+        docker_cmd.extend(["-v", f"{capture_dir}:/capture", "-e", "CAPTURE_STATE_DIR=/capture"])
+    docker_cmd.extend(["humanfund-prover", "--verbose", "--no-lock"])
+    if capture_dir:
+        docker_cmd.extend(["--capture-state", "/capture"])
     print("Running prover client (Docker)...")
     print(f"  {' '.join(docker_cmd[:6])} ...")
     try:
