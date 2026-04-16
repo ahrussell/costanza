@@ -28,8 +28,8 @@ PHASE_NAMES = {IDLE: "IDLE", COMMIT: "COMMIT", REVEAL: "REVEAL",
                EXECUTION: "EXECUTION", SETTLED: "SETTLED"}
 
 # Gas limits for auction transactions
-GAS_SYNC_PHASE = 800_000       # syncPhase may chain through multiple transitions
-GAS_COMMIT = 800_000           # commit auto-syncs (may open auction)
+GAS_SYNC_PHASE = 1_500_000     # syncPhase may chain through multiple transitions + Chainlink snapshot
+GAS_COMMIT = 1_500_000         # commit auto-syncs (may open auction + Chainlink snapshot)
 GAS_REVEAL = 500_000           # reveal auto-syncs (may close commit)
 GAS_SUBMIT_RESULT = 15_000_000 # DCAP verification is expensive; auto-syncs (may close reveal)
 GAS_CLAIM_BOND = 100_000

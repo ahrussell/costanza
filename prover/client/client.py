@@ -561,10 +561,22 @@ def run(config):
     auction = chain.get_auction_state()
     epoch = auction["epoch"]
     contract_phase = auction["contract_phase"]
-    effective_phase = _resolve_phase(auction)
+    clock_phase = _resolve_phase(auction)
 
-    logger.info("Epoch %d | Contract: %s | Clock: %s",
-                epoch, PHASE_NAMES.get(contract_phase, str(contract_phase)), effective_phase)
+    # When the owner calls nextPhase() to advance manually, the contract
+    # is ahead of the wall-clock. Trust whichever is further along.
+    CONTRACT_TO_EFFECTIVE = {0: "idle", 1: "commit", 2: "reveal", 3: "execution", 4: "epoch_over"}
+    PHASE_ORDER = {"idle": 0, "commit": 1, "reveal": 2, "execution": 3, "epoch_over": 4}
+    contract_effective = CONTRACT_TO_EFFECTIVE.get(contract_phase, "idle")
+
+    if PHASE_ORDER.get(contract_effective, 0) > PHASE_ORDER.get(clock_phase, 0):
+        effective_phase = contract_effective
+        logger.info("Epoch %d | Contract: %s | Clock: %s → using contract (ahead)",
+                    epoch, PHASE_NAMES.get(contract_phase, str(contract_phase)), clock_phase)
+    else:
+        effective_phase = clock_phase
+        logger.info("Epoch %d | Contract: %s | Clock: %s",
+                    epoch, PHASE_NAMES.get(contract_phase, str(contract_phase)), clock_phase)
 
     # 2. Load local state (advisory only — may be empty)
     saved = load_state(state_dir, current_epoch=epoch)

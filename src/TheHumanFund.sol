@@ -728,7 +728,7 @@ contract TheHumanFund is ReentrancyGuard {
     /// @dev Gated by `FREEZE_AUCTION_CONFIG` (invariant I7).
     /// @dev Re-anchors timing only on epoch advance / auction open,
     ///      satisfying I4 (schedule coherence).
-    function nextPhase() external onlyOwner {
+    function nextPhase() external onlyOwner returns (uint8 newPhase) {
         if (frozenFlags & FREEZE_AUCTION_CONFIG != 0) revert Frozen();
         IAuctionManager am = auctionManager;
         if (address(am) == address(0)) revert InvalidParams();
@@ -755,6 +755,7 @@ contract TheHumanFund is ReentrancyGuard {
             lastEpochStartTime = block.timestamp;
             _nextPhase(block.timestamp);
         }
+        newPhase = uint8(am.getPhase(currentEpoch));
     }
 
     /// @notice Owner-only reset: abort any in-flight auction, apply new
