@@ -23,7 +23,7 @@ Contract-side reference:
   WorldView.stateHash()              -> _hash_worldview()
 """
 
-MAX_MESSAGES_PER_EPOCH = 5
+MAX_MESSAGES_PER_EPOCH = 3
 MAX_HISTORY_ENTRIES = 10
 WORLDVIEW_SLOTS = 10
 DEFAULT_EPOCH_DURATION = 86400

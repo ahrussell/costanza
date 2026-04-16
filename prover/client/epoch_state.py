@@ -253,7 +253,7 @@ def read_contract_state(contract, w3):
     try:
         msg_contract = w3.eth.contract(address=contract.address, abi=_MSG_ABI)
         unread = snap["message_count"] - snap["message_head"]
-        max_msgs = 5  # MAX_MESSAGES_PER_EPOCH
+        max_msgs = 3  # MAX_MESSAGES_PER_EPOCH
         emit = min(unread, max_msgs)
         for i in range(emit):
             sender, amount, text, msg_epoch = (

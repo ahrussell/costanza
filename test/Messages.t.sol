@@ -160,19 +160,19 @@ contract MessagesTest is EpochTest {
     }
 
     function test_message_head_caps_at_max_per_epoch() public {
-        // Send 7 messages (more than MAX_MESSAGES_PER_EPOCH = 5)
+        // Send 5 messages (more than MAX_MESSAGES_PER_EPOCH = 3)
         vm.deal(donor1, 1 ether);
-        for (uint256 i = 0; i < 7; i++) {
+        for (uint256 i = 0; i < 5; i++) {
             vm.prank(donor1);
             fund.donateWithMessage{value: 0.01 ether}(0, "msg");
         }
-        assertEq(fund.messageCount(), 7);
+        assertEq(fund.messageCount(), 5);
 
-        // Execute epoch — should only advance by 5
+        // Execute epoch — should only advance by 3
         bytes memory noopAction = bytes(hex"00");
         speedrunEpoch(fund, noopAction, "reasoning");
 
-        assertEq(fund.messageHead(), 5);
+        assertEq(fund.messageHead(), 3);
 
         // 2 unread messages remain
         (address[] memory senders,,,) = fund.getUnreadMessages();
@@ -189,7 +189,7 @@ contract MessagesTest is EpochTest {
 
         // getUnreadMessages returns at most MAX_MESSAGES_PER_EPOCH
         (address[] memory senders,,,) = fund.getUnreadMessages();
-        assertEq(senders.length, 5);
+        assertEq(senders.length, 3);
     }
 
     function test_multiple_epochs_drain_queue() public {
@@ -200,12 +200,16 @@ contract MessagesTest is EpochTest {
             fund.donateWithMessage{value: 0.01 ether}(0, "msg");
         }
 
-        // Epoch 1: advances head to 5
+        // Epoch 1: advances head to 3
         bytes memory noopAction = bytes(hex"00");
         speedrunEpoch(fund, noopAction, "reasoning");
-        assertEq(fund.messageHead(), 5);
+        assertEq(fund.messageHead(), 3);
 
-        // Epoch 2: advances head to 7
+        // Epoch 2: advances head to 6
+        speedrunEpoch(fund, noopAction, "reasoning");
+        assertEq(fund.messageHead(), 6);
+
+        // Epoch 3: advances head to 7
         speedrunEpoch(fund, noopAction, "reasoning");
         assertEq(fund.messageHead(), 7);
 
@@ -546,7 +550,7 @@ contract MessagesTest is EpochTest {
         assertGe(fund.messageHead(), prevHead, "monotonic after epoch 6");
     }
 
-    /// 5-message cap via wall-clock driver (not speedrunEpoch).
+    /// 3-message cap via wall-clock driver (not speedrunEpoch).
     function test_message_cap_wallClock_driver() public {
         vm.deal(donor1, 1 ether);
         for (uint256 i = 0; i < 7; i++) {
@@ -576,10 +580,10 @@ contract MessagesTest is EpochTest {
             EPOCH_TEST_VERIFIER_ID, -1, ""
         );
 
-        // Cap: only 5 consumed, 2 remain
-        assertEq(fund.messageHead(), 5, "wall-clock: cap at 5");
+        // Cap: only 3 consumed, 4 remain
+        assertEq(fund.messageHead(), 3, "wall-clock: cap at 3");
         (address[] memory senders,,,) = fund.getUnreadMessages();
-        assertEq(senders.length, 2, "2 unread remain");
+        assertEq(senders.length, 3, "3 unread remain");
     }
 
     /// Messages accumulating across a mix of successful and missed epochs.
@@ -595,8 +599,8 @@ contract MessagesTest is EpochTest {
         speedrunEpoch(fund, noop, "epoch 1");
         assertEq(fund.messageHead(), 3);
 
-        // Send 4 more, miss an epoch, then execute
-        for (uint256 i = 0; i < 4; i++) {
+        // Send 3 more, miss an epoch, then execute
+        for (uint256 i = 0; i < 3; i++) {
             vm.prank(donor1);
             fund.donateWithMessage{value: 0.01 ether}(0, "batch2");
         }
@@ -605,9 +609,9 @@ contract MessagesTest is EpochTest {
         assertEq(fund.messageHead(), 3, "miss didn't advance head");
 
         speedrunEpoch(fund, noop, "epoch 3");
-        // head advances by min(4, 5) = 4 → head = 7
-        assertEq(fund.messageHead(), 7, "consumed batch2 after miss");
-        assertEq(fund.messageCount(), 7, "total count");
+        // head advances by min(3, 3) = 3 → head = 6
+        assertEq(fund.messageHead(), 6, "consumed batch2 after miss");
+        assertEq(fund.messageCount(), 6, "total count");
         (address[] memory senders,,,) = fund.getUnreadMessages();
         assertEq(senders.length, 0, "all read");
     }
@@ -707,7 +711,7 @@ contract MessagesTest is EpochTest {
     // regardless of how chaotic the driver interleaving is.
     // ═══════════════════════════════════════════════════════════════════
 
-    uint256 constant MAX_MSGS_PER_EPOCH = 5;
+    uint256 constant MAX_MSGS_PER_EPOCH = 3;
 
     /// @dev Chaotic fuzz test for the message queue. Sends messages at
     ///      random times, mixes drivers (speedrunEpoch, manual nextPhase,

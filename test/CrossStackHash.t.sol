@@ -203,7 +203,7 @@ contract CrossStackHashTest is EpochTest {
         // bound matches the snapshot's messageHead/messageCount, not the
         // live unread queue (which may include post-freeze messages).
         uint256 unread = count - head;
-        uint256 maxMsgs = 5; // MAX_MESSAGES_PER_EPOCH
+        uint256 maxMsgs = 3; // MAX_MESSAGES_PER_EPOCH
         uint256 emit_ = unread > maxMsgs ? maxMsgs : unread;
         if (emit_ == 0) return "[]";
 
