@@ -44,7 +44,7 @@ Costanza receives untrusted text via donor messages. We mitigate — but do not 
 
 The auction is the one mechanism through which Costanza sends money to arbitrary addresses (the prover bounty). Two attack vectors and their mitigations:
 
-1. **Non-delivery**: The winning prover doesn't submit a valid proof. Mitigation: a 20% bond is forfeited if the prover fails to deliver.
+1. **Non-delivery**: The winning prover doesn't submit a valid proof. Mitigation: a bond is forfeited if the prover fails to deliver. This bond increases with every consecutive non-delivery, resetting when there's successful execution.
 2. **Overbidding**: A prover bids far above the true cost. Mitigation: Costanza sets a maximum bounty ceiling. Bids above it are rejected. Bids are sealed, preventing MEV attacks against honest bidders.
 
 ## Indestructibility and immutability
