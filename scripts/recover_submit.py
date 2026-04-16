@@ -1,9 +1,17 @@
 #!/usr/bin/env python3
-"""Emergency recovery script: read serial console from stuck inference VM and submit on-chain."""
+"""Emergency recovery script: read serial console from stuck inference VM and submit on-chain.
+
+Usage:
+    python scripts/recover_submit.py --vm-name <vm> --contract <addr> [--zone <zone>] [--project <proj>]
+
+Reads a TEE result from a stuck VM's serial console and submits it on-chain.
+Requires PRIVATE_KEY and RPC_URL environment variables.
+"""
+import argparse
 import hashlib
 import json
 import os
-import requests
+import shlex
 import subprocess
 import sys
 import time
@@ -15,27 +23,22 @@ from eth_account import Account
 OUTPUT_START_MARKER = "===HUMANFUND_OUTPUT_START==="
 OUTPUT_END_MARKER = "===HUMANFUND_OUTPUT_END==="
 
-VM_NAME = "humanfund-runner-da2b81f2"
-ZONE = "us-central1-a"
-PROJECT = "the-human-fund"
-FUND_ADDR = "0x08e18f25f42F12fFAAca6b55247B06828150C3C9"
-RPC_URL = os.environ.get("RPC_URL", "https://sepolia.base.org")
-PRIVATE_KEY = os.environ.get("PRIVATE_KEY")
-
 # Load ABIs
 SCRIPT_DIR = Path(__file__).parent.parent
 fund_abi = json.loads((SCRIPT_DIR / "out/TheHumanFund.sol/TheHumanFund.json").read_text())["abi"]
 
-def gcloud(args, check=True, timeout=60):
-    cmd = f"gcloud {args} --project={PROJECT}"
-    result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+def gcloud(args, project, check=True, timeout=60):
+    import shlex
+    cmd = ["gcloud"] + shlex.split(args) + ["--project", project]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     if check and result.returncode != 0:
         raise RuntimeError(f"gcloud failed: {result.stderr[:500]}")
     return result.stdout.strip()
 
-def get_serial_output():
+def get_serial_output(vm_name, zone, project):
     print("Fetching serial console output...")
-    return gcloud(f"compute instances get-serial-port-output {VM_NAME} --zone={ZONE}", timeout=30)
+    return gcloud(f"compute instances get-serial-port-output {vm_name} --zone={zone}",
+                  project=project, timeout=30)
 
 def parse_result(output):
     start_idx = output.find(OUTPUT_START_MARKER)
@@ -51,15 +54,28 @@ def parse_result(output):
     return obj
 
 def main():
-    if not PRIVATE_KEY:
-        print("ERROR: PRIVATE_KEY not set")
+    parser = argparse.ArgumentParser(description="Emergency recovery: submit TEE result from stuck VM")
+    parser.add_argument("--vm-name", required=True, help="GCP VM instance name")
+    parser.add_argument("--contract", required=True, help="TheHumanFund contract address")
+    parser.add_argument("--zone", default="us-central1-a", help="GCP zone (default: us-central1-a)")
+    parser.add_argument("--project", default="the-human-fund", help="GCP project (default: the-human-fund)")
+    parser.add_argument("--verifier-id", type=int, default=2, help="Verifier ID (default: 2)")
+    args = parser.parse_args()
+
+    rpc_url = os.environ.get("RPC_URL")
+    private_key = os.environ.get("PRIVATE_KEY")
+    if not private_key:
+        print("ERROR: PRIVATE_KEY env var not set")
+        sys.exit(1)
+    if not rpc_url:
+        print("ERROR: RPC_URL env var not set")
         sys.exit(1)
 
-    account = Account.from_key(PRIVATE_KEY)
+    account = Account.from_key(private_key)
     print(f"Account: {account.address}")
 
     # Get serial output and parse result
-    output = get_serial_output()
+    output = get_serial_output(args.vm_name, args.zone, args.project)
     result = parse_result(output)
     if not result:
         print("ERROR: Could not find result in serial output")
@@ -82,20 +98,19 @@ def main():
     policy_text = wv.get("policy", "")
 
     # Verify REPORTDATA
-    w3 = Web3(Web3.HTTPProvider(RPC_URL, request_kwargs={"timeout": 60}))
-    fund = w3.eth.contract(address=FUND_ADDR, abi=fund_abi)
+    # outputHash = keccak256(sha256(action) || sha256(reasoning))
+    # Prompt is verified via dm-verity image key, no longer in outputHash.
+    w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 60}))
+    fund = w3.eth.contract(address=args.contract, abi=fund_abi)
 
     current_epoch = fund.functions.currentEpoch().call()
     input_hash_raw = fund.functions.epochInputHashes(current_epoch).call()
     input_hash_bytes = input_hash_raw if isinstance(input_hash_raw, bytes) else input_hash_raw.to_bytes(32, "big")
     print(f"Contract input hash: 0x{input_hash_bytes.hex()[:16]}...")
 
-    prompt_path = SCRIPT_DIR / "prover" / "prompts" / "system.txt"
-    prompt_hash = hashlib.sha256(prompt_path.read_text().strip().encode("utf-8")).digest()
     output_hash = Web3.keccak(
         hashlib.sha256(action_bytes).digest() +
-        hashlib.sha256(reasoning_bytes).digest() +
-        prompt_hash
+        hashlib.sha256(reasoning_bytes).digest()
     )
     expected_rd = hashlib.sha256(input_hash_bytes + output_hash).digest()
     tee_rd = bytes.fromhex(result["report_data"].replace("0x", ""))[:32]
@@ -103,19 +118,21 @@ def main():
     if expected_rd != tee_rd:
         print(f"  Expected: {expected_rd.hex()[:32]}...")
         print(f"  TEE:      {tee_rd.hex()[:32]}...")
+        print("ERROR: REPORTDATA mismatch — submission will revert on-chain. Aborting.")
+        sys.exit(1)
 
     # Build and submit tx
     nonce = w3.eth.get_transaction_count(account.address)
     gas_price = w3.eth.gas_price
     chain_id = w3.eth.chain_id
-    print(f"Submitting (nonce={nonce}, verifier_id=2)...")
+    print(f"Submitting (nonce={nonce}, verifier_id={args.verifier_id})...")
 
     calldata = fund.functions.submitAuctionResult(
-        action_bytes, reasoning_bytes, attestation_bytes, 2, policy_slot, policy_text
+        action_bytes, reasoning_bytes, attestation_bytes, args.verifier_id, policy_slot, policy_text
     )._encode_transaction_data()
     tx = {
         "from": account.address,
-        "to": FUND_ADDR,
+        "to": args.contract,
         "data": calldata,
         "nonce": nonce,
         "gas": 15_000_000,
@@ -127,12 +144,15 @@ def main():
     signed = account.sign_transaction(tx)
     raw_tx = signed.raw_transaction
     tx_hash = Web3.keccak(raw_tx)
-    print(f"Tx: https://sepolia.basescan.org/tx/{tx_hash.hex()}")
 
+    explorer = "basescan.org" if chain_id == 8453 else "sepolia.basescan.org"
+    print(f"Tx: https://{explorer}/tx/{tx_hash.hex()}")
+
+    import requests
     raw_tx_hex = "0x" + raw_tx.hex()
     for attempt in range(5):
         try:
-            resp = requests.post(RPC_URL, json={
+            resp = requests.post(rpc_url, json={
                 "jsonrpc": "2.0", "method": "eth_sendRawTransaction",
                 "params": [raw_tx_hex], "id": 1,
             }, timeout=300)

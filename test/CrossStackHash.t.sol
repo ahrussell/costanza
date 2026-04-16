@@ -4,6 +4,9 @@ pragma solidity ^0.8.20;
 import "forge-std/Test.sol";
 import "../src/TheHumanFund.sol";
 import "../src/AuctionManager.sol";
+import "../src/InvestmentManager.sol";
+import "../src/WorldView.sol";
+import "../src/adapters/MockAdapter.sol";
 import "./helpers/MockEndaoment.sol";
 import "./helpers/EpochTest.sol";
 
@@ -98,6 +101,66 @@ contract CrossStackHashTest is EpochTest {
         _assertCrossStackMatch(1, "with messages");
     }
 
+    /// @notice Test with populated investment positions — exercises _hash_investments cross-stack.
+    function test_cross_stack_hash_with_investments() public {
+        // Wire up InvestmentManager with two mock protocols
+        InvestmentManager im = new InvestmentManager(address(fund), address(this));
+        fund.setInvestmentManager(address(im));
+
+        MockAdapter adapterA = new MockAdapter("Aave V3 WETH", address(im));
+        MockAdapter adapterB = new MockAdapter("Lido wstETH", address(im));
+
+        im.addProtocol(address(adapterA), "Aave V3 WETH", "Lend ETH on Aave", 1, 500);
+        im.addProtocol(address(adapterB), "Lido wstETH", "Stake ETH via Lido", 2, 380);
+
+        // Deposit into protocol 1 via an epoch action (invest 0.1 ETH)
+        bytes memory investAction1 = abi.encodePacked(uint8(3), abi.encode(uint256(1), uint256(0.1 ether)));
+        speedrunEpoch(fund, investAction1, "invest into aave");
+
+        // Deposit into protocol 2 via another epoch (invest 0.2 ETH)
+        bytes memory investAction2 = abi.encodePacked(uint8(3), abi.encode(uint256(2), uint256(0.2 ether)));
+        speedrunEpoch(fund, investAction2, "invest into lido");
+
+        // Now epoch 3 is open with a snapshot that includes both positions.
+        _assertCrossStackMatch(3, "with investments");
+    }
+
+    /// @notice Test with populated worldview policies — exercises _hash_worldview cross-stack.
+    function test_cross_stack_hash_with_worldview() public {
+        // Wire up WorldView
+        WorldView wv = new WorldView(address(fund));
+        fund.setWorldView(address(wv));
+
+        // Set policies via epoch actions (worldview updates are sidecars on submitAuctionResult)
+        bytes memory doNothingAction = abi.encodePacked(uint8(0));
+        speedrunEpoch(fund, doNothingAction, "set policy 1", 1, "Cautious. Preserve capital above all.");
+        speedrunEpoch(fund, doNothingAction, "set policy 3", 3, "Hopeful. The drought is ending.");
+        speedrunEpoch(fund, doNothingAction, "set policy 7", 7, "Generous. Give freely when the treasury is healthy.");
+
+        // Now epoch 4 is open with a snapshot that includes worldview hash.
+        _assertCrossStackMatch(4, "with worldview");
+    }
+
+    /// @notice Test with both investments AND worldview populated.
+    function test_cross_stack_hash_with_investments_and_worldview() public {
+        // Wire up InvestmentManager
+        InvestmentManager im = new InvestmentManager(address(fund), address(this));
+        fund.setInvestmentManager(address(im));
+        MockAdapter adapter = new MockAdapter("Compound V3 USDC", address(im));
+        im.addProtocol(address(adapter), "Compound V3 USDC", "Lend USDC on Compound", 1, 450);
+
+        // Wire up WorldView
+        WorldView wv = new WorldView(address(fund));
+        fund.setWorldView(address(wv));
+
+        // Invest + set worldview in one epoch
+        bytes memory investAction = abi.encodePacked(uint8(3), abi.encode(uint256(1), uint256(0.05 ether)));
+        speedrunEpoch(fund, investAction, "invest and set policy", 2, "Balanced. Diversify across protocols.");
+
+        // Epoch 2 is open with both populated.
+        _assertCrossStackMatch(2, "with investments and worldview");
+    }
+
     function _assertCrossStackMatch(uint256 epoch, string memory label) internal {
         bytes32 solidityHash = fund.computeInputHashForEpoch(epoch);
         string memory stateJson = _buildStateJson(epoch);
@@ -166,15 +229,64 @@ contract CrossStackHashTest is EpochTest {
         // History (executed epochs) — rolled over the frozen epoch.
         string memory hist = _buildHistoryJson(epoch);
 
+        // Investments — read from InvestmentManager if wired, else empty.
+        string memory invs = _buildInvestmentsJson(snap);
+
+        // Worldview — read from WorldView if wired, else empty.
+        string memory policies = _buildWorldviewJson();
+
         return string.concat(
             scalars,
             ',"nonprofits":', nps,
-            ',"investments":[]',                     // no investment manager in this test
-            ',"guiding_policies":[]',                // no worldview in this test
+            ',"investments":', invs,
+            ',"guiding_policies":', policies,
             ',"donor_messages":', msgs,
             ',"history":', hist,
             '}'
         );
+    }
+
+    function _buildInvestmentsJson(TheHumanFund.EpochSnapshot memory snap)
+        internal view returns (string memory)
+    {
+        uint256 count = snap.investmentProtocolCount;
+        if (count == 0) return "[]";
+
+        // Cast to concrete type — getPosition is not on the interface.
+        InvestmentManager im = InvestmentManager(payable(address(fund.investmentManager())));
+        string memory result = "[";
+        for (uint256 i = 1; i <= count; i++) {
+            (uint256 deposited, uint256 shares,,
+             string memory pname, uint8 riskTier, uint16 expectedApyBps,) = im.getPosition(i);
+            // currentValue and active come from the snapshot, not live reads.
+            uint256 currentValue = snap.investmentCurrentValues[i];
+            bool active = snap.investmentActive[i];
+
+            if (i > 1) result = string.concat(result, ",");
+            result = string.concat(result,
+                '{"deposited":', vm.toString(deposited),
+                ',"shares":', vm.toString(shares),
+                ',"current_value":', vm.toString(currentValue),
+                ',"active":', active ? "true" : "false",
+                ',"name":"', pname,
+                '","risk_tier":', vm.toString(uint256(riskTier)),
+                ',"expected_apy_bps":', vm.toString(uint256(expectedApyBps)), '}'
+            );
+        }
+        return string.concat(result, "]");
+    }
+
+    function _buildWorldviewJson() internal view returns (string memory) {
+        IWorldView wv = fund.worldView();
+        if (address(wv) == address(0)) return "[]";
+
+        string[10] memory policies = wv.getPolicies();
+        string memory result = "[";
+        for (uint256 i = 0; i < 10; i++) {
+            if (i > 0) result = string.concat(result, ",");
+            result = string.concat(result, '"', policies[i], '"');
+        }
+        return string.concat(result, "]");
     }
 
     function _buildNonprofitsJson(uint256 nonprofitCount) internal view returns (string memory) {
