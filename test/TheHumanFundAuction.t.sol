@@ -140,7 +140,7 @@ contract TheHumanFundAuctionTest is EpochTest {
 
         assertEq(am.getStartTime(1), block.timestamp);
         assertEq(uint256(am.getPhase(1)), uint256(IAuctionManager.AuctionPhase.COMMIT));
-        assertEq(am.getBond(1), 0.01 ether);
+        assertEq(am.getBond(1), 0.001 ether);
     }
 
     function test_syncPhase_idempotent() public {
@@ -186,7 +186,7 @@ contract TheHumanFundAuctionTest is EpochTest {
         vm.warp(block.timestamp + EXEC_WIN);
         fund.syncPhase(); // should forfeit → SETTLED
 
-        assertEq(fund.treasuryBalance(), treasuryBefore + 0.01 ether);
+        assertEq(fund.treasuryBalance(), treasuryBefore + 0.001 ether);
         assertEq(fund.consecutiveMissedEpochs(), 1);
     }
 
@@ -343,7 +343,7 @@ contract TheHumanFundAuctionTest is EpochTest {
         uint256 balBefore = runner1.balance;
         vm.prank(runner1);
         fund.commit{value: 0.05 ether}(_commitHash(runner1, 0.005 ether, bytes32("salt1")));
-        assertEq(runner1.balance, balBefore - 0.01 ether);
+        assertEq(runner1.balance, balBefore - 0.001 ether);
     }
 
     function test_duplicate_commit_rejected() public {
@@ -461,13 +461,13 @@ contract TheHumanFundAuctionTest is EpochTest {
         vm.warp(block.timestamp + REVEAL_WIN);
         fund.syncPhase(); // closes reveal — runner2 wins, runner1 can claim
 
-        assertEq(am.pendingBondRefunds(), 0.01 ether); // runner1's bond
+        assertEq(am.pendingBondRefunds(), 0.001 ether); // runner1's bond
 
         uint256 runner1BalBefore = runner1.balance;
         vm.prank(runner1);
         am.claimBond(1);
 
-        assertEq(runner1.balance, runner1BalBefore + 0.01 ether);
+        assertEq(runner1.balance, runner1BalBefore + 0.001 ether);
         assertEq(am.pendingBondRefunds(), 0);
     }
 
@@ -556,7 +556,7 @@ contract TheHumanFundAuctionTest is EpochTest {
         fund.syncPhase();
 
         // runner1's bond (non-revealer) should be sent to fund treasury
-        assertEq(address(fund).balance, fundBalBefore + 0.01 ether);
+        assertEq(address(fund).balance, fundBalBefore + 0.001 ether);
         // Only runner2's winner bond is pending (held for execution)
         assertEq(am.pendingBondRefunds(), 0); // no non-winning revealers (runner2 is winner)
     }
@@ -584,9 +584,9 @@ contract TheHumanFundAuctionTest is EpochTest {
         fund.syncPhase();
 
         // runner2 (non-revealer): bond forfeited to fund
-        assertEq(address(fund).balance, fundBalBefore + 0.01 ether);
+        assertEq(address(fund).balance, fundBalBefore + 0.001 ether);
         // runner1 (non-winning revealer): bond is pending
-        assertEq(am.pendingBondRefunds(), 0.01 ether);
+        assertEq(am.pendingBondRefunds(), 0.001 ether);
         // runner3 (winner): bond held until settle/forfeit
     }
 
@@ -601,8 +601,8 @@ contract TheHumanFundAuctionTest is EpochTest {
         uint256 fundBalBefore = address(fund).balance;
         fund.syncPhase(); // closes commit → REVEAL (2 commits), closes reveal → SETTLED (0 reveals)
 
-        // All bonds forfeited to fund (2 bonds × 0.01 ETH)
-        assertEq(address(fund).balance, fundBalBefore + 0.02 ether);
+        // All bonds forfeited to fund (2 bonds × 0.001 ETH)
+        assertEq(address(fund).balance, fundBalBefore + 0.002 ether);
         assertEq(am.pendingBondRefunds(), 0);
     }
 
@@ -638,7 +638,7 @@ contract TheHumanFundAuctionTest is EpochTest {
         fund.syncPhase();
 
         assertEq(fund.consecutiveMissedEpochs(), 3);
-        assertEq(fund.currentBond(), 0.01 ether, "bond unchanged during silence");
+        assertEq(fund.currentBond(), 0.001 ether, "bond unchanged during silence");
         assertEq(fund.effectiveMaxBid(), 0.01331 ether, "max bid escalated 0.01 * 1.1^3");
     }
 
@@ -689,7 +689,7 @@ contract TheHumanFundAuctionTest is EpochTest {
         fund.syncPhase();
 
         assertEq(fund.consecutiveMissedEpochs(), 0);
-        assertEq(fund.currentBond(), 0.01 ether);
+        assertEq(fund.currentBond(), 0.001 ether);
     }
 
     function test_forfeit_incrementsMissed() public {
@@ -1216,13 +1216,13 @@ contract TheHumanFundAuctionTest is EpochTest {
 
         // Bond should never exceed its own cap: max(MIN_BOND_CAP, 10% of treasury)
         uint256 treasuryBondCap = (address(fund).balance * 1000) / 10000;
-        uint256 bondCap = treasuryBondCap > 1 ether ? treasuryBondCap : 1 ether;
+        uint256 bondCap = treasuryBondCap > 0.1 ether ? treasuryBondCap : 0.1 ether;
         assertLe(bond, bondCap);
         // effectiveMaxBid should never exceed 2% of treasury
         uint256 hardCap = (address(fund).balance * 200) / 10000;
         assertLe(maxBid, hardCap);
         // Bond should always be >= BASE_BOND
-        assertGe(bond, 0.01 ether);
+        assertGe(bond, 0.001 ether);
     }
 
     function testFuzz_bidReveal_aboveMaxBid_reverts(uint256 bidAmount) public {

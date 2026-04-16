@@ -116,6 +116,16 @@ def get_tee_client(config):
             machine_type="c3-standard-4",
             inference_timeout=config.get("enclave_timeout", 1800),
         )
+    elif config["tee_client"] == "gcp-persistent":
+        from .tee_clients.gcp_persistent import GCPPersistentTEEClient
+        return GCPPersistentTEEClient(
+            project=config["gcp_project"],
+            zone=config["gcp_zone"],
+            image=config.get("gcp_image", "humanfund-base-gpu-llama-b5270"),
+            machine_type=config.get("gcp_machine_type", "a3-highgpu-1g"),
+            inference_timeout=config.get("enclave_timeout", 600),
+            source_dir=config.get("source_dir", "."),
+        )
     else:
         raise ValueError(f"Unknown TEE client: {config['tee_client']}")
 

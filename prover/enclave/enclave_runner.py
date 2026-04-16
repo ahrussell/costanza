@@ -367,8 +367,12 @@ def main():
         # Step 5: Start llama-server and run inference
         log("")
         log("Step 5: Running inference...")
-        llama_proc = start_llama_server()
-        wait_for_llama_server()
+        external_llama = os.environ.get("LLAMA_SERVER_EXTERNAL", "").strip() == "1"
+        if external_llama:
+            log("  LLAMA_SERVER_EXTERNAL=1 — using already-running llama-server")
+        else:
+            llama_proc = start_llama_server()
+            wait_for_llama_server()
 
         # run_three_pass_inference internally retries just Pass 3 (the cheap
         # action-JSON pass) with an incrementing seed if parse_action fails.
@@ -451,7 +455,7 @@ def main():
         sys.exit(1)
 
     finally:
-        # Kill llama-server
+        # Kill llama-server (only if we started it — not in LLAMA_SERVER_EXTERNAL mode)
         if llama_proc and llama_proc.poll() is None:
             log("Stopping llama-server...")
             llama_proc.terminate()

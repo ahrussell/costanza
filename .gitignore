@@ -26,3 +26,6 @@ models/
 node_modules/
 
 .claude/
+
+# Testnet-only deploy scripts and mock contracts (not for production)
+testnet/

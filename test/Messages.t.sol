@@ -76,7 +76,7 @@ contract MessagesTest is EpochTest {
         vm.deal(donor1, 1 ether);
         vm.prank(donor1);
         vm.expectRevert(TheHumanFund.InvalidParams.selector);
-        fund.donateWithMessage{value: 0.005 ether}(0, "Too cheap!");
+        fund.donateWithMessage{value: 0.0005 ether}(0, "Too cheap!");
     }
 
     function test_donate_with_message_and_referral() public {
@@ -643,7 +643,7 @@ contract MessagesTest is EpochTest {
     }
 
     function testFuzz_messageDonation_belowMinimum_reverts(uint256 amount) public {
-        amount = bound(amount, 0.001 ether, 0.01 ether - 1);
+        amount = bound(amount, 0.0001 ether, 0.001 ether - 1);
         vm.deal(donor1, amount);
         vm.prank(donor1);
         vm.expectRevert(TheHumanFund.InvalidParams.selector);
@@ -651,7 +651,7 @@ contract MessagesTest is EpochTest {
     }
 
     function testFuzz_messageDonation_validAmount(uint256 amount) public {
-        amount = bound(amount, 0.01 ether, 1 ether);
+        amount = bound(amount, 0.001 ether, 1 ether);
         vm.deal(donor1, amount);
         vm.prank(donor1);
         fund.donateWithMessage{value: amount}(0, "Fuzz test");
