@@ -333,9 +333,9 @@ contract TheHumanFund is ReentrancyGuard {
         // operation after deploy and writes it via _openAuction. Before that,
         // epoch view functions return meaningless values but nothing calls them.
 
-        // Initial bond. Mutates directly on winner-forfeit (+10% up to
-        // cap) and resets to this value on successful execution.
-        currentBond = BASE_BOND;
+        // `consecutiveStalledEpochs` starts at 0 (Solidity default), so
+        // `currentBond() == BASE_BOND` at deploy. Bond is a pure function
+        // of the counter — no direct writes anywhere.
 
         donationExecutor = DonationExecutor(_donationExecutor);
         ethUsdFeed = IAggregatorV3(_ethUsdFeed);
@@ -661,7 +661,29 @@ contract TheHumanFund is ReentrancyGuard {
     ///      The max bid escalation (in `effectiveMaxBid`) still tracks
     ///      silent epochs via `consecutiveMissedEpochs` because its
     ///      purpose is to attract bidders, not to punish stalling.
-    uint256 public currentBond;
+    /// @notice Counter driving bond escalation. Updates at exactly one
+    ///         site (`_closeExecution`): resets to 0 on successful epoch;
+    ///         increments by 1 on winner-forfeit; unchanged on silence.
+    ///         Bounded at `MAX_MISSED_EPOCHS` to cap the `currentBond()`
+    ///         loop gas cost.
+    uint256 public consecutiveStalledEpochs;
+
+    /// @notice Current bond amount, as a deterministic function of
+    ///         `consecutiveStalledEpochs`:
+    ///
+    ///           currentBond = min(bondCap, BASE_BOND * (1+E)^stalled)
+    ///
+    ///         where E = AUTO_ESCALATION_BPS / 10000 (10%) and `bondCap`
+    ///         is the treasury-derived cap below.
+    function currentBond() public view returns (uint256) {
+        uint256 bond = BASE_BOND;
+        uint256 cap = _bondCap();
+        for (uint256 i = 0; i < consecutiveStalledEpochs; i++) {
+            bond = bond + (bond * AUTO_ESCALATION_BPS) / 10000;
+            if (bond >= cap) return cap;
+        }
+        return bond > cap ? cap : bond;
+    }
 
     /// @dev Compute the treasury-derived bond cap: max(MIN_BOND_CAP,
     ///      MAX_BOND_BPS of treasury). The cap prevents the escalation
@@ -885,31 +907,35 @@ contract TheHumanFund is ReentrancyGuard {
     ///      arithmetically fast-forward through multiple elapsed epochs
     ///      between the close and the open.
     ///
-    ///      Bond-forfeit logic (the only trigger for bond escalation):
-    ///        - If there was a winner AND the epoch was not executed →
-    ///          winner forfeits their bond (routed via `AM.closeExecution`),
-    ///          currentBond escalates by AUTO_ESCALATION_BPS capped at `_bondCap`.
-    ///        - Otherwise (no winner, or executed) → no forfeit, no escalate.
+    ///      Counter updates (SOLE UPDATE SITE for both counters' end-of-
+    ///      epoch branch — only `_advanceToNow` fast-forward also touches
+    ///      `consecutiveMissedEpochs`):
     ///
-    ///      Missed-epoch accounting:
-    ///        - executed → no increment.
-    ///        - not executed → +1.
+    ///        epochs[e].executed  | winner present | missed   | stalled
+    ///        ────────────────────┼────────────────┼──────────┼─────────
+    ///        true                | —              | → 0      | → 0
+    ///        false               | yes            | += 1     | += 1
+    ///        false               | no             | += 1     | unchanged
+    ///
+    ///      The `stalled` counter drives `currentBond()`; the `missed`
+    ///      counter drives `effectiveMaxBid`.
     function _closeExecution() internal {
         IAuctionManager am = auctionManager;
         uint256 epoch = currentEpoch;
         bool executed = epochs[epoch].executed;
 
-        // Emit BondForfeited + escalate currentBond only when a real winner
-        // no-showed. `AM.closeExecution` observes the same signal (no
-        // history stored ⇒ settleExecution didn't run ⇒ forfeit).
-        if (!executed) {
+        if (executed) {
+            consecutiveMissedEpochs = 0;
+            consecutiveStalledEpochs = 0;
+        } else {
             address winner = am.getWinner(epoch);
             if (winner != address(0)) {
                 emit BondForfeited(epoch, winner, am.getBond(epoch));
-                uint256 newBond = currentBond + (currentBond * AUTO_ESCALATION_BPS) / 10000;
-                uint256 cap = _bondCap();
-                currentBond = newBond > cap ? cap : newBond;
+                uint256 newStalled = consecutiveStalledEpochs + 1;
+                if (newStalled > MAX_MISSED_EPOCHS) newStalled = MAX_MISSED_EPOCHS;
+                consecutiveStalledEpochs = newStalled;
             }
+            // consecutiveMissedEpochs increments below via _advanceEpochBy.
         }
 
         // Clear AM in-flight state. If the epoch wasn't executed, this also
@@ -1037,7 +1063,7 @@ contract TheHumanFund is ReentrancyGuard {
 
         _snapshotEthUsdPrice();
 
-        uint256 bond = currentBond;
+        uint256 bond = currentBond();
         auctionManager.openAuction(epoch, bond, scheduledStart);
 
         // Freeze drifting state into snapshot so the prover can reproduce the input hash.
@@ -1280,10 +1306,9 @@ contract TheHumanFund is ReentrancyGuard {
         currentEpochInflow = 0;
         currentEpochDonationCount = 0;
         currentEpochCommissions = 0;
-        consecutiveMissedEpochs = 0;
-        // Successful execution resets bond escalation too — the stalling
-        // behavior was broken by whoever submitted this result.
-        currentBond = BASE_BOND;
+        // Counter resets (consecutiveMissedEpochs, consecutiveStalledEpochs)
+        // happen later in `_closeExecution` when the epoch formally ends.
+        // That keeps both counters' update logic in exactly one site.
     }
 
     // ─── Internal: Action Execution ──────────────────────────────────────

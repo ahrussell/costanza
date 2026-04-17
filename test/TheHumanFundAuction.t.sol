@@ -693,10 +693,15 @@ contract TheHumanFundAuctionTest is EpochTest {
         fund.syncPhase(); // close reveal
 
         _submitAttestedResult(runner1, epoch);
+        assertTrue(_executed(epoch));
+
+        // Counters reset at epoch END (in _closeExecution), not mid-epoch.
+        // Advance past the execution deadline so syncPhase triggers the close.
+        vm.warp(block.timestamp + EXEC_WIN);
+        fund.syncPhase();
 
         assertEq(fund.consecutiveMissedEpochs(), 0);
         assertEq(fund.currentBond(), 0.001 ether);
-        assertTrue(_executed(epoch));
     }
 
     function test_forfeit_incrementsMissed() public {
