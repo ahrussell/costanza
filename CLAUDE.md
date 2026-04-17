@@ -282,7 +282,7 @@ python prover/scripts/gcp/verify_measurements.py \
   --verifier 0x...                            # Verify RTMR match
 
 # TEE enclave (local testing)
-llama-server -m models/<model>.gguf -c 4096 --port 8080 &
+llama-server -m models/<model>.gguf -c 32768 --port 8080 &
 ENCLAVE_HOST=127.0.0.1 python -m prover.enclave.enclave_runner
 ```
 
