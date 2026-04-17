@@ -231,17 +231,37 @@ contract MainnetForkTest is EpochTest {
 
     // ─── effectiveMaxBid: small treasury edge case ──────────────────────
 
-    function test_fork_effectiveMaxBid_respectsOwnerMaxAtSmallTreasury() public onlyOnFork {
-        // Treasury is 0.1 ETH (from seed). maxBid is 0.01 ETH.
-        // 2% of treasury = 0.002 ETH (less than maxBid).
-        // With the fix: effectiveMaxBid should return 0.01 ETH (owner's setting).
-        // Without the fix: effectiveMaxBid would return 0.002 ETH (crushed by cap).
+    /// Exercises the post-refactor effectiveMaxBid formula at fork parameters:
+    ///
+    ///   effectiveMaxBid = min(treasury * MAX_BID_BPS / 10000,
+    ///                         maxBid * (1 + AUTO_ESCALATION_BPS/10000)^missed)
+    ///
+    /// With treasury = 0.1 ETH and maxBid = 0.01 ETH at fresh deploy:
+    ///   - treasuryCap = 10% * 0.1 ETH = 0.01 ETH
+    ///   - escalated (m=0) = 0.01 ETH
+    ///   - min(0.01, 0.01) = 0.01 ETH
+    ///
+    /// After 3 missed epochs:
+    ///   - treasuryCap = 0.01 ETH (unchanged — treasury didn't grow)
+    ///   - escalated = 0.01 * 1.1^3 ≈ 0.01331 ETH
+    ///   - min(0.01, 0.01331) = 0.01 ETH  (capped by treasury)
+    ///
+    /// So the ceiling stays at 0.01 ETH across escalation, not because of
+    /// any owner-max floor, but because 10%-of-treasury binds from epoch 1.
+    /// If treasury grew (donations), the cap would loosen and escalation
+    /// could take effect.
+    function test_fork_effectiveMaxBid_formulaAtForkParams() public onlyOnFork {
+        assertEq(fund.maxBid(), 0.01 ether, "initial maxBid");
 
-        assertEq(fund.maxBid(), 0.01 ether);
-        assertEq(fund.effectiveMaxBid(), 0.01 ether, "effectiveMaxBid should respect maxBid at small treasury");
+        uint256 treasuryCap = (address(fund).balance * fund.MAX_BID_BPS()) / 10000;
+        assertEq(
+            fund.effectiveMaxBid(),
+            treasuryCap < fund.maxBid() ? treasuryCap : fund.maxBid(),
+            "m=0: min(treasuryCap, maxBid)"
+        );
 
-        // After missed epochs, it should still respect the owner's maxBid
-        // (escalation hits the cap of max(2%, maxBid) = maxBid immediately)
+        // Missed epochs escalate the second term but the treasury cap
+        // still binds at fork-seed parameters.
         vm.prank(owner);
         fund.syncPhase();
         vm.warp(block.timestamp + EPOCH_DUR * 3);
@@ -249,8 +269,15 @@ contract MainnetForkTest is EpochTest {
         fund.syncPhase();
 
         assertEq(fund.consecutiveMissedEpochs(), 3);
-        // Even after escalation, cap is max(2%, maxBid) = maxBid = 0.01 ETH
-        assertEq(fund.effectiveMaxBid(), 0.01 ether);
+
+        uint256 escalated = fund.maxBid();
+        for (uint256 i = 0; i < 3; i++) {
+            escalated = escalated + (escalated * fund.AUTO_ESCALATION_BPS()) / 10000;
+        }
+        uint256 expected = escalated < treasuryCap ? escalated : treasuryCap;
+
+        assertEq(fund.effectiveMaxBid(), expected,
+            "m=3: formula still holds; treasury cap binds at small treasury");
     }
 
     // ─── DCAP verification: the ultimate end-to-end test ────────────────
