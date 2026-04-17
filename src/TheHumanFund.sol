@@ -329,8 +329,9 @@ contract TheHumanFund is ReentrancyGuard {
 
         // Default epoch duration (overwritten by setAuctionManager when AM timing is set)
         epochDuration = 24 hours;
-        timingAnchor = block.timestamp;
-        anchorEpoch = 1;
+        // Timing anchor is left at zero; setAuctionManager is the first
+        // operation after deploy and writes it via _openAuction. Before that,
+        // epoch view functions return meaningless values but nothing calls them.
 
         // Initial bond. Mutates directly on winner-forfeit (+10% up to
         // cap) and resets to this value on successful execution.
@@ -606,16 +607,12 @@ contract TheHumanFund is ReentrancyGuard {
         IAuctionManager(_am).setTiming(_commitWindow, _revealWindow, _executionWindow);
         epochDuration = _commitWindow + _revealWindow + _executionWindow;
 
-        // Re-anchor the schedule so the current epoch starts now.
-        timingAnchor = block.timestamp;
-        anchorEpoch = currentEpoch;
-        lastEpochStartTime = block.timestamp;
-
-        // Eagerly open an auction for currentEpoch. The 3-phase state machine
-        // has no IDLE state — the fund always holds exactly one in-flight
-        // auction. This bootstraps that invariant at deploy time. Subsequent
-        // auction opens happen inside `_closeExecution` → `_openAuction`
-        // during normal epoch rollover.
+        // Eagerly open epoch N's auction. `_openAuction` is the sole site
+        // that writes the timing anchor, so passing `block.timestamp` as
+        // `scheduledStart` atomically re-anchors + opens. The 3-phase
+        // state machine has no IDLE state — the fund always holds exactly
+        // one in-flight auction. Subsequent opens happen inside
+        // `_closeExecution` → `_openAuction` during normal epoch rollover.
         _openAuction(currentEpoch, block.timestamp);
     }
 
@@ -752,12 +749,9 @@ contract TheHumanFund is ReentrancyGuard {
         if (phase == IAuctionManager.AuctionPhase.EXECUTION) {
             // Cross the epoch boundary: close execution (forfeit if not
             // executed, update missed counter, advance currentEpoch), then
-            // open the new auction. Re-anchor so the manual driver keeps
-            // I4 coherent — the new epoch's scheduled start is now.
+            // open the new auction. `_openAuction` re-anchors the schedule
+            // atomically — no explicit anchor writes here.
             _closeExecution();
-            timingAnchor = block.timestamp;
-            anchorEpoch = currentEpoch;
-            lastEpochStartTime = block.timestamp;
             _openAuction(currentEpoch, block.timestamp);
         } else {
             // Intra-epoch: COMMIT→REVEAL or REVEAL→EXECUTION.
@@ -842,15 +836,11 @@ contract TheHumanFund is ReentrancyGuard {
         currentEpochDonationCount = 0;
         currentEpochCommissions = 0;
 
-        // Re-anchor timing so the new epoch's scheduled start is now.
-        // Satisfies I4 (schedule coherence) under the manual driver.
-        timingAnchor = block.timestamp;
-        anchorEpoch = currentEpoch;
-        lastEpochStartTime = block.timestamp;
-
-        // Open the fresh auction immediately — the 3-phase cyclic model
-        // has no IDLE state; the fund always holds an in-flight auction
-        // except during the brief sunset→migrate window.
+        // Open the fresh auction immediately. `_openAuction` atomically
+        // re-anchors the schedule so `_epochStartTime(currentEpoch) ==
+        // block.timestamp` (satisfies I4 under the manual driver).
+        // Skipped under FREEZE_SUNSET — migrate is about to drain, and
+        // the stale anchor never gets consulted again in that path.
         if (frozenFlags & FREEZE_SUNSET == 0) {
             _openAuction(currentEpoch, block.timestamp);
         }
@@ -1034,11 +1024,21 @@ contract TheHumanFund is ReentrancyGuard {
     ///      hash computed here is consistent with what the prover will
     ///      reproduce off the frozen snapshot.
     function _openAuction(uint256 epoch, uint256 scheduledStart) internal {
+        // Re-anchor the epoch schedule. `_openAuction` is the sole site
+        // that writes the timing anchor — every auction-open re-centers
+        // the schedule so that `_epochStartTime(epoch) == scheduledStart`
+        // exactly. For wall-clock-driven opens `scheduledStart` equals
+        // the pre-existing schedule's time (re-anchor is a no-op on the
+        // schedule); for manual-driver opens (deploy/nextPhase/reset)
+        // `scheduledStart == block.timestamp` so the schedule restarts now.
+        timingAnchor = scheduledStart;
+        anchorEpoch = epoch;
+        lastEpochStartTime = scheduledStart;
+
         _snapshotEthUsdPrice();
 
         uint256 bond = currentBond;
         auctionManager.openAuction(epoch, bond, scheduledStart);
-        lastEpochStartTime = scheduledStart;
 
         // Freeze drifting state into snapshot so the prover can reproduce the input hash.
         // At this instant, live state == snapshot values, so _computeInputHash is consistent.

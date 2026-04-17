@@ -141,7 +141,7 @@ import "./helpers/EpochTest.sol";
 /// Tests are grouped by concern, matching the 8 sections above. Property
 /// tests use the I1–I7 prefix for the numbered invariants; mechanical
 /// single-path tests use descriptive names.
-contract AuctionInvariantsTest is EpochTest {
+contract SystemInvariantsTest is EpochTest {
     TheHumanFund public fund;
     AuctionManager public am;
 
