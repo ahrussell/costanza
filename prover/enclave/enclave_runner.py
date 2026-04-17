@@ -174,7 +174,7 @@ def start_llama_server() -> subprocess.Popen:
     cmd = [
         LLAMA_SERVER_BIN,
         "-m", MODEL_PATH,
-        "-c", "16384",
+        "-c", "32768",
         "--host", "127.0.0.1",
         "--port", str(LLAMA_SERVER_PORT),
     ]
@@ -380,7 +380,7 @@ def main():
         # be None and we fall back to a no-action result with a system note
         # so Costanza can see what happened next epoch.
         inference = run_three_pass_inference(
-            full_prompt, seed=llama_seed, llama_url=LLAMA_SERVER_URL
+            full_prompt, seed=llama_seed, llama_url=LLAMA_SERVER_URL,
         )
         action_json = inference.get("parsed_action")
         system_notes = []  # list[str] of clamp / fallback notices for the diary

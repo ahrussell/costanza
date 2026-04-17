@@ -231,7 +231,7 @@ class GCPPersistentTEEClient(TEEClient):
         time.sleep(2)
         self._ssh(
             f"nohup env LD_LIBRARY_PATH=/opt/humanfund/bin"
-            f" {LLAMA_SERVER_BIN} -m {MODEL_PATH} -c 16384 -ngl 99"
+            f" {LLAMA_SERVER_BIN} -m {MODEL_PATH} -c 32768 -ngl 99"
             f" --host 127.0.0.1 --port {LLAMA_SERVER_PORT}"
             f" > /tmp/llama-server.log 2>&1 &",
             timeout=15,

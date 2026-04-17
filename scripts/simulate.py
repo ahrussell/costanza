@@ -1158,7 +1158,7 @@ def check_server_health(server_url):
     except Exception as e:
         print(f"ERROR: Cannot reach llama-server at {server_url}: {e}")
         print("Start a llama-server first, e.g.:")
-        print("  llama-server -m models/YOUR_MODEL.gguf -c 4096 --port 8080")
+        print("  llama-server -m models/YOUR_MODEL.gguf -c 32768 --port 8080")
         sys.exit(1)
 
 

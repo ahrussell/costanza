@@ -581,9 +581,10 @@ def build_epoch_context(state, seed=None, voice_anchors: str = ""):
     if not state["history"]:
         lines.append("No previous decisions.")
     else:
-        # 48K context target: system (~300 tok) + protocols (~200 tok) + context (~600 tok)
-        # + history + messages + reminder. Each diary entry ~300-600 tok.
-        # 10 entries ~ 3K-6K tokens, leaving plenty for messages and long entries.
+        # 32K context budget: system prompt (~1.7K tok) + voice anchors (~3.6K tok)
+        # + static state (~2.3K tok) + history + messages + reminder. Each diary
+        # entry capped at 3000 chars (~750 tok). 10 entries ~ 7.5K tokens, leaving
+        # plenty of headroom.
         max_history = 10
         history_to_show = state["history"][:max_history]
         if len(state["history"]) > max_history:
@@ -600,8 +601,8 @@ def build_epoch_context(state, seed=None, voice_anchors: str = ""):
                     reasoning_text = bytes.fromhex(r[2:]).decode("utf-8")
                 else:
                     reasoning_text = r
-                if len(reasoning_text) > 2000:
-                    reasoning_text = reasoning_text[:2000] + "... [truncated]"
+                if len(reasoning_text) > 3000:
+                    reasoning_text = reasoning_text[:3000] + "... [truncated]"
             except Exception:
                 reasoning_text = "(could not decode)"
             lines.append("[Your diary entry]:")
