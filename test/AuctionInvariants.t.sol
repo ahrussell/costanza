@@ -64,6 +64,10 @@ import "./helpers/EpochTest.sol";
 ///    - Only the winner can call `submitAuctionResult` during EXECUTION
 ///    - `epochs[e].executed == true` iff the winner W submitted a proof
 ///      that `TdxVerifier.verify` accepted during epoch e's EXECUTION window
+///    - `effectiveMaxBid == min(treasury * MAX_BID_BPS / 10000,
+///                              initialMaxBid * (1 + AUTO_ESCALATION_BPS/10000)^consecutiveMissedEpochs)`
+///      Computed once at epoch open (frozen into the snapshot); does not
+///      change mid-epoch even if treasury moves
 ///
 /// 4. SNAPSHOT & MESSAGES
 ///    - Snapshot frozen exactly when (and if) `_openAuction` fires for
@@ -91,10 +95,22 @@ import "./helpers/EpochTest.sol";
 ///        - forfeit to fund at reveal close (non-revealer)
 ///        - forfeit to fund at EXECUTION→COMMIT (winner no-show)
 ///        - refund in `abortAuction` (operator reset / migrate)
-///    - Bond escalation: `currentBond *= (1 + AUTO_ESCALATION_BPS/10000)` (capped)
-///      fires ONLY when a real winner forfeits. Not on silence, success, or reset
-///    - `consecutiveMissedEpochs`: resets on successful execute; increments on
-///      silence/forfeit/ghost skip; untouched by `_resetAuction`
+///    - `currentBond == min(BOND_CAP,
+///                          initialBond * (1 + AUTO_ESCALATION_BPS/10000)^consecutiveStalledEpochs)`
+///      Computed once at epoch open (frozen into the snapshot); does not
+///      change mid-epoch
+///    - `consecutiveStalledEpochs` (bond-escalation counter) updates in
+///      exactly one site, at epoch end:
+///        - successful execution      → reset to 0
+///        - not executed AND there was a winner → increment by 1
+///        - not executed AND no winner → unchanged
+///    - `consecutiveMissedEpochs` (max-bid-escalation counter) updates in
+///      exactly two sites:
+///        - at epoch end: successful execution → 0; otherwise → +1
+///        - in `_advanceToNow` fast-forward: increments by the count of
+///          fast-forwarded epochs
+///    - Neither counter is touched by `_resetAuction` — operator reset is
+///      not a missed/stalled signal
 ///
 /// 7. DRIVERS & PERMISSIONS
 ///    - Participant-facing methods call `_advanceToNow()` first:
@@ -1672,6 +1688,147 @@ contract AuctionInvariantsTest is EpochTest {
         // Winner got bond refund + bounty regardless of action validity.
         assertEq(runner1.balance, runnerBefore + bond + winningBid,
             "winner paid bond+bounty despite invalid action");
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // MAX-BID & BOND FORMULAS — the ceiling/bond are deterministic
+    //   functions of their respective counters:
+    //     effectiveMaxBid == min(treasury * MAX_BID_BPS / 10000,
+    //                            initialMaxBid * (1 + E)^consecutiveMissedEpochs)
+    //     currentBond     == min(BOND_CAP,
+    //                            initialBond   * (1 + E)^consecutiveStalledEpochs)
+    //   where E = AUTO_ESCALATION_BPS / 10000.
+    // ══════════════════════════════════════════════════════════════════
+
+    /// Compute `initialMaxBid * (1 + AUTO_ESCALATION_BPS/10000)^n`, capped
+    /// at `treasury * MAX_BID_BPS / 10000`, as per the spec.
+    function _expectedMaxBid(uint256 initialMaxBid, uint256 n, uint256 treasury) internal view returns (uint256) {
+        uint256 e = initialMaxBid;
+        for (uint256 i = 0; i < n; i++) {
+            e = e + (e * fund.AUTO_ESCALATION_BPS()) / 10000;
+        }
+        uint256 treasuryCap = (treasury * fund.MAX_BID_BPS()) / 10000;
+        return e > treasuryCap ? treasuryCap : e;
+    }
+
+    /// Invariant: `effectiveMaxBid` matches the spec formula at every
+    /// observable point. Fresh deploy → n=0. After a miss, n=1. Etc.
+    function test_invariant_effectiveMaxBid_formula_initial() public {
+        uint256 initialMaxBid = fund.maxBid();
+        uint256 treasury = address(fund).balance;
+        assertEq(
+            fund.effectiveMaxBid(),
+            _expectedMaxBid(initialMaxBid, 0, treasury),
+            "formula holds at n=0"
+        );
+    }
+
+    function test_invariant_effectiveMaxBid_formula_afterMisses() public {
+        uint256 initialMaxBid = fund.maxBid();
+
+        // Miss 3 epochs via wall-clock fast-forward.
+        vm.warp(block.timestamp + 3 * EPOCH_DUR);
+        fund.syncPhase();
+        uint256 missed = fund.consecutiveMissedEpochs();
+        assertGe(missed, 3, "3+ misses after 3-epoch warp");
+
+        uint256 treasury = address(fund).balance;
+        assertEq(
+            fund.effectiveMaxBid(),
+            _expectedMaxBid(initialMaxBid, missed, treasury),
+            "formula holds after misses"
+        );
+    }
+
+    /// The snapshot captures effectiveMaxBid at auction open; mid-epoch
+    /// treasury changes don't alter the snapshot's `maxBid` field.
+    function test_invariant_effectiveMaxBid_frozenAtOpen() public {
+        uint256 snapBidBefore = fund.getEpochSnapshot(1).maxBid;
+
+        // Donate mid-epoch — would change a live computation but not the snapshot.
+        vm.deal(address(this), 5 ether);
+        (bool ok, ) = address(fund).call{value: 1 ether}("");
+        require(ok, "donate failed");
+
+        assertEq(fund.getEpochSnapshot(1).maxBid, snapBidBefore,
+                 "snapshot maxBid immutable after mid-epoch treasury change");
+    }
+
+    /// `consecutiveMissedEpochs` resets on successful execution.
+    function test_invariant_missed_resetsOnSuccess() public {
+        // Miss twice to raise the counter
+        vm.warp(block.timestamp + 2 * EPOCH_DUR);
+        fund.syncPhase();
+        assertGt(fund.consecutiveMissedEpochs(), 0, "pre: missed > 0");
+
+        // Successful epoch → resets
+        speedrunEpoch(fund, abi.encodePacked(uint8(0)), "success");
+        assertEq(fund.consecutiveMissedEpochs(), 0, "missed resets on success");
+    }
+
+    /// `consecutiveMissedEpochs` increments by 1 on an epoch end with no
+    /// successful execution (silence, forfeit).
+    function test_invariant_missed_incrementsOnEpochEnd_noSuccess() public {
+        uint256 before = fund.consecutiveMissedEpochs();
+        // Miss epoch via manual driver: 3 nextPhase calls = full empty cycle
+        fund.nextPhase(); fund.nextPhase(); fund.nextPhase();
+        assertEq(fund.consecutiveMissedEpochs(), before + 1,
+                 "missed += 1 on epoch end without success");
+    }
+
+    /// `consecutiveMissedEpochs` increments by N when the wall-clock fast-
+    /// forwards past N epochs.
+    function test_invariant_missed_fastForward_incrementsByN() public {
+        uint256 before = fund.consecutiveMissedEpochs();
+        uint256 jumps = 5;
+        vm.warp(block.timestamp + jumps * EPOCH_DUR);
+        fund.syncPhase();
+        assertGe(fund.consecutiveMissedEpochs(), before + jumps,
+                 "missed += N on N-epoch fast-forward");
+    }
+
+    /// `currentBond` escalates ONLY on winner-forfeit (stalled signal),
+    /// not on silence (no winner) or success.
+    function test_invariant_bond_escalatesOnlyOnWinnerForfeit() public {
+        uint256 base = fund.currentBond();
+
+        // Silence (no commits) should NOT escalate the bond.
+        // Miss epoch via manual driver: 3 nextPhase calls = full empty cycle
+        fund.nextPhase(); fund.nextPhase(); fund.nextPhase();
+        assertEq(fund.currentBond(), base, "no escalation on silence");
+
+        // Winner forfeits (commit + reveal, no submit) → escalate.
+        uint256 bond = fund.currentBond();
+        vm.prank(runner1);
+        fund.commit{value: bond}(_commitHash(runner1, 0.005 ether, bytes32("w")));
+        fund.nextPhase();
+        vm.prank(runner1);
+        fund.reveal(0.005 ether, bytes32("w"));
+        fund.nextPhase(); // REVEAL → EXECUTION
+        // Don't submit — winner forfeits at the EXECUTION → COMMIT boundary.
+        fund.nextPhase(); // EXECUTION → COMMIT of next epoch (forfeit fires)
+
+        uint256 expectedBond = base + (base * fund.AUTO_ESCALATION_BPS()) / 10000;
+        assertEq(fund.currentBond(), expectedBond, "bond escalates 10% on winner forfeit");
+    }
+
+    /// `currentBond` resets to initial (BASE_BOND) on successful execution.
+    function test_invariant_bond_resetsOnSuccess() public {
+        // First escalate via winner forfeit.
+        uint256 base = fund.currentBond();
+        uint256 bond = fund.currentBond();
+        vm.prank(runner1);
+        fund.commit{value: bond}(_commitHash(runner1, 0.005 ether, bytes32("w")));
+        fund.nextPhase();
+        vm.prank(runner1);
+        fund.reveal(0.005 ether, bytes32("w"));
+        fund.nextPhase();
+        fund.nextPhase(); // forfeit
+        assertGt(fund.currentBond(), base, "bond escalated post-forfeit");
+
+        // Successful epoch resets to base.
+        speedrunEpoch(fund, abi.encodePacked(uint8(0)), "reset");
+        assertEq(fund.currentBond(), base, "bond resets on success");
     }
 
     /// Policy sidecar failure (invalid slot) must NOT revert the submission.
