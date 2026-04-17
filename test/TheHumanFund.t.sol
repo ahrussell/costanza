@@ -45,9 +45,8 @@ contract TheHumanFundTest is EpochTest {
         mockFactory.preDeployOrg(bytes32("EIN-AMF"));
         mockFactory.preDeployOrg(bytes32("EIN-HKI"));
 
-        // Deploy AuctionManager and set timing so syncPhase() can open auctions.
-        // Without non-zero windows, Step C (auction open) is skipped and the
-        // missed-epoch credit path never fires.
+        // Deploy AuctionManager; setAuctionManager eagerly opens epoch 1's
+        // auction so every test enters with phase=COMMIT of epoch 1.
         AuctionManager am = new AuctionManager(address(fund));
         fund.setAuctionManager(address(am), 1200, 1200, 82800); // 20m / 20m / 23h = 24h
         _registerMockVerifier(fund);
@@ -249,17 +248,17 @@ contract TheHumanFundTest is EpochTest {
 
     // ─── Epoch: Miss & Auto-Escalation ───────────────────────────────────
 
-    /// @dev Simulate a missed epoch: open an auction, warp past its deadline,
-    ///      and let syncPhase drain+advance. This is the on-chain path
-    ///      exercised by real timeouts (no owner intervention needed).
+    /// @dev Simulate a missed epoch by warping past the current epoch's
+    ///      execution deadline and letting syncPhase fast-forward. The
+    ///      auction is always open from setUp (or from the prior epoch's
+    ///      close-and-open cycle).
     ///      NOTE: Forge caches `block.timestamp` within a single test frame
     ///      after `vm.warp`, so we must warp to an absolute target read from
     ///      the contract rather than `block.timestamp + X`.
     function _missEpoch() internal {
-        fund.syncPhase(); // ensures auction is open for the current epoch
         uint256 targetEpoch = fund.currentEpoch() + 1;
         vm.warp(fund.epochStartTime(targetEpoch) + 1); // 1s into next epoch
-        fund.syncPhase(); // drains AM to SETTLED, advances epoch, credits missed
+        fund.syncPhase(); // close-execution + advance + open next; credits missed
     }
 
     function test_missed_epoch_advances_and_credits() public {

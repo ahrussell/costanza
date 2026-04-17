@@ -6,12 +6,21 @@ pragma solidity ^0.8.20;
 ///         Handles phases, bids, bonds, timing, and winner selection.
 ///         Does NOT know about epoch numbering, treasury state, or verification.
 ///
-///         Phase advancement is automatic via syncPhase() — the fund contract calls it
-///         before every action. Bond refunds are lazy via claimBond(epoch).
+///         The state machine is 3-phase cyclic: COMMIT → REVEAL → EXECUTION. The
+///         EXECUTION → COMMIT-of-next-epoch transition (including bond forfeit
+///         for no-show winners) is handled by the fund contract, not here.
+///
+///         Phase advancement within an epoch is automatic via syncPhase() — the fund
+///         contract calls it before every action. Bond refunds are lazy via
+///         claimBond(epoch).
 interface IAuctionManager {
     // ─── Enums ──────────────────────────────────────────────────────────
 
-    enum AuctionPhase { IDLE, COMMIT, REVEAL, EXECUTION, SETTLED }
+    /// @notice The three phases of an in-flight auction. Phases cycle per epoch.
+    ///         There is no IDLE/SETTLED rest state — the fund always holds exactly
+    ///         one auction-in-progress, and an epoch is considered "done" when the
+    ///         fund marks `epochs[e].executed` and advances to the next epoch's COMMIT.
+    enum AuctionPhase { COMMIT, REVEAL, EXECUTION }
 
     // ─── Historical Records ─────────────────────────────────────────────
 
@@ -24,14 +33,20 @@ interface IAuctionManager {
 
     // ─── Auction Setup & Sync (onlyFund) ────────────────────────────────
 
-    /// @notice Open a new auction. IDLE/SETTLED → COMMIT.
+    /// @notice Open a new auction. Clears any prior in-flight state and sets
+    ///         phase to COMMIT for `epoch`. No phase precondition — the fund
+    ///         is responsible for calling this only when it makes sense
+    ///         (i.e. at deploy bootstrap or after `_closeExecution` for the
+    ///         prior epoch).
     /// @param epoch The epoch identifier (opaque to the AM).
     /// @param bond The bond amount each committer must stake.
     /// @param startTime Wall-clock scheduled start time for this auction's phase windows.
     function openAuction(uint256 epoch, uint256 bond, uint256 startTime) external;
 
-    /// @notice Advance the auction through any elapsed phase windows.
-    ///         Called by the fund contract before every action.
+    /// @notice Advance the auction through any elapsed WITHIN-EPOCH phase windows.
+    ///         Cascades COMMIT→REVEAL→EXECUTION based on wall-clock. Does NOT
+    ///         advance epochs or transition out of EXECUTION — the fund handles
+    ///         the EXECUTION→COMMIT-of-next-epoch boundary via its own helpers.
     /// @return phase The phase AFTER advancement.
     /// @return advanced True if any phase transition occurred.
     function syncPhase(uint256 epoch) external returns (AuctionPhase phase, bool advanced);
@@ -44,10 +59,21 @@ interface IAuctionManager {
     /// @notice Record a bid reveal. Verifies commitment hash and tracks lowest bidder.
     function recordReveal(uint256 epoch, address runner, uint256 bidAmount, bytes32 salt) external;
 
-    /// @notice Settle a successful execution. EXECUTION → SETTLED.
-    ///         Validates caller is the winner and within the execution window.
-    ///         Winner's bond becomes claimable.
+    /// @notice Settle a successful execution. Validates caller is the winner and
+    ///         within the execution window, refunds the winner's bond, and stores
+    ///         the auction summary. Phase stays EXECUTION — the fund's
+    ///         `epochs[epoch].executed` bit is the double-submit guard, and the
+    ///         fund's `_closeExecution` drives the subsequent phase advance.
     function settleExecution(uint256 epoch, address caller) external;
+
+    /// @notice Close the current EXECUTION phase and clear in-flight state so
+    ///         the fund can call `openAuction` for the next epoch.
+    ///         If the winner never submitted (i.e. `settleExecution` never ran
+    ///         and no auction history exists for the current epoch yet), this
+    ///         forfeits the winner's bond to the fund. If settleExecution
+    ///         already ran, this is just a state-clear — no bond movement.
+    ///         Reverts if called outside EXECUTION phase.
+    function closeExecution() external;
 
     // ─── Configuration (onlyFund) ───────────────────────────────────────
 
@@ -65,7 +91,10 @@ interface IAuctionManager {
     /// @notice Force-close the current auction phase without checking
     ///         wall-clock deadlines. Time-independent counterpart to
     ///         `syncPhase`, used by the fund's owner `nextPhase` entry
-    ///         point. Reverts in IDLE/SETTLED.
+    ///         point. Only advances within an epoch (COMMIT→REVEAL or
+    ///         REVEAL→EXECUTION). Reverts if called when the AM is already
+    ///         in EXECUTION — the fund handles the EXECUTION→next-epoch
+    ///         boundary itself.
     function forceClosePhase() external;
 
     // ─── Bond Claims (anyone) ───────────────────────────────────────────

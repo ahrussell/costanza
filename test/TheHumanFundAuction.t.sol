@@ -19,7 +19,9 @@ contract AuctionMockDcapVerifier is IAutomataDcapAttestation {
     }
 }
 
-/// @title V2 Auction tests — auto-advancing phases with syncPhase() and lazy bond claims
+/// @title V3 Auction tests — 3-phase cyclic state machine (COMMIT / REVEAL / EXECUTION).
+///        Epoch 1's auction is eagerly opened at the end of setAuctionManager, so tests
+///        enter their bodies already in COMMIT of epoch 1.
 contract TheHumanFundAuctionTest is EpochTest {
     TheHumanFund public fund;
     AuctionManager public am;
@@ -67,6 +69,7 @@ contract TheHumanFundAuctionTest is EpochTest {
         vm.deal(runner2, 10 ether);
         vm.deal(runner3, 10 ether);
         _registerMockVerifier(fund);
+        // Epoch 1 auction is already in COMMIT phase — opened by setAuctionManager.
     }
 
     // ─── Helpers ────────────────────────────────────────────────────────────
@@ -79,11 +82,18 @@ contract TheHumanFundAuctionTest is EpochTest {
         return keccak256(abi.encodePacked(runner, bidAmount, salt));
     }
 
-    /// @dev Run a full commit-reveal cycle using auto-advancing API:
-    ///      syncPhase (opens auction) → commit → warp → reveal (auto-closes commit) → warp → syncPhase (closes reveal, captures seed)
-    function _runAuctionTo(address runner, uint256 bidAmount, bytes32 salt) internal {
-        fund.syncPhase(); // opens auction for current epoch
+    /// @dev Read the executed bit off an epoch record. `fund.epochs(e)` returns
+    ///      a raw tuple from the public mapping, so we can't use struct field
+    ///      access — `getEpochRecord` gives us a named destructure.
+    function _executed(uint256 epoch) internal view returns (bool) {
+        ( , , , , , , bool ex) = fund.getEpochRecord(epoch);
+        return ex;
+    }
 
+    /// @dev Run a full commit-reveal cycle for the currently-open auction:
+    ///      commit → warp → reveal (auto-closes commit) → warp → syncPhase (closes reveal, captures seed)
+    function _runAuctionTo(address runner, uint256 bidAmount, bytes32 salt) internal {
+        // Auction for currentEpoch is already open (COMMIT phase).
         uint256 bond = fund.currentBond();
         vm.prank(runner);
         fund.commit{value: bond}(_commitHash(runner, bidAmount, salt));
@@ -135,16 +145,15 @@ contract TheHumanFundAuctionTest is EpochTest {
     // Group 1: Auto-Advancement via syncPhase
     // ═══════════════════════════════════════════════════════════════════════
 
-    function test_syncPhase_opensAuction() public {
-        fund.syncPhase();
-
+    function test_setup_eagerlyOpensEpoch1() public view {
+        // setUp already called setAuctionManager, which opens epoch 1 in COMMIT.
         assertEq(am.getStartTime(1), block.timestamp);
         assertEq(uint256(am.getPhase(1)), uint256(IAuctionManager.AuctionPhase.COMMIT));
         assertEq(am.getBond(1), 0.001 ether);
     }
 
     function test_syncPhase_idempotent() public {
-        fund.syncPhase();
+        // Epoch 1 COMMIT already open from setUp.
         uint256 epoch1 = fund.currentEpoch();
         fund.syncPhase(); // should be no-op
         assertEq(fund.currentEpoch(), epoch1);
@@ -152,7 +161,7 @@ contract TheHumanFundAuctionTest is EpochTest {
     }
 
     function test_syncPhase_closesCommit() public {
-        fund.syncPhase();
+        // Epoch 1 COMMIT already open from setUp.
         vm.prank(runner1);
         fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.005 ether, bytes32("s1")));
 
@@ -163,7 +172,7 @@ contract TheHumanFundAuctionTest is EpochTest {
     }
 
     function test_syncPhase_closesReveal_capturesSeed() public {
-        fund.syncPhase();
+        // Epoch 1 COMMIT already open from setUp.
         vm.prank(runner1);
         fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.005 ether, bytes32("s1")));
 
@@ -184,15 +193,16 @@ contract TheHumanFundAuctionTest is EpochTest {
         uint256 treasuryBefore = fund.treasuryBalance();
 
         vm.warp(block.timestamp + EXEC_WIN);
-        fund.syncPhase(); // should forfeit → SETTLED
+        fund.syncPhase(); // should forfeit winner bond and advance to next epoch
 
         assertEq(fund.treasuryBalance(), treasuryBefore + 0.001 ether);
         assertEq(fund.consecutiveMissedEpochs(), 1);
+        assertEq(fund.currentEpoch(), 2);
+        assertFalse(_executed(1));
     }
 
     function test_syncPhase_multipleTransitions() public {
-        // Open auction, commit, then warp past everything
-        fund.syncPhase();
+        // Epoch 1 COMMIT already open from setUp.
         vm.prank(runner1);
         fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.005 ether, bytes32("s1")));
 
@@ -200,14 +210,14 @@ contract TheHumanFundAuctionTest is EpochTest {
         vm.warp(block.timestamp + COMMIT_WIN + REVEAL_WIN + EXEC_WIN);
         fund.syncPhase();
 
-        // Should have chained: COMMIT→REVEAL (no reveals)→SETTLED
-        // (No reveals means REVEAL settles immediately, doesn't reach EXECUTION)
-        assertEq(uint256(am.getPhase(1)), uint256(IAuctionManager.AuctionPhase.SETTLED));
+        // No reveals means REVEAL resolves with no winner, then EXECUTION times out,
+        // so epoch 1 was not executed and we've advanced to epoch 2.
+        assertEq(fund.currentEpoch(), 2);
+        assertFalse(_executed(1));
     }
 
     function test_syncPhase_chainsFullCycleWithReveals() public {
-        // Open auction, commit, reveal, then warp past everything
-        fund.syncPhase();
+        // Epoch 1 COMMIT already open from setUp.
         vm.prank(runner1);
         fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.005 ether, bytes32("s1")));
 
@@ -220,16 +230,17 @@ contract TheHumanFundAuctionTest is EpochTest {
         uint256 treasuryBefore = fund.treasuryBalance();
         fund.syncPhase();
 
-        // Should chain: REVEAL→EXECUTION→SETTLED (forfeit)
-        assertEq(uint256(am.getPhase(1)), uint256(IAuctionManager.AuctionPhase.SETTLED));
+        // Should chain: REVEAL→EXECUTION→close (forfeit, advance to next epoch's COMMIT)
+        assertEq(fund.currentEpoch(), 2);
         assertGt(fund.treasuryBalance(), treasuryBefore); // winner's bond forfeited
         assertTrue(fund.epochInputHashes(1) != bytes32(0)); // seed was bound
+        assertFalse(_executed(1));
     }
 
     function test_syncPhase_noCommits_missesEpoch() public {
-        fund.syncPhase();
-        vm.warp(block.timestamp + COMMIT_WIN);
-        fund.syncPhase(); // closes commit (0 commits → SETTLED)
+        // Epoch 1 COMMIT already open from setUp.
+        vm.warp(block.timestamp + EPOCH_DUR);
+        fund.syncPhase(); // closes empty epoch 1 → advances to 2
 
         // Epoch should advance
         assertEq(fund.currentEpoch(), 2);
@@ -239,8 +250,8 @@ contract TheHumanFundAuctionTest is EpochTest {
     // Group 2: Auto-Advancing Actions (commit/reveal/submit auto-sync)
     // ═══════════════════════════════════════════════════════════════════════
 
-    function test_commit_autoOpensAuction() public {
-        // Call commit directly — should auto-open auction via _syncPhase
+    function test_commit_worksInOpenEpoch() public {
+        // Epoch 1 COMMIT already open from setUp — no separate open step needed.
         uint256 bond = 0.01 ether; // BASE_BOND
         vm.prank(runner1);
         fund.commit{value: bond}(_commitHash(runner1, 0.005 ether, bytes32("s1")));
@@ -250,7 +261,7 @@ contract TheHumanFundAuctionTest is EpochTest {
     }
 
     function test_reveal_autoClosesCommit() public {
-        fund.syncPhase();
+        // Epoch 1 COMMIT already open from setUp.
         vm.prank(runner1);
         fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.005 ether, bytes32("s1")));
 
@@ -263,8 +274,8 @@ contract TheHumanFundAuctionTest is EpochTest {
         assertEq(am.getWinner(1), runner1);
     }
 
-    function test_submit_autoClosesReveal() public {
-        fund.syncPhase();
+    function test_submit_marksEpochExecuted() public {
+        // Epoch 1 COMMIT already open from setUp.
         vm.prank(runner1);
         fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.005 ether, bytes32("s1")));
 
@@ -278,24 +289,25 @@ contract TheHumanFundAuctionTest is EpochTest {
         fund.syncPhase();
 
         _submitAttestedResult(runner1, 1);
-        fund.syncPhase();
 
-        assertEq(fund.currentEpoch(), 2);
+        // Post-submit: phase stays EXECUTION, but epoch is flagged executed.
+        assertTrue(_executed(1));
         assertEq(fund.consecutiveMissedEpochs(), 0);
+        assertEq(uint256(am.getPhase(1)), uint256(IAuctionManager.AuctionPhase.EXECUTION));
     }
 
     function test_commit_afterWindow_reverts() public {
-        fund.syncPhase();
+        // Epoch 1 COMMIT already open from setUp.
         vm.warp(block.timestamp + COMMIT_WIN);
 
-        // _syncPhase closes commit (0 commits → SETTLED), then commit reverts
+        // _syncPhase closes commit → REVEAL, so commit now reverts
         vm.prank(runner1);
         vm.expectRevert(); // WrongPhase or similar
         fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.005 ether, bytes32("s1")));
     }
 
     function test_reveal_beforeCommitWindow_reverts() public {
-        fund.syncPhase();
+        // Epoch 1 COMMIT already open from setUp.
         vm.prank(runner1);
         fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.005 ether, bytes32("s1")));
 
@@ -306,13 +318,11 @@ contract TheHumanFundAuctionTest is EpochTest {
     }
 
     function test_reveal_afterRevealWindow_reverts() public {
-        fund.syncPhase();
+        // Epoch 1 COMMIT already open from setUp.
         vm.prank(runner1);
         fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.005 ether, bytes32("s1")));
 
-        // Warp past both commit AND reveal windows
-        // _syncPhase advances COMMIT→REVEAL→EXECUTION (if commits+reveals) or SETTLED
-        // Since only 1 commit and 0 reveals at this point, it goes COMMIT→REVEAL→SETTLED
+        // Warp past both commit AND reveal windows.
         vm.warp(block.timestamp + COMMIT_WIN + REVEAL_WIN);
 
         vm.prank(runner1);
@@ -325,21 +335,21 @@ contract TheHumanFundAuctionTest is EpochTest {
     // ═══════════════════════════════════════════════════════════════════════
 
     function test_single_commit() public {
-        fund.syncPhase();
+        // Epoch 1 COMMIT already open from setUp.
         vm.prank(runner1);
         fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.005 ether, bytes32("salt1")));
         assertEq(am.getCommitters(1).length, 1);
     }
 
     function test_commit_requires_bond() public {
-        fund.syncPhase();
+        // Epoch 1 COMMIT already open from setUp.
         vm.prank(runner1);
         vm.expectRevert(TheHumanFund.InvalidParams.selector);
         fund.commit{value: 0.0005 ether}(_commitHash(runner1, 0.005 ether, bytes32("salt1")));
     }
 
     function test_commit_refunds_excess() public {
-        fund.syncPhase();
+        // Epoch 1 COMMIT already open from setUp.
         uint256 balBefore = runner1.balance;
         vm.prank(runner1);
         fund.commit{value: 0.05 ether}(_commitHash(runner1, 0.005 ether, bytes32("salt1")));
@@ -347,7 +357,7 @@ contract TheHumanFundAuctionTest is EpochTest {
     }
 
     function test_duplicate_commit_rejected() public {
-        fund.syncPhase();
+        // Epoch 1 COMMIT already open from setUp.
         vm.prank(runner1);
         fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.005 ether, bytes32("salt1")));
         vm.prank(runner1);
@@ -360,7 +370,7 @@ contract TheHumanFundAuctionTest is EpochTest {
     // ═══════════════════════════════════════════════════════════════════════
 
     function test_single_reveal() public {
-        fund.syncPhase();
+        // Epoch 1 COMMIT already open from setUp.
         vm.prank(runner1);
         fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.005 ether, bytes32("s1")));
 
@@ -373,7 +383,7 @@ contract TheHumanFundAuctionTest is EpochTest {
     }
 
     function test_lowest_reveal_wins() public {
-        fund.syncPhase();
+        // Epoch 1 COMMIT already open from setUp.
         vm.prank(runner1);
         fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.008 ether, bytes32("s1")));
         vm.prank(runner2);
@@ -394,7 +404,7 @@ contract TheHumanFundAuctionTest is EpochTest {
     }
 
     function test_wrong_hash_reveal_reverts() public {
-        fund.syncPhase();
+        // Epoch 1 COMMIT already open from setUp.
         vm.prank(runner1);
         fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.005 ether, bytes32("salt1")));
 
@@ -405,7 +415,7 @@ contract TheHumanFundAuctionTest is EpochTest {
     }
 
     function test_reveal_without_commit_reverts() public {
-        fund.syncPhase();
+        // Epoch 1 COMMIT already open from setUp.
         vm.prank(runner1);
         fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.005 ether, bytes32("s1")));
 
@@ -416,7 +426,7 @@ contract TheHumanFundAuctionTest is EpochTest {
     }
 
     function test_duplicate_reveal_reverts() public {
-        fund.syncPhase();
+        // Epoch 1 COMMIT already open from setUp.
         vm.prank(runner1);
         fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.005 ether, bytes32("s1")));
 
@@ -429,7 +439,7 @@ contract TheHumanFundAuctionTest is EpochTest {
     }
 
     function test_reveal_bid_above_ceiling_rejected() public {
-        fund.syncPhase();
+        // Epoch 1 COMMIT already open from setUp.
         bytes32 salt = bytes32("salt1");
         uint256 tooHigh = 0.02 ether;
         vm.prank(runner1);
@@ -446,7 +456,7 @@ contract TheHumanFundAuctionTest is EpochTest {
     // ═══════════════════════════════════════════════════════════════════════
 
     function test_claimBond_nonWinnerRevealer() public {
-        fund.syncPhase();
+        // Epoch 1 COMMIT already open from setUp.
         vm.prank(runner1);
         fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.008 ether, bytes32("s1")));
         vm.prank(runner2);
@@ -472,7 +482,7 @@ contract TheHumanFundAuctionTest is EpochTest {
     }
 
     function test_claimBond_doubleClaim_reverts() public {
-        fund.syncPhase();
+        // Epoch 1 COMMIT already open from setUp.
         vm.prank(runner1);
         fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.008 ether, bytes32("s1")));
         vm.prank(runner2);
@@ -496,7 +506,7 @@ contract TheHumanFundAuctionTest is EpochTest {
     }
 
     function test_claimBond_nonRevealer_reverts() public {
-        fund.syncPhase();
+        // Epoch 1 COMMIT already open from setUp.
         vm.prank(runner1);
         fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.005 ether, bytes32("s1")));
         vm.prank(runner2);
@@ -517,7 +527,7 @@ contract TheHumanFundAuctionTest is EpochTest {
     }
 
     function test_claimBond_winner_reverts() public {
-        fund.syncPhase();
+        // Epoch 1 COMMIT already open from setUp.
         vm.prank(runner1);
         fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.008 ether, bytes32("s1")));
         vm.prank(runner2);
@@ -539,7 +549,7 @@ contract TheHumanFundAuctionTest is EpochTest {
     }
 
     function test_forfeitedBonds_sentToFund() public {
-        fund.syncPhase();
+        // Epoch 1 COMMIT already open from setUp.
         vm.prank(runner1);
         fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.005 ether, bytes32("s1")));
         vm.prank(runner2);
@@ -562,7 +572,7 @@ contract TheHumanFundAuctionTest is EpochTest {
     }
 
     function test_pendingBondRefunds_accounting_threeProvers() public {
-        fund.syncPhase();
+        // Epoch 1 COMMIT already open from setUp.
         // 3 commit, 2 reveal, runner3 wins (lowest bid)
         vm.prank(runner1);
         fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.008 ether, bytes32("s1")));
@@ -591,7 +601,7 @@ contract TheHumanFundAuctionTest is EpochTest {
     }
 
     function test_noReveals_allBondsForfeited() public {
-        fund.syncPhase();
+        // Epoch 1 COMMIT already open from setUp.
         vm.prank(runner1);
         fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.005 ether, bytes32("s1")));
         vm.prank(runner2);
@@ -599,7 +609,7 @@ contract TheHumanFundAuctionTest is EpochTest {
 
         vm.warp(block.timestamp + COMMIT_WIN + REVEAL_WIN);
         uint256 fundBalBefore = address(fund).balance;
-        fund.syncPhase(); // closes commit → REVEAL (2 commits), closes reveal → SETTLED (0 reveals)
+        fund.syncPhase(); // closes commit → REVEAL (2 commits), closes reveal (0 reveals)
 
         // All bonds forfeited to fund (2 bonds × 0.001 ETH)
         assertEq(address(fund).balance, fundBalBefore + 0.002 ether);
@@ -611,8 +621,7 @@ contract TheHumanFundAuctionTest is EpochTest {
     // ═══════════════════════════════════════════════════════════════════════
 
     function test_missedEpochs_O1_arithmetic() public {
-        fund.syncPhase(); // open epoch 1
-        // Nobody commits. Warp past 5 full epoch durations.
+        // Epoch 1 COMMIT already open from setUp. Nobody commits. Warp past 5 full epoch durations.
         vm.warp(block.timestamp + EPOCH_DUR * 5);
 
         fund.syncPhase();
@@ -622,7 +631,7 @@ contract TheHumanFundAuctionTest is EpochTest {
     }
 
     function test_missedEpochs_capsAtMax() public {
-        fund.syncPhase();
+        // Epoch 1 COMMIT already open from setUp.
         vm.warp(block.timestamp + EPOCH_DUR * 100);
         fund.syncPhase();
 
@@ -633,7 +642,7 @@ contract TheHumanFundAuctionTest is EpochTest {
     /// NOT the bond (which would discourage participation). Bond only
     /// escalates on winner-forfeit — see `test_winnerForfeit_bondEscalates`.
     function test_missedEpochs_escalateMaxBidButNotBond() public {
-        fund.syncPhase();
+        // Epoch 1 COMMIT already open from setUp.
         vm.warp(block.timestamp + EPOCH_DUR * 3);
         fund.syncPhase();
 
@@ -661,18 +670,16 @@ contract TheHumanFundAuctionTest is EpochTest {
     }
 
     function test_missedEpochs_resetAfterSuccessfulExecution() public {
-        // Miss 3 epochs
-        fund.syncPhase();
+        // Epoch 1 COMMIT already open from setUp. Miss 3 epochs.
         vm.warp(block.timestamp + EPOCH_DUR * 3);
         fund.syncPhase();
         assertEq(fund.consecutiveMissedEpochs(), 3);
 
         // Now successfully execute an epoch
         uint256 epoch = fund.currentEpoch();
-        // Need to be within the commit window of the new epoch
-        uint256 epochStart = fund.epochStartTime(epoch);
-        vm.warp(epochStart); // ensure we're at the start
-        fund.syncPhase(); // open auction for new epoch
+        // syncPhase after missed-epoch fast-forward should have left us in the
+        // new epoch's COMMIT window (wall-clock landed at its start).
+        assertEq(uint256(am.getPhase(epoch)), uint256(IAuctionManager.AuctionPhase.COMMIT));
 
         uint256 bond = fund.currentBond();
         vm.prank(runner1);
@@ -686,10 +693,10 @@ contract TheHumanFundAuctionTest is EpochTest {
         fund.syncPhase(); // close reveal
 
         _submitAttestedResult(runner1, epoch);
-        fund.syncPhase();
 
         assertEq(fund.consecutiveMissedEpochs(), 0);
         assertEq(fund.currentBond(), 0.001 ether);
+        assertTrue(_executed(epoch));
     }
 
     function test_forfeit_incrementsMissed() public {
@@ -701,47 +708,8 @@ contract TheHumanFundAuctionTest is EpochTest {
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // Group 6b: _syncPhase regression tests for issues #2 and #3
+    // Group 6b: _syncPhase regression tests
     // ═══════════════════════════════════════════════════════════════════════
-
-    /// @dev Pristine IDLE epoch (no auction ever opened) that fully elapses
-    ///      must advance currentEpoch AND credit a missed epoch. Rationale:
-    ///      `consecutiveMissedEpochs` drives bid/bond escalation, and the
-    ///      whole point of escalation is to raise the cap when nothing is
-    ///      happening — so pristine silence is exactly when it should fire.
-    function test_syncPhase_pristineIdleEpochAdvances() public {
-        // Do NOT call syncPhase first — leave epoch 1 in pristine IDLE state.
-        assertEq(uint256(am.getPhase(1)), uint256(IAuctionManager.AuctionPhase.IDLE));
-        assertEq(fund.currentEpoch(), 1);
-
-        // Let epoch 1 fully elapse without any interaction at all.
-        vm.warp(block.timestamp + EPOCH_DUR);
-
-        fund.syncPhase();
-
-        // currentEpoch advances, and epoch 1 counts as a missed epoch
-        // even though no auction was ever opened for it.
-        assertEq(fund.currentEpoch(), 2);
-        assertEq(fund.consecutiveMissedEpochs(), 1);
-
-        // Subsequent syncPhase calls should be idempotent.
-        fund.syncPhase();
-        assertEq(fund.currentEpoch(), 2);
-        assertEq(fund.consecutiveMissedEpochs(), 1);
-    }
-
-    /// @dev Issue #2 (fully-elapsed pristine IDLE) followed immediately by
-    ///      opening the new epoch's auction when the wall-clock lands in its
-    ///      commit window.
-    function test_syncPhase_pristineIdleAdvancesAndOpens() public {
-        // Pristine IDLE for epoch 1.
-        vm.warp(block.timestamp + EPOCH_DUR); // exactly at epoch 2 start
-        fund.syncPhase();
-
-        assertEq(fund.currentEpoch(), 2);
-        // Within epoch 2's commit window — auction should be open.
-        assertEq(uint256(am.getPhase(2)), uint256(IAuctionManager.AuctionPhase.COMMIT));
-    }
 
     /// @dev Issue #3 repro: winner committed+revealed but never submitted.
     ///      Wall-clock advances multiple epochs past the execution deadline.
@@ -765,7 +733,7 @@ contract TheHumanFundAuctionTest is EpochTest {
 
     /// @dev Issue #3 variant: forfeit+skip when the wall-clock lands OUTSIDE
     ///      the new epoch's commit window. Must advance epoch but must NOT
-    ///      open an auction (and must not revert).
+    ///      open a fresh auction for the landed-in epoch (and must not revert).
     function test_syncPhase_afterWinnerForfeitThenSkipOutsideCommitWindow() public {
         _runAuctionTo(runner1, 0.005 ether, bytes32("s1"));
 
@@ -776,14 +744,19 @@ contract TheHumanFundAuctionTest is EpochTest {
 
         assertEq(fund.currentEpoch(), 6);
         assertEq(fund.consecutiveMissedEpochs(), 5);
-        // No auction should be opened — we missed epoch 6's commit window too.
-        assertEq(uint256(am.getPhase(6)), uint256(IAuctionManager.AuctionPhase.IDLE));
+        // Epoch 6's commit window was already past — no new auction was opened
+        // for it. The AM state for epoch 6 is whatever _closeExecution left
+        // (i.e. not COMMIT — we missed the window).
+        assertTrue(
+            am.getPhase(6) != IAuctionManager.AuctionPhase.COMMIT,
+            "must not reopen epoch 6 commit after its window elapsed"
+        );
     }
 
     /// @dev syncPhase should be safely repeatable from any state without
     ///      changing anything between back-to-back calls.
     function test_syncPhase_repeatedCallsAreNoop() public {
-        // Pristine IDLE, fully elapsed, deep skip.
+        // Fully elapsed, deep skip.
         _runAuctionTo(runner1, 0.005 ether, bytes32("s1"));
         vm.warp(block.timestamp + EXEC_WIN + EPOCH_DUR * 3);
 
@@ -804,8 +777,7 @@ contract TheHumanFundAuctionTest is EpochTest {
     /// @dev After a no-commit elapsed epoch, the very next epoch's commit
     ///      window should still be openable for normal participation.
     function test_syncPhase_afterNoCommitEpochNextEpochUsable() public {
-        // Open epoch 1, nobody commits, epoch elapses.
-        fund.syncPhase();
+        // Epoch 1 COMMIT already open from setUp. Nobody commits, epoch elapses.
         vm.warp(block.timestamp + EPOCH_DUR);
         fund.syncPhase();
 
@@ -846,10 +818,9 @@ contract TheHumanFundAuctionTest is EpochTest {
         assertEq(fund.epochInputHashes(1), expectedBound);
     }
 
-    function test_baseInputHash_committedAtAuctionOpen() public {
-        fund.syncPhase();
-        // After _openNextAuction populates the snapshot, the computeInputHash()
-        // view reads from the same snapshot and must match the stored
+    function test_baseInputHash_committedAtAuctionOpen() public view {
+        // Epoch 1 already opened by setUp. After _openAuction populates the snapshot, the
+        // computeInputHash() view reads from the same snapshot and must match the stored
         // baseInputHash byte-for-byte. (Calling computeInputHash() BEFORE
         // opening the auction would hash against an empty snapshot and
         // return a different value — that's expected because the snapshot
@@ -871,9 +842,8 @@ contract TheHumanFundAuctionTest is EpochTest {
     function test_fullAuctionWithAttestation() public {
         _runAuctionTo(runner1, 0.005 ether, bytes32("s1"));
         _submitAttestedResult(runner1, 1);
-        fund.syncPhase();
 
-        assertEq(fund.currentEpoch(), 2);
+        assertTrue(_executed(1));
         assertEq(fund.consecutiveMissedEpochs(), 0);
         assertTrue(fund.epochContentHashes(1) != bytes32(0));
     }
@@ -898,6 +868,18 @@ contract TheHumanFundAuctionTest is EpochTest {
         fund.submitAuctionResult(_noopAction(), bytes("hax"), bytes("mock"), uint8(1), -1, "");
     }
 
+    function test_submit_twice_reverts() public {
+        _runAuctionTo(runner1, 0.005 ether, bytes32("s1"));
+        _submitAttestedResult(runner1, 1);
+        assertTrue(_executed(1));
+
+        // Second submit (while still in EXECUTION phase) must revert via
+        // the epochs[epoch].executed guard at the top of submitAuctionResult.
+        vm.prank(runner1);
+        vm.expectRevert(TheHumanFund.AlreadyDone.selector);
+        fund.submitAuctionResult(_noopAction(), bytes("again"), bytes("mock"), uint8(1), -1, "");
+    }
+
     // ═══════════════════════════════════════════════════════════════════════
     // Group 9: Wall-Clock Timing
     // ═══════════════════════════════════════════════════════════════════════
@@ -905,8 +887,7 @@ contract TheHumanFundAuctionTest is EpochTest {
     function test_wallClock_noDrift() public {
         uint256 anchor = fund.timingAnchor();
 
-        // Epoch 1: start on time
-        fund.syncPhase();
+        // Epoch 1 auction already opened at anchor by setUp.
         assertEq(am.getStartTime(1), anchor);
 
         // Miss epoch 1 (0 commits)
@@ -925,8 +906,7 @@ contract TheHumanFundAuctionTest is EpochTest {
     function test_lateStart_shortensCommitWindow() public {
         uint256 anchor = fund.timingAnchor();
 
-        // Miss epoch 1
-        fund.syncPhase();
+        // Miss epoch 1 (epoch 1 already open from setUp, just let it elapse).
         vm.warp(anchor + COMMIT_WIN);
         fund.syncPhase();
 
@@ -955,7 +935,7 @@ contract TheHumanFundAuctionTest is EpochTest {
     }
 
     function test_projectedEpoch() public {
-        fund.syncPhase();
+        // Epoch 1 COMMIT already open from setUp.
         vm.warp(block.timestamp + EPOCH_DUR * 3);
         // Contract thinks we're on epoch 1, but 3 epoch durations have passed
         assertEq(fund.projectedEpoch(), 4); // 1 + 3
@@ -977,45 +957,16 @@ contract TheHumanFundAuctionTest is EpochTest {
     }
 
     /// @dev syncPhase() is intentionally NOT sunset-gated so that in-flight
-    ///      auctions can still be drained to SETTLED during sunset (required
-    ///      before `migrate()` can run). See test_sunset_midAuction_canDrainAndMigrate.
+    ///      auctions can still be drained during sunset (so migrate() can
+    ///      run without waiting on timeouts).
     function test_sunset_allowsSyncPhase() public {
         fund.freeze(fund.FREEZE_SUNSET());
         // Must not revert.
         fund.syncPhase();
     }
 
-    /// @dev Regression: even though syncPhase() is callable during sunset,
-    ///      it must NOT open a fresh auction (Step C), otherwise the new
-    ///      auction would block migrate() for up to ~90 min until its
-    ///      commit+reveal+exec windows all time out.
-    function test_sunset_syncPhase_doesNotOpenNewAuction() public {
-        // Start in IDLE. Advance wall-clock into a new epoch's commit window.
-        fund.syncPhase();
-        vm.warp(fund.epochStartTime(2));
-
-        // Freeze sunset while we're still at epoch 1 with no in-flight auction.
-        fund.freeze(fund.FREEZE_SUNSET());
-
-        // syncPhase must drain/advance but NOT open auction for epoch 2.
-        fund.syncPhase();
-
-        // AM must remain IDLE/SETTLED so migrate can proceed.
-        IAuctionManager.AuctionPhase phase = am.getPhase(fund.currentEpoch());
-        assertTrue(
-            phase == IAuctionManager.AuctionPhase.IDLE
-                || phase == IAuctionManager.AuctionPhase.SETTLED,
-            "Step C must not open a new auction under sunset"
-        );
-
-        // migrate() should succeed without waiting for any timeout.
-        uint256 balBefore = address(0xBEEF).balance;
-        fund.migrate(address(0xBEEF));
-        assertGt(address(0xBEEF).balance, balBefore);
-    }
-
     function test_sunset_blocksCommit() public {
-        fund.syncPhase();
+        // Epoch 1 COMMIT already open from setUp.
         fund.freeze(fund.FREEZE_SUNSET());
 
         vm.prank(runner1);
@@ -1023,11 +974,11 @@ contract TheHumanFundAuctionTest is EpochTest {
         fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.005 ether, bytes32("s1")));
     }
 
-    /// @dev migrate() composes out of `_resetAuction`, so it can run
-    ///      mid-auction and must refund all held bonds to committers
-    ///      (operator intervention is never a forfeit — invariant I3).
+    /// @dev migrate() is phase-agnostic: it calls `_resetAuction` (which
+    ///      refunds in-flight bonds non-confiscatorily — invariant I3) and
+    ///      then withdraws. No pre-draining required.
     function test_migrate_midAuction_refundsCommitters() public {
-        fund.syncPhase();
+        // Epoch 1 COMMIT already open from setUp.
         uint256 bond = fund.currentBond();
 
         // runner1 commits — bond is held by the AuctionManager.
@@ -1046,15 +997,11 @@ contract TheHumanFundAuctionTest is EpochTest {
         assertGt(address(0xBEEF).balance, destBefore, "migration sent funds");
     }
 
-    /// @dev Regression: setting FREEZE_SUNSET while an auction is in-flight
-    ///      must not deadlock the fund. `receive()` has to accept inflows
-    ///      from the AuctionManager (forfeit pushes) even during sunset so
-    ///      that `syncPhase()` can drain the auction to SETTLED, and
-    ///      `syncPhase()` itself must not be sunset-gated, otherwise there
-    ///      is no way to run the drain before calling `migrate`.
+    /// @dev Regression: migrate() works even with an in-flight auction deep
+    ///      in EXECUTION phase. `_resetAuction` handles the refund; no
+    ///      drain-to-SETTLED dance needed.
     function test_sunset_midAuction_canDrainAndMigrate() public {
-        // Open an auction, commit + reveal, then warp to EXECUTION phase
-        fund.syncPhase();
+        // Epoch 1 COMMIT already open from setUp. Run commit + reveal → EXECUTION.
         uint256 bond = fund.currentBond();
         vm.prank(runner1);
         fund.commit{value: bond}(_commitHash(runner1, 0.005 ether, bytes32("s1")));
@@ -1065,23 +1012,16 @@ contract TheHumanFundAuctionTest is EpochTest {
         fund.syncPhase(); // closes reveal, captures seed → EXECUTION phase
         assertEq(uint256(am.getPhase(1)), uint256(IAuctionManager.AuctionPhase.EXECUTION));
 
-        // Owner freezes sunset while an auction is still in-flight.
+        // Owner freezes sunset while auction is still in-flight at EXECUTION.
         fund.freeze(fund.FREEZE_SUNSET());
 
-        // Warp past the execution deadline. Runner never submitted.
-        vm.warp(block.timestamp + EXEC_WIN);
-
-        // syncPhase() must not revert during sunset — it drives the AM to
-        // SETTLED via forfeit, which pushes the winner's bond to the fund's
-        // receive(). If receive() rejected AM-sourced inflows, this would
-        // revert and the fund would deadlock.
-        fund.syncPhase();
-        assertEq(uint256(am.getPhase(1)), uint256(IAuctionManager.AuctionPhase.SETTLED));
-
-        // Migrate now succeeds — AM is SETTLED.
+        // migrate() succeeds immediately — no waiting on EXEC_WIN timeout.
+        // `_resetAuction` refunds runner1's (winner) bond, then funds move.
+        uint256 runner1BalBefore = runner1.balance;
         uint256 balBefore = address(0xBEEF).balance;
         fund.migrate(address(0xBEEF));
         assertGt(address(0xBEEF).balance, balBefore);
+        assertEq(runner1.balance, runner1BalBefore + bond, "winner bond refunded on migrate");
     }
 
     function test_epochContentHashes_accumulate() public {
@@ -1100,23 +1040,24 @@ contract TheHumanFundAuctionTest is EpochTest {
     // ═══════════════════════════════════════════════════════════════════════
 
     function test_staleCommit_noCommits_cleaned() public {
-        fund.syncPhase();
+        // Epoch 1 COMMIT already open from setUp. Nobody commits, full epoch elapses.
         vm.warp(block.timestamp + EPOCH_DUR);
-        fund.syncPhase(); // auto-cleans stale COMMIT (0 commits → SETTLED), advances epoch
+        fund.syncPhase(); // auto-cleans stale empty epoch, advances epoch
 
         assertEq(fund.currentEpoch(), 2);
-        assertEq(uint256(am.getPhase(1)), uint256(IAuctionManager.AuctionPhase.SETTLED));
+        assertFalse(_executed(1));
     }
 
     function test_staleCommit_withCommits_cleaned() public {
-        fund.syncPhase();
+        // Epoch 1 COMMIT already open from setUp.
         vm.prank(runner1);
         fund.commit{value: 0.01 ether}(_commitHash(runner1, 0.005 ether, bytes32("s1")));
 
         vm.warp(block.timestamp + EPOCH_DUR);
-        fund.syncPhase(); // chains: COMMIT→REVEAL (1 commit), REVEAL→SETTLED (0 reveals)
+        fund.syncPhase(); // chains: COMMIT→REVEAL (1 commit), REVEAL close (0 reveals), advance
 
         assertEq(fund.currentEpoch(), 2);
+        assertFalse(_executed(1));
     }
 
     function test_staleExecution_cleaned() public {
@@ -1128,12 +1069,13 @@ contract TheHumanFundAuctionTest is EpochTest {
 
         assertEq(fund.currentEpoch(), 2);
         assertGt(address(fund).balance, treasuryBefore); // forfeited bond
+        assertFalse(_executed(1));
     }
 
     // ─── Fuzz Tests ────────────────────────────────────────────────────
 
     function test_equalBids_firstRevealerWins() public {
-        fund.syncPhase();
+        // Epoch 1 COMMIT already open from setUp.
         uint256 epoch = fund.currentEpoch();
         uint256 bond = fund.currentBond();
         uint256 bidAmount = 0.005 ether;
@@ -1163,7 +1105,7 @@ contract TheHumanFundAuctionTest is EpochTest {
     }
 
     function test_loser_claimsBond_afterReveal() public {
-        fund.syncPhase();
+        // Epoch 1 COMMIT already open from setUp.
         uint256 epoch = fund.currentEpoch();
         uint256 bond = fund.currentBond();
 
@@ -1204,7 +1146,6 @@ contract TheHumanFundAuctionTest is EpochTest {
         // within a test frame after vm.warp.
         uint256 n = bound(misses, 0, 50);
         for (uint256 i = 0; i < n; i++) {
-            fund.syncPhase();
             uint256 targetEpoch = fund.currentEpoch() + 1;
             vm.warp(fund.epochStartTime(targetEpoch) + 1);
             fund.syncPhase();
@@ -1229,7 +1170,7 @@ contract TheHumanFundAuctionTest is EpochTest {
         uint256 maxBid = fund.effectiveMaxBid();
         bidAmount = bound(bidAmount, maxBid + 1, 100 ether);
 
-        fund.syncPhase();
+        // Epoch 1 COMMIT already open from setUp.
         uint256 bond = fund.currentBond();
         bytes32 salt = bytes32("fuzz_salt");
 
@@ -1247,7 +1188,7 @@ contract TheHumanFundAuctionTest is EpochTest {
         uint256 maxBid = fund.effectiveMaxBid();
         bidAmount = bound(bidAmount, 1, maxBid);
 
-        fund.syncPhase();
+        // Epoch 1 COMMIT already open from setUp.
         uint256 bond = fund.currentBond();
         bytes32 salt = bytes32("fuzz_valid");
 
@@ -1277,7 +1218,7 @@ contract TheHumanFundAuctionTest is EpochTest {
         assertGe(endEpoch, startEpoch + n);
     }
 
-    function testFuzz_commitHash_preimage(uint256 bidAmount, bytes32 salt) public {
+    function testFuzz_commitHash_preimage(uint256 bidAmount, bytes32 salt) public view {
         // Verify commit hash is deterministic and matches reveal
         bidAmount = bound(bidAmount, 1, 10 ether);
         bytes32 hash = _commitHash(runner1, bidAmount, salt);
@@ -1306,7 +1247,7 @@ contract TheHumanFundAuctionTest is EpochTest {
 
         // Legit runner computes their commit hash and commits.
         bytes32 legitHash = _commitHash(runner1, bidAmount, salt);
-        fund.syncPhase();
+        // Epoch 1 COMMIT already open from setUp.
         uint256 bond = fund.currentBond();
         vm.prank(runner1);
         fund.commit{value: bond}(legitHash);
@@ -1340,8 +1281,8 @@ contract TheHumanFundAuctionTest is EpochTest {
     // Group: Epoch Snapshot — drift isolation
     // ═══════════════════════════════════════════════════════════════════════
 
-    function test_snapshot_valuesMatchAtAuctionOpen() public {
-        fund.syncPhase(); // opens auction for epoch 1
+    function test_snapshot_valuesMatchAtAuctionOpen() public view {
+        // Epoch 1 auction already opened in setUp.
         TheHumanFund.EpochSnapshot memory snap = fund.getEpochSnapshot(1);
 
         assertEq(snap.balance, address(fund).balance);
@@ -1352,7 +1293,7 @@ contract TheHumanFundAuctionTest is EpochTest {
     }
 
     function test_snapshot_donationDoesNotChangeBaseInputHash() public {
-        fund.syncPhase(); // opens auction for epoch 1
+        // Epoch 1 auction already opened in setUp.
         bytes32 hashBefore = fund.epochBaseInputHashes(1);
 
         // Donate after auction open
@@ -1365,7 +1306,7 @@ contract TheHumanFundAuctionTest is EpochTest {
     }
 
     function test_snapshot_messageDoesNotChangeBaseInputHash() public {
-        fund.syncPhase(); // opens auction for epoch 1
+        // Epoch 1 auction already opened in setUp.
         bytes32 hashBefore = fund.epochBaseInputHashes(1);
 
         // Send message after auction open
@@ -1378,30 +1319,28 @@ contract TheHumanFundAuctionTest is EpochTest {
     }
 
     function test_snapshot_messageBoundariesFrozen() public {
-        // Send a message BEFORE auction open
-        vm.deal(address(0xDEAD), 2 ether);
-        vm.prank(address(0xDEAD));
-        fund.donateWithMessage{value: 0.05 ether}(0, "before auction");
-
-        fund.syncPhase(); // opens auction for epoch 1
+        // Note: epoch 1 was already opened at the end of setUp, so we cannot
+        // retroactively add a pre-open message here. Instead we verify that
+        // once the snapshot is taken, later messages do not mutate it.
         TheHumanFund.EpochSnapshot memory snap = fund.getEpochSnapshot(1);
+        uint256 preOpenCount = snap.messageCount;
 
-        // Snapshot should record 1 message
-        assertEq(snap.messageCount, 1);
-        assertEq(snap.messageHead, 0);
-
-        // Send another message AFTER auction open
+        // Send a message AFTER auction open.
+        vm.deal(address(0xDEAD), 2 ether);
         vm.prank(address(0xDEAD));
         fund.donateWithMessage{value: 0.05 ether}(0, "after auction");
 
-        // Snapshot should still show 1 message (frozen at auction open)
+        // Snapshot should still show the original count (frozen at auction open)
         TheHumanFund.EpochSnapshot memory snapAfter = fund.getEpochSnapshot(1);
-        assertEq(snapAfter.messageCount, 1);
-        assertEq(snapAfter.messageHead, 0);
+        assertEq(snapAfter.messageCount, preOpenCount);
+        assertEq(snapAfter.messageHead, snap.messageHead);
+
+        // But live state advanced.
+        assertEq(fund.messageCount(), preOpenCount + 1);
     }
 
     function test_snapshot_scalarsFrozenAfterDonation() public {
-        fund.syncPhase(); // opens auction for epoch 1
+        // Epoch 1 auction already opened in setUp.
         TheHumanFund.EpochSnapshot memory snapBefore = fund.getEpochSnapshot(1);
 
         // Donate after auction open — changes live state but not snapshot
@@ -1422,8 +1361,7 @@ contract TheHumanFundAuctionTest is EpochTest {
     }
 
     function test_snapshot_multiEpoch_independentSnapshots() public {
-        // Epoch 1: open auction, donate, complete epoch
-        fund.syncPhase();
+        // Epoch 1: already open from setUp. Donate, complete epoch.
         TheHumanFund.EpochSnapshot memory snap1 = fund.getEpochSnapshot(1);
 
         vm.deal(address(0xDEAD), 5 ether);
@@ -1448,21 +1386,21 @@ contract TheHumanFundAuctionTest is EpochTest {
     }
 
     function test_snapshot_multiEpoch_messagesAdvanceCorrectly() public {
-        // Send message before epoch 1
-        vm.deal(address(0xDEAD), 5 ether);
-        vm.prank(address(0xDEAD));
-        fund.donateWithMessage{value: 0.05 ether}(0, "msg for epoch 1");
-
-        // Epoch 1: auction open, snapshot should see 1 message
-        _runAuctionTo(runner1, 0.005 ether, bytes32("s1"));
+        // Epoch 1 is already open from setUp — its snapshot's messageCount is
+        // whatever it was at setUp time (likely 0). Send a message after open;
+        // snapshot stays frozen at the old count.
         TheHumanFund.EpochSnapshot memory snap1 = fund.getEpochSnapshot(1);
-        assertEq(snap1.messageCount, 1);
-        assertEq(snap1.messageHead, 0);
+        uint256 epoch1FrozenCount = snap1.messageCount;
+        uint256 epoch1FrozenHead = snap1.messageHead;
 
-        // Execute epoch 1 — messageHead advances past the processed message
+        // Run epoch 1 with no pending messages visible → submit has nothing
+        // to consume, so messageHead stays where it was.
+        _runAuctionTo(runner1, 0.005 ether, bytes32("s1"));
         _submitAttestedResult(runner1, 1);
+        assertEq(fund.messageHead(), epoch1FrozenHead);
 
-        // Send another message before epoch 2
+        // Send a message before epoch 2 opens.
+        vm.deal(address(0xDEAD), 5 ether);
         vm.prank(address(0xDEAD));
         fund.donateWithMessage{value: 0.05 ether}(0, "msg for epoch 2");
 
@@ -1471,13 +1409,14 @@ contract TheHumanFundAuctionTest is EpochTest {
         fund.syncPhase();
         TheHumanFund.EpochSnapshot memory snap2 = fund.getEpochSnapshot(2);
 
-        // Epoch 2 snapshot: messageHead should have advanced, new message visible
-        assertEq(snap2.messageHead, 1); // epoch 1 consumed message 0
-        assertEq(snap2.messageCount, 2); // 2 total messages, head=1 means 1 unread
+        // Epoch 2 snapshot: head unchanged (epoch 1 consumed nothing),
+        // count advanced by the new message.
+        assertEq(snap2.messageHead, epoch1FrozenHead);
+        assertEq(snap2.messageCount, epoch1FrozenCount + 1);
     }
 
     function test_snapshot_multiEpoch_donationBetweenEpochs() public {
-        // Epoch 1
+        // Epoch 1 already open from setUp.
         _runAuctionTo(runner1, 0.005 ether, bytes32("s1"));
         TheHumanFund.EpochSnapshot memory snap1 = fund.getEpochSnapshot(1);
         _submitAttestedResult(runner1, 1);
@@ -1519,23 +1458,26 @@ contract TheHumanFundAuctionTest is EpochTest {
     // epoch, not the next attempted epoch.
 
     function test_message_survives_forfeited_auction() public {
-        // Donor sends a message BEFORE the auction opens
+        // Donor sends a message AFTER epoch 1 opened (setUp opened it).
+        // The snapshot for epoch 1 won't see it, but the live queue must
+        // retain it through a forfeit.
         vm.deal(address(0xDEAD), 1 ether);
         vm.prank(address(0xDEAD));
         fund.donateWithMessage{value: 0.05 ether}(0, "important message");
-        assertEq(fund.messageCount(), 1);
-        assertEq(fund.messageHead(), 0);
+        uint256 headBefore = fund.messageHead();
+        uint256 countBefore = fund.messageCount();
+        assertEq(countBefore, 1);
 
         // Runner commits and reveals (full auction flow)
         _runAuctionTo(runner1, 0.005 ether, bytes32("s1"));
 
         // Runner WINS but fails to submit within the execution window
         vm.warp(block.timestamp + EXEC_WIN);
-        fund.syncPhase(); // forfeits bond, advances to SETTLED
+        fund.syncPhase(); // forfeits bond, advances to next epoch
 
         // Message queue must be unchanged — messageHead was never advanced
-        assertEq(fund.messageHead(), 0, "messageHead preserved after forfeit");
-        assertEq(fund.messageCount(), 1, "message still in queue");
+        assertEq(fund.messageHead(), headBefore, "messageHead preserved after forfeit");
+        assertEq(fund.messageCount(), countBefore, "message still in queue");
 
         // Unread messages still shows the message
         (address[] memory senders,,, ) = fund.getUnreadMessages();
@@ -1549,21 +1491,22 @@ contract TheHumanFundAuctionTest is EpochTest {
         vm.deal(address(0xDEAD), 1 ether);
         vm.prank(address(0xDEAD));
         fund.donateWithMessage{value: 0.05 ether}(0, "persistent message");
-        assertEq(fund.messageHead(), 0);
+        uint256 headBefore = fund.messageHead();
 
         // Epoch 1 forfeits
         _runAuctionTo(runner1, 0.005 ether, bytes32("s1"));
         vm.warp(block.timestamp + EXEC_WIN);
         fund.syncPhase();
-        assertEq(fund.messageHead(), 0, "messageHead unchanged after forfeit");
+        assertEq(fund.messageHead(), headBefore, "messageHead unchanged after forfeit");
 
         // Advance to epoch 2's scheduled start and run a successful auction
         vm.warp(fund.epochStartTime(2));
+        fund.syncPhase(); // opens epoch 2 auction
         _runAuctionTo(runner1, 0.005 ether, bytes32("s2"));
         _submitAttestedResult(runner1, 2);
 
         // Now the message should be consumed
-        assertEq(fund.messageHead(), 1, "message consumed on successful epoch 2");
+        assertEq(fund.messageHead(), headBefore + 1, "message consumed on successful epoch 2");
     }
 
     function test_message_arrivingAfterSnapshot_survivesToNextEpoch() public {
@@ -1573,43 +1516,45 @@ contract TheHumanFundAuctionTest is EpochTest {
         // executor must advance messageHead against that frozen count too —
         // not against the live messages.length.
 
-        // M1 arrives before auction open → model will see it in epoch 1.
+        // Epoch 1 already opened at setUp. M1 arrives after open — snapshot
+        // for epoch 1 does NOT see it.
         vm.deal(address(0xDEAD), 2 ether);
         vm.prank(address(0xDEAD));
-        fund.donateWithMessage{value: 0.05 ether}(0, "seen by epoch 1");
+        fund.donateWithMessage{value: 0.05 ether}(0, "after epoch 1 open");
 
-        // Run epoch 1 auction to reveal-close (snapshot already frozen at
-        // auction open with messageCount = 1).
-        _runAuctionTo(runner1, 0.005 ether, bytes32("s1"));
         TheHumanFund.EpochSnapshot memory snap1 = fund.getEpochSnapshot(1);
-        assertEq(snap1.messageCount, 1, "snapshot frozen at 1 message");
-        assertEq(snap1.messageHead, 0);
+        uint256 epoch1FrozenCount = snap1.messageCount;
+        uint256 epoch1FrozenHead = snap1.messageHead;
 
-        // M2 arrives during the execution window — the model never saw it.
+        // Run epoch 1 to reveal-close.
+        _runAuctionTo(runner1, 0.005 ether, bytes32("s1"));
+
+        // M2 arrives during execution — also not seen by epoch 1.
         vm.prank(address(0xDEAD));
         fund.donateWithMessage{value: 0.05 ether}(0, "late arrival");
-        assertEq(fund.messageCount(), 2, "live queue has 2 messages");
+        assertEq(fund.messageCount(), epoch1FrozenCount + 2, "live queue has 2 extra messages");
 
-        // Epoch 1 submission consumes only M1.
+        // Epoch 1 submission consumes only what the snapshot saw.
         _submitAttestedResult(runner1, 1);
         assertEq(
             fund.messageHead(),
-            1,
-            "messageHead advanced past only the model-visible message"
+            epoch1FrozenHead + epoch1FrozenCount - epoch1FrozenHead,
+            "messageHead advanced only past the model-visible messages"
         );
-        assertEq(fund.messageCount(), 2, "M2 still in the queue");
+        // Simpler form: messageHead == epoch1FrozenCount (all frozen msgs consumed).
+        assertEq(fund.messageHead(), epoch1FrozenCount);
 
-        // Epoch 2 opens — its snapshot must include M2 so the next model
-        // execution actually reads it.
+        // Epoch 2 opens — its snapshot must include both late messages.
         vm.warp(fund.epochStartTime(2));
         fund.syncPhase();
         TheHumanFund.EpochSnapshot memory snap2 = fund.getEpochSnapshot(2);
-        assertEq(snap2.messageHead, 1);
-        assertEq(snap2.messageCount, 2, "epoch 2 snapshot sees the late message");
+        assertEq(snap2.messageHead, epoch1FrozenCount);
+        assertEq(snap2.messageCount, epoch1FrozenCount + 2, "epoch 2 sees late messages");
 
-        // And unread-messages view confirms M2 is the one the next epoch will read.
+        // And unread-messages view confirms the late messages are queued.
         (address[] memory senders, , string[] memory texts, ) = fund.getUnreadMessages();
-        assertEq(senders.length, 1);
-        assertEq(texts[0], "late arrival");
+        assertEq(senders.length, 2);
+        assertEq(texts[0], "after epoch 1 open");
+        assertEq(texts[1], "late arrival");
     }
 }

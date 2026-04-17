@@ -6,10 +6,16 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /// @title AuctionManager
 /// @notice Auction state machine for commit-reveal sealed-bid auctions.
-///         Phase advancement is automatic: syncPhase() advances through any
-///         elapsed phase windows based on block.timestamp vs wall-clock deadlines.
-///         Bond refunds are lazy: non-winning revealers call claimBond(epoch).
-///         Only the fund contract can call state-transition functions.
+///         3-phase cyclic: COMMIT → REVEAL → EXECUTION. The EXECUTION →
+///         COMMIT-of-next-epoch boundary (including winner-forfeit-if-no-show
+///         bookkeeping) is handled by the fund contract — see
+///         `TheHumanFund._closeExecution` and `_openAuction`.
+///
+///         Within an epoch, phase advancement is automatic: syncPhase()
+///         advances through any elapsed phase windows based on block.timestamp
+///         vs wall-clock deadlines. Bond refunds are lazy: non-winning
+///         revealers call claimBond(epoch). Only the fund contract can call
+///         state-transition functions.
 contract AuctionManager is IAuctionManager, ReentrancyGuard {
     // ─── Errors ──────────────────────────────────────────────────────────
 
@@ -91,15 +97,18 @@ contract AuctionManager is IAuctionManager, ReentrancyGuard {
 
     /// @inheritdoc IAuctionManager
     function syncPhase(uint256 epoch) external override onlyFund returns (AuctionPhase phase, bool advanced) {
-        if (epoch != currentAuctionEpoch) return (AuctionPhase.IDLE, false);
+        // Stale epoch tags are treated as a no-op. The fund shouldn't call
+        // syncPhase with a mismatched epoch in normal operation, but we
+        // avoid reverting so the caller can detect the no-op cleanly.
+        if (epoch != currentAuctionEpoch) return (currentPhase, false);
         return _syncPhase();
     }
 
-    /// @dev Advance through any elapsed phase windows.
-    ///      Each transition runs at most once (phase changes prevent re-entry).
-    ///      Returns the final phase and whether any transition occurred.
-    ///      The fund contract checks passedThroughReveal and passedThroughExecution
-    ///      to handle side effects (seed binding, forfeit events).
+    /// @dev Advance through any elapsed within-epoch phase windows.
+    ///      Cascades COMMIT→REVEAL→EXECUTION at most once each.
+    ///      Does NOT transition out of EXECUTION — the fund handles the
+    ///      EXECUTION→COMMIT-of-next-epoch boundary via `_closeExecution`
+    ///      + `_openAuction` (which calls into this AM's `openAuction`).
     function _syncPhase() internal returns (AuctionPhase phase, bool advanced) {
         phase = currentPhase;
         advanced = false;
@@ -114,14 +123,9 @@ contract AuctionManager is IAuctionManager, ReentrancyGuard {
             _closeReveal();
             phase = currentPhase;
             advanced = true;
-            // Note: if _closeReveal sets EXECUTION, the next if-block may forfeit it
         }
-
-        if (phase == AuctionPhase.EXECUTION && block.timestamp >= _executionDeadline()) {
-            _doForfeit();
-            phase = currentPhase;
-            advanced = true;
-        }
+        // EXECUTION is terminal within the epoch. The fund's `_closeExecution`
+        // handles the boundary crossing.
     }
 
     // ─── Auction Setup ──────────────────────────────────────────────────
@@ -129,9 +133,10 @@ contract AuctionManager is IAuctionManager, ReentrancyGuard {
     /// @inheritdoc IAuctionManager
     function openAuction(uint256 epoch, uint256 bond, uint256 startTime) external override onlyFund {
         if (bond == 0) revert InvalidParams();
-        if (currentPhase != AuctionPhase.IDLE && currentPhase != AuctionPhase.SETTLED) revert WrongPhase();
 
-        // Reset current auction state
+        // Reset current auction state. No phase precondition: the fund only
+        // calls this at bootstrap or after `_closeExecution` has finished
+        // with the prior epoch. openAuction overwrites live state atomically.
         _clearCurrentAuction();
 
         currentAuctionEpoch = epoch;
@@ -194,7 +199,10 @@ contract AuctionManager is IAuctionManager, ReentrancyGuard {
         if (block.timestamp >= _executionDeadline()) revert TimingError();
 
         uint256 bondRefund = currentBondAmount;
-        currentPhase = AuctionPhase.SETTLED;
+
+        // Phase stays at EXECUTION. Double-submit prevention lives on the
+        // fund side (`epochs[epoch].executed`). The fund's `_closeExecution`
+        // later observes `executed==true` and skips forfeit before advancing.
         _storeHistory(false);
 
         // Push bond directly to winner. If the push fails, the whole
@@ -203,6 +211,37 @@ contract AuctionManager is IAuctionManager, ReentrancyGuard {
         // fixing it.
         (bool sent, ) = payable(caller).call{value: bondRefund}("");
         if (!sent) revert TransferFailed();
+    }
+
+    /// @inheritdoc IAuctionManager
+    /// @dev End-of-epoch state-clear. Called exclusively by the fund at the
+    ///      EXECUTION → COMMIT-of-next-epoch boundary. Distinguishes
+    ///      "winner already submitted" from "winner no-showed" by whether
+    ///      history was stored (settleExecution stores on success):
+    ///        - history stored   → bond already refunded in settleExecution;
+    ///                             just clear state.
+    ///        - history not stored → winner never submitted; forfeit the
+    ///                             held bond to the fund, store history
+    ///                             (marked forfeited), then clear state.
+    function closeExecution() external override onlyFund nonReentrant {
+        if (currentPhase != AuctionPhase.EXECUTION) revert WrongPhase();
+
+        uint256 epoch = currentAuctionEpoch;
+        bool alreadySettled = auctionHistory[epoch].startTime != 0;
+
+        if (!alreadySettled) {
+            uint256 forfeitedBond = currentBondAmount;
+            _storeHistory(true);
+            if (forfeitedBond > 0 && currentWinner != address(0)) {
+                (bool sent, ) = payable(fund).call{value: forfeitedBond}("");
+                if (!sent) revert TransferFailed();
+            }
+        }
+
+        _clearCurrentAuction();
+        // Zero the tag so getX(epoch) lookups route through auctionHistory
+        // until the fund calls openAuction() for the next epoch.
+        currentAuctionEpoch = 0;
     }
 
     // ─── Configuration ──────────────────────────────────────────────────
@@ -236,23 +275,23 @@ contract AuctionManager is IAuctionManager, ReentrancyGuard {
     // ─── Owner-Driven Reset ─────────────────────────────────────────────
 
     /// @notice Abort the in-flight auction and refund all held bonds.
-    ///         Callable only by the fund (via its owner `resetAuction`
-    ///         entry point). This is operator intervention, NOT a forfeit
-    ///         event — committers get their bonds back regardless of
-    ///         phase.
+    ///         Callable only by the fund (via its owner `resetAuction` and
+    ///         `migrate` entry points, both routing through the shared
+    ///         `_resetAuction` internal). This is operator intervention,
+    ///         NOT a forfeit event — committers get their bonds back
+    ///         regardless of phase.
     ///
     /// Per-phase refund matrix:
-    ///  - IDLE / SETTLED: no active auction, no-op.
-    ///  - COMMIT:  all committers' bonds are held here → refund all.
-    ///  - REVEAL:  all committers' bonds are held here → refund all
-    ///             (reveals haven't settled yet; both revealers and
-    ///             non-revealers get their bond back).
+    ///  - COMMIT:    all committers' bonds are held here → refund all.
+    ///  - REVEAL:    all committers' bonds are held here → refund all
+    ///               (reveals haven't settled yet; both revealers and
+    ///               non-revealers get their bond back).
     ///  - EXECUTION: non-revealer bonds were already forfeited to the
-    ///             fund at reveal close and are NOT unwound here. Non-
-    ///             winning revealers already have a `pendingBondRefunds`
-    ///             credit and will claim via `claimBond` as normal. The
-    ///             only bond still held by the AM is the winner's — that
-    ///             is what we refund.
+    ///               fund at reveal close and are NOT unwound here. Non-
+    ///               winning revealers already have a `pendingBondRefunds`
+    ///               credit and will claim via `claimBond` as normal. The
+    ///               only bond still held by the AM is the winner's —
+    ///               that's what we refund (if there is a winner).
     ///
     /// @dev Refunds are direct push. If any committer's push fails (e.g.
     ///      a malicious fallback), the entire reset reverts. The operator
@@ -261,6 +300,10 @@ contract AuctionManager is IAuctionManager, ReentrancyGuard {
     ///      requires off-chain coordination. In practice the committer
     ///      set is small and operator-controlled, so this is acceptable.
     function abortAuction() external onlyFund nonReentrant {
+        // No live auction (e.g., we're between _closeExecution and
+        // _openAuction under sunset). Nothing to abort, no history to store.
+        if (currentAuctionEpoch == 0) return;
+
         AuctionPhase phase = currentPhase;
         uint256 bond = currentBondAmount;
 
@@ -275,26 +318,24 @@ contract AuctionManager is IAuctionManager, ReentrancyGuard {
                     if (!sent) revert TransferFailed();
                 }
             }
-        } else if (phase == AuctionPhase.EXECUTION) {
+        } else {
+            // EXECUTION: only the winner's bond is still held here.
             address winner = currentWinner;
             if (winner != address(0) && bond > 0) {
                 (bool sent, ) = payable(winner).call{value: bond}("");
                 if (!sent) revert TransferFailed();
             }
         }
-        // IDLE/SETTLED: nothing to refund.
 
         // Record history so the epoch is visibly "closed" in auctionHistory,
         // then clear working state. Mark as not-forfeited — this is an
         // operator abort, not a winner failure.
-        if (phase != AuctionPhase.IDLE && phase != AuctionPhase.SETTLED) {
-            _storeHistory(false);
-        }
+        _storeHistory(false);
         _clearCurrentAuction();
-        // After a reset, there is no active auction. Zero out the tag so
-        // getX(epoch) lookups route through auctionHistory instead of the
-        // just-cleared live fields. The next openAuction() will set this
-        // to the new epoch.
+        // After abort there is no active auction. Zero out the epoch tag so
+        // getX(epoch) lookups route through auctionHistory. The fund MUST
+        // immediately call openAuction() to restore a live auction — any
+        // interaction between abort and open is undefined.
         currentAuctionEpoch = 0;
     }
 
@@ -302,15 +343,17 @@ contract AuctionManager is IAuctionManager, ReentrancyGuard {
 
     /// @notice Force-close the current auction phase WITHOUT checking
     ///         wall-clock deadlines. Callable only by the fund (via its
-    ///         owner `nextPhase` entry point). The time-independent
-    ///         counterpart to `syncPhase`.
+    ///         owner `nextPhase` entry point and internal `_nextPhase`
+    ///         primitive). The time-independent counterpart to `syncPhase`.
     ///
     /// Transitions by phase:
-    ///  - COMMIT    → REVEAL (or SETTLED if no commits — `_closeCommit`)
-    ///  - REVEAL    → EXECUTION (or SETTLED if no reveals; captures seed
-    ///                and pushes forfeited non-revealer bonds — `_closeReveal`)
-    ///  - EXECUTION → SETTLED (forfeits winner bond — `_doForfeit`)
-    ///  - IDLE/SETTLED: reverts with WrongPhase (nothing to close).
+    ///  - COMMIT    → REVEAL (phase always advances regardless of commit
+    ///                count; see `_closeCommit`).
+    ///  - REVEAL    → EXECUTION (captures seed and pushes forfeited
+    ///                non-revealer bonds; see `_closeReveal`).
+    ///  - EXECUTION: reverts with WrongPhase. The EXECUTION → COMMIT-of-
+    ///                next-epoch transition is handled exclusively by the
+    ///                fund (via `_closeExecution` + `_openAuction`).
     ///
     /// @dev User actions (commit, reveal, submitAuctionResult) still
     ///      enforce their wall-clock windows. `forceClosePhase` only
@@ -327,71 +370,57 @@ contract AuctionManager is IAuctionManager, ReentrancyGuard {
             _closeCommit();
         } else if (phase == AuctionPhase.REVEAL) {
             _closeReveal();
-        } else if (phase == AuctionPhase.EXECUTION) {
-            _doForfeit();
         } else {
+            // EXECUTION — the fund handles the boundary, not us.
             revert WrongPhase();
         }
     }
 
     // ─── Internal: Phase Transitions ────────────────────────────────────
 
-    /// @dev Close the commit phase. COMMIT → REVEAL (or SETTLED if no commits).
+    /// @dev Close the commit phase. COMMIT → REVEAL unconditionally.
+    ///      Under the 3-phase cyclic model, phases always advance. An empty
+    ///      commit window lands in REVEAL with zero revealers, which then
+    ///      advances to EXECUTION with no winner — the fund's
+    ///      `_closeExecution` handles the "no-winner" case at the boundary.
     function _closeCommit() internal {
-        uint256 commitCount = currentCommitCount;
-        if (commitCount == 0) {
-            currentPhase = AuctionPhase.SETTLED;
-            _storeHistory(false);
-        } else {
-            currentPhase = AuctionPhase.REVEAL;
-        }
+        currentPhase = AuctionPhase.REVEAL;
     }
 
-    /// @dev Close the reveal phase. REVEAL → EXECUTION (or SETTLED if no reveals).
-    ///      Captures randomness seed. Computes aggregate bond refunds O(1) (no loop).
-    ///      Sends forfeited (unrevealed) bonds to the fund treasury.
+    /// @dev Close the reveal phase. REVEAL → EXECUTION unconditionally.
+    ///      Captures randomness seed from prevrandao XOR accumulated salts.
+    ///      Computes aggregate bond refunds O(1) (no committer loop):
+    ///        - non-winning revealers: credited to pendingBondRefunds (lazy claim).
+    ///        - non-revealers: bonds forfeited to fund treasury immediately.
+    ///      If there were zero reveals (or zero commits, cascading here), all
+    ///      held bonds go to the fund.
     function _closeReveal() internal {
         uint256 revealCount = currentRevealCount;
 
-        if (revealCount == 0) {
-            // No reveals — all bonds forfeited to fund
-            currentPhase = AuctionPhase.SETTLED;
-            _storeHistory(false);
-            uint256 allBonds = currentCommitCount * currentBondAmount;
-            if (allBonds > 0) {
-                (bool sent, ) = payable(fund).call{value: allBonds}("");
-                if (!sent) revert TransferFailed();
-            }
-            return;
-        }
-
-        // Enter execution phase — seed mixes prevrandao with revealed salts
+        // Enter execution phase. Seed is computed even when revealCount==0
+        // (it simply doesn't matter — there's no winner to use it).
         currentPhase = AuctionPhase.EXECUTION;
         currentRandomnessSeed = uint256(keccak256(abi.encodePacked(block.prevrandao, saltAccumulator)));
 
-        // O(1) bond accounting — no committer loop
         uint256 bond = currentBondAmount;
-        uint256 nonWinnerRevealers = revealCount - 1;          // winner is a revealer
-        uint256 revealerRefunds = nonWinnerRevealers * bond;   // owed to non-winning revealers
-        uint256 forfeitedBonds = (currentCommitCount - revealCount) * bond; // non-revealers
+        uint256 forfeitedBonds;
 
-        pendingBondRefunds += revealerRefunds;
+        if (revealCount == 0) {
+            // No reveals — every committer's bond forfeits to the fund.
+            forfeitedBonds = currentCommitCount * bond;
+        } else {
+            // O(1) bond accounting — no committer loop.
+            uint256 nonWinnerRevealers = revealCount - 1;          // winner is a revealer
+            uint256 revealerRefunds = nonWinnerRevealers * bond;   // owed to non-winning revealers
+            forfeitedBonds = (currentCommitCount - revealCount) * bond; // non-revealers forfeit
+            pendingBondRefunds += revealerRefunds;
+        }
 
-        // Send forfeited bonds to fund treasury immediately
+        // Send forfeited bonds to the fund treasury immediately.
         if (forfeitedBonds > 0) {
             (bool sent, ) = payable(fund).call{value: forfeitedBonds}("");
             if (!sent) revert TransferFailed();
         }
-    }
-
-    /// @dev Forfeit the current auction winner's bond. Stores history, sends bond to fund.
-    function _doForfeit() internal {
-        uint256 forfeitedBond = currentBondAmount;
-        currentPhase = AuctionPhase.SETTLED;
-        _storeHistory(true);
-
-        (bool sent, ) = payable(fund).call{value: forfeitedBond}("");
-        if (!sent) revert TransferFailed();
     }
 
     // ─── Internal: History & Cleanup ────────────────────────────────────
@@ -424,10 +453,12 @@ contract AuctionManager is IAuctionManager, ReentrancyGuard {
 
     /// @dev Clear current auction working state for reuse.
     ///      Per-runner mappings are epoch-keyed, so no cleanup loop needed.
+    ///      `currentPhase` is deliberately NOT reset here — `openAuction`
+    ///      always sets it to COMMIT immediately after, and between abort
+    ///      and open there should be no external reads.
     function _clearCurrentAuction() internal {
         delete committers;
 
-        currentPhase = AuctionPhase.IDLE;
         currentStartTime = 0;
         currentBondAmount = 0;
         currentCommitCount = 0;
@@ -458,10 +489,17 @@ contract AuctionManager is IAuctionManager, ReentrancyGuard {
 
     // ─── Views ───────────────────────────────────────────────────────────
 
+    /// @notice Returns the current live phase for `epoch` if `epoch` matches
+    ///         the in-flight auction, otherwise returns EXECUTION (the
+    ///         terminal phase for any past epoch — past epochs are "done"
+    ///         in the sense that the fund has moved on, and their fund-side
+    ///         `executed` bit carries the success/forfeit distinction).
+    ///         Epochs that were never opened also return EXECUTION — the
+    ///         fund's `epochs[e].executed` is the authoritative "did this
+    ///         epoch's auction actually run" signal.
     function getPhase(uint256 epoch) external view override returns (AuctionPhase) {
         if (epoch == currentAuctionEpoch) return currentPhase;
-        if (auctionHistory[epoch].startTime != 0) return AuctionPhase.SETTLED;
-        return AuctionPhase.IDLE;
+        return AuctionPhase.EXECUTION;
     }
 
     function getWinner(uint256 epoch) external view override returns (address) {
