@@ -7,20 +7,124 @@ import "../src/AuctionManager.sol";
 import "../src/interfaces/IAuctionManager.sol";
 import "./helpers/EpochTest.sol";
 
-/// @title Auction State Machine Invariants
+/// @title Behavioral Invariants — The Human Fund + AuctionManager
 ///
-/// Spec-in-code for the properties documented in docs/AUCTION_INVARIANTS.md.
-/// Each test maps 1:1 to an invariant (I1–I7) or a derived property. A
-/// passing test asserts that the current contract satisfies that invariant
-/// under the covered conditions.
+/// Spec-in-code. Each test pins down a property the contracts must
+/// satisfy. Organized into 8 concern-groups:
 ///
-/// Refactor note: the state machine is now a 3-phase cycle
-/// (COMMIT → REVEAL → EXECUTION → COMMIT of next epoch). There is no
-/// IDLE or SETTLED phase. `setAuctionManager` eagerly opens epoch 1's
-/// COMMIT auction, so after `setUp()` the contract is already in
-/// COMMIT of epoch 1. Double-submit prevention lives in
-/// `TheHumanFund.submitAuctionResult` via the `epochs[epoch].executed`
-/// flag, not in a terminal AM phase.
+///   1. Epoch lifecycle
+///   2. Timing & schedule
+///   3. Auction mechanics
+///   4. Snapshot & messages
+///   5. Input-hash & attestation chain
+///   6. Bonds
+///   7. Drivers & permissions
+///   8. Safety & kill-switches
+///
+/// ─── META-INVARIANT ──────────────────────────────────────────────────
+///
+/// The fund always holds EXACTLY ONE in-flight auction, with phase ∈
+/// {COMMIT, REVEAL, EXECUTION}, except:
+///   (a) during the atomic EXECUTION→COMMIT(next epoch) transition
+///       inside a single transaction (externally unobservable), and
+///   (b) while FREEZE_SUNSET is set (migration draining window).
+///
+/// There is no IDLE or SETTLED phase. Epochs are considered "done" when
+/// the fund marks `epochs[e].executed=true` (successful submission) or
+/// when `_closeExecution` forfeits the winner's bond and advances to
+/// `currentEpoch += 1` — both of which are internal state, separate
+/// from the AM's phase enum.
+///
+/// ─── BEHAVIORAL SPEC ─────────────────────────────────────────────────
+///
+/// 1. EPOCH LIFECYCLE
+///    - Phases cycle per epoch: COMMIT → REVEAL → EXECUTION → COMMIT(N+1)
+///    - `currentEpoch` is monotonically non-decreasing (I1)
+///    - Every opened epoch traverses all three phases unless `_resetAuction` aborts it
+///    - `_resetAuction` advances currentEpoch by exactly 1 and re-anchors timing
+///
+/// 2. TIMING & SCHEDULE
+///    - Schedule coherence (I4): `epochStartTime(currentEpoch) ≤ block.timestamp`
+///    - Timing anchor changes only at: (a) `setAuctionManager`, (b) `nextPhase`
+///      crossing EXECUTION→COMMIT, (c) `_resetAuction`. Wall-clock rollovers
+///      preserve the anchor — the schedule is fixed at anchor time
+///    - `epochDuration = cw + rw + xw` (derived, never drifts)
+///    - Auction timing windows change only via `_resetAuction`
+///    - Commits, reveals, submissions each allowed iff phase matches AND
+///      `block.timestamp` is strictly within that phase's wall-clock window
+///
+/// 3. AUCTION MECHANICS
+///    - Commit requires phase=COMMIT, `msg.value >= currentBond`, no prior
+///      commit by this address in this epoch, and the committers-list has
+///      room (≤ MAX_COMMITTERS)
+///    - Reveal requires phase=REVEAL, a prior commit by this address whose
+///      preimage is `keccak(runner || bid || salt)`
+///    - At most one winner per epoch: lowest revealed bid; ties broken by
+///      first revealer
+///    - Only the winner can call `submitAuctionResult` during EXECUTION
+///    - `epochs[e].executed == true` iff the winner W submitted a proof
+///      that `TdxVerifier.verify` accepted during epoch e's EXECUTION window
+///
+/// 4. SNAPSHOT & MESSAGES
+///    - Snapshot frozen exactly when (and if) `_openAuction` fires for
+///      that epoch (I5). Skipped/ghost epochs never freeze
+///    - Snapshot is immutable after freeze — mid-epoch state changes
+///      (donations, messages, investments) don't affect the frozen copy
+///    - Messages sent during epoch N (any phase) first appear in the
+///      earliest subsequent epoch whose `_openAuction` fires
+///    - Each message is consumed at most once: in the first successful
+///      epoch where the head pointer crosses its position
+///    - Per-successful-epoch consumption cap: `MAX_MESSAGES_PER_EPOCH` (3)
+///
+/// 5. INPUT-HASH & ATTESTATION CHAIN
+///    - `epochBaseInputHashes[e]` bound exactly at `_openAuction` (snapshot-derived)
+///    - Seed captured exactly once at REVEAL close: `prevrandao ^ saltAccumulator` (I6)
+///    - `epochInputHashes[e] = keccak(base ⊕ seed)` bound exactly at REVEAL close
+///    - REPORTDATA bound at submission: `keccak(epochInputHashes[e] || outputHash)`
+///
+/// 6. BONDS
+///    - Bond conservation (I3): `pendingBondRefunds + in-flight-bond-held` =
+///      total bonds held by AM. No double-count, no drop
+///    - Committed bonds exit via exactly one of:
+///        - `claimBond` by a non-winning revealer (after reveal close)
+///        - push to winner in `settleExecution` (successful submit)
+///        - forfeit to fund at reveal close (non-revealer)
+///        - forfeit to fund at EXECUTION→COMMIT (winner no-show)
+///        - refund in `abortAuction` (operator reset / migrate)
+///    - Bond escalation: `currentBond *= (1 + AUTO_ESCALATION_BPS/10000)` (capped)
+///      fires ONLY when a real winner forfeits. Not on silence, success, or reset
+///    - `consecutiveMissedEpochs`: resets on successful execute; increments on
+///      silence/forfeit/ghost skip; untouched by `_resetAuction`
+///
+/// 7. DRIVERS & PERMISSIONS
+///    - Participant-facing methods call `_advanceToNow()` first:
+///      `commit`, `reveal`, `submitAuctionResult`, `syncPhase`
+///    - Owner drivers (`nextPhase`, `resetAuction`) ALSO call `_advanceToNow()`
+///      first — "sync-first" rule — so manual drivers can't time-travel backward
+///    - Driver equivalence: manual (`nextPhase`) and wall-clock (`syncPhase`)
+///      converge to the same state under the same scenario
+///    - Permissionless: `syncPhase`, `claimBond`, `donate*`, `donateWithMessage`
+///    - Owner-only: `resetAuction`, `migrate`, `setAuctionManager`, `nextPhase`,
+///      freeze flags, verifier registration, investment-manager wiring
+///
+/// 8. SAFETY & KILL-SWITCHES
+///    - Non-reentrancy on `submitAuctionResult`, `claimBond`, `abortAuction`
+///    - `submitAuctionResult` NEVER reverts on a valid proof, regardless of
+///      whether the action parses, validates, or executes successfully.
+///      The winner receives bounty + bond-back as long as the proof verifies;
+///      invalid actions emit `ActionRejected`, invalid policy sidecars fail
+///      silently. This is load-bearing for liveness — a malicious enclave
+///      output can't DoS the payment path
+///    - FREEZE_SUNSET: blocks new-auction opens and donations; `migrate` drains
+///      via `_resetAuction` and withdraws; FREEZE_MIGRATE is terminal
+///    - Other freezes: AUCTION_CONFIG, INVESTMENT_WIRING, WORLDVIEW_WIRING,
+///      NONPROFITS — each permanently disables a specific setter once set
+///
+/// ─── TEST ORGANIZATION ──────────────────────────────────────────────
+///
+/// Tests are grouped by concern, matching the 8 sections above. Property
+/// tests use the I1–I7 prefix for the numbered invariants; mechanical
+/// single-path tests use descriptive names.
 contract AuctionInvariantsTest is EpochTest {
     TheHumanFund public fund;
     AuctionManager public am;
@@ -1459,5 +1563,142 @@ contract AuctionInvariantsTest is EpochTest {
         // Runner can still reveal
         vm.prank(runner1);
         fund.reveal(0.005 ether, bytes32("r1"));
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // META-INVARIANT — The fund always holds exactly one in-flight
+    //                  auction (except across the atomic EXECUTION→COMMIT
+    //                  tx boundary and under FREEZE_SUNSET).
+    // ══════════════════════════════════════════════════════════════════
+
+    /// At any observable point outside a single tx or sunset, the AM's
+    /// `currentAuctionEpoch` equals the fund's `currentEpoch` and the AM
+    /// phase is one of {COMMIT, REVEAL, EXECUTION}. Walk through all
+    /// 3 phases of several epochs and assert at each step.
+    function test_meta_alwaysOneAuction_acrossFullLifecycle() public {
+        for (uint256 e = 0; e < 3; e++) {
+            uint256 expectedEpoch = fund.currentEpoch();
+
+            // COMMIT phase
+            assertEq(am.currentAuctionEpoch(), expectedEpoch, "meta: live in COMMIT");
+            assertEq(uint8(am.getPhase(expectedEpoch)),
+                     uint8(IAuctionManager.AuctionPhase.COMMIT), "meta: COMMIT phase");
+
+            uint256 bond = fund.currentBond();
+            bytes32 salt = bytes32(uint256(e | 0xCAFE));
+            vm.prank(runner1);
+            fund.commit{value: bond}(_commitHash(runner1, 0.005 ether, salt));
+
+            // REVEAL phase (via manual driver)
+            fund.nextPhase();
+            assertEq(am.currentAuctionEpoch(), expectedEpoch, "meta: live in REVEAL");
+            assertEq(uint8(am.getPhase(expectedEpoch)),
+                     uint8(IAuctionManager.AuctionPhase.REVEAL), "meta: REVEAL phase");
+
+            vm.prank(runner1);
+            fund.reveal(0.005 ether, salt);
+
+            // EXECUTION phase
+            fund.nextPhase();
+            assertEq(am.currentAuctionEpoch(), expectedEpoch, "meta: live in EXECUTION");
+            assertEq(uint8(am.getPhase(expectedEpoch)),
+                     uint8(IAuctionManager.AuctionPhase.EXECUTION), "meta: EXEC phase");
+
+            // Submit to cleanly roll into the next epoch
+            vm.prank(runner1);
+            fund.submitAuctionResult(
+                abi.encodePacked(uint8(0)), bytes("noop"), bytes("mock"),
+                EPOCH_TEST_VERIFIER_ID, -1, ""
+            );
+            fund.nextPhase(); // cross boundary
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // BEHAVIORAL COMPLETENESS — mechanical invariants not yet covered.
+    // ══════════════════════════════════════════════════════════════════
+
+    /// Commit requires `msg.value >= currentBond`; under-bond reverts.
+    function test_commit_underBond_reverts() public {
+        uint256 bond = fund.currentBond();
+        vm.prank(runner1);
+        vm.expectRevert();
+        fund.commit{value: bond - 1}(_commitHash(runner1, 1, bytes32("s")));
+    }
+
+    /// Over-bonded commits accept the excess — the AM only takes exactly
+    /// `currentBond`, the rest is returned (or becomes part of the fund,
+    /// depending on contract policy). Either way the tx does not revert,
+    /// the commit is recorded, and the committer isn't overcharged on
+    /// claim time. We assert the recorded commit succeeded.
+    function test_commit_overBond_accepted() public {
+        uint256 bond = fund.currentBond();
+        vm.prank(runner1);
+        fund.commit{value: bond + 0.5 ether}(_commitHash(runner1, 1, bytes32("s")));
+        // Recorded: runner1 is a committer for epoch 1.
+        address[] memory committers = am.getCommitters(1);
+        assertEq(committers.length, 1, "commit recorded despite over-bond");
+        assertEq(committers[0], runner1);
+    }
+
+    /// submitAuctionResult must NEVER revert on a verified proof, even if
+    /// the action bytes are malformed or the action execution fails. The
+    /// winner must still receive bounty + bond-back. This is load-bearing
+    /// for liveness: a faulty enclave output cannot DoS payment.
+    function test_submit_invalidAction_stillPaysWinner() public {
+        // Walk epoch 1 into EXECUTION with runner1 as the winner.
+        uint256 bond = fund.currentBond();
+        bytes32 salt = bytes32(uint256(0xDEAD));
+        vm.prank(runner1);
+        fund.commit{value: bond}(_commitHash(runner1, 0.003 ether, salt));
+        fund.nextPhase();
+        vm.prank(runner1);
+        fund.reveal(0.003 ether, salt);
+        fund.nextPhase();
+
+        uint256 runnerBefore = runner1.balance;
+        uint256 winningBid = am.getWinningBid(1);
+
+        // Submit with a malformed action (unrecognized action type).
+        vm.prank(runner1);
+        fund.submitAuctionResult(
+            abi.encodePacked(uint8(99), uint256(0xBAD)), // garbage action
+            bytes("reasoning"),
+            bytes("mock"),
+            EPOCH_TEST_VERIFIER_ID,
+            -1, ""
+        );
+
+        // Winner got bond refund + bounty regardless of action validity.
+        assertEq(runner1.balance, runnerBefore + bond + winningBid,
+            "winner paid bond+bounty despite invalid action");
+    }
+
+    /// Policy sidecar failure (invalid slot) must NOT revert the submission.
+    /// Same liveness concern: bad policy text can't block payment.
+    function test_submit_invalidPolicySlot_stillSucceeds() public {
+        uint256 bond = fund.currentBond();
+        bytes32 salt = bytes32(uint256(0xF00D));
+        vm.prank(runner1);
+        fund.commit{value: bond}(_commitHash(runner1, 0.003 ether, salt));
+        fund.nextPhase();
+        vm.prank(runner1);
+        fund.reveal(0.003 ether, salt);
+        fund.nextPhase();
+
+        // Submit with an invalid policy slot (slot 99 is out of range).
+        vm.prank(runner1);
+        fund.submitAuctionResult(
+            abi.encodePacked(uint8(0)),
+            bytes("reasoning"),
+            bytes("mock"),
+            EPOCH_TEST_VERIFIER_ID,
+            int8(99),            // invalid slot
+            "invalid"
+        );
+
+        // Execution still recorded; epoch marked executed.
+        ( , , , , , , bool executed) = fund.getEpochRecord(1);
+        assertTrue(executed, "executed despite bad policy sidecar");
     }
 }
