@@ -111,7 +111,7 @@ def cmd_status(cfg):
     phase_result = subprocess.run(phase_cmd, capture_output=True, text=True, timeout=15)
     phase = phase_result.stdout.strip().split()[0] if phase_result.returncode == 0 else "?"
 
-    phase_names = {"0": "IDLE", "1": "COMMIT", "2": "REVEAL", "3": "EXECUTION", "4": "SETTLED"}
+    phase_names = {"0": "COMMIT", "1": "REVEAL", "2": "EXECUTION"}
     phase_name = phase_names.get(phase, phase)
 
     balance = cast_call(cfg, "treasuryBalance()(uint256)")

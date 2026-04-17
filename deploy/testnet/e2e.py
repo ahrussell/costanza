@@ -97,12 +97,14 @@ def send_tx(fn, value=0, gas=500_000, key=None, sender=None):
 
 
 def advance_to_fresh_epoch():
-    """Advance past any stale epoch so we start clean."""
+    """Ensure we're in COMMIT phase of some epoch (fresh auction)."""
     epoch = fund.functions.currentEpoch().call()
     phase = am.functions.getPhase(epoch).call()
-    if phase != 0:  # Not IDLE
+    # 3-phase cyclic model: 0=COMMIT, 1=REVEAL, 2=EXECUTION. If we're
+    # mid-epoch (REVEAL or EXECUTION), syncPhase will cascade forward.
+    if phase != 0:  # Not COMMIT
         print(f"  Advancing past epoch {epoch} (phase={phase})...")
-        receipt = send_tx(fund.functions.syncPhase(), gas=800_000)
+        send_tx(fund.functions.syncPhase(), gas=800_000)
         epoch = fund.functions.currentEpoch().call()
         phase = am.functions.getPhase(epoch).call()
         print(f"  Now at epoch {epoch}, phase {phase}")

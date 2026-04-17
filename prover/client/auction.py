@@ -17,15 +17,16 @@ from .state import save as save_state
 
 logger = logging.getLogger(__name__)
 
-# Auction phases (matches contract enum)
-IDLE = 0
-COMMIT = 1
-REVEAL = 2
-EXECUTION = 3
-SETTLED = 4
+# Auction phases (matches contract enum — 3-phase cyclic model).
+# COMMIT → REVEAL → EXECUTION → COMMIT-of-next-epoch. There is no IDLE
+# or SETTLED rest state; the contract always holds exactly one in-flight
+# auction (except under FREEZE_SUNSET). `getPhase(pastEpoch)` returns
+# EXECUTION as a terminal marker for finished epochs.
+COMMIT = 0
+REVEAL = 1
+EXECUTION = 2
 
-PHASE_NAMES = {IDLE: "IDLE", COMMIT: "COMMIT", REVEAL: "REVEAL",
-               EXECUTION: "EXECUTION", SETTLED: "SETTLED"}
+PHASE_NAMES = {COMMIT: "COMMIT", REVEAL: "REVEAL", EXECUTION: "EXECUTION"}
 
 # Gas limits for auction transactions
 GAS_SYNC_PHASE = 1_500_000     # syncPhase may chain through multiple transitions + Chainlink snapshot

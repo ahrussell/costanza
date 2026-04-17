@@ -625,12 +625,13 @@ def run_auction_e2e(w3, account, fund_addr, am_addr, nonce):
     reveal_win = am.functions.revealWindow().call()
 
     start_time = am.functions.getStartTime(epoch).call()
-    phase = am.functions.getPhase(epoch).call()  # 0=IDLE, 1=COMMIT, 2=REVEAL, 3=EXECUTION
+    phase = am.functions.getPhase(epoch).call()  # 0=COMMIT, 1=REVEAL, 2=EXECUTION
 
     if phase != 0 and start_time > 0:
         now = int(time.time())
         print(f"  4a. Cleaning up stale epoch {epoch} (phase={phase})...")
-        if phase == 1:  # COMMIT
+        if phase == 0:  # COMMIT — wait for commit window to close, then sync
+            # (unreachable here given the `phase != 0` outer guard, kept for symmetry)
             close_time = start_time + commit_win
             if now < close_time:
                 wait = close_time - now + 3
@@ -645,7 +646,7 @@ def run_auction_e2e(w3, account, fund_addr, am_addr, nonce):
             nonce = w3.eth.get_transaction_count(account.address)
             phase = am.functions.getPhase(epoch).call()
 
-        if phase == 2:  # REVEAL
+        if phase == 1:  # REVEAL
             close_time = start_time + commit_win + reveal_win
             now = int(time.time())
             if now < close_time:
@@ -661,7 +662,7 @@ def run_auction_e2e(w3, account, fund_addr, am_addr, nonce):
             nonce = w3.eth.get_transaction_count(account.address)
             phase = am.functions.getPhase(epoch).call()
 
-        if phase == 3:  # EXECUTION -- need to advance past execution window to forfeit bond
+        if phase == 2:  # EXECUTION — advance past deadline to trigger _closeExecution
             exec_win = am.functions.executionWindow().call()
             deadline = start_time + commit_win + reveal_win + exec_win
             now = int(time.time())
@@ -671,9 +672,9 @@ def run_auction_e2e(w3, account, fund_addr, am_addr, nonce):
                 time.sleep(wait)
             try:
                 receipt = send_tx(fund.functions.syncPhase())
-                print(f"      syncPhase (forfeit bond): gas={receipt.gasUsed}")
+                print(f"      syncPhase (close execution, forfeit + open next): gas={receipt.gasUsed}")
             except Exception as e:
-                print(f"      syncPhase (forfeit bond) failed: {e}")
+                print(f"      syncPhase (close execution) failed: {e}")
             w3, fund = fresh_connection()
             nonce = w3.eth.get_transaction_count(account.address)
 

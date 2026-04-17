@@ -71,12 +71,20 @@ RETRY_SCHEDULE = [
 # ─── Wall-Clock Phase Resolution ────────────────────────────────────────
 
 def _resolve_phase(auction):
-    """Resolve the effective phase from wall-clock timing."""
+    """Resolve the effective phase from wall-clock timing.
+
+    Under the 3-phase cyclic model, an auction is always open for the
+    current epoch (eager-opened at deploy, kept open at every epoch
+    rollover). The "no_auction" branch below is a sunset-state artifact:
+    after the fund is sunset via FREEZE_SUNSET and migrated, the AM's
+    currentAuctionEpoch is cleared and `getStartTime(epoch)` returns 0.
+    In normal operation we always land in commit/reveal/execution/epoch_over.
+    """
     start = auction["start_time"]
     now = auction["now"]
 
     if start == 0:
-        return "idle"
+        return "no_auction"  # sunset edge case
     if now < auction["commit_end"]:
         return "commit"
     elif now < auction["reveal_end"]:
@@ -191,31 +199,13 @@ def _try_claim_bonds(chain, ntfy, state_dir):
 
 # ─── Phase Handlers ─────────────────────────────────────────────────────
 
-def _handle_idle(chain, auction, ntfy):
-    """No auction active. Check wall-clock timing and try to advance."""
+def _handle_no_auction(chain, auction, ntfy):
+    """No live auction for currentEpoch. Under the 3-phase cyclic model
+    this should only happen after FREEZE_SUNSET was set and the fund is
+    waiting for migrate() to drain it. Log and return — opening a new
+    auction would be a no-op (blocked by sunset) or inappropriate."""
     epoch = auction["epoch"]
-    now = auction["now"]
-
-    epoch_start = chain.contract.functions.epochStartTime(epoch).call()
-    commit_window = chain.am.functions.commitWindow().call()
-    epoch_duration = chain.contract.functions.epochDuration().call()
-    commit_end = epoch_start + commit_window
-    epoch_end = epoch_start + epoch_duration
-
-    if now < epoch_start:
-        logger.info("Epoch %d starts in %ds, waiting", epoch, epoch_start - now)
-        return
-
-    if now >= epoch_end:
-        # Epoch is stale — syncPhase will advance past it
-        logger.info("Epoch %d is stale (%ds past), advancing", epoch, now - epoch_end)
-    elif now >= commit_end:
-        # Within epoch but commit window closed — nothing useful to do
-        logger.info("Epoch %d commit window closed, next epoch in %ds", epoch, epoch_end - now)
-        return
-    # else: within commit window — syncPhase will open auction
-
-    _try_advance(chain, ntfy)
+    logger.info("Epoch %d has no live auction (sunset state?) — nothing to do", epoch)
 
 
 def _handle_commit(chain, config, auction, saved, participation, state_dir, ntfy):
@@ -304,10 +294,11 @@ def _handle_execution(chain, config, auction, saved, participation, state_dir, n
     """Execution window is open."""
     epoch = auction["epoch"]
 
-    # If the auction is already settled (we already submitted, or epoch was forfeited),
-    # there's nothing to do — _syncPhase will advance the epoch when appropriate.
-    if auction["contract_phase"] == 4:  # SETTLED
-        logger.info("Epoch %d already settled, waiting for next epoch", epoch)
+    # If the epoch was already executed successfully (we or someone else
+    # submitted), there's nothing to do — the next syncPhase will cross
+    # the EXECUTION→COMMIT boundary when wall-clock permits.
+    if auction["executed"]:
+        logger.info("Epoch %d already executed, waiting for next epoch", epoch)
         return
 
     # Case 1: No winner at all (nobody committed/revealed)
@@ -565,14 +556,18 @@ def run(config):
     clock_phase = _resolve_phase(auction)
 
     # When the owner calls nextPhase() to advance manually, the contract
-    # is ahead of the wall-clock. Trust whichever is further along.
-    CONTRACT_TO_EFFECTIVE = {0: "idle", 1: "commit", 2: "reveal", 3: "execution", 4: "epoch_over"}
-    PHASE_ORDER = {"idle": 0, "commit": 1, "reveal": 2, "execution": 3, "epoch_over": 4}
-    contract_effective = CONTRACT_TO_EFFECTIVE.get(contract_phase, "idle")
+    # can be ahead of the wall-clock. Trust whichever is further along.
+    # 3-phase cyclic model: no IDLE or SETTLED; the AM phase is one of
+    # COMMIT(0) / REVEAL(1) / EXECUTION(2). "epoch_over" is a wall-clock
+    # state meaning "past the execution deadline" — the AM will still be
+    # at EXECUTION until someone drives _closeExecution.
+    CONTRACT_TO_EFFECTIVE = {0: "commit", 1: "reveal", 2: "execution"}
+    PHASE_ORDER = {"commit": 0, "reveal": 1, "execution": 2, "epoch_over": 3}
+    contract_effective = CONTRACT_TO_EFFECTIVE.get(contract_phase, "commit")
 
     if PHASE_ORDER.get(contract_effective, 0) > PHASE_ORDER.get(clock_phase, 0):
         effective_phase = contract_effective
-        logger.info("Epoch %d | Contract: %s | Clock: %s → using contract (ahead)",
+        logger.info("Epoch %d | Contract: %s | Clock: %s - using contract (ahead)",
                     epoch, PHASE_NAMES.get(contract_phase, str(contract_phase)), clock_phase)
     else:
         effective_phase = clock_phase
@@ -602,8 +597,8 @@ def run(config):
     _try_claim_bonds(chain, ntfy, state_dir)
 
     # 6. Dispatch based on wall-clock phase
-    if effective_phase == "idle":
-        _handle_idle(chain, auction, ntfy)
+    if effective_phase == "no_auction":
+        _handle_no_auction(chain, auction, ntfy)
     elif effective_phase == "commit":
         _handle_commit(chain, config, auction, saved, participation, state_dir, ntfy)
     elif effective_phase == "reveal":
