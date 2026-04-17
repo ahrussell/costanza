@@ -939,13 +939,6 @@ contract TheHumanFundAuctionTest is EpochTest {
         assertEq(fund.epochStartTime(10), anchor + 9 * EPOCH_DUR);
     }
 
-    function test_projectedEpoch() public {
-        // Epoch 1 COMMIT already open from setUp.
-        vm.warp(block.timestamp + EPOCH_DUR * 3);
-        // Contract thinks we're on epoch 1, but 3 epoch durations have passed
-        assertEq(fund.projectedEpoch(), 4); // 1 + 3
-    }
-
     // ═══════════════════════════════════════════════════════════════════════
     // Group 10: Configuration & Edge Cases
     // ═══════════════════════════════════════════════════════════════════════

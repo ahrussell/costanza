@@ -39,6 +39,7 @@ from .action_encoder import parse_action, encode_action_bytes, validate_and_clam
 from .input_hash import compute_input_hash, _keccak256
 from .attestation import get_tdx_quote, compute_report_data
 from .prompt_builder import build_epoch_context, build_full_prompt
+from .voice_anchors import parse_anchors, select_anchors, VOICE_ANCHOR_K
 
 # ─── Configuration ──────────────────────────────────────────────────────
 
@@ -321,8 +322,24 @@ def main():
 
         anchors_path = Path(VOICE_ANCHORS_PATH)
         if anchors_path.exists():
-            voice_anchors = anchors_path.read_text().strip()
-            log(f"  Voice anchors: {len(voice_anchors)} chars, sha256={hashlib.sha256(voice_anchors.encode()).hexdigest()[:16]}...")
+            full_anchors_text = anchors_path.read_text().strip()
+            log(
+                f"  Voice anchors: {len(full_anchors_text)} chars, "
+                f"sha256={hashlib.sha256(full_anchors_text.encode()).hexdigest()[:16]}..."
+            )
+            # Deterministic seed-bound rotation: show the model VOICE_ANCHOR_K
+            # of the full entry set per epoch, selected by the same seed that
+            # is XOR'd into `epochInputHash`. The anchors file is measured in
+            # RTMR[2] via dm-verity and the seed is bound on-chain, so the
+            # selection is integrity-protected transitively (no extra hash).
+            anchors_header, anchor_entries = parse_anchors(full_anchors_text)
+            voice_anchors = select_anchors(
+                anchors_header, anchor_entries, seed=seed, k=VOICE_ANCHOR_K
+            )
+            log(
+                f"  Voice anchors: {len(anchor_entries)} parsed, "
+                f"{VOICE_ANCHOR_K} selected via seed={seed}"
+            )
         else:
             voice_anchors = ""
             log(f"  Voice anchors: not found at {VOICE_ANCHORS_PATH}, continuing without")

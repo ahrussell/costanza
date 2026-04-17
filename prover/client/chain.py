@@ -76,9 +76,9 @@ class ChainClient:
         Returns dict with epoch, contract_phase, winner, bid, bond, seed,
         and timing boundaries (commit_end, reveal_end, exec_end, now).
         """
-        # Use currentEpoch (actual contract state), not projectedEpoch.
-        # The v2 client calls syncPhase() to advance — projectedEpoch() would
-        # return a future epoch that has no auction data in the AuctionManager.
+        # Use currentEpoch (actual contract state). The client calls
+        # syncPhase() to advance — the contract always reflects the
+        # up-to-date epoch + auction data for any action path.
         epoch = self.contract.functions.currentEpoch().call()
         am = self.am
         phase = am.functions.getPhase(epoch).call()

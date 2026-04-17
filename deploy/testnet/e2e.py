@@ -541,15 +541,6 @@ def test_edge_cases(results):
     except Exception as e:
         results.fail("input_hash_nonzero", str(e)[:100])
 
-    # Test: projectedEpoch >= currentEpoch
-    print("\nTest: projectedEpoch >= currentEpoch")
-    current = fund.functions.currentEpoch().call()
-    projected = fund.functions.projectedEpoch().call()
-    if projected >= current:
-        results.ok("projected_ge_current", f"projected={projected} >= current={current}")
-    else:
-        results.fail("projected_ge_current", f"projected={projected} < current={current}")
-
     # Test: epochStartTime is monotonically increasing
     print("\nTest: epochStartTime monotonic")
     epoch = fund.functions.currentEpoch().call()

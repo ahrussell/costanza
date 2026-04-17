@@ -117,6 +117,21 @@ def strip_diary_meta_lines(text: str) -> str:
     return "\n".join(lines[start:]).lstrip()
 
 
+# Pattern matching leaked <think>, </think>, <diary>, </diary> tags (with
+# optional attributes) that R1-Distill sometimes emits inside the diary
+# body as residual of the inference protocol markers we use to bracket
+# each pass. Strip them post-hoc so they don't end up on-chain.
+_DIARY_STRAY_TAGS = re.compile(r'</?(?:think|diary)[^>]*>', re.IGNORECASE)
+
+
+def strip_diary_stray_tags(text: str) -> str:
+    """Remove any <think>/</think>/<diary>/</diary> tags leaked into the
+    diary body. These tags are protocol markers for the inference loop;
+    whenever they appear inside the diary text they're always noise.
+    """
+    return _DIARY_STRAY_TAGS.sub("", text)
+
+
 def sanitize_thinking(text):
     """Strip XML-like instruction/override tags from thinking output.
 
@@ -173,6 +188,7 @@ def run_three_pass_inference(prompt, seed=-1, llama_url=DEFAULT_LLAMA_URL):
     )
     diary_entry = result2["text"].strip()
     diary_entry = strip_diary_meta_lines(diary_entry)
+    diary_entry = strip_diary_stray_tags(diary_entry)
     print(f"  Diary: {len(diary_entry)} chars, {result2['elapsed_seconds']}s")
 
     # Pass 3: JSON action. Retry up to MAX_ACTION_RETRIES times with an

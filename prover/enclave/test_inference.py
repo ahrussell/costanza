@@ -18,6 +18,7 @@ from .inference import (
     run_three_pass_inference,
     run_two_pass_inference,
     truncate_reasoning,
+    strip_diary_stray_tags,
     MAX_REASONING_BYTES,
 )
 from .action_encoder import parse_action
@@ -237,6 +238,59 @@ class TestTruncateReasoning(unittest.TestCase):
 
     def test_empty_string(self):
         self.assertEqual(truncate_reasoning(""), "")
+
+
+class TestStripDiaryStrayTags(unittest.TestCase):
+    """Test the diary stray-tag scrubber."""
+
+    def test_no_tags_unchanged(self):
+        self.assertEqual(
+            strip_diary_stray_tags("A normal diary entry. No tags."),
+            "A normal diary entry. No tags.",
+        )
+
+    def test_stray_think_open_removed(self):
+        self.assertEqual(
+            strip_diary_stray_tags("I wrote <think> inside my diary."),
+            "I wrote  inside my diary.",
+        )
+
+    def test_stray_think_close_removed(self):
+        self.assertEqual(
+            strip_diary_stray_tags("Something </think> happened."),
+            "Something  happened.",
+        )
+
+    def test_stray_diary_tags_removed(self):
+        self.assertEqual(
+            strip_diary_stray_tags("start <diary> middle </diary> end"),
+            "start  middle  end",
+        )
+
+    def test_case_insensitive(self):
+        self.assertEqual(
+            strip_diary_stray_tags("<THINK> and <Diary> and </DIARY>"),
+            " and  and ",
+        )
+
+    def test_tag_with_attributes(self):
+        """Tags with attributes (if the model invents them) are still stripped."""
+        self.assertEqual(
+            strip_diary_stray_tags('pre <diary class="foo"> post'),
+            "pre  post",
+        )
+
+    def test_multiple_instances(self):
+        text = "<diary>alpha</diary> beta <think>gamma</think>"
+        self.assertEqual(strip_diary_stray_tags(text), "alpha beta gamma")
+
+    def test_preserves_non_protocol_tags(self):
+        """Tags unrelated to the inference protocol should be preserved."""
+        text = "see <b>bold</b> and <code>code</code> remains"
+        self.assertEqual(strip_diary_stray_tags(text), text)
+
+    def test_empty_string(self):
+        self.assertEqual(strip_diary_stray_tags(""), "")
 
 
 if __name__ == "__main__":

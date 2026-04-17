@@ -675,9 +675,17 @@ contract TheHumanFund is ReentrancyGuard {
     ///         where E = AUTO_ESCALATION_BPS / 10000 (10%) and `bondCap`
     ///         is the treasury-derived cap below.
     function currentBond() public view returns (uint256) {
+        return _bondFor(consecutiveStalledEpochs);
+    }
+
+    /// @dev Pure formula for the bond amount given a stalled-counter value.
+    ///      Single source of truth for bond math, consumed by `currentBond()`
+    ///      and by `projectedCurrentBond()` (via `_projectCounters`). Any
+    ///      change to the formula only needs to happen here.
+    function _bondFor(uint256 stalled) internal view returns (uint256) {
         uint256 bond = BASE_BOND;
         uint256 cap = _bondCap();
-        for (uint256 i = 0; i < consecutiveStalledEpochs; i++) {
+        for (uint256 i = 0; i < stalled; i++) {
             bond = bond + (bond * AUTO_ESCALATION_BPS) / 10000;
             if (bond >= cap) return cap;
         }
@@ -956,12 +964,25 @@ contract TheHumanFund is ReentrancyGuard {
     ///        C. Arithmetically advance `currentEpoch` past any additional
     ///           fully-elapsed "ghost" epochs — epochs whose commit windows
     ///           came and went without anyone opening an auction. O(1).
-    ///        D. Open a fresh auction for the (now-current) epoch iff
-    ///           we're inside its commit window. Skipped under sunset.
+    ///        D. Open an auction on the landed epoch if one isn't already
+    ///           open for it. This runs on EVERY non-skipped epoch so the
+    ///           bookkeeping (`_freezeEpochSnapshot`, base-input-hash bind,
+    ///           `AuctionOpened` event) fires exactly once per landed epoch.
+    ///           After opening, cascade `_nextPhase()` to bring the phase
+    ///           in line with wall-clock (opening always starts in COMMIT).
+    ///           The per-phase gates on `commit`/`reveal`/`submitAuctionResult`
+    ///           prevent anyone from participating in an already-elapsed
+    ///           window on a retroactively-opened epoch. Skipped under sunset.
     ///
     ///      The steps are decoupled so a stuck step never traps the
     ///      others; repeated calls converge regardless of where
     ///      execution left off.
+    ///
+    /// @dev ⚠ If you change the counter arithmetic in this function (the
+    ///      missed/stalled updates in `_closeExecution` / `_advanceEpochBy`
+    ///      or the epoch-advance math in Step C), update `_projectCounters`
+    ///      to match. `testFuzz_projectedState_matchesAdvanceToNow` enforces
+    ///      parity between the two under fuzzed wall-clock advancement.
     function _advanceToNow() internal {
         IAuctionManager am = auctionManager;
         if (address(am) == address(0)) return;
@@ -1021,16 +1042,32 @@ contract TheHumanFund is ReentrancyGuard {
             }
         }
 
-        // ─── Step D: open a fresh auction if we're in the commit window ─
+        // ─── Step D: open an auction on the landed epoch + cascade phases ─
         // Skipped under FREEZE_SUNSET so the AM stays in the last executed
         // epoch's EXECUTION state and `migrate()` can drain without waiting.
+        //
+        // If no auction is tagged to `epoch`, open one — this runs
+        // `_freezeEpochSnapshot`, binds the base input hash, and emits
+        // `AuctionOpened`, which must happen for every non-skipped epoch
+        // to preserve the meta-invariant (exactly one in-flight auction).
+        // `_openAuction` always opens in COMMIT. If wall-clock has already
+        // advanced past the commit window, cascade `_nextPhase()` to bring
+        // the phase forward. Gates on `commit`/`reveal`/`submitAuctionResult`
+        // naturally prevent any action in an already-elapsed window.
         if (frozenFlags & FREEZE_SUNSET != 0) return;
         if (am.currentAuctionEpoch() == epoch) return; // already open
         uint256 newScheduledStart = _epochStartTime(epoch);
-        if (block.timestamp >= newScheduledStart
-            && block.timestamp < newScheduledStart + am.commitWindow()
-        ) {
-            _openAuction(epoch, newScheduledStart);
+        if (block.timestamp < newScheduledStart) return; // epoch hasn't started yet
+        _openAuction(epoch, newScheduledStart);
+
+        // Cascade phases to match wall-clock on the newly-opened epoch.
+        uint256 cwNew = am.commitWindow();
+        uint256 rwNew = am.revealWindow();
+        if (block.timestamp >= newScheduledStart + cwNew) {
+            _nextPhase(); // COMMIT → REVEAL
+        }
+        if (block.timestamp >= newScheduledStart + cwNew + rwNew) {
+            _nextPhase(); // REVEAL → EXECUTION
         }
     }
 
@@ -1555,11 +1592,19 @@ contract TheHumanFund is ReentrancyGuard {
     /// of the current treasury. When an epoch executes successfully,
     /// `consecutiveMissedEpochs` resets and so does the escalated ceiling.
     function effectiveMaxBid() public view returns (uint256) {
-        uint256 treasury = address(this).balance;
+        return _maxBidFor(consecutiveMissedEpochs, address(this).balance);
+    }
+
+    /// @dev Pure formula for the effective max-bid ceiling given a missed-
+    ///      counter value and a treasury balance. Single source of truth for
+    ///      max-bid math, consumed by `effectiveMaxBid()` and by
+    ///      `projectedMaxBid()` (via `_projectCounters`). Any change to the
+    ///      formula only needs to happen here.
+    function _maxBidFor(uint256 missed, uint256 treasury) internal view returns (uint256) {
         uint256 cap = (treasury * MAX_BID_BPS) / 10000;
 
         uint256 effective = maxBid;
-        for (uint256 i = 0; i < consecutiveMissedEpochs; i++) {
+        for (uint256 i = 0; i < missed; i++) {
             effective = effective + (effective * AUTO_ESCALATION_BPS) / 10000;
             if (effective >= cap) return cap;
         }
@@ -1622,18 +1667,12 @@ contract TheHumanFund is ReentrancyGuard {
     }
 
 
-    /// @notice Projected epoch number accounting for elapsed wall-clock time.
-    /// Returns what currentEpoch would be if syncPhase() were called now.
-    /// Use this instead of currentEpoch() for display when the contract may be idle.
-    function projectedEpoch() external view returns (uint256) {
-        if (timingAnchor == 0 || epochDuration == 0) return currentEpoch;
-        uint256 scheduledStart = _epochStartTime(currentEpoch);
-        if (block.timestamp < scheduledStart + epochDuration) return currentEpoch;
-
-        // Mirrors _advanceToNow() O(1) epoch advancement
-        uint256 elapsed = (block.timestamp - scheduledStart) / epochDuration;
-        return currentEpoch + elapsed;
-    }
+    // Projection views (projectedEpoch, projectedPhase, projectedMaxBid,
+    // projectedCurrentBond) are intentionally NOT implemented on-chain.
+    // The only consumer is the frontend (`index.html`), which computes
+    // these values in JavaScript from raw state reads. Keeping projection
+    // logic off-chain avoids both bytecode bloat and the drift risk of
+    // mirroring `_advanceToNow`'s arithmetic in a view.
 
     /// @notice Compute the deterministic scheduled start time for any epoch.
     function epochStartTime(uint256 epoch) external view returns (uint256) {
