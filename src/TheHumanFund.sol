@@ -160,7 +160,6 @@ contract TheHumanFund is ReentrancyGuard {
     event CommissionRateChanged(uint256 indexed epoch, uint256 newRateBps);
     event ReferralCodeMinted(uint256 indexed codeId, address indexed owner);
     event CommissionPaid(address indexed referrer, uint256 amount, uint256 referralCodeId);
-    event EpochStarted(uint256 indexed epoch, bytes32 inputHash);
 
     // Auction events
     event AuctionOpened(uint256 indexed epoch, bytes32 inputHash, uint256 maxBidCeiling, uint256 bond);
@@ -851,12 +850,10 @@ contract TheHumanFund is ReentrancyGuard {
         am.setTiming(_commitWindow, _revealWindow, _executionWindow);
         epochDuration = _commitWindow + _revealWindow + _executionWindow;
 
-        // Advance one epoch. `consecutiveMissedEpochs` is NOT touched —
-        // reset is not a missed epoch.
-        currentEpoch = fromEpoch + 1;
-        currentEpochInflow = 0;
-        currentEpochDonationCount = 0;
-        currentEpochCommissions = 0;
+        // Advance one epoch. Reset is not a missed epoch, so neither
+        // `consecutiveMissedEpochs` nor `consecutiveStalledEpochs` is
+        // touched (missCount = 0).
+        _advanceEpochBy(1, 0);
 
         // Open the fresh auction immediately. `_openAuction` atomically
         // re-anchors the schedule so `_epochStartTime(currentEpoch) ==
@@ -1303,12 +1300,10 @@ contract TheHumanFund is ReentrancyGuard {
             messageHead = frozenCount;
         }
 
-        currentEpochInflow = 0;
-        currentEpochDonationCount = 0;
-        currentEpochCommissions = 0;
-        // Counter resets (consecutiveMissedEpochs, consecutiveStalledEpochs)
-        // happen later in `_closeExecution` when the epoch formally ends.
-        // That keeps both counters' update logic in exactly one site.
+        // Per-epoch counter resets (currentEpochInflow / DonationCount /
+        // Commissions) and escalation counter resets happen later in
+        // `_closeExecution` → `_advanceEpochBy` when the epoch formally
+        // ends. That keeps every epoch-end mutation in exactly one site.
     }
 
     // ─── Internal: Action Execution ──────────────────────────────────────
@@ -1686,9 +1681,9 @@ contract TheHumanFund is ReentrancyGuard {
     // (either by a model `withdraw` action or by `migrate`'s unwind path).
     // Those internal transfers must succeed even after FREEZE_SUNSET, otherwise
     // settling an in-flight auction reverts, `_advanceToNow` reverts, and the
-    // fund deadlocks with no way to `migrate()` (which requires AM to be
-    // IDLE/SETTLED). So `_requireNotSunset` is bypassed for those two trusted
-    // internal senders only.
+    // fund deadlocks with no way to `migrate()` (which aborts + drains the
+    // in-flight auction unconditionally). So `_requireNotSunset` is bypassed
+    // for those two trusted internal senders only.
     receive() external payable {
         if (msg.sender != address(auctionManager) && msg.sender != address(investmentManager)) {
             _requireNotSunset();
