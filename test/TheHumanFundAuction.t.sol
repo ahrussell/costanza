@@ -1159,8 +1159,8 @@ contract TheHumanFundAuctionTest is EpochTest {
         uint256 treasuryBondCap = (address(fund).balance * 1000) / 10000;
         uint256 bondCap = treasuryBondCap > 0.1 ether ? treasuryBondCap : 0.1 ether;
         assertLe(bond, bondCap);
-        // effectiveMaxBid should never exceed 2% of treasury
-        uint256 hardCap = (address(fund).balance * 200) / 10000;
+        // effectiveMaxBid is capped at treasury * MAX_BID_BPS / 10000.
+        uint256 hardCap = (address(fund).balance * fund.MAX_BID_BPS()) / 10000;
         assertLe(maxBid, hardCap);
         // Bond should always be >= BASE_BOND
         assertGe(bond, 0.001 ether);
