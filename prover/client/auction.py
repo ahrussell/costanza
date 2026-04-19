@@ -17,16 +17,21 @@ from .state import save as save_state
 
 logger = logging.getLogger(__name__)
 
-# Auction phases (matches contract enum).
-# COMMIT → REVEAL → EXECUTION → COMMIT-of-next-epoch. The contract
-# always holds exactly one in-flight auction (except under
-# FREEZE_SUNSET). `getPhase(pastEpoch)` returns EXECUTION as a
-# terminal marker for finished epochs.
+# Auction phases (matches AM enum).
+# COMMIT → REVEAL → EXECUTION → SETTLED → COMMIT-of-next-epoch.
+# SETTLED is an internal terminal state; the prover dispatches on
+# wall-clock, not on phase, so SETTLED is purely informational.
 COMMIT = 0
 REVEAL = 1
 EXECUTION = 2
+SETTLED = 3
 
-PHASE_NAMES = {COMMIT: "COMMIT", REVEAL: "REVEAL", EXECUTION: "EXECUTION"}
+PHASE_NAMES = {
+    COMMIT: "COMMIT",
+    REVEAL: "REVEAL",
+    EXECUTION: "EXECUTION",
+    SETTLED: "SETTLED",
+}
 
 # Gas limits for auction transactions
 GAS_SYNC_PHASE = 1_500_000     # syncPhase may chain through multiple transitions + Chainlink snapshot

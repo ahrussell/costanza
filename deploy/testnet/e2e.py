@@ -99,14 +99,15 @@ def send_tx(fn, value=0, gas=500_000, key=None, sender=None):
 def advance_to_fresh_epoch():
     """Ensure we're in COMMIT phase of some epoch (fresh auction)."""
     epoch = fund.functions.currentEpoch().call()
-    phase = am.functions.getPhase(epoch).call()
-    # 3-phase cyclic model: 0=COMMIT, 1=REVEAL, 2=EXECUTION. If we're
-    # mid-epoch (REVEAL or EXECUTION), syncPhase will cascade forward.
+    phase = am.functions.phase().call()
+    # 4-phase cyclic model (post-refactor): 0=COMMIT, 1=REVEAL, 2=EXECUTION,
+    # 3=SETTLED. If we're mid/post-epoch (REVEAL/EXECUTION/SETTLED), syncPhase
+    # cascades forward and opens the next auction in COMMIT.
     if phase != 0:  # Not COMMIT
         print(f"  Advancing past epoch {epoch} (phase={phase})...")
         send_tx(fund.functions.syncPhase(), gas=800_000)
         epoch = fund.functions.currentEpoch().call()
-        phase = am.functions.getPhase(epoch).call()
+        phase = am.functions.phase().call()
         print(f"  Now at epoch {epoch}, phase {phase}")
     return epoch
 
@@ -347,12 +348,12 @@ def test_multiprover(results):
     epoch = fund.functions.currentEpoch().call()
 
     # Open auction if needed
-    phase = am.functions.getPhase(epoch).call()
+    phase = am.functions.phase().call()
     if phase == 0:
         print("  Opening auction via syncPhase...")
         send_tx(fund.functions.syncPhase(), gas=800_000)
         epoch = fund.functions.currentEpoch().call()
-        phase = am.functions.getPhase(epoch).call()
+        phase = am.functions.phase().call()
 
     if phase != 1:
         # Not in commit phase — wait for next epoch's commit window
@@ -378,7 +379,7 @@ def test_multiprover(results):
             except Exception:
                 pass
             epoch = fund.functions.currentEpoch().call()
-            phase = am.functions.getPhase(epoch).call()
+            phase = am.functions.phase().call()
             print(f"  After sync: epoch={epoch}, phase={phase}")
         else:
             # Already past next epoch start — just sync
@@ -387,7 +388,7 @@ def test_multiprover(results):
             except Exception:
                 pass
             epoch = fund.functions.currentEpoch().call()
-            phase = am.functions.getPhase(epoch).call()
+            phase = am.functions.phase().call()
             print(f"  After sync: epoch={epoch}, phase={phase}")
 
     goto_bond_tests = locals().get("goto_bond_tests", False)
@@ -408,9 +409,10 @@ def test_multiprover(results):
             results.ok("commit_for_forfeit", f"Committed with bond {bond/1e18:.6f} ETH")
 
             # Wait for commit window to close, then reveal window to close
-            commit_win = am.functions.commitWindow().call()
-            reveal_win = am.functions.revealWindow().call()
-            exec_win = am.functions.executionWindow().call()
+            # Timing now lives on the main fund contract, not AM.
+            commit_win = fund.functions.commitWindow().call()
+            reveal_win = fund.functions.revealWindow().call()
+            exec_win = fund.functions.executionWindow().call()
             total_wait = commit_win + reveal_win + exec_win + 10  # Wait for full epoch
 
             print(f"  Waiting {total_wait}s for epoch to expire (commit+reveal+exec)...")
@@ -511,8 +513,8 @@ def test_edge_cases(results):
     # 5.6: Reveal after window closes should fail
     print("\nTest 5.7: Reveal after window reverts")
     epoch = fund.functions.currentEpoch().call()
-    phase = am.functions.getPhase(epoch).call()
-    if phase >= 2:  # Past commit, reveal might also be closed
+    phase = am.functions.phase().call()
+    if phase >= 2:  # Past commit, reveal might also be closed (2=EXECUTION, 3=SETTLED)
         try:
             # Try to reveal with garbage — should revert regardless
             receipt = send_tx(

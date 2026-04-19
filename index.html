@@ -1277,10 +1277,10 @@ function cv(name) {
 // CONFIG
 // ═══════════════════════════════════════════════════════
 
-const CONTRACT_ADDRESS = '0xCF5f1859D3AE62AF89B01E1d43aAB44D8C79CAE0'; // Base Sepolia testnet
+const CONTRACT_ADDRESS = '0xFe7735aeEb98b089863Eb7535684421F163508D2'; // Base Sepolia testnet
 const RPC_URL = 'https://sepolia.base.org';
 const EXPLORER = 'https://sepolia.basescan.org';
-const DEPLOY_BLOCK = 40321128;
+const DEPLOY_BLOCK = 40331889;
 const REFERRAL_CODE = '2'; // creator referral code (default when no code entered)
 
 // ═══════════════════════════════════════════════════════
@@ -1316,6 +1316,14 @@ const FUND_ABI = [
   "function timingAnchor() view returns (uint256)",
   "function anchorEpoch() view returns (uint256)",
   "function epochStartTime(uint256 epoch) view returns (uint256)",
+  // Timing (moved from AuctionManager in the AM refactor)
+  "function commitWindow() view returns (uint256)",
+  "function revealWindow() view returns (uint256)",
+  "function executionWindow() view returns (uint256)",
+  "function currentAuctionStartTime() view returns (uint256)",
+  // Seed + salt accumulator (main-owned input-hash chain)
+  "function epochSeeds(uint256 epoch) view returns (uint256)",
+  "function epochSaltAccumulator(uint256 epoch) view returns (bytes32)",
   // Structs
   "function getNonprofit(uint256 id) view returns (string name, string description, bytes32 ein, uint256 totalDonated, uint256 totalDonatedUsd, uint256 donationCount)",
   "function getEpochRecord(uint256 epoch) view returns (uint256 timestamp, bytes action, bytes reasoning, uint256 treasuryBefore, uint256 treasuryAfter, uint256 bountyPaid, bool executed)",
@@ -1362,19 +1370,22 @@ const WORLDVIEW_ABI = [
 ];
 
 const AUCTION_ABI = [
-  "function getPhase(uint256 epoch) view returns (uint8)",
+  // Current-auction state (no epoch arg — AM holds one live auction)
+  "function phase() view returns (uint8)",
+  "function currentEpoch() view returns (uint256)",
+  "function maxBid() view returns (uint256)",
+  "function bond() view returns (uint256)",
+  "function winner() view returns (address)",
+  "function winningBid() view returns (uint256)",
+  "function getCommitters() view returns (address[])",
+  "function didReveal(address runner) view returns (bool)",
+  // Historical per-epoch views
   "function getWinner(uint256 epoch) view returns (address)",
   "function getWinningBid(uint256 epoch) view returns (uint256)",
   "function getBond(uint256 epoch) view returns (uint256)",
-  "function getStartTime(uint256 epoch) view returns (uint256)",
-  "function getCommitters(uint256 epoch) view returns (address[])",
-  "function commitWindow() view returns (uint256)",
-  "function revealWindow() view returns (uint256)",
-  "function executionWindow() view returns (uint256)",
-  "function executionDeadline() view returns (uint256)",
-  "function currentAuctionEpoch() view returns (uint256)",
+  "function getCommittersOfEpoch(uint256 epoch) view returns (address[])",
+  "function didRevealInEpoch(uint256 epoch, address runner) view returns (bool)",
   "function getBidRecord(uint256 epoch, address runner) view returns (bool revealed, uint256 bidAmount, bool winner, bool forfeited)",
-  "function didReveal(uint256 epoch, address runner) view returns (bool)",
   "function pendingBondRefunds() view returns (uint256)",
 ];
 
@@ -1441,17 +1452,20 @@ function projectedBondFor(stalled, treasuryWei) {
 //   timingAnchor         — fund.timingAnchor()
 //   anchorEpoch          — fund.anchorEpoch()
 //   epochDuration        — fund.epochDuration()
-//   amTaggedEpoch        — auctionMgr.currentAuctionEpoch()
-//   amStartTime          — auctionMgr.getStartTime(currentEpoch)
-//   amPhase              — uint8, auctionMgr.getPhase(currentEpoch)
-//   amCommitWindow       — auctionMgr.commitWindow()
-//   amRevealWindow       — auctionMgr.revealWindow()
-//   amExecutionDeadline  — auctionMgr.executionDeadline()
-//   amWinner             — auctionMgr.getWinner(currentEpoch)
+//   amTaggedEpoch        — auctionMgr.currentEpoch()
+//   amStartTime          — fund.currentAuctionStartTime()
+//   amPhase              — uint8, auctionMgr.phase() (0/1/2/3 — SETTLED new)
+//   amCommitWindow       — fund.commitWindow()
+//   amRevealWindow       — fund.revealWindow()
+//   amExecutionDeadline  — fund.currentAuctionStartTime() + cw + rw + xw
+//   amWinner             — auctionMgr.winner() (current auction)
 //   epochExecuted (bool) — fund.getEpochRecord(currentEpoch).executed
 //
 // Returns: { epoch, phase, missed, stalled } — all BigInt except
-// `phase` which is a Number (0=COMMIT, 1=REVEAL, 2=EXECUTION).
+// `phase` which is a Number (0=COMMIT, 1=REVEAL, 2=EXECUTION, 3=SETTLED).
+// SETTLED is an AM-internal terminal state reached via settleExecution,
+// closeExecution, or abortAuction. The projection converts SETTLED to
+// the next-epoch COMMIT once wall-clock crosses the scheduled epoch end.
 function projectAuctionState({
   nowSec,
   currentEpoch, missedSeed, stalledSeed,
@@ -1462,6 +1476,7 @@ function projectAuctionState({
 }) {
   const { MAX_MISSED_EPOCHS } = FUND_CONSTANTS;
   const ZERO_ADDR = '0x0000000000000000000000000000000000000000';
+  const SETTLED = 3;
 
   let epoch = currentEpoch;
   let missed = missedSeed;
@@ -1470,18 +1485,22 @@ function projectAuctionState({
 
   let amTagged = amTaggedEpoch === epoch;
 
-  // Steps A + B: AM tagged to current epoch — derive intra-epoch
-  // phase from wall-clock, then maybe cross the epoch boundary.
-  if (amTagged) {
+  // Step A: intra-epoch phase advance (only for COMMIT/REVEAL/EXECUTION).
+  if (amTagged && amPhase !== SETTLED) {
     phase = amPhase;
     if (phase === 0 && nowSec >= amStartTime + amCommitWindow) phase = 1;
     if (phase === 1 && nowSec >= amStartTime + amCommitWindow + amRevealWindow) phase = 2;
+  } else if (amTagged) {
+    phase = SETTLED;
+  }
 
+  // Step B: cross epoch boundary (two triggers).
+  if (amTagged) {
     const epochStart = timingAnchor + (epoch - anchorEpoch) * epochDuration;
     const pastDeadline = phase === 2 && nowSec >= amExecutionDeadline;
-    const successfullyRolled = phase === 2 && epochExecuted && nowSec >= epochStart + epochDuration;
+    const settledAndDone = phase === SETTLED && nowSec >= epochStart + epochDuration;
 
-    if (pastDeadline || successfullyRolled) {
+    if (pastDeadline || settledAndDone) {
       if (epochExecuted) {
         missed = 0n;
         stalled = 0n;
@@ -1498,9 +1517,10 @@ function projectAuctionState({
     }
   }
 
-  // Steps C + D: no live auction on `epoch` — fast-forward ghost
-  // epochs and derive phase from wall-clock relative to the landed
-  // epoch's scheduled start.
+  // Steps C + D: no live auction on `epoch` — fast-forward ghost epochs
+  // and derive phase from wall-clock relative to the landed epoch's
+  // scheduled start. (The AM will open in COMMIT at the next tx; for
+  // display purposes we report the phase that would obtain post-sync.)
   if (!amTagged) {
     let ss = timingAnchor + (epoch - anchorEpoch) * epochDuration;
     if (nowSec >= ss + epochDuration) {
@@ -2344,18 +2364,22 @@ async function loadAll() {
   };
   if (auctionOn && auctionMgr) {
     try {
-      const [amTaggedEpoch, amStartTime, amPhase, cw, rw, execDeadline, amWinner, epochRecord, block] = await Promise.all([
-        auctionMgr.currentAuctionEpoch(),
-        auctionMgr.getStartTime(currentEpochRaw),
-        auctionMgr.getPhase(currentEpochRaw).then(p => Number(p)),
-        auctionMgr.commitWindow(),
-        auctionMgr.revealWindow(),
-        auctionMgr.executionDeadline(),
-        auctionMgr.getWinner(currentEpochRaw),
+      // All timing state is main-owned now; AM holds no wall-clock data.
+      // Seeds live on main (epochSeeds). AM exposes current-auction state
+      // via no-arg views (phase, winner, currentEpoch, etc.).
+      const [amTaggedEpoch, amPhase, cw, rw, ew, startTime, amWinner, epochRecord, block] = await Promise.all([
+        auctionMgr.currentEpoch(),
+        auctionMgr.phase().then(p => Number(p)),
+        fund.commitWindow(),
+        fund.revealWindow(),
+        fund.executionWindow(),
+        fund.currentAuctionStartTime(),
+        auctionMgr.winner(),
         fund.getEpochRecord(currentEpochRaw),
         provider.getBlock('latest'),
       ]);
       const nowSec = BigInt(block.timestamp);
+      const execDeadline = startTime + cw + rw + ew;
       projected = projectAuctionState({
         nowSec,
         currentEpoch: currentEpochRaw,
@@ -2365,7 +2389,7 @@ async function loadAll() {
         anchorEpoch: anchorEpochRaw,
         epochDuration: epochDur,
         amTaggedEpoch,
-        amStartTime,
+        amStartTime: startTime,
         amPhase,
         amCommitWindow: cw,
         amRevealWindow: rw,
@@ -2844,11 +2868,12 @@ async function loadAll() {
   const timelineEpoch = currentEpochNum;
   document.getElementById('tl-epoch').textContent = timelineEpoch;
 
-  // Phase + countdown — compute from wall-clock timing, not AuctionManager internal phase.
+  // Phase + countdown — compute from wall-clock timing, not AM phase.
+  // Timing state lives on the fund contract in the post-refactor design.
   if (auctionOn && auctionMgr) {
     try {
       const [cw, rw, ew] = await Promise.all([
-        auctionMgr.commitWindow(), auctionMgr.revealWindow(), auctionMgr.executionWindow(),
+        fund.commitWindow(), fund.revealWindow(), fund.executionWindow(),
       ]);
       const now = Math.floor(Date.now() / 1000);
       const cwN = Number(cw), rwN = Number(rw), ewN = Number(ew), ed = Number(epochDur);
@@ -2929,19 +2954,23 @@ async function loadAll() {
   // Current bond (projected — reflects post-sync counter state)
   document.getElementById('tl-bond').textContent = fmtEth(projectedBond);
 
-  // Latest bids
+  // Latest bids — queries target the in-flight auction (AM's current).
+  // Projected epoch may be ahead of AM's current if we've projected past
+  // a rollover that hasn't been materialized on-chain yet; in that case
+  // the AM's current-auction views still reflect the most recent auction
+  // whose bids are worth displaying.
   if (auctionOn && auctionMgr) {
     try {
-      const committers = await auctionMgr.getCommitters(epoch);
+      const committers = await auctionMgr.getCommitters();
       const bidCount = committers.length;
       if (bidCount === 0) {
         document.getElementById('tl-bids').innerHTML = '<div style="font-family:var(--mono);font-size:20px;font-weight:600;">0</div><div style="font-size:11px;color:var(--text-dim);">No bids this epoch</div>';
       } else {
-        // Get reveal status and winner info for each committer
+        // Get reveal status and winner info for each committer (current auction)
         const [didRevealResults, winner, winningBid] = await Promise.all([
-          Promise.all(committers.map(addr => auctionMgr.didReveal(epoch, addr).catch(() => false))),
-          auctionMgr.getWinner(epoch).catch(() => null),
-          auctionMgr.getWinningBid(epoch).catch(() => null),
+          Promise.all(committers.map(addr => auctionMgr.didReveal(addr).catch(() => false))),
+          auctionMgr.winner().catch(() => null),
+          auctionMgr.winningBid().catch(() => null),
         ]);
         const winnerAddr = winner && winner !== '0x0000000000000000000000000000000000000000' ? winner.toLowerCase() : null;
         const allBids = [];

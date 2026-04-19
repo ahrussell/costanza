@@ -81,17 +81,21 @@ class ChainClient:
         # up-to-date epoch + auction data for any action path.
         epoch = self.contract.functions.currentEpoch().call()
         am = self.am
-        phase = am.functions.getPhase(epoch).call()
-        winner = am.functions.getWinner(epoch).call()
-        winning_bid = am.functions.getWinningBid(epoch).call()
-        bond_amount = am.functions.getBond(epoch).call()
-        seed = am.functions.getRandomnessSeed(epoch).call()
+        # Current-auction AM views take no args (the AM is timing-agnostic
+        # and holds exactly one live auction at a time).
+        phase = am.functions.phase().call()
+        winner = am.functions.winner().call()
+        winning_bid = am.functions.winningBid().call()
+        bond_amount = am.functions.bond().call()
+        # Seed is main-owned now — captured at reveal-close into epochSeeds.
+        seed = self.contract.functions.epochSeeds(epoch).call()
 
-        # Timing data for wall-clock phase resolution
-        start_time = am.functions.getStartTime(epoch).call()
-        commit_window = am.functions.commitWindow().call()
-        reveal_window = am.functions.revealWindow().call()
-        execution_window = am.functions.executionWindow().call()
+        # Timing data for wall-clock phase resolution. Timing is main-owned
+        # now; AM has no notion of time.
+        start_time = self.contract.functions.currentAuctionStartTime().call()
+        commit_window = self.contract.functions.commitWindow().call()
+        reveal_window = self.contract.functions.revealWindow().call()
+        execution_window = self.contract.functions.executionWindow().call()
         now = self.w3.eth.get_block("latest")["timestamp"]
 
         # Authoritative "epoch resolved" signal is epochs[e].executed. Pulled
@@ -122,22 +126,25 @@ class ChainClient:
         Returns dict with committed, revealed, won, winner.
         This is the source of truth — local state is advisory only.
 
-        Uses didReveal() (reads hasRevealed mapping) rather than getBidRecord()
-        because getBidRecord is only populated after the auction settles.
+        For the current (live) auction, uses the AM's current-auction
+        views. For past epochs, uses historical views.
         """
         my_addr = self.account.address
         am = self.am
+        current_epoch = am.functions.currentEpoch().call()
+        is_current = epoch == current_epoch
 
-        # Check if we committed by scanning the committers list.
-        # hasCommitted is internal in the AM, so we scan the list (bounded by MAX_COMMITTERS).
-        committers = am.functions.getCommitters(epoch).call()
-        committed = any(Web3.to_checksum_address(c) == my_addr for c in committers)
+        if is_current:
+            committers = am.functions.getCommitters().call()
+            committed = any(Web3.to_checksum_address(c) == my_addr for c in committers)
+            revealed = am.functions.didReveal(my_addr).call() if committed else False
+            winner = am.functions.winner().call()
+        else:
+            committers = am.functions.getCommittersOfEpoch(epoch).call()
+            committed = any(Web3.to_checksum_address(c) == my_addr for c in committers)
+            revealed = am.functions.didRevealInEpoch(epoch, my_addr).call() if committed else False
+            winner = am.functions.getWinner(epoch).call()
 
-        # didReveal reads from the live hasRevealed mapping (works during active auctions)
-        revealed = am.functions.didReveal(epoch, my_addr).call() if committed else False
-
-        # Epoch-level winner address
-        winner = am.functions.getWinner(epoch).call()
         won = revealed and Web3.to_checksum_address(winner) == my_addr
 
         return {
@@ -222,16 +229,18 @@ class ChainClient:
         return True
 
     def claim_bond(self, epoch):
-        """Claim bond refund for a specific epoch from the AuctionManager.
+        """Claim bond refund for a past epoch from the AuctionManager.
 
-        Returns the receipt, or None if no bond is claimable.
+        Returns the receipt, or None if no bond is claimable. Past-epoch
+        participation is tracked via `didRevealInEpoch` (historical) rather
+        than the current-auction `didReveal(runner)` view.
         """
         # Check eligibility first to avoid wasting gas
-        if not self.am.functions.didReveal(epoch, self.account.address).call():
+        if not self.am.functions.didRevealInEpoch(epoch, self.account.address).call():
             return None
         winner = self.am.functions.getWinner(epoch).call()
         if winner.lower() == self.account.address.lower():
-            return None  # winners get bond via settleExecution
+            return None  # winners were paid bond + bounty in settleExecution
         if self.am.functions.hasClaimed(epoch, self.account.address).call():
             return None  # already claimed
 

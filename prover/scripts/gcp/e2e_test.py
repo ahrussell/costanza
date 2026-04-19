@@ -618,12 +618,18 @@ def run_auction_e2e(w3, account, fund_addr, am_addr, nonce):
     # Clean up any stale auction state before starting a new epoch.
     # If the current epoch has an active auction (e.g., from a previous failed run),
     # advance phases via syncPhase() so we can proceed.
+    #
+    # Post-AM-refactor: timing lives on the fund, AM is a timing-agnostic state
+    # machine with a SETTLED (3) terminal phase. The in-flight auction's start
+    # time is `fund.currentAuctionStartTime()`; past epochs use the schedule
+    # view `fund.epochStartTime(epoch)` (re-anchored at each open, so schedule
+    # == actual for the last completed epoch in a well-behaved run).
     epoch_dur = fund.functions.epochDuration().call()
-    commit_win = am.functions.commitWindow().call()
-    reveal_win = am.functions.revealWindow().call()
+    commit_win = fund.functions.commitWindow().call()
+    reveal_win = fund.functions.revealWindow().call()
 
-    start_time = am.functions.getStartTime(epoch).call()
-    phase = am.functions.getPhase(epoch).call()  # 0=COMMIT, 1=REVEAL, 2=EXECUTION
+    start_time = fund.functions.currentAuctionStartTime().call()
+    phase = am.functions.phase().call()  # 0=COMMIT, 1=REVEAL, 2=EXECUTION, 3=SETTLED
 
     if phase != 0 and start_time > 0:
         now = int(time.time())
@@ -642,7 +648,7 @@ def run_auction_e2e(w3, account, fund_addr, am_addr, nonce):
                 print(f"      syncPhase (close commit) failed: {e}")
             w3, fund = fresh_connection()
             nonce = w3.eth.get_transaction_count(account.address)
-            phase = am.functions.getPhase(epoch).call()
+            phase = am.functions.phase().call()
 
         if phase == 1:  # REVEAL
             close_time = start_time + commit_win + reveal_win
@@ -658,10 +664,10 @@ def run_auction_e2e(w3, account, fund_addr, am_addr, nonce):
                 print(f"      syncPhase (close reveal) failed: {e}")
             w3, fund = fresh_connection()
             nonce = w3.eth.get_transaction_count(account.address)
-            phase = am.functions.getPhase(epoch).call()
+            phase = am.functions.phase().call()
 
         if phase == 2:  # EXECUTION — advance past deadline to trigger _closeExecution
-            exec_win = am.functions.executionWindow().call()
+            exec_win = fund.functions.executionWindow().call()
             deadline = start_time + commit_win + reveal_win + exec_win
             now = int(time.time())
             if now < deadline:
@@ -683,7 +689,9 @@ def run_auction_e2e(w3, account, fund_addr, am_addr, nonce):
     # Wait for previous epoch's duration if needed
     if epoch > 1:
         try:
-            prev_start = am.functions.getStartTime(epoch - 1).call()
+            # `epochStartTime` is a schedule view (re-anchored at each open);
+            # for the just-completed previous epoch this equals its actual start.
+            prev_start = fund.functions.epochStartTime(epoch - 1).call()
             if prev_start > 0:
                 earliest_start = prev_start + epoch_dur
                 now = int(time.time())
@@ -694,7 +702,7 @@ def run_auction_e2e(w3, account, fund_addr, am_addr, nonce):
                     w3, fund = fresh_connection()
                     nonce = w3.eth.get_transaction_count(account.address)
         except Exception:
-            pass  # AM query may fail for epoch 0
+            pass  # Schedule query may fail for epoch 0
 
     # syncPhase to open auction for the fresh epoch
     print(f"  4a. Opening auction for epoch {epoch} via syncPhase()...")
@@ -735,8 +743,9 @@ def run_auction_e2e(w3, account, fund_addr, am_addr, nonce):
     print(f"      Gas: {receipt.gasUsed}")
 
     # --- 4c: Wait for commit window, syncPhase (close commit), reveal, syncPhase (close reveal) ---
-    start_time = am.functions.getStartTime(epoch).call()
-    commit_win = am.functions.commitWindow().call()
+    # Current in-flight auction — use fund's timing state, not AM (timing moved post-refactor).
+    start_time = fund.functions.currentAuctionStartTime().call()
+    commit_win = fund.functions.commitWindow().call()
     now = w3.eth.get_block("latest").timestamp
     wait_secs = max(0, start_time + commit_win - now + 5)
     print(f"\n  4c. Waiting {wait_secs}s for commit window to close...")
@@ -755,7 +764,7 @@ def run_auction_e2e(w3, account, fund_addr, am_addr, nonce):
     print(f"      Gas: {receipt.gasUsed}")
 
     # Wait for reveal window, then close
-    reveal_win = am.functions.revealWindow().call()
+    reveal_win = fund.functions.revealWindow().call()
     now = w3.eth.get_block("latest").timestamp
     reveal_close_time = start_time + commit_win + reveal_win
     wait_secs = max(0, reveal_close_time - now + 5)
@@ -775,7 +784,8 @@ def run_auction_e2e(w3, account, fund_addr, am_addr, nonce):
 
     winner = am.functions.getWinner(epoch).call()
     winning_bid = am.functions.getWinningBid(epoch).call()
-    seed = am.functions.getRandomnessSeed(epoch).call()
+    # Seed is fund-owned post-refactor (captured at REVEAL→EXECUTION into epochSeeds).
+    seed = fund.functions.epochSeeds(epoch).call()
     input_hash = fund.functions.epochInputHashes(epoch).call()
     print(f"      Winner: {winner}")
     print(f"      Input hash: 0x{input_hash.hex()[:16]}... (set at reveal close via syncPhase)")
@@ -1084,9 +1094,18 @@ def main():
                     fund = w3.eth.contract(address=fund_addr, abi=json.loads((ABI_DIR / "TheHumanFund.sol" / "TheHumanFund.json").read_text())["abi"])
                     epoch = fund.functions.currentEpoch().call()
                     am_tmp = w3.eth.contract(address=am_addr, abi=json.loads((ABI_DIR / "AuctionManager.sol" / "AuctionManager.json").read_text())["abi"])
-                    phase = am_tmp.functions.getPhase(epoch).call()
-                    if phase == 3:  # EXECUTION phase -- syncPhase after deadline forfeits bond
-                        deadline = am_tmp.functions.executionDeadline().call()
+                    # Post-AM-refactor: phase() is the current in-flight auction's phase;
+                    # EXECUTION is value 2 (not 3 — the old enum didn't have SETTLED).
+                    phase = am_tmp.functions.phase().call()
+                    if phase == 2:  # EXECUTION -- syncPhase after deadline forfeits bond
+                        # executionDeadline moved off AM; inline as
+                        # currentAuctionStartTime + commit + reveal + execution.
+                        deadline = (
+                            fund.functions.currentAuctionStartTime().call()
+                            + fund.functions.commitWindow().call()
+                            + fund.functions.revealWindow().call()
+                            + fund.functions.executionWindow().call()
+                        )
                         wait = max(0, deadline - int(time.time())) + 5
                         print(f"      Waiting {wait}s for execution window to expire...")
                         time.sleep(wait)
