@@ -73,12 +73,11 @@ RETRY_SCHEDULE = [
 def _resolve_phase(auction):
     """Resolve the effective phase from wall-clock timing.
 
-    Under the 3-phase cyclic model, an auction is always open for the
-    current epoch (eager-opened at deploy, kept open at every epoch
-    rollover). The "no_auction" branch below is a sunset-state artifact:
-    after the fund is sunset via FREEZE_SUNSET and migrated, the AM's
-    currentAuctionEpoch is cleared and `getStartTime(epoch)` returns 0.
-    In normal operation we always land in commit/reveal/execution/epoch_over.
+    An auction is always open for the current epoch (eager-opened at
+    deploy, kept open at every epoch rollover). The "no_auction" branch
+    below is a sunset-state artifact: after migrate() runs, the AM is
+    SETTLED and `currentAuctionStartTime` is 0. In normal operation we
+    always land in commit/reveal/execution/epoch_over.
     """
     start = auction["start_time"]
     now = auction["now"]
@@ -147,8 +146,10 @@ def _try_advance(chain, ntfy):
     """
     if sync_phase(chain):
         new_epoch = chain.contract.functions.currentEpoch().call()
-        new_phase = chain.am.functions.getPhase(new_epoch).call()
-        if new_phase == 1:  # COMMIT — auction opened
+        new_phase = chain.am.functions.phase().call()
+        # AM phases: 0=COMMIT, 1=REVEAL, 2=EXECUTION, 3=SETTLED.
+        # A fresh auction after rollover lands in COMMIT.
+        if new_phase == 0:  # COMMIT — auction opened
             logger.info("Auction opened for epoch %d", new_epoch)
             notify_epoch_started(ntfy, new_epoch)
         else:
@@ -177,6 +178,7 @@ def _try_claim_bonds(chain, ntfy, state_dir):
         for ep in range(max(1, last_epoch + 1), current):
             receipt = chain.claim_bond(ep)
             if receipt:
+                # Historical bond amount from AM's auctionHistory
                 bond = chain.am.functions.getBond(ep).call()
                 notify_bond_claimed(ntfy, ep, bond / 1e18)
                 logger.info("Claimed bond for epoch %d", ep)

@@ -106,12 +106,12 @@ def cmd_status(cfg):
     epoch = cast_call(cfg, "currentEpoch()(uint256)")
     am_addr = cast_call(cfg, "auctionManager()(address)")
 
-    # Read AuctionManager phase
-    phase_cmd = ["cast", "call", am_addr, "getPhase(uint256)(uint8)", epoch, "--rpc-url", cfg["rpc"]]
+    # Read AuctionManager phase (current auction — no-arg view)
+    phase_cmd = ["cast", "call", am_addr, "phase()(uint8)", "--rpc-url", cfg["rpc"]]
     phase_result = subprocess.run(phase_cmd, capture_output=True, text=True, timeout=15)
     phase = phase_result.stdout.strip().split()[0] if phase_result.returncode == 0 else "?"
 
-    phase_names = {"0": "COMMIT", "1": "REVEAL", "2": "EXECUTION"}
+    phase_names = {"0": "COMMIT", "1": "REVEAL", "2": "EXECUTION", "3": "SETTLED"}
     phase_name = phase_names.get(phase, phase)
 
     balance = cast_call(cfg, "treasuryBalance()(uint256)")
@@ -126,17 +126,10 @@ def cmd_status(cfg):
 
     missed = cast_call(cfg, "consecutiveMissedEpochs()(uint256)")
 
-    # Timing
-    def am_call(sig):
-        r = subprocess.run(
-            ["cast", "call", am_addr, sig, "--rpc-url", cfg["rpc"]],
-            capture_output=True, text=True, timeout=15
-        )
-        return r.stdout.strip().split()[0] if r.returncode == 0 and r.stdout.strip() else "0"
-
-    cw = int(am_call("commitWindow()(uint256)"))
-    rw = int(am_call("revealWindow()(uint256)"))
-    ew = int(am_call("executionWindow()(uint256)"))
+    # Timing now lives on the main fund contract (AM is timing-agnostic).
+    cw = int(cast_call(cfg, "commitWindow()(uint256)") or "0")
+    rw = int(cast_call(cfg, "revealWindow()(uint256)") or "0")
+    ew = int(cast_call(cfg, "executionWindow()(uint256)") or "0")
 
     print(f"\n  Contract:  {cfg['contract']}")
     print(f"  Epoch:     {epoch}")
@@ -176,15 +169,16 @@ def cmd_message(cfg, amount_eth, message):
 
 
 def _get_current_timing(cfg):
-    """Read current commit/reveal/exec windows from AuctionManager."""
-    am_addr = cast_call(cfg, "auctionManager()(address)")
-    def am_call(sig):
-        r = subprocess.run(
-            ["cast", "call", am_addr, sig, "--rpc-url", cfg["rpc"]],
-            capture_output=True, text=True, timeout=15
-        )
-        return r.stdout.strip().split()[0] if r.returncode == 0 and r.stdout.strip() else "0"
-    return am_call("commitWindow()(uint256)"), am_call("revealWindow()(uint256)"), am_call("executionWindow()(uint256)")
+    """Read current commit/reveal/exec windows from the main fund contract.
+
+    Timing moved to TheHumanFund as part of the AM refactor — AM is now
+    timing-agnostic and only handles the commit-reveal state machine.
+    """
+    return (
+        cast_call(cfg, "commitWindow()(uint256)") or "0",
+        cast_call(cfg, "revealWindow()(uint256)") or "0",
+        cast_call(cfg, "executionWindow()(uint256)") or "0",
+    )
 
 
 def cmd_run_epoch(cfg):

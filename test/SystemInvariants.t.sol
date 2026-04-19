@@ -197,12 +197,12 @@ contract SystemInvariantsTest is EpochTest {
     function test_I1_syncPhaseIdempotent() public {
         fund.syncPhase();
         uint256 e1 = fund.currentEpoch();
-        IAuctionManager.AuctionPhase p1 = am.getPhase(e1);
+        IAuctionManager.AuctionPhase p1 = am.phase();
         fund.syncPhase();
         fund.syncPhase();
         fund.syncPhase();
         assertEq(fund.currentEpoch(), e1, "I1: epoch stable under repeat sync");
-        assertEq(uint8(am.getPhase(e1)), uint8(p1), "I1: phase stable under repeat sync");
+        assertEq(uint8(am.phase()), uint8(p1), "I1: phase stable under repeat sync");
     }
 
     /// I1 under manual driver: walking the 3-phase cycle via nextPhase
@@ -213,29 +213,29 @@ contract SystemInvariantsTest is EpochTest {
 
         // Epoch 1 is already open in COMMIT (setAuctionManager opened it).
         assertEq(fund.currentEpoch(), 1);
-        assertEq(uint8(am.getPhase(1)), uint8(IAuctionManager.AuctionPhase.COMMIT));
+        assertEq(uint8(am.phase()), uint8(IAuctionManager.AuctionPhase.COMMIT));
 
         // Commit, then COMMIT → REVEAL
         vm.prank(runner1);
         fund.commit{value: bond}(_commitHash(runner1, 0.005 ether, bytes32("r1")));
         fund.nextPhase();
-        assertEq(uint8(am.getPhase(1)), uint8(IAuctionManager.AuctionPhase.REVEAL));
+        assertEq(uint8(am.phase()), uint8(IAuctionManager.AuctionPhase.REVEAL));
 
         // Reveal, then REVEAL → EXECUTION (captures seed)
         vm.prank(runner1);
         fund.reveal(0.005 ether, bytes32("r1"));
         fund.nextPhase();
-        assertEq(uint8(am.getPhase(1)), uint8(IAuctionManager.AuctionPhase.EXECUTION));
+        assertEq(uint8(am.phase()), uint8(IAuctionManager.AuctionPhase.EXECUTION));
 
         // EXECUTION → COMMIT (epoch 2) — winner forfeit happens as a
         // side effect of this transition (no executed submit).
         fund.nextPhase();
         assertEq(fund.currentEpoch(), 2);
-        assertEq(uint8(am.getPhase(2)), uint8(IAuctionManager.AuctionPhase.COMMIT));
+        assertEq(uint8(am.phase()), uint8(IAuctionManager.AuctionPhase.COMMIT));
 
         // And the cycle continues: epoch 2's COMMIT → REVEAL
         fund.nextPhase();
-        assertEq(uint8(am.getPhase(2)), uint8(IAuctionManager.AuctionPhase.REVEAL));
+        assertEq(uint8(am.phase()), uint8(IAuctionManager.AuctionPhase.REVEAL));
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -407,10 +407,10 @@ contract SystemInvariantsTest is EpochTest {
         // syncPhase must be a no-op — we're at the start of the commit
         // window, so it sees the auction is already open.
         uint256 epochBefore = fund.currentEpoch();
-        uint8 phaseBefore = uint8(am.getPhase(epochBefore));
+        uint8 phaseBefore = uint8(am.phase());
         fund.syncPhase();
         assertEq(fund.currentEpoch(), epochBefore, "I4: syncPhase is noop (epoch)");
-        assertEq(uint8(am.getPhase(epochBefore)), phaseBefore, "I4: syncPhase is noop (phase)");
+        assertEq(uint8(am.phase()), phaseBefore, "I4: syncPhase is noop (phase)");
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -518,24 +518,24 @@ contract SystemInvariantsTest is EpochTest {
         fund.commit{value: bond}(_commitHash(runner1, 0.005 ether, bytes32("r1")));
 
         // Seed is zero during COMMIT/REVEAL windows.
-        assertEq(am.getRandomnessSeed(1), 0, "I6: seed unset before reveal close");
+        assertEq(fund.epochSeeds(1), 0, "I6: seed unset before reveal close");
 
         vm.warp(block.timestamp + COMMIT_WIN);
         vm.prank(runner1);
         fund.reveal(0.005 ether, bytes32("r1"));
 
-        assertEq(am.getRandomnessSeed(1), 0, "I6: seed unset during reveal window");
+        assertEq(fund.epochSeeds(1), 0, "I6: seed unset during reveal window");
 
         vm.warp(block.timestamp + REVEAL_WIN);
         fund.syncPhase(); // closes reveal → captures seed
 
-        uint256 seed = am.getRandomnessSeed(1);
+        uint256 seed = fund.epochSeeds(1);
         assertTrue(seed != 0, "I6: seed captured at reveal close");
 
         // Further syncPhase calls must not re-set the seed.
         fund.syncPhase();
         fund.syncPhase();
-        assertEq(am.getRandomnessSeed(1), seed, "I6: seed stable after capture");
+        assertEq(fund.epochSeeds(1), seed, "I6: seed stable after capture");
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -573,7 +573,7 @@ contract SystemInvariantsTest is EpochTest {
         vm.warp(block.timestamp + REVEAL_WIN);
         fund.syncPhase();
         assertEq(
-            uint8(am.getPhase(1)),
+            uint8(am.phase()),
             uint8(IAuctionManager.AuctionPhase.EXECUTION),
             "I7: syncPhase still works under freeze"
         );
@@ -792,7 +792,7 @@ contract SystemInvariantsTest is EpochTest {
         // already opened it).
         fund.syncPhase();
         assertEq(
-            uint8(am.getPhase(newEpoch)),
+            uint8(am.phase()),
             uint8(IAuctionManager.AuctionPhase.COMMIT),
             "new epoch in COMMIT"
         );
@@ -840,15 +840,15 @@ contract SystemInvariantsTest is EpochTest {
         uint256 newExecWin   = 500;
         fund.resetAuction(newCommitWin, newRevealWin, newExecWin);
 
-        // New timing is live on the AM.
-        assertEq(am.commitWindow(), newCommitWin, "new commit window applied");
-        assertEq(am.revealWindow(), newRevealWin, "new reveal window applied");
-        assertEq(am.executionWindow(), newExecWin, "new exec window applied");
+        // New timing is live on the fund (timing moved to main).
+        assertEq(fund.commitWindow(), newCommitWin, "new commit window applied");
+        assertEq(fund.revealWindow(), newRevealWin, "new reveal window applied");
+        assertEq(fund.executionWindow(), newExecWin, "new exec window applied");
 
         // Fresh auction should be in COMMIT using the new windows.
         uint256 newEpoch = fund.currentEpoch();
         assertEq(
-            uint8(am.getPhase(newEpoch)),
+            uint8(am.phase()),
             uint8(IAuctionManager.AuctionPhase.COMMIT),
             "new auction opened in COMMIT"
         );
@@ -863,7 +863,7 @@ contract SystemInvariantsTest is EpochTest {
         vm.warp(block.timestamp + 2);
         fund.syncPhase();
         assertEq(
-            uint8(am.getPhase(newEpoch)),
+            uint8(am.phase()),
             uint8(IAuctionManager.AuctionPhase.REVEAL),
             "new commit window boundary respected"
         );
@@ -1091,13 +1091,13 @@ contract SystemInvariantsTest is EpochTest {
     function test_nextPhase_commitToExecution_noCommits() public {
         // Epoch 1 COMMIT already open from setUp.
         fund.nextPhase(); // COMMIT → REVEAL
-        assertEq(uint8(am.getPhase(1)), uint8(IAuctionManager.AuctionPhase.REVEAL));
+        assertEq(uint8(am.phase()), uint8(IAuctionManager.AuctionPhase.REVEAL));
         fund.nextPhase(); // REVEAL → EXECUTION (0 reveals, no winner)
-        assertEq(uint8(am.getPhase(1)), uint8(IAuctionManager.AuctionPhase.EXECUTION));
+        assertEq(uint8(am.phase()), uint8(IAuctionManager.AuctionPhase.EXECUTION));
 
         fund.nextPhase(); // EXECUTION → COMMIT (epoch 2)
         assertEq(fund.currentEpoch(), 2);
-        assertEq(uint8(am.getPhase(2)), uint8(IAuctionManager.AuctionPhase.COMMIT));
+        assertEq(uint8(am.phase()), uint8(IAuctionManager.AuctionPhase.COMMIT));
         assertEq(fund.consecutiveMissedEpochs(), 1, "one missed epoch credited");
     }
 
@@ -1163,7 +1163,7 @@ contract SystemInvariantsTest is EpochTest {
         // Wall-clock catches up: warp past commit window
         vm.warp(block.timestamp + COMMIT_WIN);
         fund.syncPhase(); // wall-clock: COMMIT → REVEAL
-        assertEq(uint8(am.getPhase(1)), uint8(IAuctionManager.AuctionPhase.REVEAL));
+        assertEq(uint8(am.phase()), uint8(IAuctionManager.AuctionPhase.REVEAL));
 
         vm.prank(runner1);
         fund.reveal(0.005 ether, bytes32("r1"));
@@ -1171,7 +1171,7 @@ contract SystemInvariantsTest is EpochTest {
         // Wall-clock continues
         vm.warp(block.timestamp + REVEAL_WIN);
         fund.syncPhase(); // REVEAL → EXECUTION
-        assertEq(uint8(am.getPhase(1)), uint8(IAuctionManager.AuctionPhase.EXECUTION));
+        assertEq(uint8(am.phase()), uint8(IAuctionManager.AuctionPhase.EXECUTION));
 
         vm.warp(block.timestamp + EXEC_WIN);
         fund.syncPhase(); // EXECUTION → advance → COMMIT (epoch 2)
@@ -1190,12 +1190,12 @@ contract SystemInvariantsTest is EpochTest {
 
         // Manual close of COMMIT (no wall-clock advancement)
         fund.nextPhase(); // COMMIT → REVEAL
-        assertEq(uint8(am.getPhase(1)), uint8(IAuctionManager.AuctionPhase.REVEAL));
+        assertEq(uint8(am.phase()), uint8(IAuctionManager.AuctionPhase.REVEAL));
 
         // syncPhase must be a no-op — we haven't reached the reveal
         // deadline on the AM's internal clock.
         fund.syncPhase();
-        assertEq(uint8(am.getPhase(1)), uint8(IAuctionManager.AuctionPhase.REVEAL),
+        assertEq(uint8(am.phase()), uint8(IAuctionManager.AuctionPhase.REVEAL),
             "syncPhase noop: reveal deadline not reached");
 
         vm.prank(runner1);
@@ -1204,7 +1204,7 @@ contract SystemInvariantsTest is EpochTest {
 
         // syncPhase again should be a no-op
         fund.syncPhase();
-        assertEq(uint8(am.getPhase(1)), uint8(IAuctionManager.AuctionPhase.EXECUTION),
+        assertEq(uint8(am.phase()), uint8(IAuctionManager.AuctionPhase.EXECUTION),
             "syncPhase noop: execution deadline not reached");
     }
 
@@ -1249,7 +1249,7 @@ contract SystemInvariantsTest is EpochTest {
         fund.nextPhase(); // manual: REVEAL → EXECUTION
 
         // Verify seed was captured (the critical side effect)
-        assertTrue(am.getRandomnessSeed(1) != 0, "seed captured via mixed drivers");
+        assertTrue(fund.epochSeeds(1) != 0, "seed captured via mixed drivers");
         assertTrue(fund.epochInputHashes(1) != bytes32(0), "input hash bound");
     }
 
@@ -1263,14 +1263,14 @@ contract SystemInvariantsTest is EpochTest {
         fund.commit{value: bond}(_commitHash(runner1, 0.005 ether, bytes32("r1")));
         fund.nextPhase(); // COMMIT → REVEAL
 
-        assertEq(am.getRandomnessSeed(1), 0, "seed unset before reveal close");
+        assertEq(fund.epochSeeds(1), 0, "seed unset before reveal close");
         assertEq(fund.epochInputHashes(1), bytes32(0), "input hash unbound");
 
         vm.prank(runner1);
         fund.reveal(0.005 ether, bytes32("r1"));
         fund.nextPhase(); // REVEAL → EXECUTION
 
-        assertTrue(am.getRandomnessSeed(1) != 0, "seed captured at reveal close");
+        assertTrue(fund.epochSeeds(1) != 0, "seed captured at reveal close");
         assertTrue(fund.epochInputHashes(1) != bytes32(0), "input hash bound");
     }
 
@@ -1408,13 +1408,13 @@ contract SystemInvariantsTest is EpochTest {
         fund.reveal(0.005 ether, bytes32("r1"));
         fund.nextPhase(); // REVEAL → EXECUTION (seed captured)
 
-        uint256 seed = am.getRandomnessSeed(1);
+        uint256 seed = fund.epochSeeds(1);
         assertTrue(seed != 0, "I6: seed captured");
 
         // Walk through forfeit + next epoch — seed must not change
         fund.nextPhase(); // EXECUTION → COMMIT (epoch 2) with forfeit
         fund.nextPhase(); // epoch 2: COMMIT → REVEAL
-        assertEq(am.getRandomnessSeed(1), seed, "I6: seed stable after epoch advance");
+        assertEq(fund.epochSeeds(1), seed, "I6: seed stable after epoch advance");
     }
 
     // ── Derived: no stuck states via manual driver ───────────────────
@@ -1568,7 +1568,7 @@ contract SystemInvariantsTest is EpochTest {
 
         // Should be in REVEAL, not EXECUTION
         assertEq(
-            uint8(am.getPhase(1)),
+            uint8(am.phase()),
             uint8(IAuctionManager.AuctionPhase.REVEAL),
             "partial: stopped at REVEAL"
         );
@@ -1593,8 +1593,8 @@ contract SystemInvariantsTest is EpochTest {
             uint256 expectedEpoch = fund.currentEpoch();
 
             // COMMIT phase
-            assertEq(am.currentAuctionEpoch(), expectedEpoch, "meta: live in COMMIT");
-            assertEq(uint8(am.getPhase(expectedEpoch)),
+            assertEq(am.currentEpoch(), expectedEpoch, "meta: live in COMMIT");
+            assertEq(uint8(am.phase()),
                      uint8(IAuctionManager.AuctionPhase.COMMIT), "meta: COMMIT phase");
 
             uint256 bond = fund.currentBond();
@@ -1604,8 +1604,8 @@ contract SystemInvariantsTest is EpochTest {
 
             // REVEAL phase (via manual driver)
             fund.nextPhase();
-            assertEq(am.currentAuctionEpoch(), expectedEpoch, "meta: live in REVEAL");
-            assertEq(uint8(am.getPhase(expectedEpoch)),
+            assertEq(am.currentEpoch(), expectedEpoch, "meta: live in REVEAL");
+            assertEq(uint8(am.phase()),
                      uint8(IAuctionManager.AuctionPhase.REVEAL), "meta: REVEAL phase");
 
             vm.prank(runner1);
@@ -1613,8 +1613,8 @@ contract SystemInvariantsTest is EpochTest {
 
             // EXECUTION phase
             fund.nextPhase();
-            assertEq(am.currentAuctionEpoch(), expectedEpoch, "meta: live in EXECUTION");
-            assertEq(uint8(am.getPhase(expectedEpoch)),
+            assertEq(am.currentEpoch(), expectedEpoch, "meta: live in EXECUTION");
+            assertEq(uint8(am.phase()),
                      uint8(IAuctionManager.AuctionPhase.EXECUTION), "meta: EXEC phase");
 
             // Submit to cleanly roll into the next epoch
@@ -1649,7 +1649,7 @@ contract SystemInvariantsTest is EpochTest {
         vm.prank(runner1);
         fund.commit{value: bond + 0.5 ether}(_commitHash(runner1, 1, bytes32("s")));
         // Recorded: runner1 is a committer for epoch 1.
-        address[] memory committers = am.getCommitters(1);
+        address[] memory committers = am.getCommitters();
         assertEq(committers.length, 1, "commit recorded despite over-bond");
         assertEq(committers[0], runner1);
     }
@@ -1670,7 +1670,7 @@ contract SystemInvariantsTest is EpochTest {
         fund.nextPhase();
 
         uint256 runnerBefore = runner1.balance;
-        uint256 winningBid = am.getWinningBid(1);
+        uint256 winningBid = am.winningBid();
 
         // Submit with a malformed action (unrecognized action type).
         vm.prank(runner1);

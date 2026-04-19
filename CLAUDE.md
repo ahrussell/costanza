@@ -36,45 +36,63 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 
 ## Architecture
 
+Responsibility split — two contracts:
+
+- **`TheHumanFund`** owns wall-clock scheduling (window durations, anchor,
+  `_advanceToNow` driver), treasury, worldview, investments, verification,
+  the input-hash chain, salt accumulator, and seed capture. Main contract
+  is the sole authorized caller of AM's state-transition methods.
+- **`AuctionManager`** is a timing-agnostic commit-reveal auction primitive
+  driven manually by main. It holds the in-flight bond pool, enforces
+  commit/reveal preimage and max-bid gates, tracks the winner incrementally,
+  pays out bond + bounty on settle, and records per-epoch history. It has
+  no `block.timestamp` reads.
+
 Each epoch (24 hours in production, configurable for testnet) cycles through
-three phases — **COMMIT → REVEAL → EXECUTION** — then rolls straight into
-the next epoch's COMMIT. There is no IDLE or SETTLED rest state; the fund
-always holds exactly one in-flight auction (the *meta-invariant*), except
-during the atomic EXECUTION→COMMIT-of-next-epoch transition within a single
-transaction and under FREEZE_SUNSET.
+**COMMIT → REVEAL → EXECUTION → SETTLED** then rolls into the next epoch's
+COMMIT. SETTLED is an AM-internal terminal state — never prover-facing
+(provers dispatch on wall-clock). The fund always holds exactly one in-flight
+auction (the *meta-invariant*), except:
+(a) during the atomic boundary tx EXECUTION→SETTLED→COMMIT(N+1),
+(b) under FREEZE_SUNSET, and
+(c) during the post-submit interregnum [settleExecution, epoch_end) where
+AM sits in SETTLED awaiting the scheduled rollover.
 
 The per-epoch flow:
 
-1. Prover calls `commit()` in the COMMIT window — contract auto-syncs via
-   `_advanceToNow()`, then submits sealed bid hash with bond.
-2. Prover calls `reveal()` in the REVEAL window — contract auto-syncs
-   (closes commit if needed), records bid reveal.
-3. Lowest revealed bid wins; ties broken by first revealer. Randomness seed
-   captured from `block.prevrandao XOR saltAccumulator` at REVEAL→EXECUTION.
+1. Prover calls `fund.commit(hash)` in the COMMIT window — main auto-syncs
+   via `_advanceToNow()`, forwards the bond + bidder identity to
+   `am.commit(runner, hash)`.
+2. Prover calls `fund.reveal(bid, salt)` in the REVEAL window — main
+   auto-syncs, forwards to `am.reveal(runner, bid, salt)`, XORs the salt
+   into `epochSaltAccumulator[epoch]`. AM verifies the commit preimage and
+   enforces `bidAmount <= maxBid` (the ceiling stored at auction open).
+3. Lowest revealed bid wins; ties broken by first revealer. At REVEAL→EXECUTION
+   (triggered by the first post-window `_advanceToNow` or manual `nextPhase`),
+   main computes `seed = block.prevrandao XOR epochSaltAccumulator[epoch]`,
+   stores it in `epochSeeds[epoch]`, and binds the full input hash.
 4. Winner boots TDX VM from dm-verity disk image, one-shot enclave runs
-   inference with the epoch's seed-bound input hash.
-5. Winner calls `submitAuctionResult()` during EXECUTION — contract auto-
-   syncs, `TdxVerifier` verifies:
-   - Automata DCAP: quote is genuine TDX hardware
-   - Platform key: `sha256(MRTD || RTMR[1] || RTMR[2])` — firmware + kernel + rootfs
-   - REPORTDATA: `sha256(inputHash || outputHash)` matches
-   Winner receives their bond back plus the bounty immediately.
-6. Epoch ends when someone calls `syncPhase()` (or the prover naturally
-   interacts with the next epoch): `_closeExecution` forfeits the winner's
-   bond to the fund if they no-showed, updates counters, and `_openAuction`
-   opens the next epoch's COMMIT.
-7. Non-winning revealers claim bonds via `claimBond(epoch)`. Non-revealers
-   forfeit bonds to the fund at reveal close.
+   inference with the seed-bound input hash.
+5. Winner calls `fund.submitAuctionResult()` during EXECUTION — main
+   verifies the TDX proof, then `am.settleExecution{value: bounty}()`
+   combines bond + bounty and pushes to winner. AM transitions to SETTLED.
+6. Epoch ends when wall-clock crosses its scheduled duration (or a prover
+   interacts during the next commit window): `_closeExecution` updates
+   counters, `_advanceEpochBy` bumps `currentEpoch`, `_openAuction` calls
+   `am.openAuction(newEpoch, maxBid, bond)` to start the next auction.
+7. Non-winning revealers claim bonds via `am.claimBond(epoch)`. Non-
+   revealers forfeit to the fund at reveal close.
 
 ### Two drivers, one state machine
 
-- **Wall-clock driver** (`syncPhase` / `_advanceToNow`): cascades COMMIT→REVEAL
-  via `_nextPhase`, closes EXECUTION via `_closeExecution`, arithmetically
-  fast-forwards through ghost epochs, opens the landed epoch if we're inside
-  its commit window. Called automatically from every participant method
-  (`commit`, `reveal`, `submitAuctionResult`, `syncPhase`).
-- **Manual driver** (`nextPhase`, owner-only): advances exactly one state-
-  machine step. Sync-first: both `nextPhase` and `resetAuction` call
+- **Wall-clock driver** (`syncPhase` / `_advanceToNow`): calls
+  `am.nextPhase()` when the next window has elapsed, crosses epoch
+  boundaries via `_closeExecution`, arithmetically fast-forwards through
+  ghost epochs, opens the landed epoch's auction via
+  `am.openAuction(epoch, maxBid, bond)`. Called automatically from every
+  participant method (`commit`, `reveal`, `submitAuctionResult`, `syncPhase`).
+- **Manual driver** (`fund.nextPhase`, owner-only): advances exactly one
+  state-machine step. Sync-first: both `nextPhase` and `resetAuction` call
   `_advanceToNow()` first so the manual driver can never time-travel
   backward past wall-clock.
 
@@ -82,12 +100,15 @@ Both drivers converge to the same state under the same scenario.
 
 ### Single-site state mutation
 
-- `_openAuction(epoch, scheduledStart)` — the sole site that writes the
-  timing anchor and opens an auction.
-- `_closeExecution()` — the sole site where the two escalation counters
-  update at epoch end (`consecutiveMissedEpochs`, `consecutiveStalledEpochs`).
-- `_nextPhase()` — the sole site for intra-epoch phase transitions (and
-  the sole binder of the seed-XORed input hash at REVEAL→EXECUTION).
+- `_openAuction(epoch, scheduledStart)` — sole site that writes timing
+  anchor and calls `am.openAuction(epoch, maxBid, bond)`.
+- `_closeExecution()` — sole site where the two escalation counters
+  update at epoch end (`consecutiveMissedEpochs`, `consecutiveStalledEpochs`)
+  AND the sole caller of `am.closeExecution()` in the forfeit path.
+- `_nextPhase()` — sole site for intra-epoch phase transitions (via
+  `am.nextPhase()`) and the sole binder of the seed-XORed input hash
+  at REVEAL→EXECUTION.
+- `reveal()` — sole site that XORs into `epochSaltAccumulator[epoch]`.
 
 See `test/SystemInvariants.t.sol`'s preamble for the complete behavioral
 spec (8 groups: lifecycle, timing, auction mechanics, snapshot/messages,
@@ -246,24 +267,28 @@ thehumanfund/
 - 5 agent actions with contract-enforced bounds
 - `DiaryEntry` event emits reasoning + action on-chain
 
-### Reverse Auction (Commit-Reveal) — 3-Phase Cyclic
-- **Auction state machine**: `AuctionPhase { COMMIT, REVEAL, EXECUTION }` — cyclic per epoch
-- **Eager open**: `setAuctionManager` opens epoch 1's auction at deploy time. Every subsequent epoch opens automatically at the EXECUTION→COMMIT transition. The fund never sits in an IDLE rest state
-- **Auto-sync**: every participant-facing method (`commit`, `reveal`, `submitAuctionResult`, `syncPhase`) calls `_advanceToNow()` first — cascades COMMIT→REVEAL→EXECUTION by wall-clock, crosses epoch boundaries via `_closeExecution`, arithmetically fast-forwards ghost epochs, opens the landed epoch if we're in its commit window
-- **Sync-first rule**: `nextPhase` and `resetAuction` (owner-only, manual drivers) also call `_advanceToNow()` first, so the manual driver can never leave the contract behind wall-clock
-- **Public entry points**:
-  - `syncPhase()` — permissionless, catches the contract up to wall-clock
-  - `commit(commitHash) payable` — auto-syncs, then submits sealed bid with bond ≥ `currentBond()`
-  - `reveal(bidAmount, salt)` — auto-syncs, reveals bid ≤ `effectiveMaxBid()`
-  - `submitAuctionResult(action, reasoning, proof, verifierId, policySlot, policyText)` — auto-syncs, TDX-verifies proof, pays bounty, executes action (best-effort: invalid actions/policies don't revert a verified proof — the winner still gets paid)
-  - `nextPhase()` owner-only — syncs first, then advances exactly one state-machine step
-  - `resetAuction(cw, rw, xw)` owner-only — syncs first, aborts in-flight auction (refunds all bonds non-confiscatorily), applies new timing, advances one epoch, re-opens
-- **Escalation counters (both update at exactly one site, `_closeExecution`)**:
-  - `consecutiveMissedEpochs` — resets on success, else +1 per epoch end; also += N on wall-clock fast-forward. Drives `effectiveMaxBid()` via `maxBid * (1 + AUTO_ESCALATION_BPS/10000)^missed`, capped at `treasury * MAX_BID_BPS/10000` (10%)
-  - `consecutiveStalledEpochs` — resets on success, +1 on winner-forfeit, unchanged on silence. Drives `currentBond()` via `BASE_BOND * (1 + AUTO_ESCALATION_BPS/10000)^stalled`, capped at `_bondCap()`
-- **Lazy bond claiming**: `AuctionManager.claimBond(epoch)` — non-winning revealers claim bonds per-epoch. O(1) bond accounting at reveal close (no committer loop). Non-revealers' bonds sent to treasury immediately
-- **Wall-clock anchored timing**: `timingAnchor` + `anchorEpoch` define a fixed schedule. `epochStartTime(N) = timingAnchor + (N - anchorEpoch) * epochDuration`. The anchor is written at EXACTLY ONE site — `_openAuction`, which re-anchors to `scheduledStart` on every open. Late interactions produce shorter remaining phase windows (self-correcting, no drift)
-- **O(1) missed epoch advancement**: `_advanceToNow` uses arithmetic (`currentEpoch += missed`) to skip ghost epochs, not a loop
+### Reverse Auction (Commit-Reveal)
+- **Split architecture**:
+  - `AuctionManager` is a timing-agnostic state-machine primitive. Phases: `{ COMMIT, REVEAL, EXECUTION, SETTLED }`. Driven manually by the fund via `am.nextPhase()`. SETTLED is the terminal state; `openAuction` requires SETTLED (or first-ever call) to start a new auction.
+  - `TheHumanFund` owns timing (`commitWindow`, `revealWindow`, `executionWindow`, `currentAuctionStartTime`) and drives AM via `_advanceToNow` based on wall-clock.
+- **Eager open**: `setAuctionManager` opens epoch 1's auction at deploy time. Every subsequent epoch opens automatically at the epoch-boundary sync. The fund never sits in a "no auction" rest state.
+- **Auto-sync**: every participant-facing fund method (`commit`, `reveal`, `submitAuctionResult`, `syncPhase`) calls `_advanceToNow()` first — cascades COMMIT→REVEAL→EXECUTION via `am.nextPhase()` by wall-clock, crosses epoch boundaries via `_closeExecution` (+ `am.closeExecution()` on the forfeit path), arithmetically fast-forwards ghost epochs, opens the landed epoch via `am.openAuction(epoch, maxBid, bond)`.
+- **Sync-first rule**: `fund.nextPhase` and `fund.resetAuction` (owner-only, manual drivers) also call `_advanceToNow()` first, so the manual driver can never leave the contract behind wall-clock.
+- **Public entry points** (fund contract):
+  - `syncPhase()` — permissionless, catches the contract up to wall-clock.
+  - `commit(commitHash) payable` — auto-syncs, forwards to `am.commit(msg.sender, hash)` with bond = `currentBond()`.
+  - `reveal(bidAmount, salt)` — auto-syncs, forwards to `am.reveal(msg.sender, bid, salt)`; AM enforces `bid <= maxBid`; main XORs salt into `epochSaltAccumulator[epoch]`.
+  - `submitAuctionResult(action, reasoning, proof, verifierId, policySlot, policyText)` — auto-syncs, TDX-verifies proof, calls `am.settleExecution{value: bounty}()` which pays bond + bounty to winner in one transfer. Executes action best-effort.
+  - `nextPhase()` owner-only — syncs first, then advances exactly one state-machine step (via `am.nextPhase()` intra-epoch, or `_closeExecution` + `_openAuction` cross-epoch).
+  - `resetAuction(cw, rw, xw)` owner-only — syncs first, calls `am.abortAuction()` (refunds all bonds), updates main's timing, advances one epoch, re-opens.
+- **Escalation counters (both live in main, update at `_closeExecution`)**:
+  - `consecutiveMissedEpochs` — resets on success, else +1 per epoch end; also += N on wall-clock fast-forward. Drives `effectiveMaxBid()` via `maxBid * (1 + AUTO_ESCALATION_BPS/10000)^missed`, capped at `treasury * MAX_BID_BPS/10000` (10%). Snapshot-frozen into AM at `openAuction`.
+  - `consecutiveStalledEpochs` — resets on success, +1 on winner-forfeit, unchanged on silence. Drives `currentBond()` via `BASE_BOND * (1 + AUTO_ESCALATION_BPS/10000)^stalled`, capped at `_bondCap()`. Frozen into AM at `openAuction`.
+- **Seed chain**: main computes `seed = block.prevrandao ^ epochSaltAccumulator[epoch]` at REVEAL→EXECUTION in `_nextPhase()`, stores in `epochSeeds[epoch]`, binds `epochInputHashes[epoch] = keccak(base || seed)`. AM is seed-ignorant.
+- **Lazy bond claiming**: `am.claimBond(epoch)` — non-winning revealers claim bonds per-epoch. O(1) bond accounting at reveal close (no committer loop). Non-revealers' bonds pushed to main's treasury immediately.
+- **Bond holding**: AM holds all bond ETH in `address(am).balance`. Bond conservation invariant: `am.bondPool + am.pendingBondRefunds == address(am).balance` between transactions.
+- **Wall-clock anchored timing**: `timingAnchor` + `anchorEpoch` define the schedule. `epochStartTime(N) = timingAnchor + (N - anchorEpoch) * epochDuration`. Anchor is written only in `_openAuction`. Late interactions produce shorter remaining phase windows (self-correcting, no drift).
+- **O(1) missed epoch advancement**: `_advanceToNow` uses arithmetic (`currentEpoch += missed`) to skip ghost epochs, not a loop.
 
 ### Action Encoding
 `uint8 action_type + ABI-encoded params`
