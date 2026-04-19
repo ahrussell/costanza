@@ -83,7 +83,7 @@ abstract contract EpochTest is Test {
     ) private {
         IAuctionManager am = fund.auctionManager();
         require(
-            am.getPhase(fund.currentEpoch()) == IAuctionManager.AuctionPhase.COMMIT,
+            am.phase() == IAuctionManager.AuctionPhase.COMMIT,
             "speedrunEpoch: expected COMMIT phase (auction not open or caller drift?)"
         );
 

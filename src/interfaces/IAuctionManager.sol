@@ -2,25 +2,34 @@
 pragma solidity ^0.8.20;
 
 /// @title IAuctionManager
-/// @notice Interface for the auction state machine that manages commit-reveal auctions.
-///         Handles phases, bids, bonds, timing, and winner selection.
-///         Does NOT know about epoch numbering, treasury state, or verification.
+/// @notice Interface for the auction state machine — a reusable commit-reveal
+///         sealed-bid auction primitive with bond slashing. The AM knows
+///         nothing about wall-clock time, epoch scheduling, treasury, or
+///         verification. It is driven entirely by the fund contract.
 ///
-///         The state machine is 3-phase cyclic: COMMIT → REVEAL → EXECUTION. The
-///         EXECUTION → COMMIT-of-next-epoch transition (including bond forfeit
-///         for no-show winners) is handled by the fund contract, not here.
+///         State machine:
 ///
-///         Phase advancement within an epoch is automatic via syncPhase() — the fund
-///         contract calls it before every action. Bond refunds are lazy via
-///         claimBond(epoch).
+///             COMMIT ── nextPhase ──▸ REVEAL ── nextPhase ──▸ EXECUTION
+///                                                                  │
+///                                       ┌─ settleExecution ────────┤
+///                                       ├─ closeExecution  ────────┤
+///                                       └─ abortAuction   ─────────┘
+///                                                                  │
+///                                                                  ▼
+///                                                              SETTLED
+///                                                                  │
+///                                                                  │ openAuction
+///                                                                  ▼
+///                                                              COMMIT
+///
+///         SETTLED is an internal terminal state; it is never prover-facing
+///         (provers dispatch on wall-clock). `openAuction` is the only way
+///         to leave SETTLED; it requires the previous auction to have reached
+///         SETTLED via one of the three closing paths.
 interface IAuctionManager {
     // ─── Enums ──────────────────────────────────────────────────────────
 
-    /// @notice The three phases of an in-flight auction. Phases cycle per epoch.
-    ///         There is no IDLE/SETTLED rest state — the fund always holds exactly
-    ///         one auction-in-progress, and an epoch is considered "done" when the
-    ///         fund marks `epochs[e].executed` and advances to the next epoch's COMMIT.
-    enum AuctionPhase { COMMIT, REVEAL, EXECUTION }
+    enum AuctionPhase { COMMIT, REVEAL, EXECUTION, SETTLED }
 
     // ─── Historical Records ─────────────────────────────────────────────
 
@@ -31,94 +40,99 @@ interface IAuctionManager {
         bool forfeited;     // true if the winner forfeited (didn't submit result)
     }
 
-    // ─── Auction Setup & Sync (onlyFund) ────────────────────────────────
+    // ─── State Transitions (onlyFund) ───────────────────────────────────
 
-    /// @notice Open a new auction. Clears any prior in-flight state and sets
-    ///         phase to COMMIT for `epoch`. No phase precondition — the fund
-    ///         is responsible for calling this only when it makes sense
-    ///         (i.e. at deploy bootstrap or after `_closeExecution` for the
-    ///         prior epoch).
-    /// @param epoch The epoch identifier (opaque to the AM).
+    /// @notice Open a fresh auction for `epoch` with the given bid ceiling
+    ///         and bond amount. Requires the current phase to be SETTLED
+    ///         (enforced by implementation) or that no auction has ever been
+    ///         opened. `maxBid` and `bond` are stored for the life of the
+    ///         auction; the fund is the source of truth for both values.
+    /// @param epoch Epoch identifier — opaque to the AM; used as a history
+    ///        key and returned by `currentEpoch()` while the auction runs.
+    /// @param maxBid The bid ceiling enforced at reveal time.
     /// @param bond The bond amount each committer must stake.
-    /// @param startTime Wall-clock scheduled start time for this auction's phase windows.
-    function openAuction(uint256 epoch, uint256 bond, uint256 startTime) external;
+    function openAuction(uint256 epoch, uint256 maxBid, uint256 bond) external;
 
-    /// @notice Advance the auction through any elapsed WITHIN-EPOCH phase windows.
-    ///         Cascades COMMIT→REVEAL→EXECUTION based on wall-clock. Does NOT
-    ///         advance epochs or transition out of EXECUTION — the fund handles
-    ///         the EXECUTION→COMMIT-of-next-epoch boundary via its own helpers.
-    /// @return phase The phase AFTER advancement.
-    /// @return advanced True if any phase transition occurred.
-    function syncPhase(uint256 epoch) external returns (AuctionPhase phase, bool advanced);
+    /// @notice Advance the state machine by one step: COMMIT→REVEAL or
+    ///         REVEAL→EXECUTION. Reverts if called in EXECUTION or SETTLED.
+    ///         REVEAL→EXECUTION finalizes the winner selection and distributes
+    ///         non-revealer bond forfeits to the fund.
+    function nextPhase() external;
 
-    // ─── Prover Actions (onlyFund, forwarded from provers) ──────────────
+    /// @notice Happy-path terminal transition: EXECUTION → SETTLED. The
+    ///         caller must send `msg.value == winningBid()` as the bounty;
+    ///         the AM combines it with the winner's held bond and pushes
+    ///         `bond + bounty` to the winner in a single transfer. Records
+    ///         history (non-forfeited).
+    function settleExecution() external payable;
 
-    /// @notice Record a sealed bid commitment. Must be called with bond ETH attached.
-    function commit(uint256 epoch, address runner, bytes32 commitHash) external payable;
-
-    /// @notice Record a bid reveal. Verifies commitment hash and tracks lowest bidder.
-    function recordReveal(uint256 epoch, address runner, uint256 bidAmount, bytes32 salt) external;
-
-    /// @notice Settle a successful execution. Validates caller is the winner and
-    ///         within the execution window, refunds the winner's bond, and stores
-    ///         the auction summary. Phase stays EXECUTION — the fund's
-    ///         `epochs[epoch].executed` bit is the double-submit guard, and the
-    ///         fund's `_closeExecution` drives the subsequent phase advance.
-    function settleExecution(uint256 epoch, address caller) external;
-
-    /// @notice Close the current EXECUTION phase and clear in-flight state so
-    ///         the fund can call `openAuction` for the next epoch.
-    ///         If the winner never submitted (i.e. `settleExecution` never ran
-    ///         and no auction history exists for the current epoch yet), this
-    ///         forfeits the winner's bond to the fund. If settleExecution
-    ///         already ran, this is just a state-clear — no bond movement.
-    ///         Reverts if called outside EXECUTION phase.
+    /// @notice No-show terminal transition: EXECUTION → SETTLED. Forfeits
+    ///         the held winner bond to the fund and records history
+    ///         (marked forfeited). Reverts if called outside EXECUTION.
     function closeExecution() external;
 
-    // ─── Configuration (onlyFund) ───────────────────────────────────────
-
-    /// @notice Update auction timing parameters.
-    function setTiming(uint256 _commitWindow, uint256 _revealWindow, uint256 _executionWindow) external;
-
-    /// @notice Abort the in-flight auction and refund all held bonds.
-    ///         Operator intervention path: NOT a forfeit event — committers
-    ///         get their bonds back regardless of phase. Non-revealer bonds
-    ///         already forfeited at reveal close are not unwound; non-winning
-    ///         revealer credits in `pendingBondRefunds` are left intact.
-    ///         See `AuctionManager.abortAuction` for the full refund matrix.
+    /// @notice Operator-abort terminal transition: any phase → SETTLED.
+    ///         Refunds all held bonds non-confiscatorily. See implementation
+    ///         docstring for the per-phase refund matrix. Records history
+    ///         (non-forfeited).
     function abortAuction() external;
 
-    /// @notice Force-close the current auction phase without checking
-    ///         wall-clock deadlines. Time-independent counterpart to
-    ///         `syncPhase`, used by the fund's owner `nextPhase` entry
-    ///         point. Only advances within an epoch (COMMIT→REVEAL or
-    ///         REVEAL→EXECUTION). Reverts if called when the AM is already
-    ///         in EXECUTION — the fund handles the EXECUTION→next-epoch
-    ///         boundary itself.
-    function forceClosePhase() external;
+    // ─── Bidder Actions (onlyFund; fund forwards from provers) ──────────
 
-    // ─── Bond Claims (anyone) ───────────────────────────────────────────
+    /// @notice Record a sealed bid commitment. `msg.value` must equal the
+    ///         bond amount configured for the current auction.
+    function commit(address runner, bytes32 commitHash) external payable;
 
-    /// @notice Claim bond refund for a specific epoch.
-    ///         Eligible: non-winning revealers. Winners are paid directly
-    ///         by `settleExecution` and don't need to claim.
+    /// @notice Record a bid reveal. Verifies commitment preimage and enforces
+    ///         the stored max-bid ceiling. Updates current winner incrementally
+    ///         (lowest bid wins; ties broken by first-revealer).
+    function reveal(address runner, uint256 bidAmount, bytes32 salt) external;
+
+    // ─── Bond Claims (permissionless) ───────────────────────────────────
+
+    /// @notice Claim a bond refund for a past epoch.
+    ///         Eligible: non-winning revealers from that epoch's auction.
+    ///         Winners received bond+bounty at `settleExecution` time.
     function claimBond(uint256 epoch) external;
 
     // ─── Views ──────────────────────────────────────────────────────────
 
-    function currentAuctionEpoch() external view returns (uint256);
-    function getPhase(uint256 epoch) external view returns (AuctionPhase);
+    /// @notice The current auction's phase. Use this (not historical epoch
+    ///         lookups) for the in-flight auction's state.
+    function phase() external view returns (AuctionPhase);
+
+    /// @notice The current auction's epoch tag (set at `openAuction`).
+    function currentEpoch() external view returns (uint256);
+
+    /// @notice Max-bid ceiling for the current auction.
+    function maxBid() external view returns (uint256);
+
+    /// @notice Bond amount required per commit for the current auction.
+    function bond() external view returns (uint256);
+
+    /// @notice The current auction's leading bidder (lowest revealed bid).
+    ///         Returns address(0) before any reveal lands.
+    function winner() external view returns (address);
+
+    /// @notice The current auction's leading bid. Zero before any reveal.
+    function winningBid() external view returns (uint256);
+
+    /// @notice The list of runners who have committed to the current auction.
+    function getCommitters() external view returns (address[] memory);
+
+    /// @notice True if `runner` has revealed their bid in the current auction.
+    function didReveal(address runner) external view returns (bool);
+
+    // Historical lookups (keyed by past epoch)
+
     function getWinner(uint256 epoch) external view returns (address);
     function getWinningBid(uint256 epoch) external view returns (uint256);
     function getBond(uint256 epoch) external view returns (uint256);
-    function getStartTime(uint256 epoch) external view returns (uint256);
-    function getRandomnessSeed(uint256 epoch) external view returns (uint256);
-    function getCommitters(uint256 epoch) external view returns (address[] memory);
-    function didReveal(uint256 epoch, address runner) external view returns (bool);
     function getBidRecord(uint256 epoch, address runner) external view returns (BidRecord memory);
-    function commitWindow() external view returns (uint256);
-    function revealWindow() external view returns (uint256);
-    function executionWindow() external view returns (uint256);
-    function executionDeadline() external view returns (uint256);
+    function getCommittersOfEpoch(uint256 epoch) external view returns (address[] memory);
+    function didRevealInEpoch(uint256 epoch, address runner) external view returns (bool);
+
+    /// @notice Total bond ETH held for non-winning revealers who haven't
+    ///         claimed yet. Decrements as `claimBond` calls succeed.
     function pendingBondRefunds() external view returns (uint256);
 }

@@ -5,544 +5,412 @@ import "./interfaces/IAuctionManager.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /// @title AuctionManager
-/// @notice Auction state machine for commit-reveal sealed-bid auctions.
-///         3-phase cyclic: COMMIT → REVEAL → EXECUTION. The EXECUTION →
-///         COMMIT-of-next-epoch boundary (including winner-forfeit-if-no-show
-///         bookkeeping) is handled by the fund contract — see
-///         `TheHumanFund._closeExecution` and `_openAuction`.
+/// @notice Reusable commit-reveal sealed-bid auction primitive. Manually
+///         driven by the fund contract — has no knowledge of wall-clock,
+///         epoch scheduling, treasury, or verification.
 ///
-///         Within an epoch, phase advancement is automatic: syncPhase()
-///         advances through any elapsed phase windows based on block.timestamp
-///         vs wall-clock deadlines. Bond refunds are lazy: non-winning
-///         revealers call claimBond(epoch). Only the fund contract can call
-///         state-transition functions.
+///         Every state-mutating function is onlyFund except `claimBond`.
+///         The fund wraps prover actions (commit, reveal) and injects the
+///         bidder address as `runner`.
+///
+///         Bonds are held directly by this contract:
+///           - committed bonds → `address(this).balance`
+///           - non-winning revealers' refunds → still in balance, tracked
+///             by `pendingBondRefunds`, claimable per-epoch via `claimBond`
+///           - winner's bond+bounty → pushed to winner in `settleExecution`
+///           - forfeited bonds → pushed to fund in `nextPhase` (REVEAL→EXECUTION)
+///             or `closeExecution`
+///
+///         Bond conservation invariant:
+///           `currentAuctionHeldBond + pendingBondRefunds == address(this).balance`
+///         between transactions. `currentAuctionHeldBond` is the sum of bonds
+///         still tied to the in-flight auction (committers pre-reveal-close,
+///         winner pre-settle/close).
 contract AuctionManager is IAuctionManager, ReentrancyGuard {
     // ─── Errors ──────────────────────────────────────────────────────────
 
     error Unauthorized();
     error WrongPhase();
-    error TimingError();
     error AlreadyDone();
     error InvalidParams();
     error TransferFailed();
     error TooManyCommitters();
+    error BountyMismatch();
 
     // ─── Constants ──────────────────────────────────────────────────────
 
     uint256 public constant MAX_COMMITTERS = 50;
 
-    // ─── Current Auction State ───────────────────────────────────────────
+    // ─── Fund Linkage ───────────────────────────────────────────────────
 
     address public immutable fund;
-
-    /// @notice Aggregate pending bond refunds owed to non-winning revealers.
-    ///         Incremented O(1) at reveal close; decremented per claimBond(epoch) call.
-    uint256 public override pendingBondRefunds;
-
-    /// @notice Tracks whether a runner has claimed their bond for a given epoch.
-    mapping(uint256 => mapping(address => bool)) public hasClaimed;
-
-    uint256 public override commitWindow;
-    uint256 public override revealWindow;
-    uint256 public override executionWindow;
-
-    /// @notice The epoch tag of the current (or most recent) auction.
-    uint256 public override currentAuctionEpoch;
-
-    AuctionPhase public currentPhase;
-    uint256 public currentStartTime;
-    uint256 public currentBondAmount;
-    uint256 public currentCommitCount;
-    uint256 public currentRevealCount;
-    address public currentWinner;
-    uint256 public currentWinningBid;
-    uint256 public currentRandomnessSeed;
-
-    // Per-runner state keyed by epoch — no cleanup loop needed between auctions.
-    mapping(uint256 => mapping(address => bytes32)) internal bidCommits;
-    mapping(uint256 => mapping(address => bool)) internal hasCommitted;
-    mapping(uint256 => mapping(address => bool)) internal hasRevealed;
-    mapping(uint256 => mapping(address => uint256)) internal revealedBids;
-    address[] internal committers;
-    bytes32 internal saltAccumulator; // XOR of all revealed salts — mixed into randomness seed
-
-    // ─── Historical Records ──────────────────────────────────────────────
-
-    mapping(uint256 => mapping(address => BidRecord)) internal bidRecords;
-
-    struct AuctionSummary {
-        uint256 startTime;
-        address winner;
-        uint256 winningBid;
-        uint256 bondAmount;
-        uint256 randomnessSeed;
-        address[] committerList;
-    }
-    mapping(uint256 => AuctionSummary) internal auctionHistory;
-
-    // ─── Modifiers ───────────────────────────────────────────────────────
 
     modifier onlyFund() {
         if (msg.sender != fund) revert Unauthorized();
         _;
     }
 
-    // ─── Constructor ─────────────────────────────────────────────────────
+    // ─── Current Auction State ──────────────────────────────────────────
+
+    AuctionPhase public override phase;  // default COMMIT (0) pre-first-open
+    uint256 public override currentEpoch;
+    uint256 public override maxBid;
+    uint256 public override bond;
+
+    address public override winner;
+    uint256 public override winningBid;
+
+    uint256 internal commitCount;
+    uint256 internal revealCount;
+    address[] internal committers;
+
+    mapping(address => bytes32) internal commitHashOf;
+    mapping(address => bool) internal hasCommitted;   // current-auction scope
+    mapping(address => bool) internal hasRevealed;    // current-auction scope
+    mapping(address => uint256) internal revealedBidOf;
+
+    // Whether the first-ever auction has been opened. Gates the SETTLED
+    // precondition on `openAuction` so that the bootstrap call (from the
+    // default zero-state) can proceed.
+    bool internal bootstrapped;
+
+    // ─── Bond Accounting ────────────────────────────────────────────────
+
+    /// @notice Aggregate lazy-claimable refunds owed to past non-winning
+    ///         revealers. Invariant: decrements by exactly `bond` on each
+    ///         successful `claimBond` call.
+    uint256 public override pendingBondRefunds;
+
+    mapping(uint256 => mapping(address => bool)) public hasClaimed;
+
+    // ─── Historical Records ─────────────────────────────────────────────
+
+    mapping(uint256 => mapping(address => BidRecord)) internal bidRecords;
+
+    struct AuctionSummary {
+        address winner;
+        uint256 winningBid;
+        uint256 bond;
+        address[] committerList;
+    }
+    mapping(uint256 => AuctionSummary) internal auctionHistory;
+    mapping(uint256 => mapping(address => bool)) internal hasRevealedInEpoch;
+
+    // ─── Constructor ────────────────────────────────────────────────────
 
     constructor(address _fund) {
         fund = _fund;
     }
 
-    // ─── Phase Sync ─────────────────────────────────────────────────────
+    // ─── State Transitions (onlyFund) ───────────────────────────────────
 
     /// @inheritdoc IAuctionManager
-    function syncPhase(uint256 epoch) external override onlyFund returns (AuctionPhase phase, bool advanced) {
-        // Stale epoch tags are treated as a no-op. The fund shouldn't call
-        // syncPhase with a mismatched epoch in normal operation, but we
-        // avoid reverting so the caller can detect the no-op cleanly.
-        if (epoch != currentAuctionEpoch) return (currentPhase, false);
-        return _syncPhase();
-    }
+    function openAuction(uint256 epoch, uint256 maxBid_, uint256 bond_) external override onlyFund {
+        if (bootstrapped && phase != AuctionPhase.SETTLED) revert WrongPhase();
+        if (bond_ == 0) revert InvalidParams();
+        if (maxBid_ == 0) revert InvalidParams();
 
-    /// @dev Advance through any elapsed within-epoch phase windows.
-    ///      Cascades COMMIT→REVEAL→EXECUTION at most once each.
-    ///      Does NOT transition out of EXECUTION — the fund handles the
-    ///      EXECUTION→COMMIT-of-next-epoch boundary via `_closeExecution`
-    ///      + `_openAuction` (which calls into this AM's `openAuction`).
-    function _syncPhase() internal returns (AuctionPhase phase, bool advanced) {
-        phase = currentPhase;
-        advanced = false;
-
-        if (phase == AuctionPhase.COMMIT && block.timestamp >= currentStartTime + commitWindow) {
-            _closeCommit();
-            phase = currentPhase; // re-read after transition
-            advanced = true;
-        }
-
-        if (phase == AuctionPhase.REVEAL && block.timestamp >= currentStartTime + commitWindow + revealWindow) {
-            _closeReveal();
-            phase = currentPhase;
-            advanced = true;
-        }
-        // EXECUTION is terminal within the epoch. The fund's `_closeExecution`
-        // handles the boundary crossing.
-    }
-
-    // ─── Auction Setup ──────────────────────────────────────────────────
-
-    /// @inheritdoc IAuctionManager
-    function openAuction(uint256 epoch, uint256 bond, uint256 startTime) external override onlyFund {
-        if (bond == 0) revert InvalidParams();
-
-        // Reset current auction state. No phase precondition: the fund only
-        // calls this at bootstrap or after `_closeExecution` has finished
-        // with the prior epoch. openAuction overwrites live state atomically.
         _clearCurrentAuction();
 
-        currentAuctionEpoch = epoch;
-        currentPhase = AuctionPhase.COMMIT;
-        currentStartTime = startTime;
-        currentBondAmount = bond;
-    }
-
-    // ─── Prover Actions ─────────────────────────────────────────────────
-
-    /// @inheritdoc IAuctionManager
-    function commit(uint256 epoch, address runner, bytes32 commitHash) external payable override onlyFund {
-        if (epoch != currentAuctionEpoch) revert InvalidParams();
-        if (currentPhase != AuctionPhase.COMMIT) revert WrongPhase();
-        if (block.timestamp >= currentStartTime + commitWindow) revert TimingError();
-        if (hasCommitted[epoch][runner]) revert AlreadyDone();
-        if (commitHash == bytes32(0)) revert InvalidParams();
-        if (msg.value < currentBondAmount) revert InvalidParams();
-        if (committers.length >= MAX_COMMITTERS) revert TooManyCommitters();
-
-        hasCommitted[epoch][runner] = true;
-        bidCommits[epoch][runner] = commitHash;
-        committers.push(runner);
-        currentCommitCount += 1;
+        currentEpoch = epoch;
+        maxBid = maxBid_;
+        bond = bond_;
+        phase = AuctionPhase.COMMIT;
+        bootstrapped = true;
     }
 
     /// @inheritdoc IAuctionManager
-    function recordReveal(uint256 epoch, address runner, uint256 bidAmount, bytes32 salt) external override onlyFund {
-        if (epoch != currentAuctionEpoch) revert InvalidParams();
-        if (currentPhase != AuctionPhase.REVEAL) revert WrongPhase();
-        if (block.timestamp >= currentStartTime + commitWindow + revealWindow) revert TimingError();
-        if (!hasCommitted[epoch][runner]) revert Unauthorized();
-        if (hasRevealed[epoch][runner]) revert AlreadyDone();
-
-        // Verify commitment. The runner address is part of the preimage to
-        // prevent reveal front-running: if a commit hash only bound (bid, salt),
-        // an attacker could observe a legit runner's commit, submit the same
-        // hash under their own address, then front-run the legit reveal tx
-        // and steal the winning slot with the same (bid, salt) pair.
-        bytes32 expectedHash = keccak256(abi.encodePacked(runner, bidAmount, salt));
-        if (expectedHash != bidCommits[epoch][runner]) revert InvalidParams();
-
-        hasRevealed[epoch][runner] = true;
-        revealedBids[epoch][runner] = bidAmount;
-        saltAccumulator ^= salt;
-        currentRevealCount += 1;
-
-        // Update winner if this is the lowest bid (or first reveal)
-        if (currentWinner == address(0) || bidAmount < currentWinningBid) {
-            currentWinner = runner;
-            currentWinningBid = bidAmount;
-        }
-    }
-
-    /// @inheritdoc IAuctionManager
-    function settleExecution(uint256 epoch, address caller) external override onlyFund {
-        if (epoch != currentAuctionEpoch) revert InvalidParams();
-        if (currentPhase != AuctionPhase.EXECUTION) revert WrongPhase();
-        if (caller != currentWinner) revert Unauthorized();
-        if (block.timestamp >= _executionDeadline()) revert TimingError();
-
-        uint256 bondRefund = currentBondAmount;
-
-        // Phase stays at EXECUTION. Double-submit prevention lives on the
-        // fund side (`epochs[epoch].executed`). The fund's `_closeExecution`
-        // later observes `executed==true` and skips forfeit before advancing.
-        _storeHistory(false);
-
-        // Push bond directly to winner. If the push fails, the whole
-        // submitAuctionResult tx reverts — the winner's own contract is
-        // at fault (e.g. non-payable fallback), and they can retry after
-        // fixing it.
-        (bool sent, ) = payable(caller).call{value: bondRefund}("");
-        if (!sent) revert TransferFailed();
-    }
-
-    /// @inheritdoc IAuctionManager
-    /// @dev End-of-epoch state-clear. Called exclusively by the fund at the
-    ///      EXECUTION → COMMIT-of-next-epoch boundary. Distinguishes
-    ///      "winner already submitted" from "winner no-showed" by whether
-    ///      history was stored (settleExecution stores on success):
-    ///        - history stored   → bond already refunded in settleExecution;
-    ///                             just clear state.
-    ///        - history not stored → winner never submitted; forfeit the
-    ///                             held bond to the fund, store history
-    ///                             (marked forfeited), then clear state.
-    function closeExecution() external override onlyFund nonReentrant {
-        if (currentPhase != AuctionPhase.EXECUTION) revert WrongPhase();
-
-        uint256 epoch = currentAuctionEpoch;
-        bool alreadySettled = auctionHistory[epoch].startTime != 0;
-
-        if (!alreadySettled) {
-            uint256 forfeitedBond = currentBondAmount;
-            _storeHistory(true);
-            if (forfeitedBond > 0 && currentWinner != address(0)) {
-                (bool sent, ) = payable(fund).call{value: forfeitedBond}("");
-                if (!sent) revert TransferFailed();
-            }
-        }
-
-        _clearCurrentAuction();
-        // Zero the tag so getX(epoch) lookups route through auctionHistory
-        // until the fund calls openAuction() for the next epoch.
-        currentAuctionEpoch = 0;
-    }
-
-    // ─── Configuration ──────────────────────────────────────────────────
-
-    /// @inheritdoc IAuctionManager
-    function setTiming(uint256 _commitWindow, uint256 _revealWindow, uint256 _executionWindow) external override onlyFund {
-        if (_commitWindow == 0 || _revealWindow == 0 || _executionWindow == 0) revert InvalidParams();
-        commitWindow = _commitWindow;
-        revealWindow = _revealWindow;
-        executionWindow = _executionWindow;
-    }
-
-    // ─── Bond Claims ────────────────────────────────────────────────────
-
-    /// @inheritdoc IAuctionManager
-    function claimBond(uint256 epoch) external override nonReentrant {
-        if (!hasRevealed[epoch][msg.sender]) revert Unauthorized();
-        if (msg.sender == _getWinner(epoch)) revert InvalidParams(); // winners use settleExecution
-        if (hasClaimed[epoch][msg.sender]) revert AlreadyDone();
-
-        uint256 bond = _getBond(epoch);
-        if (bond == 0) revert InvalidParams();
-
-        hasClaimed[epoch][msg.sender] = true;
-        pendingBondRefunds -= bond;
-
-        (bool sent, ) = payable(msg.sender).call{value: bond}("");
-        if (!sent) revert TransferFailed();
-    }
-
-    // ─── Owner-Driven Reset ─────────────────────────────────────────────
-
-    /// @notice Abort the in-flight auction and refund all held bonds.
-    ///         Callable only by the fund (via its owner `resetAuction` and
-    ///         `migrate` entry points, both routing through the shared
-    ///         `_resetAuction` internal). This is operator intervention,
-    ///         NOT a forfeit event — committers get their bonds back
-    ///         regardless of phase.
-    ///
-    /// Per-phase refund matrix:
-    ///  - COMMIT:    all committers' bonds are held here → refund all.
-    ///  - REVEAL:    all committers' bonds are held here → refund all
-    ///               (reveals haven't settled yet; both revealers and
-    ///               non-revealers get their bond back).
-    ///  - EXECUTION: non-revealer bonds were already forfeited to the
-    ///               fund at reveal close and are NOT unwound here. Non-
-    ///               winning revealers already have a `pendingBondRefunds`
-    ///               credit and will claim via `claimBond` as normal. The
-    ///               only bond still held by the AM is the winner's —
-    ///               that's what we refund (if there is a winner).
-    ///
-    /// @dev Refunds are direct push. If any committer's push fails (e.g.
-    ///      a malicious fallback), the entire reset reverts. The operator
-    ///      must investigate and either remove the griefer (by a direct
-    ///      admin action outside this contract) or accept that recovery
-    ///      requires off-chain coordination. In practice the committer
-    ///      set is small and operator-controlled, so this is acceptable.
-    function abortAuction() external onlyFund nonReentrant {
-        // No live auction (e.g., we're between _closeExecution and
-        // _openAuction under sunset). Nothing to abort, no history to store.
-        if (currentAuctionEpoch == 0) return;
-
-        AuctionPhase phase = currentPhase;
-        uint256 bond = currentBondAmount;
-
-        if (phase == AuctionPhase.COMMIT || phase == AuctionPhase.REVEAL) {
-            // Refund every committer. In REVEAL phase we don't distinguish
-            // revealers from non-revealers — this is an abort, everyone
-            // gets their bond back.
-            address[] memory list = committers;
-            for (uint256 i = 0; i < list.length; i++) {
-                if (bond > 0) {
-                    (bool sent, ) = payable(list[i]).call{value: bond}("");
-                    if (!sent) revert TransferFailed();
-                }
-            }
-        } else {
-            // EXECUTION: only the winner's bond is still held here.
-            address winner = currentWinner;
-            if (winner != address(0) && bond > 0) {
-                (bool sent, ) = payable(winner).call{value: bond}("");
-                if (!sent) revert TransferFailed();
-            }
-        }
-
-        // Record history so the epoch is visibly "closed" in auctionHistory,
-        // then clear working state. Mark as not-forfeited — this is an
-        // operator abort, not a winner failure.
-        _storeHistory(false);
-        _clearCurrentAuction();
-        // After abort there is no active auction. Zero out the epoch tag so
-        // getX(epoch) lookups route through auctionHistory. The fund MUST
-        // immediately call openAuction() to restore a live auction — any
-        // interaction between abort and open is undefined.
-        currentAuctionEpoch = 0;
-    }
-
-    // ─── Owner-Driven Single-Step Advance ───────────────────────────────
-
-    /// @notice Force-close the current auction phase WITHOUT checking
-    ///         wall-clock deadlines. Callable only by the fund (via its
-    ///         owner `nextPhase` entry point and internal `_nextPhase`
-    ///         primitive). The time-independent counterpart to `syncPhase`.
-    ///
-    /// Transitions by phase:
-    ///  - COMMIT    → REVEAL (phase always advances regardless of commit
-    ///                count; see `_closeCommit`).
-    ///  - REVEAL    → EXECUTION (captures seed and pushes forfeited
-    ///                non-revealer bonds; see `_closeReveal`).
-    ///  - EXECUTION: reverts with WrongPhase. The EXECUTION → COMMIT-of-
-    ///                next-epoch transition is handled exclusively by the
-    ///                fund (via `_closeExecution` + `_openAuction`).
-    ///
-    /// @dev User actions (commit, reveal, submitAuctionResult) still
-    ///      enforce their wall-clock windows. `forceClosePhase` only
-    ///      bypasses the *state-machine's* time gates — it does not
-    ///      grant the owner a way to invalidate a revealer's fair
-    ///      reveal window, because those bounds are enforced in
-    ///      commit()/recordReveal()/settleExecution() themselves. The
-    ///      worst an owner can do with this is prematurely close a
-    ///      phase — bidders lose the opportunity to act, but bonds
-    ///      are still handled by the normal close-paths.
-    function forceClosePhase() external override onlyFund nonReentrant {
-        AuctionPhase phase = currentPhase;
-        if (phase == AuctionPhase.COMMIT) {
-            _closeCommit();
-        } else if (phase == AuctionPhase.REVEAL) {
+    function nextPhase() external override onlyFund nonReentrant {
+        AuctionPhase p = phase;
+        if (p == AuctionPhase.COMMIT) {
+            phase = AuctionPhase.REVEAL;
+        } else if (p == AuctionPhase.REVEAL) {
             _closeReveal();
         } else {
-            // EXECUTION — the fund handles the boundary, not us.
+            // EXECUTION and SETTLED cannot be advanced via nextPhase.
+            // EXECUTION requires settleExecution / closeExecution / abortAuction.
+            // SETTLED requires openAuction.
             revert WrongPhase();
         }
     }
 
-    // ─── Internal: Phase Transitions ────────────────────────────────────
+    /// @inheritdoc IAuctionManager
+    function settleExecution() external payable override onlyFund nonReentrant {
+        if (phase != AuctionPhase.EXECUTION) revert WrongPhase();
+        if (msg.value != winningBid) revert BountyMismatch();
 
-    /// @dev Close the commit phase. COMMIT → REVEAL unconditionally.
-    ///      Under the 3-phase cyclic model, phases always advance. An empty
-    ///      commit window lands in REVEAL with zero revealers, which then
-    ///      advances to EXECUTION with no winner — the fund's
-    ///      `_closeExecution` handles the "no-winner" case at the boundary.
-    function _closeCommit() internal {
-        currentPhase = AuctionPhase.REVEAL;
+        address w = winner;
+        // With MAX_COMMITTERS > 0 and at least one revealer required to
+        // reach EXECUTION with a real winner, `w` should be set — but guard
+        // defensively. If nobody revealed, closeExecution is the correct
+        // terminal path, not settleExecution.
+        if (w == address(0)) revert InvalidParams();
+
+        uint256 refund = bond + msg.value;
+        _storeHistory(false);
+        phase = AuctionPhase.SETTLED;
+
+        (bool sent, ) = payable(w).call{value: refund}("");
+        if (!sent) revert TransferFailed();
     }
 
-    /// @dev Close the reveal phase. REVEAL → EXECUTION unconditionally.
-    ///      Captures randomness seed from prevrandao XOR accumulated salts.
-    ///      Computes aggregate bond refunds O(1) (no committer loop):
-    ///        - non-winning revealers: credited to pendingBondRefunds (lazy claim).
-    ///        - non-revealers: bonds forfeited to fund treasury immediately.
-    ///      If there were zero reveals (or zero commits, cascading here), all
-    ///      held bonds go to the fund.
-    function _closeReveal() internal {
-        uint256 revealCount = currentRevealCount;
+    /// @inheritdoc IAuctionManager
+    function closeExecution() external override onlyFund nonReentrant {
+        if (phase != AuctionPhase.EXECUTION) revert WrongPhase();
 
-        // Enter execution phase. Seed is computed even when revealCount==0
-        // (it simply doesn't matter — there's no winner to use it).
-        currentPhase = AuctionPhase.EXECUTION;
-        currentRandomnessSeed = uint256(keccak256(abi.encodePacked(block.prevrandao, saltAccumulator)));
+        address w = winner;
+        uint256 forfeited = bond;
 
-        uint256 bond = currentBondAmount;
-        uint256 forfeitedBonds;
+        // If there was a winner who failed to submit, forfeit their bond
+        // to the fund. If there was no winner (empty auction), there's
+        // no in-flight bond to forfeit — non-revealer bonds already went
+        // to the fund at REVEAL close.
+        _storeHistory(w != address(0));  // forfeited=true iff winner no-showed
+        phase = AuctionPhase.SETTLED;
 
-        if (revealCount == 0) {
-            // No reveals — every committer's bond forfeits to the fund.
-            forfeitedBonds = currentCommitCount * bond;
+        if (w != address(0) && forfeited > 0) {
+            (bool sent, ) = payable(fund).call{value: forfeited}("");
+            if (!sent) revert TransferFailed();
+        }
+    }
+
+    /// @inheritdoc IAuctionManager
+    /// @dev Per-phase refund matrix:
+    ///  - COMMIT:    all committer bonds held here → refund each committer.
+    ///  - REVEAL:    all committer bonds held here → refund each committer
+    ///               (reveals haven't settled yet; both revealers and
+    ///               non-revealers get their bond back).
+    ///  - EXECUTION: non-revealer bonds already forfeited at reveal close
+    ///               (not unwound). Non-winning revealer credits in
+    ///               pendingBondRefunds remain claimable post-abort. Only
+    ///               the winner's bond is refunded here (if there is one).
+    ///  - SETTLED:   no-op (already terminal; nothing to refund).
+    function abortAuction() external override onlyFund nonReentrant {
+        AuctionPhase p = phase;
+        if (p == AuctionPhase.SETTLED) return;
+
+        uint256 b = bond;
+
+        if (p == AuctionPhase.COMMIT || p == AuctionPhase.REVEAL) {
+            address[] memory list = committers;
+            for (uint256 i = 0; i < list.length; i++) {
+                if (b > 0) {
+                    (bool sent, ) = payable(list[i]).call{value: b}("");
+                    if (!sent) revert TransferFailed();
+                }
+            }
         } else {
-            // O(1) bond accounting — no committer loop.
-            uint256 nonWinnerRevealers = revealCount - 1;          // winner is a revealer
-            uint256 revealerRefunds = nonWinnerRevealers * bond;   // owed to non-winning revealers
-            forfeitedBonds = (currentCommitCount - revealCount) * bond; // non-revealers forfeit
-            pendingBondRefunds += revealerRefunds;
+            // EXECUTION
+            address w = winner;
+            if (w != address(0) && b > 0) {
+                (bool sent, ) = payable(w).call{value: b}("");
+                if (!sent) revert TransferFailed();
+            }
         }
 
-        // Send forfeited bonds to the fund treasury immediately.
-        if (forfeitedBonds > 0) {
-            (bool sent, ) = payable(fund).call{value: forfeitedBonds}("");
+        _storeHistory(false);
+        phase = AuctionPhase.SETTLED;
+    }
+
+    // ─── Bidder Actions (onlyFund) ──────────────────────────────────────
+
+    /// @inheritdoc IAuctionManager
+    function commit(address runner, bytes32 commitHash) external payable override onlyFund {
+        if (phase != AuctionPhase.COMMIT) revert WrongPhase();
+        if (commitHash == bytes32(0)) revert InvalidParams();
+        if (msg.value != bond) revert InvalidParams();
+        if (hasCommitted[runner]) revert AlreadyDone();
+        if (committers.length >= MAX_COMMITTERS) revert TooManyCommitters();
+
+        hasCommitted[runner] = true;
+        commitHashOf[runner] = commitHash;
+        committers.push(runner);
+        commitCount += 1;
+    }
+
+    /// @inheritdoc IAuctionManager
+    function reveal(address runner, uint256 bidAmount, bytes32 salt) external override onlyFund {
+        if (phase != AuctionPhase.REVEAL) revert WrongPhase();
+        if (!hasCommitted[runner]) revert Unauthorized();
+        if (hasRevealed[runner]) revert AlreadyDone();
+        if (bidAmount == 0) revert InvalidParams();
+        if (bidAmount > maxBid) revert InvalidParams();
+
+        // Commit hash binds the runner address to prevent reveal front-running.
+        bytes32 expected = keccak256(abi.encodePacked(runner, bidAmount, salt));
+        if (expected != commitHashOf[runner]) revert InvalidParams();
+
+        hasRevealed[runner] = true;
+        // Also persist to the epoch-keyed mapping so `claimBond` works from
+        // the moment REVEAL→EXECUTION completes (without waiting for
+        // settlement). The persistent write lets non-winning revealers
+        // claim as soon as their non-winner status is known — which is at
+        // reveal-close when the winner is finalized, before settleExecution.
+        hasRevealedInEpoch[currentEpoch][runner] = true;
+        revealedBidOf[runner] = bidAmount;
+        revealCount += 1;
+
+        // Incrementally track winner: lowest bid wins; first-revealer tiebreak.
+        if (winner == address(0) || bidAmount < winningBid) {
+            winner = runner;
+            winningBid = bidAmount;
+        }
+    }
+
+    // ─── Bond Claims (permissionless) ───────────────────────────────────
+
+    /// @inheritdoc IAuctionManager
+    function claimBond(uint256 epoch) external override nonReentrant {
+        if (!hasRevealedInEpoch[epoch][msg.sender]) revert Unauthorized();
+        if (hasClaimed[epoch][msg.sender]) revert AlreadyDone();
+        if (msg.sender == auctionHistory[epoch].winner) revert InvalidParams();
+
+        uint256 b = auctionHistory[epoch].bond;
+        if (b == 0) revert InvalidParams();
+
+        hasClaimed[epoch][msg.sender] = true;
+        pendingBondRefunds -= b;
+
+        (bool sent, ) = payable(msg.sender).call{value: b}("");
+        if (!sent) revert TransferFailed();
+    }
+
+    // ─── Internal: Phase Transitions ────────────────────────────────────
+
+    /// @dev REVEAL → EXECUTION. Aggregates O(1) bond accounting:
+    ///       - non-winning revealers → credited to pendingBondRefunds
+    ///       - non-revealers → bonds forfeited to fund immediately
+    ///       - no reveals at all → all committer bonds forfeit to fund
+    ///
+    ///      Also partially populates `auctionHistory[currentEpoch]` — the
+    ///      winner, winningBid, and bond are known at this point, so we
+    ///      commit them to history immediately. This lets `claimBond` work
+    ///      during EXECUTION (before settleExecution/closeExecution/abort
+    ///      fire). The committer list and per-runner BidRecords are
+    ///      finalized later in `_storeHistory` at terminal transition.
+    function _closeReveal() internal {
+        uint256 rc = revealCount;
+        uint256 cc = commitCount;
+        uint256 b = bond;
+        uint256 forfeited;
+
+        phase = AuctionPhase.EXECUTION;
+
+        // Partial history write — enough for claimBond to work.
+        AuctionSummary storage s = auctionHistory[currentEpoch];
+        s.winner = winner;
+        s.winningBid = winningBid;
+        s.bond = b;
+
+        if (rc == 0) {
+            // No reveals — every committer's bond forfeits.
+            forfeited = cc * b;
+        } else {
+            // Winner is a revealer; `rc - 1` non-winning revealers hold claims.
+            uint256 nonWinnerRevealers = rc - 1;
+            pendingBondRefunds += nonWinnerRevealers * b;
+            forfeited = (cc - rc) * b;  // non-revealers
+        }
+
+        if (forfeited > 0) {
+            (bool sent, ) = payable(fund).call{value: forfeited}("");
             if (!sent) revert TransferFailed();
         }
     }
 
     // ─── Internal: History & Cleanup ────────────────────────────────────
 
-    /// @dev Store historical records for the current auction.
+    /// @dev Freeze the current auction's state into historical records.
+    ///      Called on each path into SETTLED (settle / close / abort).
+    ///      `forfeited` marks the winner's bond status: true on no-show
+    ///      forfeiture (closeExecution), false otherwise.
     function _storeHistory(bool forfeited) internal {
-        uint256 epoch = currentAuctionEpoch;
+        uint256 e = currentEpoch;
+        AuctionSummary storage s = auctionHistory[e];
+        s.winner = winner;
+        s.winningBid = winningBid;
+        s.bond = bond;
+        s.committerList = committers;
 
-        // Store auction summary
-        auctionHistory[epoch].startTime = currentStartTime;
-        auctionHistory[epoch].winner = currentWinner;
-        auctionHistory[epoch].winningBid = currentWinningBid;
-        auctionHistory[epoch].bondAmount = currentBondAmount;
-        auctionHistory[epoch].randomnessSeed = currentRandomnessSeed;
-        auctionHistory[epoch].committerList = committers;
-
-        // Store per-runner bid records
-        address winner = currentWinner;
+        address w = winner;
         for (uint256 i = 0; i < committers.length; i++) {
-            address runner = committers[i];
-            bool revealed = hasRevealed[epoch][runner];
-            bidRecords[epoch][runner] = BidRecord({
+            address r = committers[i];
+            bool revealed = hasRevealed[r];
+            bidRecords[e][r] = BidRecord({
                 revealed: revealed,
-                bidAmount: revealed ? revealedBids[epoch][runner] : 0,
-                winner: runner == winner,
-                forfeited: runner == winner && forfeited
+                bidAmount: revealed ? revealedBidOf[r] : 0,
+                winner: r == w,
+                forfeited: r == w && forfeited
             });
+            if (revealed) {
+                hasRevealedInEpoch[e][r] = true;
+            }
         }
     }
 
-    /// @dev Clear current auction working state for reuse.
-    ///      Per-runner mappings are epoch-keyed, so no cleanup loop needed.
-    ///      `currentPhase` is deliberately NOT reset here — `openAuction`
-    ///      always sets it to COMMIT immediately after, and between abort
-    ///      and open there should be no external reads.
+    /// @dev Wipe current-auction working state. Called at `openAuction` so
+    ///      the next auction starts with a clean slate. Historical records
+    ///      remain; `hasRevealedInEpoch[e]` is the canonical "did X reveal
+    ///      in epoch e?" signal for past epochs.
     function _clearCurrentAuction() internal {
+        for (uint256 i = 0; i < committers.length; i++) {
+            address r = committers[i];
+            delete hasCommitted[r];
+            delete hasRevealed[r];
+            delete commitHashOf[r];
+            delete revealedBidOf[r];
+        }
         delete committers;
-
-        currentStartTime = 0;
-        currentBondAmount = 0;
-        currentCommitCount = 0;
-        currentRevealCount = 0;
-        saltAccumulator = bytes32(0);
-        currentWinner = address(0);
-        currentWinningBid = 0;
-        currentRandomnessSeed = 0;
+        winner = address(0);
+        winningBid = 0;
+        commitCount = 0;
+        revealCount = 0;
     }
 
-    // ─── Internal: Helpers ──────────────────────────────────────────────
+    // ─── Views ──────────────────────────────────────────────────────────
 
-    function _executionDeadline() internal view returns (uint256) {
-        return currentStartTime + commitWindow + revealWindow + executionWindow;
+    /// @inheritdoc IAuctionManager
+    function getCommitters() external view override returns (address[] memory) {
+        return committers;
     }
 
-    /// @dev Get winner for an epoch (current or historical).
-    function _getWinner(uint256 epoch) internal view returns (address) {
-        if (epoch == currentAuctionEpoch) return currentWinner;
+    /// @inheritdoc IAuctionManager
+    function didReveal(address runner) external view override returns (bool) {
+        return hasRevealed[runner];
+    }
+
+    /// @inheritdoc IAuctionManager
+    function getWinner(uint256 epoch) external view override returns (address) {
         return auctionHistory[epoch].winner;
     }
 
-    /// @dev Get bond for an epoch (current or historical).
-    function _getBond(uint256 epoch) internal view returns (uint256) {
-        if (epoch == currentAuctionEpoch) return currentBondAmount;
-        return auctionHistory[epoch].bondAmount;
-    }
-
-    // ─── Views ───────────────────────────────────────────────────────────
-
-    /// @notice Returns the current live phase for `epoch` if `epoch` matches
-    ///         the in-flight auction, otherwise returns EXECUTION (the
-    ///         terminal phase for any past epoch — past epochs are "done"
-    ///         in the sense that the fund has moved on, and their fund-side
-    ///         `executed` bit carries the success/forfeit distinction).
-    ///         Epochs that were never opened also return EXECUTION — the
-    ///         fund's `epochs[e].executed` is the authoritative "did this
-    ///         epoch's auction actually run" signal.
-    function getPhase(uint256 epoch) external view override returns (AuctionPhase) {
-        if (epoch == currentAuctionEpoch) return currentPhase;
-        return AuctionPhase.EXECUTION;
-    }
-
-    function getWinner(uint256 epoch) external view override returns (address) {
-        return _getWinner(epoch);
-    }
-
+    /// @inheritdoc IAuctionManager
     function getWinningBid(uint256 epoch) external view override returns (uint256) {
-        if (epoch == currentAuctionEpoch) return currentWinningBid;
         return auctionHistory[epoch].winningBid;
     }
 
+    /// @inheritdoc IAuctionManager
     function getBond(uint256 epoch) external view override returns (uint256) {
-        return _getBond(epoch);
+        return auctionHistory[epoch].bond;
     }
 
-    function getStartTime(uint256 epoch) external view override returns (uint256) {
-        if (epoch == currentAuctionEpoch) return currentStartTime;
-        return auctionHistory[epoch].startTime;
-    }
-
-    function getRandomnessSeed(uint256 epoch) external view override returns (uint256) {
-        if (epoch == currentAuctionEpoch) return currentRandomnessSeed;
-        return auctionHistory[epoch].randomnessSeed;
-    }
-
-    function getCommitters(uint256 epoch) external view override returns (address[] memory) {
-        if (epoch == currentAuctionEpoch) return committers;
-        return auctionHistory[epoch].committerList;
-    }
-
-    function didReveal(uint256 epoch, address runner) external view override returns (bool) {
-        if (epoch == currentAuctionEpoch) return hasRevealed[epoch][runner];
-        return bidRecords[epoch][runner].revealed;
-    }
-
+    /// @inheritdoc IAuctionManager
     function getBidRecord(uint256 epoch, address runner) external view override returns (BidRecord memory) {
         return bidRecords[epoch][runner];
     }
 
-    function executionDeadline() external view override returns (uint256) {
-        return _executionDeadline();
+    /// @inheritdoc IAuctionManager
+    function getCommittersOfEpoch(uint256 epoch) external view override returns (address[] memory) {
+        return auctionHistory[epoch].committerList;
     }
 
-    // Accept ETH (bond payments forwarded from fund)
+    /// @inheritdoc IAuctionManager
+    function didRevealInEpoch(uint256 epoch, address runner) external view override returns (bool) {
+        return hasRevealedInEpoch[epoch][runner];
+    }
+
+    // Accept ETH (bond payments flow in via payable `commit` and bounty via
+    // payable `settleExecution`; this receive guards against accidental
+    // direct sends but doesn't error — tests and harnesses may pre-fund).
     receive() external payable {}
 }

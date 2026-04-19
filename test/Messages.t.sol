@@ -663,9 +663,9 @@ contract MessagesTest is EpochTest {
         uint256 bond = fund.currentBond();
         address runner = EPOCH_TEST_RUNNER;
         bytes32 salt = bytes32(uint256(0xF00D));
-        uint256 auctionStart = am.getStartTime(2);
-        uint256 commitEnd = auctionStart + am.commitWindow();
-        uint256 revealEnd = commitEnd + am.revealWindow();
+        uint256 auctionStart = fund.currentAuctionStartTime();
+        uint256 commitEnd = auctionStart + fund.commitWindow();
+        uint256 revealEnd = commitEnd + fund.revealWindow();
 
         vm.prank(runner);
         fund.commit{value: bond}(keccak256(abi.encodePacked(runner, uint256(1), salt)));
@@ -746,9 +746,9 @@ contract MessagesTest is EpochTest {
         uint256 bond = fund.currentBond();
         address runner = EPOCH_TEST_RUNNER;
         bytes32 salt = bytes32(uint256(0xF00D));
-        uint256 auctionStart = am.getStartTime(2);
-        uint256 commitEnd = auctionStart + am.commitWindow();
-        uint256 revealEnd = commitEnd + am.revealWindow();
+        uint256 auctionStart = fund.currentAuctionStartTime();
+        uint256 commitEnd = auctionStart + fund.commitWindow();
+        uint256 revealEnd = commitEnd + fund.revealWindow();
 
         vm.prank(runner);
         fund.commit{value: bond}(keccak256(abi.encodePacked(runner, uint256(1), salt)));
