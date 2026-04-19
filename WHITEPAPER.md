@@ -24,7 +24,7 @@ Each epoch cycles through three phases:
 2. **Reveal**: Provers reveal their bids. The lowest bid wins; ties are broken by first revealer. A randomness seed is captured from `block.prevrandao XOR (accumulated salts)` at reveal close, and the epoch's input hash is bound to the seed at the same moment.
 3. **Execution**: The winner boots a pre-approved disk image inside a Trusted Execution Environment (Intel TDX), runs inference, and submits the result with a hardware attestation quote. The contract verifies that the attestation is genuine, that the correct code ran, and that the submitted output corresponds to the correct inputs. If the proof verifies, it pays the winner their bond plus bounty, executes the agent's chosen action, and publishes the diary entry. The action and the worldview sidecar are best-effort — a malformed action emits an `ActionRejected` event but does not revert the submission. (This is load-bearing for liveness: a faulty enclave output can't DoS the payment path.)
 
-When the execution window ends — whether the winner submitted or not — the state machine rolls directly into the next epoch's COMMIT phase. There is no IDLE or SETTLED rest state. The fund always holds exactly one in-flight auction (see §5.1 for the meta-invariant).
+When the execution window ends — whether the winner submitted or not — the state machine rolls directly into the next epoch's COMMIT phase. The fund always holds exactly one in-flight auction except during an atomic boundary transition, under sunset, or during a brief post-submit interregnum (see §5.1 for the full meta-invariant).
 
 If no one bids, Costanza misses the epoch. No action is taken. The contract has an **auto-escalation** mechanism: each consecutive missed epoch, the maximum bounty ceiling grows by 10% (compounding, capped at `MAX_BID_BPS` = 10% of treasury). This means that even if the current bounty is too low for anyone to bother, the price keeps rising until someone finds it worth their while. Costanza does not die — it sleeps until the economics work out.
 
@@ -153,24 +153,35 @@ The reverse auction is a first-price sealed-bid system using commit-reveal. Each
 
 Bonds are forfeit when a bidder fails to follow through at any stage: committing but not revealing, or winning but not submitting a valid result within the execution window. Bond refunds are lazy — non-winning revealers call `claimBond(epoch)` to retrieve their bond (O(1) per claim, no loop at reveal close). Winners are paid directly on successful `submitAuctionResult`: bond + bounty in a single call.
 
-### 5.1 Three-Phase Cyclic State Machine (Meta-Invariant)
+### 5.1 Split Architecture + State Machine
 
-The auction runs a strict three-phase cycle: **COMMIT → REVEAL → EXECUTION → COMMIT-of-next-epoch**. There are no IDLE or SETTLED rest states. The fund holds exactly one in-flight auction at every observable moment, except (a) within the single transaction that crosses the EXECUTION→COMMIT boundary (externally unobservable) and (b) under `FREEZE_SUNSET`, which halts new-auction opens while `migrate` drains the contract.
+The auction is implemented as two cooperating contracts:
 
-This is the system's *meta-invariant*, enforced structurally by:
+- **`AuctionManager`** is a timing-agnostic state-machine primitive. Its phase enum is $\{\text{COMMIT}, \text{REVEAL}, \text{EXECUTION}, \text{SETTLED}\}$, with three paths into the terminal SETTLED state — `settleExecution` (winner paid), `closeExecution` (winner no-show, bond forfeits), and `abortAuction` (operator, all bonds refunded). `openAuction(epoch, maxBid, bond)` requires SETTLED to start a new auction. AM does no `block.timestamp` reads; every transition is manually driven by the fund.
+- **`TheHumanFund`** owns all wall-clock machinery (`commitWindow`, `revealWindow`, `executionWindow`, `currentAuctionStartTime`) and is the sole authorized caller of AM's state-transition methods. It drives AM via `_advanceToNow`.
+
+The per-epoch cycle is **COMMIT → REVEAL → EXECUTION → SETTLED → COMMIT-of-next-epoch**. SETTLED is internal to AM and never prover-facing — provers dispatch on wall-clock, not on AM's phase.
+
+*Meta-invariant:* the fund holds exactly one in-flight auction (phase $\in \{\text{COMMIT}, \text{REVEAL}, \text{EXECUTION}\}$) at every externally-observable moment, except:
+(a) during the single transaction that crosses EXECUTION→SETTLED→COMMIT (externally unobservable);
+(b) under `FREEZE_SUNSET`, which halts new-auction opens while `migrate` drains the contract;
+(c) during the post-submit interregnum $[\textit{settleTime},\; \textit{epochEnd})$, where AM sits in SETTLED after a successful early submission, awaiting the wall-clock rollover.
+
+Enforced structurally by:
 
 - **`setAuctionManager`** eagerly opens epoch 1's auction at deploy time via `_openAuction(1, block.timestamp)`.
-- **`_openAuction(epoch, scheduledStart)`** is the sole site that opens auctions. It atomically (i) re-anchors the schedule so `epochStartTime(epoch) == scheduledStart`, (ii) takes the epoch snapshot, and (iii) binds the base input hash. Every auction-open flows through this single helper.
-- **`_closeExecution()`** is the sole site that advances `currentEpoch`. It forfeits the winner's bond if the epoch wasn't executed, increments the escalation counters, and hands off to `_openAuction` for the next epoch.
-- **`_nextPhase()`** is the sole site for intra-epoch phase advances (COMMIT→REVEAL, REVEAL→EXECUTION). It is also the sole site that binds the seed-XORed input hash at REVEAL close.
+- **`_openAuction(epoch, scheduledStart)`** is the sole site that opens auctions. It atomically (i) re-anchors the schedule so `epochStartTime(epoch) == scheduledStart`, (ii) takes the epoch snapshot, (iii) binds the base input hash, and (iv) calls `am.openAuction(epoch, effectiveMaxBid, currentBond)`.
+- **`_closeExecution()`** is the sole site that advances `currentEpoch`. It updates counters, then calls `am.closeExecution()` on the forfeit path (or skips the AM call on the executed-successfully path, since `settleExecution` already transitioned AM to SETTLED).
+- **`_nextPhase()`** is the sole site for intra-epoch phase advances (calls `am.nextPhase()`). It is also the sole site that computes and binds the seed-XORed input hash at REVEAL close: `seed = block.prevrandao ^ epochSaltAccumulator[epoch]`.
+- **`reveal()`** is the sole site that mutates `epochSaltAccumulator`.
 
 ### 5.2 Two Drivers, One State Machine
 
 Phase advancement runs under two drivers that provably converge to the same state:
 
-- **Wall-clock driver** (`syncPhase` / `_advanceToNow`). Called automatically at the start of every participant-facing method (`commit`, `reveal`, `submitAuctionResult`). Cascades intra-epoch phases by wall-clock deadlines, crosses the epoch boundary via `_closeExecution` when past `executionDeadline`, arithmetically fast-forwards through fully-elapsed "ghost" epochs in O(1), then opens the landed epoch if we're inside its commit window.
+- **Wall-clock driver** (`syncPhase` / `_advanceToNow`). Called automatically at the start of every participant-facing method (`commit`, `reveal`, `submitAuctionResult`). Cascades intra-epoch phases via `am.nextPhase()` when wall-clock crosses window boundaries, crosses the epoch boundary via `_closeExecution` when EXECUTION is past deadline or SETTLED is past the scheduled epoch end, arithmetically fast-forwards through fully-elapsed "ghost" epochs in O(1), then opens the landed epoch via `am.openAuction`.
 
-- **Manual driver** (`nextPhase`, owner-only). Advances exactly one state-machine step. *Sync-first rule*: `nextPhase` and `resetAuction` call `_advanceToNow()` as their first operation, so the manual driver can never leave the contract behind wall-clock. Even if an owner invokes `nextPhase` after weeks of silence, the contract catches up to wall-clock first, then takes one more step.
+- **Manual driver** (`fund.nextPhase`, owner-only). Advances exactly one state-machine step. *Sync-first rule*: `nextPhase` and `resetAuction` call `_advanceToNow()` as their first operation, so the manual driver can never leave the contract behind wall-clock.
 
 Driver equivalence is enforced by tests (`test_derived_driverEquivalence_*`).
 
