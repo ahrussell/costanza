@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The Human Fund — Auction Runner Client (v2, resilient)
+"""The Human Fund — Auction Runner Client.
 
 Designed to run as a cron job (e.g., every 2 minutes). Uses chain state as
 the source of truth and local state as advisory only.
@@ -125,7 +125,9 @@ def get_tee_client(config):
             inference_timeout=config.get("enclave_timeout", 1800),
         )
     elif config["tee_client"] == "gcp-persistent":
-        from .tee_clients.gcp_persistent import GCPPersistentTEEClient
+        # Testnet-only client. Lives in deploy/testnet/ since it's not part
+        # of the production cron path.
+        from deploy.testnet.gcp_persistent import GCPPersistentTEEClient
         return GCPPersistentTEEClient(
             project=config["gcp_project"],
             zone=config["gcp_zone"],
@@ -557,10 +559,10 @@ def run(config):
 
     # When the owner calls nextPhase() to advance manually, the contract
     # can be ahead of the wall-clock. Trust whichever is further along.
-    # 3-phase cyclic model: no IDLE or SETTLED; the AM phase is one of
-    # COMMIT(0) / REVEAL(1) / EXECUTION(2). "epoch_over" is a wall-clock
-    # state meaning "past the execution deadline" — the AM will still be
-    # at EXECUTION until someone drives _closeExecution.
+    # The AM phase is one of COMMIT(0) / REVEAL(1) / EXECUTION(2);
+    # "epoch_over" is a wall-clock state meaning "past the execution
+    # deadline" — the AM will still be at EXECUTION until someone drives
+    # _closeExecution.
     CONTRACT_TO_EFFECTIVE = {0: "commit", 1: "reveal", 2: "execution"}
     PHASE_ORDER = {"commit": 0, "reveal": 1, "execution": 2, "epoch_over": 3}
     contract_effective = CONTRACT_TO_EFFECTIVE.get(contract_phase, "commit")

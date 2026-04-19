@@ -23,7 +23,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from .base import TEEClient
+from prover.client.tee_clients.base import TEEClient
 
 logger = logging.getLogger(__name__)
 

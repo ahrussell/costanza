@@ -520,9 +520,9 @@ def build_epoch_context(state, seed=None, voice_anchors: str = ""):
     # -- Section 5: Worldview --
     policies = state.get("guiding_policies", [""] * 10)
     has_policies = any(p for p in policies)
-    # Slot 0 is reserved (legacy "diary style" slot — WorldView rejects
-    # writes to it). The display loop iterates 1..7. The contract stores
-    # 10 slots in total; slots 8-9 are unused and hashed but not shown.
+    # Slot 0 is reserved (WorldView rejects writes). The display loop
+    # iterates 1..7. The contract stores 10 slots in total; slots 8-9
+    # are unused and hashed but not shown.
     slot_labels = {
         1: "Donation strategy",
         2: "Investment stance",
@@ -535,7 +535,7 @@ def build_epoch_context(state, seed=None, voice_anchors: str = ""):
     num_slots = 8  # upper bound for the 1..7 display loop
     lines.append("")
     lines.append("--- Your Worldview ---")
-    for i in range(1, num_slots):  # slot 0 (diary style) removed from system prompt
+    for i in range(1, num_slots):  # slot 0 reserved; skipped
         label = slot_labels.get(i, f"Slot {i}")
         p = policies[i] if i < len(policies) else ""
         if p:

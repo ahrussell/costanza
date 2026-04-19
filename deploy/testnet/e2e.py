@@ -111,14 +111,13 @@ def advance_to_fresh_epoch():
     return epoch
 
 
-# ─── Phase 3: Actions via Direct Mode ──────────────────────────────
+# ─── Phase 3: Actions ──────────────────────────────────────────────
 
 def test_actions(results):
-    print("\n── Phase 3: Actions (direct mode removed — skipping) ──")
-    print("  SKIPPED: submitEpochAction was removed in the _nextPhase refactor.")
-    print("  Actions now flow through commit → reveal → submitAuctionResult.")
-    print("  Covered by Foundry tests (285 passing including fuzz tests).")
-    results.ok("direct_mode_removed", "Direct mode correctly removed")
+    print("\n── Phase 3: Actions (covered by Foundry tests) ──")
+    print("  Actions flow through commit → reveal → submitAuctionResult.")
+    print("  Full coverage in forge test; skipped here.")
+    results.ok("actions_skipped", "Actions covered by Foundry tests")
     return
 
     # 3.6: Commission rate change
@@ -579,7 +578,6 @@ def test_freezing(results):
         4: ("FREEZE_WORLDVIEW_WIRING", "setWorldView"),
         8: ("FREEZE_AUCTION_CONFIG", "resetAuction"),
         16: ("FREEZE_VERIFIERS", "approveVerifier"),
-        # 64: FREEZE_DIRECT_MODE removed in _nextPhase refactor
         128: ("FREEZE_MIGRATE", "withdrawAll"),
     }
 

@@ -194,11 +194,9 @@ contract TheHumanFund is ReentrancyGuard {
     uint256 public constant PRICE_STALENESS_THRESHOLD = 3600; // 1 hour
     uint256 public constant MAX_MISSED_EPOCHS = 50;           // Cap loop iterations in effectiveMaxBid/currentBond
 
-    // Note: DCAP verification now handled by the AttestationVerifier contract (see setVerifier)
-
     // ─── State ───────────────────────────────────────────────────────────
 
-    address public owner;           // Deployer is the authorized runner for direct submission
+    address public owner;
     uint256 public deployTimestamp;
     uint256 public currentEpoch;
 
@@ -286,8 +284,7 @@ contract TheHumanFund is ReentrancyGuard {
     uint256 public constant FREEZE_WORLDVIEW_WIRING    = 1 << 2;
     uint256 public constant FREEZE_AUCTION_CONFIG      = 1 << 3;
     uint256 public constant FREEZE_VERIFIERS           = 1 << 4;
-    // FREEZE_PROMPT (1 << 5) removed — prompt verified via dm-verity image key
-    // FREEZE_DIRECT_MODE (1 << 6) removed — direct mode deleted in _nextPhase refactor
+    // Bits (1 << 5) and (1 << 6) are unused.
     uint256 public constant FREEZE_MIGRATE              = 1 << 7;
     uint256 public constant FREEZE_SUNSET               = 1 << 8;
     uint256 public frozenFlags;
@@ -1564,9 +1561,8 @@ contract TheHumanFund is ReentrancyGuard {
     }
 
     /// @dev Live rolling hash of recent epoch content hashes.
-    ///      Takes the epoch as a parameter because the caller may be
-    ///      freezing for a future epoch (direct mode) that isn't
-    ///      currentEpoch yet.
+    ///      Takes the epoch as a parameter so callers can compute the
+    ///      history rolling up to any target epoch.
     function _liveHashRecentHistory(uint256 epoch) internal view returns (bytes32) {
         if (epoch == 0) return bytes32(0);
 

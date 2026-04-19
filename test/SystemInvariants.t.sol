@@ -583,8 +583,7 @@ contract SystemInvariantsTest is EpochTest {
     // Derived: Driver equivalence
     //
     // Given the same (state, block.timestamp), time driver and manual
-    // driver produce the same resulting (state, schedule). Core property
-    // that justifies the refactor.
+    // driver produce the same resulting (state, schedule).
     // ══════════════════════════════════════════════════════════════════
 
     /// Driver equivalence (simplified): manual nextPhase and wall-clock
@@ -630,8 +629,8 @@ contract SystemInvariantsTest is EpochTest {
     // Derived: No stuck states
     //
     // For any reachable (epoch, phase), there exists a finite sequence of
-    // syncPhase calls that reaches a new epoch. Today `recover_submit.py`
-    // exists because this isn't guaranteed; the refactor makes it so.
+    // syncPhase calls that reaches a new epoch. No manual escape hatch
+    // required.
     // ══════════════════════════════════════════════════════════════════
 
     /// From any phase, enough wall-clock advancement + syncPhase always
@@ -891,9 +890,9 @@ contract SystemInvariantsTest is EpochTest {
     //     bookkeeping (consecutiveMissedEpochs, effectiveMaxBid, bond
     //     escalation, message queue preserved)
     //
-    // These tests run against the CURRENT contract and lock in the
-    // existing O(1) arithmetic-advance behavior (see commits 74dfdfd
-    // and 990f944). Any refactor regression shows up here immediately.
+    // These tests lock in the O(1) arithmetic-advance behavior; any
+    // regression (e.g. replacing the arithmetic path with a loop) shows
+    // up here immediately.
     // ══════════════════════════════════════════════════════════════════
 
     /// Warp 10 epochs forward with an auction open but no commits. Exactly
@@ -938,9 +937,7 @@ contract SystemInvariantsTest is EpochTest {
     /// the missed counter. Only the silent epochs count — the successful
     /// epoch itself is not a miss.
     function test_ff_successfulEpoch_thenSilence() public {
-        // Direct mode executes epoch 1 and advances currentEpoch to 2.
-        // (Direct mode is removed in commit 7; when it goes, swap this
-        // for a real commit/reveal/submit flow via the mock verifier.)
+        // Speedrun executes epoch 1 and advances currentEpoch to 2.
         speedrunEpoch(fund, abi.encodePacked(uint8(0)), "executed");
         assertEq(fund.consecutiveMissedEpochs(), 0, "reset after success");
         assertEq(fund.currentEpoch(), 2, "advanced past executed epoch 1");

@@ -253,7 +253,7 @@ class TestTamperingChangesHash:
     def test_tampered_effective_max_bid(
         self, sample_investments, sample_policies, sample_messages, sample_history
     ):
-        # effective_max_bid is now in _hashState, so lying about it changes the hash.
+        # effective_max_bid is in _hashState, so lying about it changes the hash.
         state = make_epoch_state(sample_investments, sample_policies, sample_messages, sample_history)
         self._mutate(state, lambda s: s.update(effective_max_bid=10**18))
 

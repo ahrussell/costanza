@@ -1,19 +1,19 @@
-# The Human Fund — Prover Client
+# The Human Fund — Prover Client (testnet, gcp-persistent flow)
 #
-# Runs the auction prover client locally. Inference runs on a GCP VM (not in
-# this container). The container just needs Python + web3 + gcloud CLI.
+# Runs the auction prover client locally for testnet, talking to a persistent
+# GCP VM for inference. Production deploys use prover/client/Dockerfile instead.
 #
-# Usage (testnet with persistent GCP VM):
-#   docker build -t humanfund-prover .
+# Build from the repo root (the build context must include prover/ + out/):
+#   docker build -f deploy/testnet/Dockerfile -t humanfund-prover .
 #   docker run --rm \
 #     --env-file .env \
-#     -v ~/.config/gcloud:/root/.config/gcloud:ro \
+#     -v ~/.config/gcloud:/root/.config/gcloud \
 #     -v ~/.humanfund:/root/.humanfund \
 #     humanfund-prover
 #
 # Or to pass extra args (e.g. --verbose):
 #   docker run --rm --env-file .env \
-#     -v ~/.config/gcloud:/root/.config/gcloud:ro \
+#     -v ~/.config/gcloud:/root/.config/gcloud \
 #     -v ~/.humanfund:/root/.humanfund \
 #     humanfund-prover --verbose
 #

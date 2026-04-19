@@ -230,8 +230,7 @@ def deploy_contracts(w3, account):
     print(f"  AuctionManager: {am_addr} (gas: {receipt.gasUsed})")
     nonce += 1
 
-    # Wire AuctionManager to fund AND set timing atomically
-    # (setAuctionManager now takes cw/rw/xw; setAuctionTiming was removed)
+    # Wire AuctionManager to fund AND set timing atomically.
     print(f"Wiring AuctionManager with timing (commit={COMMIT_WINDOW}s, reveal={REVEAL_WINDOW}s, exec={EXECUTION_WINDOW}s)...")
     tx = fund.functions.setAuctionManager(
         am_addr, COMMIT_WINDOW, REVEAL_WINDOW, EXECUTION_WINDOW
@@ -534,8 +533,7 @@ def run_dmverity_inference(w3, fund_addr, fund_abi, am_addr, am_abi, epoch, seed
     """
     print(f"\n  4d. Running dm-verity inference...")
 
-    # Read contract state using prover.client.epoch_state. After the
-    # pure-`_hashSnapshot` refactor, read_contract_state already pulls
+    # Read contract state using prover.client.epoch_state. It pulls
     # scalars from the frozen EpochSnapshot — no overlay needed.
     sys.path.insert(0, str(PROJECT_ROOT))
     from prover.client.epoch_state import read_contract_state

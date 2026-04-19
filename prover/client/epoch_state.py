@@ -4,10 +4,10 @@
 The snapshot-only pinning invariant
 ===================================
 
-After the "Layer 1" pure-_hashSnapshot refactor, the contract's on-chain
-input hash is computed *only* from `_epochSnapshots[epoch]` — the
-`_hashSnapshot` function is declared `pure`, so the Solidity compiler
-mechanically proves no live-storage reads leak into the hash path.
+The contract's on-chain input hash is computed *only* from
+`_epochSnapshots[epoch]` — the `_hashSnapshot` function is declared
+`pure`, so the Solidity compiler mechanically proves no live-storage
+reads leak into the hash path.
 
 For the prover side to be drift-free, this module must mirror that
 discipline: every scalar the enclave sees comes from `getEpochSnapshot`,

@@ -225,10 +225,10 @@ contract WorldViewTest is EpochTest {
         wv.setPolicy(1, "Unauthorized");
     }
 
-    /// @notice Slot 0 is reserved (legacy "diary style" slot). Writes must
-    ///         revert even when called by the fund. The enclave display
-    ///         skips slot 0, so allowing writes would just accumulate dead
-    ///         state that's hashed but never shown.
+    /// @notice Slot 0 is reserved. Writes must revert even when called by
+    ///         the fund. The enclave display skips slot 0, so allowing
+    ///         writes would just accumulate dead state that's hashed but
+    ///         never shown.
     function test_setPolicy_rejects_slot_zero_from_fund() public {
         vm.expectRevert("invalid slot");
         vm.prank(address(fund));

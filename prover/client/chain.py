@@ -94,10 +94,9 @@ class ChainClient:
         execution_window = am.functions.executionWindow().call()
         now = self.w3.eth.get_block("latest")["timestamp"]
 
-        # Under the 3-phase cyclic model there's no SETTLED phase — the
-        # authoritative "epoch resolved" signal is epochs[e].executed.
-        # Pulled alongside the phase so the dispatcher can short-circuit
-        # once a winner has already submitted successfully.
+        # Authoritative "epoch resolved" signal is epochs[e].executed. Pulled
+        # alongside the phase so the dispatcher can short-circuit once a
+        # winner has already submitted successfully.
         record = self.contract.functions.getEpochRecord(epoch).call()
         executed = bool(record[6])  # 7th field per EpochRecord layout
 
@@ -194,9 +193,8 @@ class ChainClient:
     def read_contract_state(self, epoch=None):
         """Read the full epoch state the enclave needs.
 
-        After the pure-`_hashSnapshot` refactor, this reads scalars from
-        the frozen `EpochSnapshot` directly — no separate overlay pass.
-        If epoch is specified, reads that epoch's snapshot instead of currentEpoch().
+        Reads scalars from the frozen `EpochSnapshot` directly. If epoch
+        is specified, reads that epoch's snapshot instead of currentEpoch().
         """
         from .epoch_state import read_contract_state
         return read_contract_state(self.contract, self.w3, epoch=epoch)

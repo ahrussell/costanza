@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Auction actions — commit, reveal, submit, sync.
 
-With the v2 contract, phase advancement is automatic (via syncPhase).
-The client only needs to call the action appropriate for the current
-wall-clock phase. Each action auto-syncs the contract state first.
+Phase advancement is automatic (via syncPhase). The client only needs
+to call the action appropriate for the current wall-clock phase. Each
+action auto-syncs the contract state first.
 """
 
 import logging
@@ -17,11 +17,11 @@ from .state import save as save_state
 
 logger = logging.getLogger(__name__)
 
-# Auction phases (matches contract enum — 3-phase cyclic model).
-# COMMIT → REVEAL → EXECUTION → COMMIT-of-next-epoch. There is no IDLE
-# or SETTLED rest state; the contract always holds exactly one in-flight
-# auction (except under FREEZE_SUNSET). `getPhase(pastEpoch)` returns
-# EXECUTION as a terminal marker for finished epochs.
+# Auction phases (matches contract enum).
+# COMMIT → REVEAL → EXECUTION → COMMIT-of-next-epoch. The contract
+# always holds exactly one in-flight auction (except under
+# FREEZE_SUNSET). `getPhase(pastEpoch)` returns EXECUTION as a
+# terminal marker for finished epochs.
 COMMIT = 0
 REVEAL = 1
 EXECUTION = 2

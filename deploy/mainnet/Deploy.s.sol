@@ -202,8 +202,7 @@ contract Deploy is Script {
     }
 
     function _seedWorldView(TheHumanFund fund) internal {
-        // Slot 0 is reserved (legacy "diary style" slot, unused in the live
-        // prompt) and the WorldView contract rejects writes to it.
+        // Slot 0 is reserved (the WorldView contract rejects writes to it).
         // Seed slots 1-6 only.
         uint256[] memory slots = new uint256[](5);
         string[] memory policies = new string[](5);
