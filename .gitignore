@@ -26,3 +26,6 @@ models/
 node_modules/
 
 .claude/
+
+# Testnet deploy env (secrets)
+.env.testnet-deploy

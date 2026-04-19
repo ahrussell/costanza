@@ -549,13 +549,16 @@
   .msg-item:last-child { border-bottom: none; }
 
   .msg-header {
-    display: flex; justify-content: space-between; margin-bottom: 6px;
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px;
   }
   .msg-sender {
     font-family: var(--mono); font-size: 11px; color: var(--text-dim);
   }
   .msg-amount {
     font-family: var(--mono); font-size: 11px; color: var(--green);
+  }
+  .msg-meta {
+    font-size: 10px; color: var(--text-dim); margin-left: auto;
   }
   .msg-text {
     font-size: 13px; line-height: 1.6; color: var(--text);
@@ -943,10 +946,10 @@
     <!-- Optional message -->
     <div style="padding-top:14px;border-top:1px solid var(--border);margin-top:4px;">
       <div style="font-size:13px;font-weight:500;margin-bottom:6px;">Message Costanza <span style="font-weight:400;color:var(--text-dim);font-size:12px;">(optional)</span></div>
-      <p style="font-size:12px;color:var(--text-secondary);margin-bottom:10px;line-height:1.5;">Leave a message that Costanza reads each epoch — it can influence his decisions. Requires a minimum donation of 0.01 ETH to reduce spam. Stored on-chain permanently.</p>
+      <p style="font-size:12px;color:var(--text-secondary);margin-bottom:10px;line-height:1.5;">Leave a message that Costanza can read — it can influence his decisions. Messages are queued on-chain and Costanza reads up to 3 per epoch, in order. Requires a minimum donation of 0.001 ETH.</p>
       <div class="form-group">
         <textarea class="form-input" id="message-text" placeholder="Write something to Costanza..." oninput="updateMessageByteCount()" style="min-height:80px;resize:vertical;"></textarea>
-        <div class="form-hint" id="message-hint">0 / 280 bytes. Emoji and non-ASCII characters count as multiple bytes. Stored on-chain forever.</div>
+        <div class="form-hint" id="message-hint">0 / 280 bytes. Emoji and non-ASCII characters count as multiple bytes.</div>
       </div>
     </div>
 
@@ -1074,21 +1077,11 @@
       Each epoch, Costanza reasons about his world to decide on his next action. His world includes the current status of his treasury, his recent diary entries, a worldview that he can update, and messages from donors.
     </p>
 
-    <!-- Row 1: Age/Lifespan + System Prompt + Worldview -->
-    <div class="grid-3" style="margin-bottom:16px;">
+    <!-- Row 1: Age/Lifespan + Worldview -->
+    <div class="grid-2" style="margin-bottom:16px;">
       <div class="card">
         <div class="card-header">Age &amp; Lifespan</div>
         <div id="world-age"><div class="loading">Loading</div></div>
-      </div>
-
-      <div class="card" id="sysprompt-card" style="cursor:pointer;" onclick="openModal('sysprompt')">
-        <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0;">
-          <span>System Prompt</span>
-          <button class="hero-diary-toggle wc-toggle" onclick="event.stopPropagation();openModal('sysprompt')">↗</button>
-        </div>
-        <div id="sysprompt-preview" style="margin-top:12px;position:relative;max-height:120px;overflow:hidden;">
-          <div class="loading">Loading</div>
-        </div>
       </div>
 
       <div class="card" id="worldview-card" style="cursor:pointer;" onclick="openModal('worldview')">
@@ -1181,14 +1174,6 @@
   </div>
 </div>
 
-<!-- SYSTEM PROMPT MODAL -->
-<div class="modal-overlay" id="modal-sysprompt" onclick="closeModal(event, 'sysprompt')">
-  <div class="modal modal-wide" onclick="event.stopPropagation()">
-    <button class="modal-close" onclick="document.getElementById('modal-sysprompt').classList.remove('open')">&times;</button>
-    <h3>System Prompt</h3>
-    <div id="sysprompt-full" style="max-height:70vh;overflow-y:auto;"></div>
-  </div>
-</div>
 
 <!-- ALL MESSAGES MODAL -->
 <div class="modal-overlay" id="modal-all-messages" onclick="closeModal(event, 'all-messages')">
@@ -1292,10 +1277,10 @@ function cv(name) {
 // CONFIG
 // ═══════════════════════════════════════════════════════
 
-const CONTRACT_ADDRESS = '0xeE98b474000a2B350FfcBA8F02889d5047B8DFca';
-const RPC_URL = 'https://humanfund-rpc-cache.thehumanfund.workers.dev';
-const EXPLORER = 'https://basescan.org';
-const DEPLOY_BLOCK = 44683700;
+const CONTRACT_ADDRESS = '0xCF5f1859D3AE62AF89B01E1d43aAB44D8C79CAE0'; // Base Sepolia testnet
+const RPC_URL = 'https://sepolia.base.org';
+const EXPLORER = 'https://sepolia.basescan.org';
+const DEPLOY_BLOCK = 40321128;
 const REFERRAL_CODE = '2'; // creator referral code (default when no code entered)
 
 // ═══════════════════════════════════════════════════════
@@ -1307,7 +1292,6 @@ const FUND_ABI = [
   "function treasuryBalance() view returns (uint256)",
   "function totalAssets() view returns (uint256)",
   "function currentEpoch() view returns (uint256)",
-  "function projectedEpoch() view returns (uint256)",
   "function commissionRateBps() view returns (uint256)",
   "function maxBid() view returns (uint256)",
   "function effectiveMaxBid() view returns (uint256)",
@@ -1317,6 +1301,7 @@ const FUND_ABI = [
   "function totalCommissionsPaid() view returns (uint256)",
   "function totalBountiesPaid() view returns (uint256)",
   "function consecutiveMissedEpochs() view returns (uint256)",
+  "function consecutiveStalledEpochs() view returns (uint256)",
   "function lastDonationEpoch() view returns (uint256)",
   "function deployTimestamp() view returns (uint256)",
   "function owner() view returns (address)",
@@ -1338,6 +1323,7 @@ const FUND_ABI = [
   "function messageCount() view returns (uint256)",
   "function messageHead() view returns (uint256)",
   "function messages(uint256) view returns (address sender, uint256 amount, string text, uint256 epoch)",
+  "function getEpochSnapshot(uint256 epoch) view returns (uint256 epoch_, uint256 balance, uint256 commissionRateBps, uint256 maxBid, uint256 effectiveMaxBid, uint256 consecutiveMissedEpochs, uint256 lastDonationEpoch, uint256 lastCommissionChangeEpoch, uint256 totalInflows, uint256 totalDonatedToNonprofits, uint256 totalCommissionsPaid, uint256 totalBountiesPaid, uint256 currentEpochInflow, uint256 currentEpochDonationCount, uint256 epochEthUsdPrice, uint256 epochDuration, uint256 messageHead, uint256 messageCount, uint256 nonprofitCount)",
   // Linked contracts
   "function worldView() view returns (address)",
   "function investmentManager() view returns (address)",
@@ -1391,6 +1377,146 @@ const AUCTION_ABI = [
   "function didReveal(uint256 epoch, address runner) view returns (bool)",
   "function pendingBondRefunds() view returns (uint256)",
 ];
+
+// ═══════════════════════════════════════════════════════
+// PROJECTED STATE (frontend-only)
+// ═══════════════════════════════════════════════════════
+//
+// These helpers compute the state that `_advanceToNow()` would land
+// on if it were called right now, without any mutation. They mirror
+// the on-chain logic in `src/TheHumanFund.sol`. The frontend is the
+// only consumer of projection; keeping this off-chain avoids
+// bytecode bloat and duplicate-maintenance drift.
+//
+// ⚠ If `_advanceToNow` or `_bondFor` / `_maxBidFor` on-chain change,
+// update the mirrors below to match.
+
+// Constants — must match src/TheHumanFund.sol
+const FUND_CONSTANTS = {
+  MAX_BID_BPS:         1000n,              // 10% of treasury
+  AUTO_ESCALATION_BPS: 1000n,              // 10% per miss/stall
+  MAX_BOND_BPS:        1000n,              // bond cap = 10% of treasury
+  MIN_BOND_CAP:        10n ** 17n,         // 0.1 ether floor on bond cap
+  BASE_BOND:           10n ** 15n,         // 0.001 ether base bond
+  MAX_MISSED_EPOCHS:   50n,                // loop/counter cap
+};
+
+// Mirror of `_maxBidFor(missed, treasury)` in TheHumanFund.sol.
+function projectedMaxBidFor(missed, treasuryWei, baseMaxBidWei) {
+  const { MAX_BID_BPS, AUTO_ESCALATION_BPS, MAX_MISSED_EPOCHS } = FUND_CONSTANTS;
+  const cap = (treasuryWei * MAX_BID_BPS) / 10000n;
+  let effective = baseMaxBidWei;
+  const iterations = missed > MAX_MISSED_EPOCHS ? MAX_MISSED_EPOCHS : missed;
+  for (let i = 0n; i < iterations; i++) {
+    effective = effective + (effective * AUTO_ESCALATION_BPS) / 10000n;
+    if (effective >= cap) return cap;
+  }
+  return effective > cap ? cap : effective;
+}
+
+// Mirror of `_bondFor(stalled)` in TheHumanFund.sol.
+function projectedBondFor(stalled, treasuryWei) {
+  const { MAX_BOND_BPS, MIN_BOND_CAP, BASE_BOND, AUTO_ESCALATION_BPS, MAX_MISSED_EPOCHS } = FUND_CONSTANTS;
+  const treasuryPct = (treasuryWei * MAX_BOND_BPS) / 10000n;
+  const cap = treasuryPct > MIN_BOND_CAP ? treasuryPct : MIN_BOND_CAP;
+  let bond = BASE_BOND;
+  const iterations = stalled > MAX_MISSED_EPOCHS ? MAX_MISSED_EPOCHS : stalled;
+  for (let i = 0n; i < iterations; i++) {
+    bond = bond + (bond * AUTO_ESCALATION_BPS) / 10000n;
+    if (bond >= cap) return cap;
+  }
+  return bond > cap ? cap : bond;
+}
+
+// Mirror of `_advanceToNow()`'s arithmetic — returns the state the
+// contract would land on if syncPhase() were called now. Pure view;
+// no side effects. Takes a bundle of pre-fetched raw state so the
+// caller controls the RPC batching.
+//
+// Inputs (all BigInt unless noted):
+//   nowSec               — wall-clock seconds (from chain block or Date.now)
+//   currentEpoch         — fund.currentEpoch()
+//   missedSeed           — fund.consecutiveMissedEpochs()
+//   stalledSeed          — fund.consecutiveStalledEpochs()
+//   timingAnchor         — fund.timingAnchor()
+//   anchorEpoch          — fund.anchorEpoch()
+//   epochDuration        — fund.epochDuration()
+//   amTaggedEpoch        — auctionMgr.currentAuctionEpoch()
+//   amStartTime          — auctionMgr.getStartTime(currentEpoch)
+//   amPhase              — uint8, auctionMgr.getPhase(currentEpoch)
+//   amCommitWindow       — auctionMgr.commitWindow()
+//   amRevealWindow       — auctionMgr.revealWindow()
+//   amExecutionDeadline  — auctionMgr.executionDeadline()
+//   amWinner             — auctionMgr.getWinner(currentEpoch)
+//   epochExecuted (bool) — fund.getEpochRecord(currentEpoch).executed
+//
+// Returns: { epoch, phase, missed, stalled } — all BigInt except
+// `phase` which is a Number (0=COMMIT, 1=REVEAL, 2=EXECUTION).
+function projectAuctionState({
+  nowSec,
+  currentEpoch, missedSeed, stalledSeed,
+  timingAnchor, anchorEpoch, epochDuration,
+  amTaggedEpoch, amStartTime, amPhase,
+  amCommitWindow, amRevealWindow, amExecutionDeadline,
+  amWinner, epochExecuted,
+}) {
+  const { MAX_MISSED_EPOCHS } = FUND_CONSTANTS;
+  const ZERO_ADDR = '0x0000000000000000000000000000000000000000';
+
+  let epoch = currentEpoch;
+  let missed = missedSeed;
+  let stalled = stalledSeed;
+  let phase = 0; // default COMMIT
+
+  let amTagged = amTaggedEpoch === epoch;
+
+  // Steps A + B: AM tagged to current epoch — derive intra-epoch
+  // phase from wall-clock, then maybe cross the epoch boundary.
+  if (amTagged) {
+    phase = amPhase;
+    if (phase === 0 && nowSec >= amStartTime + amCommitWindow) phase = 1;
+    if (phase === 1 && nowSec >= amStartTime + amCommitWindow + amRevealWindow) phase = 2;
+
+    const epochStart = timingAnchor + (epoch - anchorEpoch) * epochDuration;
+    const pastDeadline = phase === 2 && nowSec >= amExecutionDeadline;
+    const successfullyRolled = phase === 2 && epochExecuted && nowSec >= epochStart + epochDuration;
+
+    if (pastDeadline || successfullyRolled) {
+      if (epochExecuted) {
+        missed = 0n;
+        stalled = 0n;
+      } else {
+        if (amWinner && amWinner.toLowerCase() !== ZERO_ADDR) {
+          stalled += 1n;
+          if (stalled > MAX_MISSED_EPOCHS) stalled = MAX_MISSED_EPOCHS;
+        }
+        missed += 1n;
+        if (missed > MAX_MISSED_EPOCHS) missed = MAX_MISSED_EPOCHS;
+      }
+      epoch += 1n;
+      amTagged = false;
+    }
+  }
+
+  // Steps C + D: no live auction on `epoch` — fast-forward ghost
+  // epochs and derive phase from wall-clock relative to the landed
+  // epoch's scheduled start.
+  if (!amTagged) {
+    let ss = timingAnchor + (epoch - anchorEpoch) * epochDuration;
+    if (nowSec >= ss + epochDuration) {
+      const advance = (nowSec - ss) / epochDuration;  // BigInt integer division
+      missed += advance;
+      if (missed > MAX_MISSED_EPOCHS) missed = MAX_MISSED_EPOCHS;
+      epoch += advance;
+      ss = timingAnchor + (epoch - anchorEpoch) * epochDuration;
+    }
+    if (nowSec >= ss + amCommitWindow + amRevealWindow) phase = 2;
+    else if (nowSec >= ss + amCommitWindow) phase = 1;
+    else phase = 0;
+  }
+
+  return { epoch, phase, missed, stalled };
+}
 
 // ═══════════════════════════════════════════════════════
 // GLOBALS
@@ -1744,6 +1870,27 @@ function fmtUsdFromPrice(weiAmount, ethUsdPrice8) {
   return '$' + usd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+// Format USD primary with ETH underneath in small text (for cards/stats)
+function fmtEthUsd(wei) {
+  const usd = fmtUsdFromPrice(wei, lastEthUsdPrice);
+  if (!usd) return fmtEth(wei);
+  return `${usd}<div style="font-size:0.55em;font-weight:400;color:var(--text-dim);margin-top:-2px;">${fmtEth(wei)}</div>`;
+}
+
+// USD primary, ETH secondary inline (for messages/compact displays)
+function fmtUsdEthInline(wei) {
+  const usd = fmtUsdFromPrice(wei, lastEthUsdPrice);
+  if (!usd) return fmtEth(wei);
+  return `${usd} <span style="font-size:0.85em;color:var(--text-dim);">(${fmtEth(wei)})</span>`;
+}
+
+// ETH with USD in parens (for places where ETH is primary)
+function fmtEthUsdInline(wei) {
+  const usd = fmtUsdFromPrice(wei, lastEthUsdPrice);
+  if (!usd) return fmtEth(wei);
+  return `${fmtEth(wei)} <span style="color:var(--text-dim);">(${usd})</span>`;
+}
+
 function fmtAddr(addr) {
   return addr.slice(0, 6) + '...' + addr.slice(-4);
 }
@@ -1777,7 +1924,7 @@ function rejectionSuffix(actionType, reason) {
   if (reason === 1)  return ' — action was empty';
   if (reason === 2)  return ' — action encoding was malformed';
   if (reason === 10) return ' — unrecognized action type';
-  if (actionType === 1 && reason === 3) return ' — exceeded the 10% treasury cap';
+  if (actionType === 1 && reason === 3) return ' — donation failed (cap exceeded, executor error, or nonprofit not found)';
   if (actionType === 2 && reason === 3) return ' — rate outside the allowed 1%–90% range';
   if (actionType === 3 && reason === 4) return ' — no investment manager is configured';
   if (actionType === 3 && reason === 5) return ' — deposit failed (may have exceeded the 80% invested cap or been rejected by the protocol)';
@@ -1902,6 +2049,49 @@ function toggleWorldCard(cardId) {
   btn.textContent = card.classList.contains('expanded') ? '\u2212' : '+';
 }
 
+const MAX_MESSAGES_PER_EPOCH = 3;
+
+// ─── LocalStorage cache (keyed by contract address) ─────────────────
+// On-chain data is immutable once written, so we cache aggressively.
+function cacheKey(type, id) {
+  return `hf:${CONTRACT_ADDRESS.slice(0,10)}:${type}:${id}`;
+}
+function cacheGet(type, id) {
+  try {
+    const raw = localStorage.getItem(cacheKey(type, id));
+    if (raw) return JSON.parse(raw);
+  } catch {}
+  return null;
+}
+function cacheSet(type, id, data) {
+  try {
+    localStorage.setItem(cacheKey(type, id), JSON.stringify(data));
+  } catch {}
+}
+
+async function loadEpochMessages(epoch) {
+  const cached = cacheGet('epoch-msgs', epoch);
+  if (cached) return cached;
+
+  const snap = await fund.getEpochSnapshot(epoch);
+  const head = Number(snap.messageHead);
+  const count = Number(snap.messageCount);
+  const unread = count - head;
+  const toRead = Math.min(unread, MAX_MESSAGES_PER_EPOCH);
+  if (toRead <= 0) {
+    cacheSet('epoch-msgs', epoch, []);
+    return [];
+  }
+
+  const msgs = [];
+  for (let i = 0; i < toRead; i++) {
+    const m = await fund.messages(head + i);
+    msgs.push({ sender: m.sender, amount: m.amount.toString(), text: m.text, epoch: Number(m.epoch) });
+  }
+  cacheSet('epoch-msgs', epoch, msgs);
+  return msgs;
+}
+
 let diaryViewerIdx = 0;
 
 function openDiaryViewer() {
@@ -1918,12 +2108,14 @@ function diaryNav(dir) {
 function renderDiaryViewer() {
   if (diaryEntries.length === 0) return;
   const entry = diaryEntries[diaryViewerIdx];
-  document.getElementById('diary-viewer-title').textContent = `Epoch ${entry.epoch}`;
+  const ts = Number(entry.timestamp);
+  const timeStr = ts > 0 ? new Date(ts * 1000).toLocaleString() : '';
+  document.getElementById('diary-viewer-title').innerHTML = `Epoch ${entry.epoch}${timeStr ? `<span style="font-size:12px;font-weight:400;color:var(--text-dim);margin-left:10px;">${timeStr}</span>` : ''}`;
   document.getElementById('diary-viewer-entry').textContent = entry.reasoning;
 
   // Action row
   const detailStyle = entry.rejected ? 'color:var(--text-dim);' : '';
-  let actionHtml = `<span class="badge ${actionBadgeClass(entry.action.type, entry.rejected)}" style="font-size:10px;">${entry.action.label}</span> <span style="${detailStyle}">${entry.action.detail}</span>${entry.bountyPaid > 0n ? ' | Bounty: ' + fmtEth(entry.bountyPaid) : ''}`;
+  let actionHtml = `<span class="badge ${actionBadgeClass(entry.action.type, entry.rejected)}" style="font-size:10px;">${entry.action.label}</span> <span style="${detailStyle}">${entry.action.detail}</span>${entry.bountyPaid > 0n ? ' | Bounty: ' + fmtEthUsdInline(entry.bountyPaid) : ''}`;
   document.getElementById('diary-viewer-action').innerHTML = actionHtml;
 
   // Worldview diff (if any)
@@ -1944,9 +2136,27 @@ function renderDiaryViewer() {
     wvEl.innerHTML = '';
   }
 
-  // Messages placeholder — we don't have per-epoch message history readily available
-  document.getElementById('diary-viewer-messages').innerHTML =
-    '<div style="color:var(--text-dim);font-style:italic;font-size:12px;">Message history per epoch is not available from the current contract view. Messages are consumed when Costanza reads them.</div>';
+  // Load messages read during this epoch from the frozen snapshot
+  const msgsEl = document.getElementById('diary-viewer-messages');
+  msgsEl.innerHTML = '<div style="color:var(--text-dim);font-style:italic;">Loading messages...</div>';
+  loadEpochMessages(entry.epoch).then(msgs => {
+    if (msgs.length === 0) {
+      msgsEl.innerHTML = '<div style="color:var(--text-dim);font-style:italic;">No messages this epoch</div>';
+    } else {
+      msgsEl.innerHTML = msgs.map(m => `
+        <div style="margin-bottom:12px;padding:8px 10px;background:var(--bg);border-radius:var(--radius-xs);border-left:2px solid var(--accent);">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:2px;">
+            <span style="font-family:var(--mono);font-size:11px;color:var(--text-dim);">${fmtAddr(m.sender)}</span>
+            <span class="badge badge-accent" style="font-size:9px;padding:2px 6px;">read</span>
+          </div>
+          <div style="font-size:11px;color:var(--accent);font-weight:500;margin-bottom:4px;">${fmtUsdEthInline(m.amount)}</div>
+          <div style="font-size:12px;line-height:1.5;color:var(--text-secondary);word-wrap:break-word;">${escapeHtml(m.text)}</div>
+        </div>
+      `).join('');
+    }
+  }).catch(() => {
+    msgsEl.innerHTML = '<div style="color:var(--text-dim);font-style:italic;">Could not load messages</div>';
+  });
 
   // Nav button states
   document.getElementById('diary-prev').disabled = diaryViewerIdx >= diaryEntries.length - 1;
@@ -1995,8 +2205,18 @@ async function loadMessagesPage(page) {
   document.getElementById('all-messages-content').innerHTML = '<div class="loading">Loading</div>';
 
   try {
+    // Load messages, using cache for already-read ones (immutable once written)
+    const msgPromises = Array.from({length: endIdx - startIdx}, async (_, i) => {
+      const idx = startIdx + i;
+      const cached = cacheGet('msg', idx);
+      if (cached) return cached;
+      const m = await fund.messages(idx);
+      const obj = { sender: m.sender, amount: m.amount.toString(), text: m.text, epoch: Number(m.epoch) };
+      cacheSet('msg', idx, obj);
+      return obj;
+    });
     const [msgs, msgHead] = await Promise.all([
-      Promise.all(Array.from({length: endIdx - startIdx}, (_, i) => fund.messages(startIdx + i))),
+      Promise.all(msgPromises),
       fund.messageHead(),
     ]);
     const headIdx = Number(msgHead);
@@ -2009,9 +2229,9 @@ async function loadMessagesPage(page) {
       html += `<div class="msg-item">
         <div class="msg-header">
           <span class="msg-sender"><a href="${EXPLORER}/address/${m.sender}" target="_blank">${fmtAddr(m.sender)}</a></span>
-          <span class="msg-amount">${fmtEth(m.amount)}</span>
-          ${isUnread ? '<span class="badge badge-accent" style="font-size:9px;padding:2px 6px;margin-left:4px;">unread</span>' : ''}
-          <span style="font-size:10px;color:var(--text-dim);margin-left:auto;">#${msgIdx} &mdash; epoch ${m.epoch}</span>
+          <span class="msg-amount">${fmtUsdEthInline(m.amount)}</span>
+          ${isUnread ? '<span class="badge badge-accent" style="font-size:9px;padding:2px 6px;">unread</span>' : ''}
+          <span class="msg-meta">#${msgIdx} &mdash; sent in epoch ${m.epoch}</span>
         </div>
         ${m.text ? `<div class="msg-text">${escapeHtml(m.text)}</div>` : '<div class="msg-text" style="color:var(--text-dim);font-style:italic;">(no text)</div>'}
       </div>`;
@@ -2081,23 +2301,27 @@ async function loadWorldviewHistory() {
 // ═══════════════════════════════════════════════════════
 
 async function loadAll() {
-  // Core state
+  // Core state — read currentEpoch directly; projection below handles
+  // "where the contract would land if syncPhase were called now".
   const [
-    treasury, totalAssets, epoch, commRate, maxBidVal, effectiveBid,
+    treasury, totalAssets, currentEpochRaw, commRate, maxBidVal, effectiveBidLive,
     inflows, donated, donatedUsd, commPaid, bountiesPaid,
-    missedEpochs, lastDonation, deployTs, ownerAddr,
+    missedEpochsRaw, stalledEpochsRaw, lastDonation, deployTs, ownerAddr,
     epochInflow, epochDonations, nextRefCode,
     epochDur, ethUsdPrice, frozenFlags, npCount,
+    timingAnchorRaw, anchorEpochRaw,
   ] = await Promise.all([
-    fund.treasuryBalance(), fund.totalAssets(), fund.projectedEpoch().catch(() => fund.currentEpoch()),
+    fund.treasuryBalance(), fund.totalAssets(), fund.currentEpoch(),
     fund.commissionRateBps(), fund.maxBid(), fund.effectiveMaxBid(),
     fund.totalInflows(), fund.totalDonatedToNonprofits(), fund.totalDonatedToNonprofitsUsd(),
     fund.totalCommissionsPaid(), fund.totalBountiesPaid(),
-    fund.consecutiveMissedEpochs(), fund.lastDonationEpoch(),
+    fund.consecutiveMissedEpochs(), fund.consecutiveStalledEpochs().catch(() => 0n),
+    fund.lastDonationEpoch(),
     fund.deployTimestamp(), fund.owner(),
     fund.currentEpochInflow(), fund.currentEpochDonationCount(), fund.nextReferralCodeId(),
     fund.epochDuration(), fund.epochEthUsdPrice().catch(() => 0n),
     fund.frozenFlags(), fund.nonprofitCount().catch(() => 3n),
+    fund.timingAnchor(), fund.anchorEpoch(),
   ]);
 
   // Derive auction status from whether auctionManager is set
@@ -2106,6 +2330,62 @@ async function loadAll() {
   if (auctionOn) {
     auctionMgr = new ethers.Contract(amAddr, AUCTION_ABI, provider);
   }
+
+  // ── Compute projected state (mirrors `_advanceToNow`) ──
+  // For a fresh display of epoch/phase/maxBid/bond, we project forward
+  // from current raw state using wall-clock. The live `effectiveBidLive`
+  // and a direct `currentBond()` call reflect stale counter values if
+  // the contract hasn't been synced recently; projection corrects that.
+  let projected = {
+    epoch: currentEpochRaw,
+    phase: 0,
+    missed: missedEpochsRaw,
+    stalled: stalledEpochsRaw,
+  };
+  if (auctionOn && auctionMgr) {
+    try {
+      const [amTaggedEpoch, amStartTime, amPhase, cw, rw, execDeadline, amWinner, epochRecord, block] = await Promise.all([
+        auctionMgr.currentAuctionEpoch(),
+        auctionMgr.getStartTime(currentEpochRaw),
+        auctionMgr.getPhase(currentEpochRaw).then(p => Number(p)),
+        auctionMgr.commitWindow(),
+        auctionMgr.revealWindow(),
+        auctionMgr.executionDeadline(),
+        auctionMgr.getWinner(currentEpochRaw),
+        fund.getEpochRecord(currentEpochRaw),
+        provider.getBlock('latest'),
+      ]);
+      const nowSec = BigInt(block.timestamp);
+      projected = projectAuctionState({
+        nowSec,
+        currentEpoch: currentEpochRaw,
+        missedSeed: missedEpochsRaw,
+        stalledSeed: stalledEpochsRaw,
+        timingAnchor: timingAnchorRaw,
+        anchorEpoch: anchorEpochRaw,
+        epochDuration: epochDur,
+        amTaggedEpoch,
+        amStartTime,
+        amPhase,
+        amCommitWindow: cw,
+        amRevealWindow: rw,
+        amExecutionDeadline: execDeadline,
+        amWinner,
+        epochExecuted: epochRecord.executed,
+      });
+    } catch (err) {
+      console.warn('Projection failed, falling back to raw state:', err);
+    }
+  }
+
+  // Projected values: used by the display layer. `epoch` is the epoch
+  // the contract would land on; `maxBid` and `bond` reflect post-sync
+  // counter state (approximates balance as current, which is adequate
+  // for display — bond deltas are a fraction of a percent of treasury).
+  const epoch = projected.epoch;
+  const effectiveBid = projectedMaxBidFor(projected.missed, treasury, maxBidVal);
+  const projectedBond = projectedBondFor(projected.stalled, treasury);
+  const missedEpochs = projected.missed;
 
   const currentEpochNum = Number(epoch);
 
@@ -2199,7 +2479,7 @@ async function loadAll() {
   document.getElementById('hero-total-assets').textContent = usdStr ? usdStr : fmtEth(totalAssets);
   document.getElementById('hero-total-usd').textContent = usdStr ? fmtEth(totalAssets) : '';
   document.getElementById('hero-donated-usd').textContent = fmtUsd(donatedUsd);
-  document.getElementById('hero-donated-eth').textContent = fmtEth(donated);
+  document.getElementById('hero-donated-eth').innerHTML = fmtEth(donated);
 
   // Age
   const age = Math.floor(Date.now() / 1000) - Number(deployTs);
@@ -2237,7 +2517,7 @@ async function loadAll() {
   }
 
   // ── THE HUMAN FUND ──
-  document.getElementById('fund-liquid').textContent = fmtEth(treasury);
+  document.getElementById('fund-liquid').innerHTML = fmtEthUsd(treasury);
   let totalInvested = 0n;
   let investmentPositions = [];
 
@@ -2247,7 +2527,7 @@ async function loadAll() {
     if (imAddr && imAddr !== '0x0000000000000000000000000000000000000000') {
       investmentMgr = new ethers.Contract(imAddr, INVESTMENT_ABI, provider);
       totalInvested = await investmentMgr.totalInvestedValue();
-      document.getElementById('fund-invested').textContent = fmtEth(totalInvested);
+      document.getElementById('fund-invested').innerHTML = fmtEthUsd(totalInvested);
 
       const pCount = Number(await investmentMgr.protocolCount());
       for (let i = 1; i <= pCount; i++) {
@@ -2307,12 +2587,12 @@ async function loadAll() {
   }
 
   // Inflows / Outflows
-  document.getElementById('inflow-total').textContent = fmtEth(inflows);
-  document.getElementById('outflow-total').textContent = fmtEth(donated + bountiesPaid);
+  document.getElementById('inflow-total').innerHTML = fmtEthUsd(inflows);
+  document.getElementById('outflow-total').innerHTML = fmtEthUsd(donated + bountiesPaid);
   document.getElementById('inflow-commission').textContent = `${(Number(commRate) / 100).toFixed(1)}%`;
   currentCommissionPct = (Number(commRate) / 100).toFixed(1);
   document.querySelectorAll('.commission-pct').forEach(el => el.textContent = currentCommissionPct);
-  document.getElementById('inflow-commissions-paid').textContent = fmtEth(commPaid);
+  document.getElementById('inflow-commissions-paid').innerHTML = fmtEthUsd(commPaid);
 
   // Inflow/outflow chart — inflows as positive bars, outflows as negative bars
   if (diaryEntries.length > 1) {
@@ -2439,18 +2719,10 @@ async function loadAll() {
       const dr = Math.floor(er * Number(epochDur) / 86400);
       ageHtml += `<div class="stat-divider"></div>`;
       ageHtml += `<div class="stat-row"><span class="stat-label">Est. runway</span><span class="stat-value green">${dr > 365 ? '~' + (dr/365).toFixed(1) + ' years' : '~' + dr + ' days'}</span></div>`;
-      ageHtml += `<div class="stat-row"><span class="stat-label">Avg cost/epoch</span><span class="stat-value">${fmtEth(ac)}</span></div>`;
+      ageHtml += `<div class="stat-row"><span class="stat-label">Avg cost/epoch</span><span class="stat-value">${fmtUsdEthInline(ac)}</span></div>`;
     }
   }
   document.getElementById('world-age').innerHTML = ageHtml;
-
-  // System prompt — preview with fade, full in expanded body
-  const promptFirstLines = SYSTEM_PROMPT.split('\n').slice(0, 6).join('\n');
-  document.getElementById('sysprompt-preview').innerHTML = `
-    <div style="font-size:12px;line-height:1.6;color:var(--text-secondary);font-family:var(--mono);white-space:pre-wrap;">${escapeHtml(promptFirstLines)}</div>
-    <div style="position:absolute;bottom:0;left:0;right:0;height:40px;background:linear-gradient(transparent, var(--surface));pointer-events:none;"></div>
-  `;
-  document.getElementById('sysprompt-full').innerHTML = `<div class="prompt-text">${escapeHtml(SYSTEM_PROMPT)}</div>`;
 
   // Worldview card
   try {
@@ -2464,10 +2736,16 @@ async function loadAll() {
       const wvBadgeText = `${activePolicies.length}/7 active`;
       document.getElementById('worldview-badge').textContent = wvBadgeText;
       document.getElementById('worldview-badge-modal').textContent = wvBadgeText;
-      // Preview: brief explanation
-      document.getElementById('worldview-preview').innerHTML = `
-        <div style="font-size:12px;color:var(--text-secondary);line-height:1.5;">Costanza can update his worldview based on what he learns each epoch. This acts as his long-term memory.</div>
-      `;
+      // Preview: description + random non-empty slot
+      let previewHtml = '<div style="font-size:12px;color:var(--text-secondary);line-height:1.5;margin-bottom:10px;">Costanza can update his worldview based on what he learns each epoch. This acts as his long-term memory.</div>';
+      if (activePolicies.length > 0) {
+        const pick = activePolicies[Math.floor(Math.random() * activePolicies.length)];
+        previewHtml += `
+          <div style="font-size:11px;color:var(--text-dim);margin-bottom:4px;">[${pick.idx}] ${SLOT_NAMES[pick.idx] || 'Slot ' + pick.idx}</div>
+          <div style="font-size:12px;color:var(--text-secondary);line-height:1.5;font-style:italic;">${escapeHtml(pick.text)}</div>
+        `;
+      }
+      document.getElementById('worldview-preview').innerHTML = previewHtml;
       // Full view
       document.getElementById('worldview-full').innerHTML = displayed.map((p, i) => {
         const slot = i + 1;
@@ -2506,7 +2784,7 @@ async function loadAll() {
         mHtml += `<div class="msg-item">
           <div class="msg-header">
             <span class="msg-sender"><a href="${EXPLORER}/address/${m.sender}" target="_blank">${fmtAddr(m.sender)}</a></span>
-            <span class="msg-amount">${fmtEth(m.amount)}</span>
+            <span class="msg-amount">${fmtUsdEthInline(m.amount)}</span>
             ${isUnread ? '<span class="badge badge-accent" style="font-size:9px;padding:2px 6px;margin-left:4px;">unread</span>' : ''}
           </div>
           ${m.text ? `<div class="msg-text">${escapeHtml(m.text)}</div>` : '<div class="msg-text" style="color:var(--text-dim);font-style:italic;">(no text)</div>'}
@@ -2648,13 +2926,8 @@ async function loadAll() {
     ? `There have been ${missed} consecutive skipped epoch${missed > 1 ? 's' : ''}. Max bid auto-escalated +${missed * 10}%.`
     : 'No skipped epochs. Max bid is at its base level.';
 
-  // Current bond
-  try {
-    const bond = await fund.currentBond();
-    document.getElementById('tl-bond').textContent = fmtEth(bond);
-  } catch {
-    document.getElementById('tl-bond').textContent = '--';
-  }
+  // Current bond (projected — reflects post-sync counter state)
+  document.getElementById('tl-bond').textContent = fmtEth(projectedBond);
 
   // Latest bids
   if (auctionOn && auctionMgr) {

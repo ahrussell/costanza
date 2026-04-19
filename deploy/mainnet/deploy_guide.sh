@@ -50,7 +50,7 @@ ENVVARS
 cat << 'DEPLOY'
 
 # Deploy all contracts (TheHumanFund + TdxVerifier + AuctionManager + InvestmentManager + WorldView + adapters):
-forge script script/Deploy.s.sol:Deploy \
+forge script deploy/mainnet/Deploy.s.sol:Deploy \
   --rpc-url $RPC_URL \
   --broadcast \
   --verify \

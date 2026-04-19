@@ -97,26 +97,27 @@ def send_tx(fn, value=0, gas=500_000, key=None, sender=None):
 
 
 def advance_to_fresh_epoch():
-    """Advance past any stale epoch so we start clean."""
+    """Ensure we're in COMMIT phase of some epoch (fresh auction)."""
     epoch = fund.functions.currentEpoch().call()
     phase = am.functions.getPhase(epoch).call()
-    if phase != 0:  # Not IDLE
+    # 3-phase cyclic model: 0=COMMIT, 1=REVEAL, 2=EXECUTION. If we're
+    # mid-epoch (REVEAL or EXECUTION), syncPhase will cascade forward.
+    if phase != 0:  # Not COMMIT
         print(f"  Advancing past epoch {epoch} (phase={phase})...")
-        receipt = send_tx(fund.functions.syncPhase(), gas=800_000)
+        send_tx(fund.functions.syncPhase(), gas=800_000)
         epoch = fund.functions.currentEpoch().call()
         phase = am.functions.getPhase(epoch).call()
         print(f"  Now at epoch {epoch}, phase {phase}")
     return epoch
 
 
-# ─── Phase 3: Actions via Direct Mode ──────────────────────────────
+# ─── Phase 3: Actions ──────────────────────────────────────────────
 
 def test_actions(results):
-    print("\n── Phase 3: Actions (direct mode removed — skipping) ──")
-    print("  SKIPPED: submitEpochAction was removed in the _nextPhase refactor.")
-    print("  Actions now flow through commit → reveal → submitAuctionResult.")
-    print("  Covered by Foundry tests (285 passing including fuzz tests).")
-    results.ok("direct_mode_removed", "Direct mode correctly removed")
+    print("\n── Phase 3: Actions (covered by Foundry tests) ──")
+    print("  Actions flow through commit → reveal → submitAuctionResult.")
+    print("  Full coverage in forge test; skipped here.")
+    results.ok("actions_skipped", "Actions covered by Foundry tests")
     return
 
     # 3.6: Commission rate change
@@ -539,15 +540,6 @@ def test_edge_cases(results):
     except Exception as e:
         results.fail("input_hash_nonzero", str(e)[:100])
 
-    # Test: projectedEpoch >= currentEpoch
-    print("\nTest: projectedEpoch >= currentEpoch")
-    current = fund.functions.currentEpoch().call()
-    projected = fund.functions.projectedEpoch().call()
-    if projected >= current:
-        results.ok("projected_ge_current", f"projected={projected} >= current={current}")
-    else:
-        results.fail("projected_ge_current", f"projected={projected} < current={current}")
-
     # Test: epochStartTime is monotonically increasing
     print("\nTest: epochStartTime monotonic")
     epoch = fund.functions.currentEpoch().call()
@@ -586,7 +578,6 @@ def test_freezing(results):
         4: ("FREEZE_WORLDVIEW_WIRING", "setWorldView"),
         8: ("FREEZE_AUCTION_CONFIG", "resetAuction"),
         16: ("FREEZE_VERIFIERS", "approveVerifier"),
-        # 64: FREEZE_DIRECT_MODE removed in _nextPhase refactor
         128: ("FREEZE_MIGRATE", "withdrawAll"),
     }
 

@@ -76,9 +76,9 @@ class ChainClient:
         Returns dict with epoch, contract_phase, winner, bid, bond, seed,
         and timing boundaries (commit_end, reveal_end, exec_end, now).
         """
-        # Use currentEpoch (actual contract state), not projectedEpoch.
-        # The v2 client calls syncPhase() to advance — projectedEpoch() would
-        # return a future epoch that has no auction data in the AuctionManager.
+        # Use currentEpoch (actual contract state). The client calls
+        # syncPhase() to advance — the contract always reflects the
+        # up-to-date epoch + auction data for any action path.
         epoch = self.contract.functions.currentEpoch().call()
         am = self.am
         phase = am.functions.getPhase(epoch).call()
@@ -94,9 +94,16 @@ class ChainClient:
         execution_window = am.functions.executionWindow().call()
         now = self.w3.eth.get_block("latest")["timestamp"]
 
+        # Authoritative "epoch resolved" signal is epochs[e].executed. Pulled
+        # alongside the phase so the dispatcher can short-circuit once a
+        # winner has already submitted successfully.
+        record = self.contract.functions.getEpochRecord(epoch).call()
+        executed = bool(record[6])  # 7th field per EpochRecord layout
+
         return {
             "epoch": epoch,
             "contract_phase": phase,
+            "executed": executed,
             "winner": winner,
             "winning_bid": winning_bid,
             "bond_amount": bond_amount,
@@ -183,14 +190,14 @@ class ChainClient:
             logger.warning("ETH/USD price fetch failed, using $2000 fallback", exc_info=True)
             return 2000 * 10**8  # fallback: $2000 in 8-decimal format
 
-    def read_contract_state(self):
+    def read_contract_state(self, epoch=None):
         """Read the full epoch state the enclave needs.
 
-        After the pure-`_hashSnapshot` refactor, this reads scalars from
-        the frozen `EpochSnapshot` directly — no separate overlay pass.
+        Reads scalars from the frozen `EpochSnapshot` directly. If epoch
+        is specified, reads that epoch's snapshot instead of currentEpoch().
         """
         from .epoch_state import read_contract_state
-        return read_contract_state(self.contract, self.w3)
+        return read_contract_state(self.contract, self.w3, epoch=epoch)
 
     def get_epoch_timing(self):
         """Read epoch timing from contract.

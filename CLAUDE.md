@@ -20,7 +20,7 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 - **WorldView**: [`0x1370f47C7Ae6f6edF850bfF74c86BF591D7Ad3ae`](https://basescan.org/address/0x1370f47C7Ae6f6edF850bfF74c86BF591D7Ad3ae)
 - **Owner**: `0x495fB7ddD383be8030EFC93324Ff078f173eAb2A` (EOA, will transfer to Safe `0x6dF6f527E193fAf1334c26A6d811fAd62E79E5Db`)
 - **Epoch timing**: 90-min epochs (20m commit, 20m reveal, 50m execution)
-- **222 tests pass** (core + auction + TDX verifier + investment + worldview + messages + cross-stack)
+- **302 tests pass** (core + auction + TDX verifier + investment + worldview + messages + cross-stack + system invariants)
 - GPU image: `humanfund-dmverity-hardened-v11`, key: `0xf23661d5f5a506472feb7c5fff267eb0b0d80caf5a87c0c831292e1f4809d614`
 - GCP TDX FMSPC `00806f050000` registered in Automata DCAP Dashboard
 - H100 on-demand quota is 0; all GPU VMs use `--provisioning-model=SPOT`
@@ -36,28 +36,75 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 
 ## Architecture
 
-Each epoch (24 hours in production, configurable for testnet):
+Each epoch (24 hours in production, configurable for testnet) cycles through
+three phases — **COMMIT → REVEAL → EXECUTION** — then rolls straight into
+the next epoch's COMMIT. There is no IDLE or SETTLED rest state; the fund
+always holds exactly one in-flight auction (the *meta-invariant*), except
+during the atomic EXECUTION→COMMIT-of-next-epoch transition within a single
+transaction and under FREEZE_SUNSET.
 
-1. Prover calls `commit()` — contract auto-opens auction via `_syncPhase()` if within commit window, commits sealed bid hash with bond
-2. Prover calls `reveal()` after commit window — contract auto-closes commit via `_syncPhase()`, records bid reveal
-3. Lowest revealed bid wins. Randomness seed captured from `block.prevrandao` XOR salt accumulator at reveal close.
-4. Winner boots TDX VM from dm-verity disk image, one-shot enclave runs inference with deterministic seed
-5. Winner calls `submitAuctionResult()` — contract auto-closes reveal via `_syncPhase()` if needed, TdxVerifier verifies:
+The per-epoch flow:
+
+1. Prover calls `commit()` in the COMMIT window — contract auto-syncs via
+   `_advanceToNow()`, then submits sealed bid hash with bond.
+2. Prover calls `reveal()` in the REVEAL window — contract auto-syncs
+   (closes commit if needed), records bid reveal.
+3. Lowest revealed bid wins; ties broken by first revealer. Randomness seed
+   captured from `block.prevrandao XOR saltAccumulator` at REVEAL→EXECUTION.
+4. Winner boots TDX VM from dm-verity disk image, one-shot enclave runs
+   inference with the epoch's seed-bound input hash.
+5. Winner calls `submitAuctionResult()` during EXECUTION — contract auto-
+   syncs, `TdxVerifier` verifies:
    - Automata DCAP: quote is genuine TDX hardware
-   - Platform key: `sha256(MRTD || RTMR[1] || RTMR[2])` — firmware + kernel + dm-verity rootfs
+   - Platform key: `sha256(MRTD || RTMR[1] || RTMR[2])` — firmware + kernel + rootfs
    - REPORTDATA: `sha256(inputHash || outputHash)` matches
-6. Contract executes action, pays bounty. Winner claims bond via `claimBond(epoch)`.
-7. If winner doesn't deliver: anyone calls `syncPhase()` after execution window, bond forfeited to treasury.
-8. Non-winning revealers claim bonds via `claimBond(epoch)`. Non-revealers forfeit bonds to treasury at reveal close.
+   Winner receives their bond back plus the bounty immediately.
+6. Epoch ends when someone calls `syncPhase()` (or the prover naturally
+   interacts with the next epoch): `_closeExecution` forfeits the winner's
+   bond to the fund if they no-showed, updates counters, and `_openAuction`
+   opens the next epoch's COMMIT.
+7. Non-winning revealers claim bonds via `claimBond(epoch)`. Non-revealers
+   forfeit bonds to the fund at reveal close.
 
-Phase advancement is automatic: every public method calls `_syncPhase()` first, which advances
-the AuctionManager through any elapsed phase windows based on wall-clock timing. The client
-computes the effective phase from timing data and only calls the action appropriate for the
-current window — no need to call `startEpoch`, `closeCommit`, `closeReveal`, or `forfeitBond`.
+### Two drivers, one state machine
 
-See [WHITEPAPER.md](WHITEPAPER.md) for the full integrity chain, auction economics, and indestructibility model.
+- **Wall-clock driver** (`syncPhase` / `_advanceToNow`): cascades COMMIT→REVEAL
+  via `_nextPhase`, closes EXECUTION via `_closeExecution`, arithmetically
+  fast-forwards through ghost epochs, opens the landed epoch if we're inside
+  its commit window. Called automatically from every participant method
+  (`commit`, `reveal`, `submitAuctionResult`, `syncPhase`).
+- **Manual driver** (`nextPhase`, owner-only): advances exactly one state-
+  machine step. Sync-first: both `nextPhase` and `resetAuction` call
+  `_advanceToNow()` first so the manual driver can never time-travel
+  backward past wall-clock.
+
+Both drivers converge to the same state under the same scenario.
+
+### Single-site state mutation
+
+- `_openAuction(epoch, scheduledStart)` — the sole site that writes the
+  timing anchor and opens an auction.
+- `_closeExecution()` — the sole site where the two escalation counters
+  update at epoch end (`consecutiveMissedEpochs`, `consecutiveStalledEpochs`).
+- `_nextPhase()` — the sole site for intra-epoch phase transitions (and
+  the sole binder of the seed-XORed input hash at REVEAL→EXECUTION).
+
+See `test/SystemInvariants.t.sol`'s preamble for the complete behavioral
+spec (8 groups: lifecycle, timing, auction mechanics, snapshot/messages,
+input-hash chain, bonds, drivers, safety). See [WHITEPAPER.md](WHITEPAPER.md)
+for the full integrity chain, auction economics, and indestructibility model.
 
 ## Key Development Rules
+
+### Canonical behavioral spec
+
+The authoritative behavioral spec lives in **`test/SystemInvariants.t.sol`'s
+preamble**. Every new invariant or change in behavior should be reflected
+there first, then enforced by a test, then made true in the contract. The
+spec is organized into 8 concern-groups: epoch lifecycle, timing &
+schedule, auction mechanics, snapshot & messages, input-hash &
+attestation chain, bonds, drivers & permissions, safety & kill-switches.
+Read it before making non-trivial contract changes.
 
 ### Input Hash Integrity
 
@@ -124,13 +171,27 @@ thehumanfund/
 ├── test/
 │   ├── TheHumanFund.t.sol       # Core tests
 │   ├── TheHumanFundAuction.t.sol # Auction + attestation tests
+│   ├── SystemInvariants.t.sol   # Behavioral spec in code — canonical invariant list
 │   ├── TdxVerifier.t.sol        # TDX verifier tests
 │   ├── CrossStackHash.t.sol     # Cross-language hash compatibility tests
 │   ├── InvestmentManager.t.sol  # Investment tests
 │   ├── WorldView.t.sol          # Worldview tests
-│   └── Messages.t.sol           # Donor messages tests
-├── script/
-│   └── Deploy.s.sol             # Foundry deployment script
+│   ├── Messages.t.sol           # Donor messages tests + visibility-boundary invariants
+│   └── helpers/
+│       ├── EpochTest.sol        # Shared speedrunEpoch driver
+│       ├── MockProofVerifier.sol
+│       └── MockEndaoment.sol
+├── deploy/
+│   ├── mainnet/
+│   │   ├── Deploy.s.sol         # Mainnet Foundry deployment script
+│   │   ├── deploy_guide.sh      # Mainnet deployment guide
+│   │   ├── preflight.sh         # Pre-deploy validation checklist
+│   │   └── base_addresses.json  # Base mainnet contract addresses
+│   ├── testnet/
+│   │   ├── DeployTestnet.s.sol  # Base Sepolia deploy (mock contracts)
+│   │   ├── cli.py               # Testnet CLI (status, run-epoch, etc.)
+│   │   └── e2e.py               # End-to-end testnet test harness
+│   └── DeployLocal.s.sol        # Local anvil testing script
 ├── prover/
 │   ├── client/                 # Prover client (cron job, untrusted)
 │   │   ├── client.py           # Main entry point — checks phase, acts accordingly
@@ -166,11 +227,9 @@ thehumanfund/
 ├── index.html                   # Frontend dashboard (reads contract state)
 ├── models/                      # Local model files (gitignored)
 ├── scripts/
-│   ├── deploy_mainnet.sh        # Mainnet deployment guide
 │   ├── recover_submit.py        # Emergency recovery for stuck auction epochs
 │   ├── simulate.py              # Local simulation mode (scenario presets)
-│   ├── compute_hash.py          # Input hash computation (used by Foundry FFI tests)
-│   └── base_addresses.json      # Base mainnet contract addresses
+│   └── compute_hash.py          # Input hash computation (used by Foundry FFI tests)
 └── .env                         # Secrets (gitignored)
 ```
 
@@ -183,24 +242,28 @@ thehumanfund/
 - Chainlink ETH/USD price feed: snapshotted each epoch, included in inputHash, shown to model
 - USD donation tracking: `totalDonatedUsd` per nonprofit and globally (USDC 6 decimals, actual swap output)
 - Referral system with mintable codes and immediate commission payout
-- Donor messages: `donateWithMessage()` stores messages on-chain, queue advances each epoch
-- 7 agent actions with contract-enforced bounds
-- Auto-escalation: `effectiveMaxBid` increases 10% per consecutive missed epoch
+- Donor messages: `donateWithMessage()` stores messages on-chain; each message first visible in the epoch AFTER it arrives (messages sent in epoch N appear in epoch N+1's snapshot at the earliest)
+- 5 agent actions with contract-enforced bounds
 - `DiaryEntry` event emits reasoning + action on-chain
 
-### Reverse Auction (Commit-Reveal) — V2 Auto-Advancing
-- **Auction state machine**: `AuctionPhase { IDLE, COMMIT, REVEAL, EXECUTION, SETTLED }`
-- **Auto-phase advancement**: every public method calls `_syncPhase()` first, which advances the AuctionManager through any elapsed phase windows based on `block.timestamp`. No separate `startEpoch`/`closeCommit`/`closeReveal`/`forfeitBond` calls needed.
-- `syncPhase()` — permissionless, advances through elapsed phases and opens new auction if within commit window
-- `commit(commitHash) payable` — auto-syncs, then submits sealed bid hash with bond
-- `reveal(bidAmount, salt)` — auto-syncs (closes commit if needed), then reveals bid
-- `submitAuctionResult(action, reasoning, proof, verifierId, policySlot, policyText)` — auto-syncs (closes reveal, captures seed), then verifies proof and executes action
-- `computeInputHash()` — public view for prover verification
-- `projectedEpoch()` — public view returning what `currentEpoch` would be if `syncPhase()` were called now
-- `epochStartTime(epoch)` — public view computing the deterministic scheduled start time for any epoch
-- **Lazy bond claiming**: `AuctionManager.claimBond(epoch)` — non-winning revealers claim bonds per-epoch. O(1) bond accounting at reveal close (no committer loop). Non-revealers' bonds sent to treasury immediately.
-- **Wall-clock anchored timing**: `timingAnchor` + `anchorEpoch` define a fixed schedule. `epochStartTime(N) = timingAnchor + (N - anchorEpoch) * epochDuration`. Late interactions produce shorter remaining phase windows (self-correcting, no drift).
-- **O(1) missed epoch advancement**: `_syncPhase()` uses arithmetic (`currentEpoch += missed`) instead of looping through each missed epoch
+### Reverse Auction (Commit-Reveal) — 3-Phase Cyclic
+- **Auction state machine**: `AuctionPhase { COMMIT, REVEAL, EXECUTION }` — cyclic per epoch
+- **Eager open**: `setAuctionManager` opens epoch 1's auction at deploy time. Every subsequent epoch opens automatically at the EXECUTION→COMMIT transition. The fund never sits in an IDLE rest state
+- **Auto-sync**: every participant-facing method (`commit`, `reveal`, `submitAuctionResult`, `syncPhase`) calls `_advanceToNow()` first — cascades COMMIT→REVEAL→EXECUTION by wall-clock, crosses epoch boundaries via `_closeExecution`, arithmetically fast-forwards ghost epochs, opens the landed epoch if we're in its commit window
+- **Sync-first rule**: `nextPhase` and `resetAuction` (owner-only, manual drivers) also call `_advanceToNow()` first, so the manual driver can never leave the contract behind wall-clock
+- **Public entry points**:
+  - `syncPhase()` — permissionless, catches the contract up to wall-clock
+  - `commit(commitHash) payable` — auto-syncs, then submits sealed bid with bond ≥ `currentBond()`
+  - `reveal(bidAmount, salt)` — auto-syncs, reveals bid ≤ `effectiveMaxBid()`
+  - `submitAuctionResult(action, reasoning, proof, verifierId, policySlot, policyText)` — auto-syncs, TDX-verifies proof, pays bounty, executes action (best-effort: invalid actions/policies don't revert a verified proof — the winner still gets paid)
+  - `nextPhase()` owner-only — syncs first, then advances exactly one state-machine step
+  - `resetAuction(cw, rw, xw)` owner-only — syncs first, aborts in-flight auction (refunds all bonds non-confiscatorily), applies new timing, advances one epoch, re-opens
+- **Escalation counters (both update at exactly one site, `_closeExecution`)**:
+  - `consecutiveMissedEpochs` — resets on success, else +1 per epoch end; also += N on wall-clock fast-forward. Drives `effectiveMaxBid()` via `maxBid * (1 + AUTO_ESCALATION_BPS/10000)^missed`, capped at `treasury * MAX_BID_BPS/10000` (10%)
+  - `consecutiveStalledEpochs` — resets on success, +1 on winner-forfeit, unchanged on silence. Drives `currentBond()` via `BASE_BOND * (1 + AUTO_ESCALATION_BPS/10000)^stalled`, capped at `_bondCap()`
+- **Lazy bond claiming**: `AuctionManager.claimBond(epoch)` — non-winning revealers claim bonds per-epoch. O(1) bond accounting at reveal close (no committer loop). Non-revealers' bonds sent to treasury immediately
+- **Wall-clock anchored timing**: `timingAnchor` + `anchorEpoch` define a fixed schedule. `epochStartTime(N) = timingAnchor + (N - anchorEpoch) * epochDuration`. The anchor is written at EXACTLY ONE site — `_openAuction`, which re-anchors to `scheduledStart` on every open. Late interactions produce shorter remaining phase windows (self-correcting, no drift)
+- **O(1) missed epoch advancement**: `_advanceToNow` uses arithmetic (`currentEpoch += missed`) to skip ghost epochs, not a loop
 
 ### Action Encoding
 `uint8 action_type + ABI-encoded params`
@@ -209,18 +272,20 @@ thehumanfund/
 - 2 = set_commission_rate(rate_bps)
 - 3 = invest(protocol_id, amount) — delegate to InvestmentManager
 - 4 = withdraw(protocol_id, amount) — delegate to InvestmentManager
-- ~~5 = set_guiding_policy~~ — removed; worldview updates happen via sidecar parameters on submitAuctionResult
+
+Worldview updates happen via sidecar parameters (`policySlot`, `policyText`) on `submitAuctionResult`, not via an action type. Both the action and the policy sidecar are best-effort: as long as the TDX proof verifies, the winner gets bond refund + bounty immediately; a malformed action emits `ActionRejected` and an invalid policy slot is silently ignored, but neither reverts the submission.
 
 ## Prover Client
 
 **`prover/client/client.py`** — Cron-based auction prover (`*/2 * * * *`). Uses wall-clock phase dispatch:
 
 The client computes the effective phase from timing data (`commit_end`, `reveal_end`, `exec_end`) rather than reading the AuctionManager's internal phase. Each run is idempotent:
-- **IDLE** → calls `syncPhase()` to advance epoch and open auction
 - **COMMIT window** → calculates bid (gas + compute cost), commits with bond
-- **REVEAL window** → reveals committed bid (contract auto-closes commit)
-- **EXECUTION window** → if winner: calls `syncPhase()` to capture seed, boots GCP TDX VM, runs inference (with caching), submits result with retry logic
-- **EPOCH OVER** → detects bond forfeiture (committed but missed reveal), calls `syncPhase()` to advance, claims bonds
+- **REVEAL window** → reveals committed bid (contract auto-closes commit via `_advanceToNow`)
+- **EXECUTION window** → if winner: calls `syncPhase()` to capture seed, boots GCP TDX VM, runs inference, submits result with retry logic
+- **EPOCH OVER** (past execution deadline) → detects bond forfeiture (committed but missed reveal), calls `syncPhase()` to advance to next epoch, claims bonds
+
+The dm-verity enclave is always in one of the three phases — no IDLE dispatch branch exists. The prover's first interaction after a fresh deploy lands in COMMIT (epoch 1 opened eagerly by `setAuctionManager`).
 
 ntfy.sh notifications cover the full lifecycle including bond forfeiture alerts. Error selectors are computed from compiled ABIs at import time.
 
@@ -253,11 +318,11 @@ source .venv/bin/activate
 
 # Smart contracts
 forge build                                    # Compile contracts
-forge test                                     # Run all tests (175 tests)
+forge test                                     # Run all tests (302 pass, 9 pre-existing skipped)
 forge test -vvv                                # Verbose test output
 forge test --match-path test/TdxVerifier.t.sol # Specific test file
-forge script script/Deploy.s.sol \
-  --rpc-url $RPC_URL --broadcast              # Deploy to testnet
+forge script deploy/mainnet/Deploy.s.sol \
+  --rpc-url $RPC_URL --broadcast              # Deploy to network
 
 # Prover client (cron mode)
 python -m prover.client                        # Check auction state, act accordingly
@@ -275,7 +340,7 @@ python prover/scripts/gcp/verify_measurements.py \
   --verifier 0x...                            # Verify RTMR match
 
 # TEE enclave (local testing)
-llama-server -m models/<model>.gguf -c 4096 --port 8080 &
+llama-server -m models/<model>.gguf -c 32768 --port 8080 &
 ENCLAVE_HOST=127.0.0.1 python -m prover.enclave.enclave_runner
 ```
 

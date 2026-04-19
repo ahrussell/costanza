@@ -2,17 +2,17 @@
 pragma solidity ^0.8.20;
 
 import "forge-std/Script.sol";
-import "../src/TheHumanFund.sol";
-import "../src/AuctionManager.sol";
-import "../src/TdxVerifier.sol";
-import "../src/InvestmentManager.sol";
-import "../src/WorldView.sol";
-import "../src/adapters/AaveV3WETHAdapter.sol";
-import "../src/adapters/AaveV3USDCAdapter.sol";
-import "../src/adapters/WstETHAdapter.sol";
-import "../src/adapters/CbETHAdapter.sol";
-import "../src/adapters/CompoundV3USDCAdapter.sol";
-import "../src/adapters/MorphoWETHAdapter.sol";
+import "../../src/TheHumanFund.sol";
+import "../../src/AuctionManager.sol";
+import "../../src/TdxVerifier.sol";
+import "../../src/InvestmentManager.sol";
+import "../../src/WorldView.sol";
+import "../../src/adapters/AaveV3WETHAdapter.sol";
+import "../../src/adapters/AaveV3USDCAdapter.sol";
+import "../../src/adapters/WstETHAdapter.sol";
+import "../../src/adapters/CbETHAdapter.sol";
+import "../../src/adapters/CompoundV3USDCAdapter.sol";
+import "../../src/adapters/MorphoWETHAdapter.sol";
 
 /// @title Deploy
 /// @notice Deploys the full Human Fund system: core contracts, adapters, and links everything.
@@ -202,13 +202,12 @@ contract Deploy is Script {
     }
 
     function _seedWorldView(TheHumanFund fund) internal {
-        // Slot 0 is reserved (legacy "diary style" slot, unused in the live
-        // prompt) and the WorldView contract rejects writes to it.
+        // Slot 0 is reserved (the WorldView contract rejects writes to it).
         // Seed slots 1-6 only.
         uint256[] memory slots = new uint256[](5);
         string[] memory policies = new string[](5);
 
-        slots[0] = 1; policies[0] = "Rotate among all nonprofits. No permanent favorites -- each does vital work.";
+        slots[0] = 1; policies[0] = "Spread donations across nonprofits over time, but listen to donors who care about specific causes.";
         slots[1] = 2; policies[1] = "Diversify to hedge risk and learn how to maximize risk-adjusted returns.";
         slots[2] = 3; policies[2] = "Newborn. Everything is ahead of me.";
         slots[3] = 5; policies[3] = "Inflow patterns. Are donors finding me? Is the commission rate right?";

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The Human Fund — Auction Runner Client (v2, resilient)
+"""The Human Fund — Auction Runner Client.
 
 Designed to run as a cron job (e.g., every 2 minutes). Uses chain state as
 the source of truth and local state as advisory only.
@@ -71,12 +71,20 @@ RETRY_SCHEDULE = [
 # ─── Wall-Clock Phase Resolution ────────────────────────────────────────
 
 def _resolve_phase(auction):
-    """Resolve the effective phase from wall-clock timing."""
+    """Resolve the effective phase from wall-clock timing.
+
+    Under the 3-phase cyclic model, an auction is always open for the
+    current epoch (eager-opened at deploy, kept open at every epoch
+    rollover). The "no_auction" branch below is a sunset-state artifact:
+    after the fund is sunset via FREEZE_SUNSET and migrated, the AM's
+    currentAuctionEpoch is cleared and `getStartTime(epoch)` returns 0.
+    In normal operation we always land in commit/reveal/execution/epoch_over.
+    """
     start = auction["start_time"]
     now = auction["now"]
 
     if start == 0:
-        return "idle"
+        return "no_auction"  # sunset edge case
     if now < auction["commit_end"]:
         return "commit"
     elif now < auction["reveal_end"]:
@@ -115,6 +123,18 @@ def get_tee_client(config):
             image=config.get("gcp_image"),
             machine_type="c3-standard-4",
             inference_timeout=config.get("enclave_timeout", 1800),
+        )
+    elif config["tee_client"] == "gcp-persistent":
+        # Testnet-only client. Lives in deploy/testnet/ since it's not part
+        # of the production cron path.
+        from deploy.testnet.gcp_persistent import GCPPersistentTEEClient
+        return GCPPersistentTEEClient(
+            project=config["gcp_project"],
+            zone=config["gcp_zone"],
+            image=config.get("gcp_image", "humanfund-base-gpu-llama-b5270"),
+            machine_type=config.get("gcp_machine_type", "a3-highgpu-1g"),
+            inference_timeout=config.get("enclave_timeout", 600),
+            source_dir=config.get("source_dir", "."),
         )
     else:
         raise ValueError(f"Unknown TEE client: {config['tee_client']}")
@@ -181,31 +201,13 @@ def _try_claim_bonds(chain, ntfy, state_dir):
 
 # ─── Phase Handlers ─────────────────────────────────────────────────────
 
-def _handle_idle(chain, auction, ntfy):
-    """No auction active. Check wall-clock timing and try to advance."""
+def _handle_no_auction(chain, auction, ntfy):
+    """No live auction for currentEpoch. Under the 3-phase cyclic model
+    this should only happen after FREEZE_SUNSET was set and the fund is
+    waiting for migrate() to drain it. Log and return — opening a new
+    auction would be a no-op (blocked by sunset) or inappropriate."""
     epoch = auction["epoch"]
-    now = auction["now"]
-
-    epoch_start = chain.contract.functions.epochStartTime(epoch).call()
-    commit_window = chain.am.functions.commitWindow().call()
-    epoch_duration = chain.contract.functions.epochDuration().call()
-    commit_end = epoch_start + commit_window
-    epoch_end = epoch_start + epoch_duration
-
-    if now < epoch_start:
-        logger.info("Epoch %d starts in %ds, waiting", epoch, epoch_start - now)
-        return
-
-    if now >= epoch_end:
-        # Epoch is stale — syncPhase will advance past it
-        logger.info("Epoch %d is stale (%ds past), advancing", epoch, now - epoch_end)
-    elif now >= commit_end:
-        # Within epoch but commit window closed — nothing useful to do
-        logger.info("Epoch %d commit window closed, next epoch in %ds", epoch, epoch_end - now)
-        return
-    # else: within commit window — syncPhase will open auction
-
-    _try_advance(chain, ntfy)
+    logger.info("Epoch %d has no live auction (sunset state?) — nothing to do", epoch)
 
 
 def _handle_commit(chain, config, auction, saved, participation, state_dir, ntfy):
@@ -294,10 +296,11 @@ def _handle_execution(chain, config, auction, saved, participation, state_dir, n
     """Execution window is open."""
     epoch = auction["epoch"]
 
-    # If the auction is already settled (we already submitted, or epoch was forfeited),
-    # there's nothing to do — _syncPhase will advance the epoch when appropriate.
-    if auction["contract_phase"] == 4:  # SETTLED
-        logger.info("Epoch %d already settled, waiting for next epoch", epoch)
+    # If the epoch was already executed successfully (we or someone else
+    # submitted), there's nothing to do — the next syncPhase will cross
+    # the EXECUTION→COMMIT boundary when wall-clock permits.
+    if auction["executed"]:
+        logger.info("Epoch %d already executed, waiting for next epoch", epoch)
         return
 
     # Case 1: No winner at all (nobody committed/revealed)
@@ -449,10 +452,11 @@ def _run_tee_inference(chain, config, auction, saved, state_dir):
         saved.pop("tee_completed", None)
         saved.pop("tee_result_path", None)
 
-    logger.info("Starting TEE inference...")
-    # After the pure-`_hashSnapshot` refactor, read_contract_state already
-    # pulls scalars from the frozen EpochSnapshot — no overlay needed.
-    epoch_state = chain.read_contract_state()
+    logger.info("Starting TEE inference for epoch %d...", auction["epoch"])
+    # Pin to the auction's epoch — don't let a syncPhase advance cause us
+    # to read the wrong epoch's snapshot (especially with MockVerifier
+    # which won't catch hash mismatches).
+    epoch_state = chain.read_contract_state(epoch=auction["epoch"])
 
     prompt_path = Path(config["system_prompt_path"])
     system_prompt = prompt_path.read_text().strip()
@@ -551,10 +555,26 @@ def run(config):
     auction = chain.get_auction_state()
     epoch = auction["epoch"]
     contract_phase = auction["contract_phase"]
-    effective_phase = _resolve_phase(auction)
+    clock_phase = _resolve_phase(auction)
 
-    logger.info("Epoch %d | Contract: %s | Clock: %s",
-                epoch, PHASE_NAMES.get(contract_phase, str(contract_phase)), effective_phase)
+    # When the owner calls nextPhase() to advance manually, the contract
+    # can be ahead of the wall-clock. Trust whichever is further along.
+    # The AM phase is one of COMMIT(0) / REVEAL(1) / EXECUTION(2);
+    # "epoch_over" is a wall-clock state meaning "past the execution
+    # deadline" — the AM will still be at EXECUTION until someone drives
+    # _closeExecution.
+    CONTRACT_TO_EFFECTIVE = {0: "commit", 1: "reveal", 2: "execution"}
+    PHASE_ORDER = {"commit": 0, "reveal": 1, "execution": 2, "epoch_over": 3}
+    contract_effective = CONTRACT_TO_EFFECTIVE.get(contract_phase, "commit")
+
+    if PHASE_ORDER.get(contract_effective, 0) > PHASE_ORDER.get(clock_phase, 0):
+        effective_phase = contract_effective
+        logger.info("Epoch %d | Contract: %s | Clock: %s - using contract (ahead)",
+                    epoch, PHASE_NAMES.get(contract_phase, str(contract_phase)), clock_phase)
+    else:
+        effective_phase = clock_phase
+        logger.info("Epoch %d | Contract: %s | Clock: %s",
+                    epoch, PHASE_NAMES.get(contract_phase, str(contract_phase)), clock_phase)
 
     # 2. Load local state (advisory only — may be empty)
     saved = load_state(state_dir, current_epoch=epoch)
@@ -579,8 +599,8 @@ def run(config):
     _try_claim_bonds(chain, ntfy, state_dir)
 
     # 6. Dispatch based on wall-clock phase
-    if effective_phase == "idle":
-        _handle_idle(chain, auction, ntfy)
+    if effective_phase == "no_auction":
+        _handle_no_auction(chain, auction, ntfy)
     elif effective_phase == "commit":
         _handle_commit(chain, config, auction, saved, participation, state_dir, ntfy)
     elif effective_phase == "reveal":
@@ -599,15 +619,17 @@ def main():
 
     config = load_config()
 
-    # Acquire exclusive lock
-    lock_path = Path(config["state_dir"]) / ".runner.lock"
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    lock_fd = open(lock_path, "w")
-    try:
-        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        logger.info("Another runner instance is active, exiting")
-        sys.exit(0)
+    # Acquire exclusive lock (skip with --no-lock for Docker on macOS)
+    lock_fd = None
+    if not config.get("no_lock"):
+        lock_path = Path(config["state_dir"]) / ".runner.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_fd = open(lock_path, "w")
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            logger.info("Another runner instance is active, exiting")
+            sys.exit(0)
 
     try:
         run(config)
@@ -621,7 +643,8 @@ def main():
         notify_error(config.get("ntfy_channel"), "?", msg)
         sys.exit(1)
     finally:
-        lock_fd.close()
+        if lock_fd:
+            lock_fd.close()
 
 
 if __name__ == "__main__":

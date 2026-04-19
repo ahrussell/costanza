@@ -7,17 +7,141 @@ import "../src/AuctionManager.sol";
 import "../src/interfaces/IAuctionManager.sol";
 import "./helpers/EpochTest.sol";
 
-/// @title Auction State Machine Invariants
+/// @title Behavioral Invariants — The Human Fund + AuctionManager
 ///
-/// Spec-in-code for the properties documented in docs/AUCTION_INVARIANTS.md.
-/// Each test maps 1:1 to an invariant (I1–I7) or a derived property. A
-/// passing test asserts that the current contract satisfies that invariant
-/// under the covered conditions.
+/// Spec-in-code. Each test pins down a property the contracts must
+/// satisfy. Organized into 8 concern-groups:
 ///
-/// All invariant tests are live. The `[POST_REFACTOR]` stubs from
-/// the initial stubbing pass have been filled in now that `nextPhase`,
-/// `resetAuction`, and `FREEZE_AUCTION_CONFIG` are implemented.
-contract AuctionInvariantsTest is EpochTest {
+///   1. Epoch lifecycle
+///   2. Timing & schedule
+///   3. Auction mechanics
+///   4. Snapshot & messages
+///   5. Input-hash & attestation chain
+///   6. Bonds
+///   7. Drivers & permissions
+///   8. Safety & kill-switches
+///
+/// ─── META-INVARIANT ──────────────────────────────────────────────────
+///
+/// The fund always holds EXACTLY ONE in-flight auction, with phase ∈
+/// {COMMIT, REVEAL, EXECUTION}, except:
+///   (a) during the atomic EXECUTION→COMMIT(next epoch) transition
+///       inside a single transaction (externally unobservable), and
+///   (b) while FREEZE_SUNSET is set (migration draining window).
+///
+/// There is no IDLE or SETTLED phase. Epochs are considered "done" when
+/// the fund marks `epochs[e].executed=true` (successful submission) or
+/// when `_closeExecution` forfeits the winner's bond and advances to
+/// `currentEpoch += 1` — both of which are internal state, separate
+/// from the AM's phase enum.
+///
+/// ─── BEHAVIORAL SPEC ─────────────────────────────────────────────────
+///
+/// 1. EPOCH LIFECYCLE
+///    - Phases cycle per epoch: COMMIT → REVEAL → EXECUTION → COMMIT(N+1)
+///    - `currentEpoch` is monotonically non-decreasing (I1)
+///    - Every opened epoch traverses all three phases unless `_resetAuction` aborts it
+///    - `_resetAuction` advances currentEpoch by exactly 1 and re-anchors timing
+///
+/// 2. TIMING & SCHEDULE
+///    - Schedule coherence (I4): `epochStartTime(currentEpoch) ≤ block.timestamp`
+///    - Timing anchor changes only at: (a) `setAuctionManager`, (b) `nextPhase`
+///      crossing EXECUTION→COMMIT, (c) `_resetAuction`. Wall-clock rollovers
+///      preserve the anchor — the schedule is fixed at anchor time
+///    - `epochDuration = cw + rw + xw` (derived, never drifts)
+///    - Auction timing windows change only via `_resetAuction`
+///    - Commits, reveals, submissions each allowed iff phase matches AND
+///      `block.timestamp` is strictly within that phase's wall-clock window
+///
+/// 3. AUCTION MECHANICS
+///    - Commit requires phase=COMMIT, `msg.value >= currentBond`, no prior
+///      commit by this address in this epoch, and the committers-list has
+///      room (≤ MAX_COMMITTERS)
+///    - Reveal requires phase=REVEAL, a prior commit by this address whose
+///      preimage is `keccak(runner || bid || salt)`
+///    - At most one winner per epoch: lowest revealed bid; ties broken by
+///      first revealer
+///    - Only the winner can call `submitAuctionResult` during EXECUTION
+///    - `epochs[e].executed == true` iff the winner W submitted a proof
+///      that `TdxVerifier.verify` accepted during epoch e's EXECUTION window
+///    - `effectiveMaxBid == min(treasury * MAX_BID_BPS / 10000,
+///                              initialMaxBid * (1 + AUTO_ESCALATION_BPS/10000)^consecutiveMissedEpochs)`
+///      Computed once at epoch open (frozen into the snapshot); does not
+///      change mid-epoch even if treasury moves
+///
+/// 4. SNAPSHOT & MESSAGES
+///    - Snapshot frozen exactly when (and if) `_openAuction` fires for
+///      that epoch (I5). Skipped/ghost epochs never freeze
+///    - Snapshot is immutable after freeze — mid-epoch state changes
+///      (donations, messages, investments) don't affect the frozen copy
+///    - Messages sent during epoch N (any phase) first appear in the
+///      earliest subsequent epoch whose `_openAuction` fires
+///    - Each message is consumed at most once: in the first successful
+///      epoch where the head pointer crosses its position
+///    - Per-successful-epoch consumption cap: `MAX_MESSAGES_PER_EPOCH` (3)
+///
+/// 5. INPUT-HASH & ATTESTATION CHAIN
+///    - `epochBaseInputHashes[e]` bound exactly at `_openAuction` (snapshot-derived)
+///    - Seed captured exactly once at REVEAL close: `prevrandao ^ saltAccumulator` (I6)
+///    - `epochInputHashes[e] = keccak(base ⊕ seed)` bound exactly at REVEAL close
+///    - REPORTDATA bound at submission: `keccak(epochInputHashes[e] || outputHash)`
+///
+/// 6. BONDS
+///    - Bond conservation (I3): `pendingBondRefunds + in-flight-bond-held` =
+///      total bonds held by AM. No double-count, no drop
+///    - Committed bonds exit via exactly one of:
+///        - `claimBond` by a non-winning revealer (after reveal close)
+///        - push to winner in `settleExecution` (successful submit)
+///        - forfeit to fund at reveal close (non-revealer)
+///        - forfeit to fund at EXECUTION→COMMIT (winner no-show)
+///        - refund in `abortAuction` (operator reset / migrate)
+///    - `currentBond == min(BOND_CAP,
+///                          initialBond * (1 + AUTO_ESCALATION_BPS/10000)^consecutiveStalledEpochs)`
+///      Computed once at epoch open (frozen into the snapshot); does not
+///      change mid-epoch
+///    - `consecutiveStalledEpochs` (bond-escalation counter) updates in
+///      exactly one site, at epoch end:
+///        - successful execution      → reset to 0
+///        - not executed AND there was a winner → increment by 1
+///        - not executed AND no winner → unchanged
+///    - `consecutiveMissedEpochs` (max-bid-escalation counter) updates in
+///      exactly two sites:
+///        - at epoch end: successful execution → 0; otherwise → +1
+///        - in `_advanceToNow` fast-forward: increments by the count of
+///          fast-forwarded epochs
+///    - Neither counter is touched by `_resetAuction` — operator reset is
+///      not a missed/stalled signal
+///
+/// 7. DRIVERS & PERMISSIONS
+///    - Participant-facing methods call `_advanceToNow()` first:
+///      `commit`, `reveal`, `submitAuctionResult`, `syncPhase`
+///    - Owner drivers (`nextPhase`, `resetAuction`) ALSO call `_advanceToNow()`
+///      first — "sync-first" rule — so manual drivers can't time-travel backward
+///    - Driver equivalence: manual (`nextPhase`) and wall-clock (`syncPhase`)
+///      converge to the same state under the same scenario
+///    - Permissionless: `syncPhase`, `claimBond`, `donate*`, `donateWithMessage`
+///    - Owner-only: `resetAuction`, `migrate`, `setAuctionManager`, `nextPhase`,
+///      freeze flags, verifier registration, investment-manager wiring
+///
+/// 8. SAFETY & KILL-SWITCHES
+///    - Non-reentrancy on `submitAuctionResult`, `claimBond`, `abortAuction`
+///    - `submitAuctionResult` NEVER reverts on a valid proof, regardless of
+///      whether the action parses, validates, or executes successfully.
+///      The winner receives bounty + bond-back as long as the proof verifies;
+///      invalid actions emit `ActionRejected`, invalid policy sidecars fail
+///      silently. This is load-bearing for liveness — a malicious enclave
+///      output can't DoS the payment path
+///    - FREEZE_SUNSET: blocks new-auction opens and donations; `migrate` drains
+///      via `_resetAuction` and withdraws; FREEZE_MIGRATE is terminal
+///    - Other freezes: AUCTION_CONFIG, INVESTMENT_WIRING, WORLDVIEW_WIRING,
+///      NONPROFITS — each permanently disables a specific setter once set
+///
+/// ─── TEST ORGANIZATION ──────────────────────────────────────────────
+///
+/// Tests are grouped by concern, matching the 8 sections above. Property
+/// tests use the I1–I7 prefix for the numbered invariants; mechanical
+/// single-path tests use descriptive names.
+contract SystemInvariantsTest is EpochTest {
     TheHumanFund public fund;
     AuctionManager public am;
 
@@ -36,6 +160,8 @@ contract AuctionInvariantsTest is EpochTest {
         );
 
         am = new AuctionManager(address(fund));
+        // setAuctionManager eagerly opens epoch 1's COMMIT auction at the
+        // end, so after this call: currentEpoch == 1, phase == COMMIT.
         fund.setAuctionManager(address(am), COMMIT_WIN, REVEAL_WIN, EXEC_WIN);
 
         vm.deal(runner1, 10 ether);
@@ -79,14 +205,13 @@ contract AuctionInvariantsTest is EpochTest {
         assertEq(uint8(am.getPhase(e1)), uint8(p1), "I1: phase stable under repeat sync");
     }
 
-    /// I1 under manual driver: walking the state machine via nextPhase
-    /// produces strictly lex-increasing (epoch, phase). Full cycle through
-    /// forfeit: IDLE → COMMIT → REVEAL → EXECUTION → SETTLED → next-COMMIT.
+    /// I1 under manual driver: walking the 3-phase cycle via nextPhase
+    /// produces strictly lex-increasing (epoch, phase). Cycle is
+    /// COMMIT → REVEAL → EXECUTION → COMMIT(next epoch).
     function test_I1_manualDriver_monotonicEpochAndPhase() public {
         uint256 bond = fund.currentBond();
 
-        // IDLE → COMMIT (epoch 1)
-        fund.nextPhase();
+        // Epoch 1 is already open in COMMIT (setAuctionManager opened it).
         assertEq(fund.currentEpoch(), 1);
         assertEq(uint8(am.getPhase(1)), uint8(IAuctionManager.AuctionPhase.COMMIT));
 
@@ -102,14 +227,15 @@ contract AuctionInvariantsTest is EpochTest {
         fund.nextPhase();
         assertEq(uint8(am.getPhase(1)), uint8(IAuctionManager.AuctionPhase.EXECUTION));
 
-        // EXECUTION → SETTLED (winner forfeit — no submit)
-        fund.nextPhase();
-        assertEq(uint8(am.getPhase(1)), uint8(IAuctionManager.AuctionPhase.SETTLED));
-
-        // SETTLED → advance epoch + open COMMIT (epoch 2)
+        // EXECUTION → COMMIT (epoch 2) — winner forfeit happens as a
+        // side effect of this transition (no executed submit).
         fund.nextPhase();
         assertEq(fund.currentEpoch(), 2);
         assertEq(uint8(am.getPhase(2)), uint8(IAuctionManager.AuctionPhase.COMMIT));
+
+        // And the cycle continues: epoch 2's COMMIT → REVEAL
+        fund.nextPhase();
+        assertEq(uint8(am.getPhase(2)), uint8(IAuctionManager.AuctionPhase.REVEAL));
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -188,11 +314,12 @@ contract AuctionInvariantsTest is EpochTest {
     }
 
     /// I3 conservation: across a manual-driver forfeit cycle (nextPhase
-    /// through EXECUTION without submit), total wei is conserved. The
-    /// winner's bond goes to treasury (forfeit), the non-winning
-    /// revealer's bond goes to pendingBondRefunds (claimable).
+    /// through EXECUTION → COMMIT(next) without submit), total wei is
+    /// conserved. The winner's bond goes to treasury (forfeit on the
+    /// EXECUTION → COMMIT(next) transition), the non-winning revealer's
+    /// bond goes to pendingBondRefunds (claimable).
     function test_I3_conservation_manualDriverForfeit() public {
-        fund.nextPhase(); // IDLE → COMMIT
+        // Epoch 1 COMMIT is already open (from setUp).
         uint256 bond = fund.currentBond();
         uint256 treasuryBefore = address(fund).balance;
 
@@ -212,7 +339,7 @@ contract AuctionInvariantsTest is EpochTest {
         // No non-revealers, so no forfeit at reveal close. Both bonds
         // accounted: winner-held (runner2) + pending refund (runner1).
 
-        fund.nextPhase(); // EXECUTION → SETTLED (winner forfeit)
+        fund.nextPhase(); // EXECUTION → COMMIT(epoch 2) with winner forfeit side-effect
         // Winner (runner2) bond forfeited to treasury.
         // Non-winner (runner1) bond is claimable.
 
@@ -249,15 +376,16 @@ contract AuctionInvariantsTest is EpochTest {
         }
     }
 
-    /// I4 under manual driver: after nextPhase opens a new auction,
-    /// epochStartTime(currentEpoch) == block.timestamp exactly. After
-    /// that, syncPhase is a no-op until the wall clock ticks forward.
+    /// I4 under manual driver: after the EXECUTION → COMMIT(next) transition
+    /// opens a new auction, epochStartTime(currentEpoch) == block.timestamp
+    /// exactly (re-anchored). After that, syncPhase is a no-op until the
+    /// wall clock ticks forward.
     function test_I4_manualDriver_reanchor() public {
-        fund.nextPhase(); // IDLE → COMMIT (epoch 1)
+        // Epoch 1 COMMIT already open from setUp; epochStartTime(1) == now.
         assertEq(
             fund.epochStartTime(fund.currentEpoch()),
             block.timestamp,
-            "I4: epoch start == now after open"
+            "I4: epoch 1 start == now after setUp open"
         );
 
         // Walk through a full cycle via manual driver
@@ -268,8 +396,7 @@ contract AuctionInvariantsTest is EpochTest {
         vm.prank(runner1);
         fund.reveal(0.005 ether, bytes32("r1"));
         fund.nextPhase(); // REVEAL → EXECUTION
-        fund.nextPhase(); // EXECUTION → SETTLED (forfeit)
-        fund.nextPhase(); // SETTLED → COMMIT (epoch 2)
+        fund.nextPhase(); // EXECUTION → COMMIT (epoch 2) with forfeit
 
         assertEq(
             fund.epochStartTime(fund.currentEpoch()),
@@ -287,26 +414,84 @@ contract AuctionInvariantsTest is EpochTest {
     }
 
     // ══════════════════════════════════════════════════════════════════
+    // SYNC-FIRST — owner drivers catch up to wall-clock before acting.
+    //
+    // The manual driver must not let the contract "time-travel backward":
+    // if wall-clock says we should be in epoch N+K phase P, calling
+    // `nextPhase` or `resetAuction` from a stale epoch N state must first
+    // catch up (via _advanceToNow) and THEN perform its one-step action.
+    // Otherwise, the contract falls further behind the schedule each time
+    // a manual driver is invoked under stale state.
+    // ══════════════════════════════════════════════════════════════════
+
+    /// Starting in epoch 1 COMMIT, warp 3 full epoch durations forward.
+    /// Wall-clock says we should be in epoch 4's COMMIT phase. Calling
+    /// `nextPhase` must FIRST sync to wall-clock (→ epoch 4 COMMIT), then
+    /// advance exactly one state-machine step (→ epoch 4 REVEAL).
+    /// Without sync-first, we'd incorrectly land in epoch 1 REVEAL.
+    function test_syncFirst_nextPhase_catchesUpFromStaleEpoch() public {
+        assertEq(fund.currentEpoch(), 1, "pre: epoch 1");
+        vm.warp(block.timestamp + 3 * EPOCH_DUR);
+
+        fund.nextPhase();
+
+        assertGe(fund.currentEpoch(), 4,
+            "nextPhase must sync to wall-clock first (expected epoch >= 4)");
+    }
+
+    /// Same scenario, but for `resetAuction`. Starting in epoch 1 with 3
+    /// epoch durations elapsed, resetAuction must first catch up to the
+    /// wall-clock-correct epoch (4), then abort and advance to epoch 5.
+    /// Without sync-first, it would abort the stale epoch 1 and advance
+    /// only to epoch 2 — leaving the contract 3 epochs behind wall-clock.
+    function test_syncFirst_resetAuction_catchesUpFromStaleEpoch() public {
+        assertEq(fund.currentEpoch(), 1, "pre: epoch 1");
+        vm.warp(block.timestamp + 3 * EPOCH_DUR);
+
+        fund.resetAuction(COMMIT_WIN, REVEAL_WIN, EXEC_WIN);
+
+        // After sync-then-reset: sync should have taken us to epoch 4
+        // (COMMIT of wall-clock), then reset aborts and advances to 5.
+        assertGe(fund.currentEpoch(), 5,
+            "resetAuction must sync to wall-clock first (expected epoch >= 5)");
+    }
+
+    // ══════════════════════════════════════════════════════════════════
     // I5. Freeze atomicity — EpochSnapshot[e] is frozen exactly once, at
-    //     the transition that opens COMMIT[e]. After freeze, the snapshot
-    //     is immutable under further state mutation.
+    //     the transition that opens COMMIT[e]. For e=1 that transition is
+    //     `setAuctionManager` (bootstrap); for e>1 it's the
+    //     EXECUTION[e-1] → COMMIT[e] transition in _openAuction.
+    //     After freeze, the snapshot is immutable under further state
+    //     mutation.
     // ══════════════════════════════════════════════════════════════════
 
     function test_I5_snapshotFrozenAtAuctionOpen() public {
-        // Before syncPhase opens the auction, snapshot for epoch 1 should
-        // have zero treasuryBalance (not yet populated).
-        TheHumanFund.EpochSnapshot memory preSnap = fund.getEpochSnapshot(1);
-        assertEq(preSnap.balance, 0, "I5: snapshot empty before auction open");
+        // Epoch 1 was opened at setUp time (via setAuctionManager's eager
+        // _openAuction). Snapshot should be frozen with the
+        // treasury balance at that instant.
+        TheHumanFund.EpochSnapshot memory snap1 = fund.getEpochSnapshot(1);
+        assertEq(snap1.balance, 10 ether, "I5: epoch 1 snapshot frozen at setAuctionManager");
+        assertEq(snap1.epoch, 1, "I5: snapshot epoch matches");
 
-        fund.syncPhase(); // opens epoch 1 COMMIT → freezes snapshot
+        // Before epoch 2 opens, its snapshot should be empty.
+        TheHumanFund.EpochSnapshot memory preSnap2 = fund.getEpochSnapshot(2);
+        assertEq(preSnap2.balance, 0, "I5: epoch 2 snapshot empty before open");
 
-        TheHumanFund.EpochSnapshot memory postSnap = fund.getEpochSnapshot(1);
-        assertEq(postSnap.balance, 10 ether, "I5: snapshot frozen with treasury at open");
-        assertEq(postSnap.epoch, 1, "I5: snapshot epoch matches");
+        // Drive through to EXECUTION → COMMIT(epoch 2); this is the
+        // steady-state freeze path.
+        fund.nextPhase(); // COMMIT → REVEAL (epoch 1)
+        fund.nextPhase(); // REVEAL → EXECUTION (epoch 1, no reveals so no seed capture issues)
+        // With no commits, the EXECUTION→COMMIT(2) still opens epoch 2's
+        // auction and freezes its snapshot.
+        fund.nextPhase(); // EXECUTION → COMMIT (epoch 2)
+
+        TheHumanFund.EpochSnapshot memory snap2 = fund.getEpochSnapshot(2);
+        assertEq(snap2.epoch, 2, "I5: epoch 2 snapshot frozen on steady-state open");
+        assertGt(snap2.balance, 0, "I5: epoch 2 snapshot has balance");
     }
 
     function test_I5_snapshotImmutableAfterFreeze() public {
-        fund.syncPhase();
+        // Epoch 1 snapshot already frozen via setUp's setAuctionManager.
         bytes32 hashAtOpen = fund.computeInputHashForEpoch(1);
 
         // Receive ETH → live treasury changes. Snapshot must not.
@@ -363,8 +548,7 @@ contract AuctionInvariantsTest is EpochTest {
     /// I7: FREEZE_AUCTION_CONFIG gates manual-only entry points but
     /// does NOT block participants or the time driver.
     function test_I7_freezeAuctionConfig_manualOnlyScope() public {
-        // First, open an auction so we can test participant actions.
-        fund.syncPhase(); // opens epoch 1 COMMIT
+        // Epoch 1 COMMIT already open from setUp.
         uint256 bond = fund.currentBond();
 
         // Freeze the manual driver.
@@ -399,8 +583,7 @@ contract AuctionInvariantsTest is EpochTest {
     // Derived: Driver equivalence
     //
     // Given the same (state, block.timestamp), time driver and manual
-    // driver produce the same resulting (state, schedule). Core property
-    // that justifies the refactor.
+    // driver produce the same resulting (state, schedule).
     // ══════════════════════════════════════════════════════════════════
 
     /// Driver equivalence (simplified): manual nextPhase and wall-clock
@@ -410,7 +593,7 @@ contract AuctionInvariantsTest is EpochTest {
     function test_derived_driverEquivalence_epochAdvancement() public {
         // ── Manual driver path ──
         uint256 snap = vm.snapshotState();
-        fund.nextPhase(); // IDLE → COMMIT
+        // Epoch 1 COMMIT already open.
         uint256 bond = fund.currentBond();
         vm.prank(runner1);
         fund.commit{value: bond}(_commitHash(runner1, 0.005 ether, bytes32("r1")));
@@ -418,15 +601,14 @@ contract AuctionInvariantsTest is EpochTest {
         vm.prank(runner1);
         fund.reveal(0.005 ether, bytes32("r1"));
         fund.nextPhase(); // REVEAL → EXECUTION
-        fund.nextPhase(); // EXECUTION → SETTLED (forfeit)
-        fund.nextPhase(); // SETTLED → COMMIT (epoch 2)
+        fund.nextPhase(); // EXECUTION → COMMIT (epoch 2) with forfeit
         uint256 manualEpoch = fund.currentEpoch();
         uint256 manualMissed = fund.consecutiveMissedEpochs();
         uint256 manualBond = fund.currentBond();
 
         // ── Wall-clock driver path (same scenario) ──
         vm.revertToState(snap);
-        fund.syncPhase(); // opens epoch 1 COMMIT
+        // Epoch 1 already open; no syncPhase needed to open it.
         bond = fund.currentBond();
         vm.prank(runner1);
         fund.commit{value: bond}(_commitHash(runner1, 0.005 ether, bytes32("r1")));
@@ -436,7 +618,7 @@ contract AuctionInvariantsTest is EpochTest {
         vm.warp(block.timestamp + REVEAL_WIN);
         fund.syncPhase(); // REVEAL → EXECUTION
         vm.warp(block.timestamp + EXEC_WIN);
-        fund.syncPhase(); // EXECUTION → SETTLED → advance → COMMIT (epoch 2)
+        fund.syncPhase(); // EXECUTION → COMMIT (epoch 2)
 
         assertEq(fund.currentEpoch(), manualEpoch, "equivalence: epoch");
         assertEq(fund.consecutiveMissedEpochs(), manualMissed, "equivalence: missed");
@@ -447,25 +629,23 @@ contract AuctionInvariantsTest is EpochTest {
     // Derived: No stuck states
     //
     // For any reachable (epoch, phase), there exists a finite sequence of
-    // syncPhase calls that reaches a new epoch. Today `recover_submit.py`
-    // exists because this isn't guaranteed; the refactor makes it so.
+    // syncPhase calls that reaches a new epoch. No manual escape hatch
+    // required.
     // ══════════════════════════════════════════════════════════════════
 
     /// From any phase, enough wall-clock advancement + syncPhase always
     /// reaches a fresh epoch. No manual escape hatch required.
     function test_derived_noStuckStates_fromEachPhase() public {
-        // Case A: stuck in IDLE/fresh
+        // Case A: fresh (epoch 1 COMMIT, no commits)
         _assertAdvancesToNewEpoch();
 
         // Case B: stuck mid-COMMIT (one commit, never reveals)
-        fund.syncPhase();
         uint256 bond = fund.currentBond();
         vm.prank(runner1);
         fund.commit{value: bond}(_commitHash(runner1, 0.005 ether, bytes32("r1")));
         _assertAdvancesToNewEpoch();
 
         // Case C: stuck mid-REVEAL (warp into reveal but don't reveal)
-        fund.syncPhase();
         bond = fund.currentBond();
         vm.prank(runner1);
         fund.commit{value: bond}(_commitHash(runner1, 0.005 ether, bytes32("r1b")));
@@ -496,7 +676,6 @@ contract AuctionInvariantsTest is EpochTest {
     /// directly (push-to-address), not to treasury. This is the
     /// primary non-confiscation property.
     function test_resetAuction_commitPhase_refundsCommitter() public {
-        fund.syncPhase();
         uint256 bond = fund.currentBond();
         uint256 treasuryBefore = address(fund).balance;
         uint256 runnerBefore = runner1.balance;
@@ -519,7 +698,6 @@ contract AuctionInvariantsTest is EpochTest {
     /// settled bonds yet, and operator intervention must not punish
     /// late revealers.
     function test_resetAuction_revealPhase_refundsAllCommitters() public {
-        fund.syncPhase();
         uint256 bond = fund.currentBond();
         uint256 r1Before = runner1.balance;
         uint256 r2Before = runner2.balance;
@@ -553,7 +731,6 @@ contract AuctionInvariantsTest is EpochTest {
     /// are closed transactions that operator intervention does not
     /// retroactively unwind.
     function test_resetAuction_executionPhase_refundsWinnerOnly() public {
-        fund.syncPhase();
         uint256 bond = fund.currentBond();
         uint256 r1Before = runner1.balance;
         uint256 r2Before = runner2.balance;
@@ -588,25 +765,9 @@ contract AuctionInvariantsTest is EpochTest {
         assertEq(runner1.balance, r1Before, "non-winner can still claim post-reset");
     }
 
-    /// resetAuction from IDLE (no active auction) is a clean no-op on
-    /// the bond state — nothing to refund, but the epoch advances and
-    /// the timing is re-anchored.
-    function test_resetAuction_idle_noop_advancesEpoch() public {
-        uint256 startEpoch = fund.currentEpoch();
-        uint256 treasuryBefore = address(fund).balance;
-
-        fund.resetAuction(COMMIT_WIN, REVEAL_WIN, EXEC_WIN);
-
-        assertEq(fund.currentEpoch(), startEpoch + 1, "epoch advanced by 1");
-        assertEq(address(fund).balance, treasuryBefore, "treasury unchanged");
-        // Re-anchored: the new epoch starts now.
-        assertEq(fund.epochStartTime(fund.currentEpoch()), block.timestamp, "re-anchored");
-    }
-
     /// resetAuction does NOT increment `consecutiveMissedEpochs` —
     /// operator intervention is not a missed epoch.
     function test_resetAuction_doesNotBumpMissedCounter() public {
-        fund.syncPhase();
         uint256 bond = fund.currentBond();
         vm.prank(runner1);
         fund.commit{value: bond}(_commitHash(runner1, 0.005 ether, bytes32("r1")));
@@ -620,7 +781,6 @@ contract AuctionInvariantsTest is EpochTest {
     /// epoch (landing in COMMIT). Verifies the re-anchor leaves the
     /// contract in a usable state.
     function test_resetAuction_followedBySyncPhase_opensNewAuction() public {
-        fund.syncPhase();
         uint256 bond = fund.currentBond();
         vm.prank(runner1);
         fund.commit{value: bond}(_commitHash(runner1, 0.005 ether, bytes32("r1")));
@@ -628,7 +788,8 @@ contract AuctionInvariantsTest is EpochTest {
         fund.resetAuction(COMMIT_WIN, REVEAL_WIN, EXEC_WIN);
         uint256 newEpoch = fund.currentEpoch();
 
-        // syncPhase should open the new epoch's auction.
+        // syncPhase should leave the new epoch in COMMIT (or resetAuction
+        // already opened it).
         fund.syncPhase();
         assertEq(
             uint8(am.getPhase(newEpoch)),
@@ -668,7 +829,6 @@ contract AuctionInvariantsTest is EpochTest {
     /// prover would compute (the drift bug from mainnet v1 —
     /// commit bd883a9).
     function test_resetAuction_changesAuctionTiming() public {
-        fund.syncPhase();
         uint256 bond = fund.currentBond();
         vm.prank(runner1);
         fund.commit{value: bond}(_commitHash(runner1, 0.005 ether, bytes32("r1")));
@@ -685,8 +845,7 @@ contract AuctionInvariantsTest is EpochTest {
         assertEq(am.revealWindow(), newRevealWin, "new reveal window applied");
         assertEq(am.executionWindow(), newExecWin, "new exec window applied");
 
-        // Next syncPhase should open a fresh auction using the new windows.
-        fund.syncPhase();
+        // Fresh auction should be in COMMIT using the new windows.
         uint256 newEpoch = fund.currentEpoch();
         assertEq(
             uint8(am.getPhase(newEpoch)),
@@ -731,18 +890,16 @@ contract AuctionInvariantsTest is EpochTest {
     //     bookkeeping (consecutiveMissedEpochs, effectiveMaxBid, bond
     //     escalation, message queue preserved)
     //
-    // These tests run against the CURRENT contract and lock in the
-    // existing O(1) arithmetic-advance behavior (see commits 74dfdfd
-    // and 990f944). Any refactor regression shows up here immediately.
+    // These tests lock in the O(1) arithmetic-advance behavior; any
+    // regression (e.g. replacing the arithmetic path with a loop) shows
+    // up here immediately.
     // ══════════════════════════════════════════════════════════════════
 
     /// Warp 10 epochs forward with an auction open but no commits. Exactly
     /// one syncPhase call should land in epoch 11's COMMIT with escalated
-    /// bond/bid values. The "missed" semantics require that an auction was
-    /// open at the start of the silence — that's what distinguishes a
-    /// real-world prover outage from a fresh-deploy state.
+    /// bond/bid values.
     function test_ff_longSilence_noActivity() public {
-        fund.syncPhase(); // opens epoch 1 auction
+        // Epoch 1 already open from setUp.
 
         // Jump 10 full epochs into the future without any interaction.
         vm.warp(fund.epochStartTime(11) + 1);
@@ -756,9 +913,8 @@ contract AuctionInvariantsTest is EpochTest {
 
     /// A committer who never reveals + long silence: exactly ONE bond
     /// forfeited, not 10. The forfeit happens on the in-flight epoch
-    /// (epoch 1 here) via _closeReveal's no-reveals branch.
+    /// (epoch 1 here) via the reveal-close no-reveals branch.
     function test_ff_commitNoReveal_thenSilence() public {
-        fund.syncPhase(); // open epoch 1 COMMIT
         uint256 bond = fund.currentBond();
         uint256 treasuryBefore = address(fund).balance;
 
@@ -781,9 +937,7 @@ contract AuctionInvariantsTest is EpochTest {
     /// the missed counter. Only the silent epochs count — the successful
     /// epoch itself is not a miss.
     function test_ff_successfulEpoch_thenSilence() public {
-        // Direct mode executes epoch 1 and advances currentEpoch to 2.
-        // (Direct mode is removed in commit 7; when it goes, swap this
-        // for a real commit/reveal/submit flow via the mock verifier.)
+        // Speedrun executes epoch 1 and advances currentEpoch to 2.
         speedrunEpoch(fund, abi.encodePacked(uint8(0)), "executed");
         assertEq(fund.consecutiveMissedEpochs(), 0, "reset after success");
         assertEq(fund.currentEpoch(), 2, "advanced past executed epoch 1");
@@ -796,26 +950,6 @@ contract AuctionInvariantsTest is EpochTest {
         // Epochs 2..10 were all silent → 9 misses.
         assertEq(fund.consecutiveMissedEpochs(), 9, "9 silent epochs credited");
         assertEq(fund.currentEpoch(), 11, "landed at epoch 11");
-    }
-
-    /// Pristine-IDLE long silence (fresh deploy, nobody has called
-    /// anything): every elapsed epoch counts as a miss. This was
-    /// previously broken — the original logic explicitly skipped
-    /// pristine-IDLE escalation, which meant a fresh deploy with no
-    /// prover activity would never raise the bid cap, forever.
-    function test_ff_pristineIdle_longSilence_credits() public {
-        // No setup beyond the test's setUp(). Contract was just deployed.
-        assertEq(fund.currentEpoch(), 1, "fresh deploy at epoch 1");
-        assertEq(fund.consecutiveMissedEpochs(), 0, "counter starts at 0");
-
-        vm.warp(fund.epochStartTime(11) + 1);
-        fund.syncPhase();
-
-        // All 10 elapsed epochs were silent → all 10 count as misses.
-        // The bid cap should be escalated so any prover that shows up
-        // later has headroom to win.
-        assertEq(fund.currentEpoch(), 11, "landed at epoch 11");
-        assertEq(fund.consecutiveMissedEpochs(), 10, "pristine silence counts");
     }
 
     /// Messages queued before silence must survive and be visible in the
@@ -854,7 +988,7 @@ contract AuctionInvariantsTest is EpochTest {
     /// Messages can arrive DURING silence (donateWithMessage doesn't
     /// advance the state machine). All must be preserved.
     function test_ff_messagesQueuedDuringSilence() public {
-        fund.syncPhase(); // open epoch 1
+        // Epoch 1 already open from setUp.
 
         // Warp partway, then queue messages.
         vm.warp(fund.epochStartTime(5) + 1);
@@ -878,7 +1012,7 @@ contract AuctionInvariantsTest is EpochTest {
     /// `currentBond()` and `effectiveMaxBid()` would return for the
     /// landing state.
     function test_ff_snapshotReflectsEscalation() public {
-        fund.syncPhase(); // open epoch 1 auction
+        // Epoch 1 already open from setUp.
 
         vm.warp(fund.epochStartTime(6) + 1);
         fund.syncPhase();
@@ -892,7 +1026,7 @@ contract AuctionInvariantsTest is EpochTest {
     /// winner-forfeit events. This is the key property that keeps the
     /// auction attractive for new bidders after a drought.
     function test_ff_bondDoesNotEscalateOnSilence() public {
-        fund.syncPhase(); // open epoch 1 auction
+        // Epoch 1 already open from setUp.
         uint256 bondBefore = fund.currentBond();
 
         // Long silence — 5 epochs with no commits, no reveals, nothing.
@@ -916,8 +1050,7 @@ contract AuctionInvariantsTest is EpochTest {
     function test_ff_syncPhaseGas_boundedInN() public {
         uint256 snapId = vm.snapshotState();
 
-        // Baseline: open auction + 1 missed epoch.
-        fund.syncPhase();
+        // Baseline: epoch 1 already open + 1 missed epoch.
         vm.warp(fund.epochStartTime(2) + 1);
         uint256 g1 = gasleft();
         fund.syncPhase();
@@ -925,8 +1058,7 @@ contract AuctionInvariantsTest is EpochTest {
 
         vm.revertToState(snapId);
 
-        // Longer: open auction + 20 missed epochs.
-        fund.syncPhase();
+        // Longer: epoch 1 already open + 20 missed epochs.
         vm.warp(fund.epochStartTime(21) + 1);
         uint256 g20 = gasleft();
         fund.syncPhase();
@@ -937,10 +1069,6 @@ contract AuctionInvariantsTest is EpochTest {
         // A 2x slack gives room for effectiveMaxBid's bounded loop
         // (over min(N, MAX_MISSED_EPOCHS)) without permitting a true
         // O(N) regression.
-        // As of the current contract: gasN1 ≈ 416k, gasN20 ≈ 451k (8%
-        // delta for 20x more missed epochs). The delta comes from
-        // effectiveMaxBid's bounded escalation loop, not the fast-forward
-        // advance itself.
         assertLt(gasN20, gasN1 * 2, "ff: syncPhase gas must not scale linearly in N");
     }
 
@@ -957,22 +1085,27 @@ contract AuctionInvariantsTest is EpochTest {
         fund.nextPhase();
     }
 
-    /// nextPhase with 0 commits: COMMIT → SETTLED (no-commit drain),
-    /// then next nextPhase opens epoch 2 and credits the miss.
-    function test_nextPhase_commitToSettled_noCommits() public {
-        fund.nextPhase(); // IDLE → COMMIT
-        fund.nextPhase(); // COMMIT → SETTLED (0 commits)
-        assertEq(uint8(am.getPhase(1)), uint8(IAuctionManager.AuctionPhase.SETTLED));
+    /// nextPhase with 0 commits walks COMMIT → REVEAL → EXECUTION → COMMIT(next).
+    /// No SETTLED terminal state — the epoch advance happens on the
+    /// EXECUTION → COMMIT(next) transition.
+    function test_nextPhase_commitToExecution_noCommits() public {
+        // Epoch 1 COMMIT already open from setUp.
+        fund.nextPhase(); // COMMIT → REVEAL
+        assertEq(uint8(am.getPhase(1)), uint8(IAuctionManager.AuctionPhase.REVEAL));
+        fund.nextPhase(); // REVEAL → EXECUTION (0 reveals, no winner)
+        assertEq(uint8(am.getPhase(1)), uint8(IAuctionManager.AuctionPhase.EXECUTION));
 
-        fund.nextPhase(); // SETTLED → COMMIT (epoch 2)
+        fund.nextPhase(); // EXECUTION → COMMIT (epoch 2)
         assertEq(fund.currentEpoch(), 2);
+        assertEq(uint8(am.getPhase(2)), uint8(IAuctionManager.AuctionPhase.COMMIT));
         assertEq(fund.consecutiveMissedEpochs(), 1, "one missed epoch credited");
     }
 
-    /// nextPhase with commits but no reveals: REVEAL → SETTLED, bonds
-    /// forfeited. Same as wall-clock driver would do.
-    function test_nextPhase_revealToSettled_noReveals() public {
-        fund.nextPhase(); // IDLE → COMMIT
+    /// nextPhase with commits but no reveals: bonds forfeit at reveal
+    /// close (the REVEAL → EXECUTION transition). Same semantics as the
+    /// wall-clock driver.
+    function test_nextPhase_revealToExecution_noReveals() public {
+        // Epoch 1 COMMIT already open from setUp.
         uint256 bond = fund.currentBond();
         uint256 treasuryBefore = address(fund).balance;
 
@@ -980,19 +1113,20 @@ contract AuctionInvariantsTest is EpochTest {
         fund.commit{value: bond}(_commitHash(runner1, 0.005 ether, bytes32("r1")));
 
         fund.nextPhase(); // COMMIT → REVEAL
-        fund.nextPhase(); // REVEAL → SETTLED (no reveals, bonds forfeited)
+        fund.nextPhase(); // REVEAL → EXECUTION (no reveals, bonds forfeited)
 
         assertEq(
             address(fund).balance,
             treasuryBefore + bond,
-            "non-revealer bond forfeited to treasury"
+            "non-revealer bond forfeited to treasury at reveal close"
         );
     }
 
-    /// Bond escalation via manual driver: EXECUTION forfeit escalates
-    /// currentBond, same as wall-clock path.
+    /// Bond escalation via manual driver: a winner who doesn't submit
+    /// forfeits their bond at the EXECUTION → COMMIT(next) transition,
+    /// which also escalates currentBond. Same as the wall-clock path.
     function test_nextPhase_executionForfeit_escalatesBond() public {
-        fund.nextPhase(); // IDLE → COMMIT
+        // Epoch 1 COMMIT already open from setUp.
         uint256 bond = fund.currentBond();
 
         vm.prank(runner1);
@@ -1003,7 +1137,7 @@ contract AuctionInvariantsTest is EpochTest {
         fund.nextPhase(); // REVEAL → EXECUTION
 
         uint256 bondBefore = fund.currentBond();
-        fund.nextPhase(); // EXECUTION → SETTLED (winner forfeit)
+        fund.nextPhase(); // EXECUTION → COMMIT(epoch 2) with winner forfeit
 
         // Bond escalated by AUTO_ESCALATION_BPS (1000 = 10%)
         uint256 expected = bondBefore + (bondBefore * 1000) / 10000;
@@ -1016,11 +1150,11 @@ contract AuctionInvariantsTest is EpochTest {
     // must stay consistent regardless of which driver fires when.
     // ══════════════════════════════════════════════════════════════════
 
-    /// Manual open, then wall-clock takes over for the rest of the
-    /// auction. The auction opened by nextPhase must be drainable by
-    /// syncPhase when wall-clock catches up.
+    /// Manual partial close, then wall-clock takes over. The auction
+    /// started by setUp must be drainable by syncPhase when wall-clock
+    /// catches up.
     function test_mixed_manualOpen_wallClockDrain() public {
-        fund.nextPhase(); // manual: IDLE → COMMIT
+        // Epoch 1 COMMIT already open from setUp.
         uint256 bond = fund.currentBond();
 
         vm.prank(runner1);
@@ -1040,15 +1174,15 @@ contract AuctionInvariantsTest is EpochTest {
         assertEq(uint8(am.getPhase(1)), uint8(IAuctionManager.AuctionPhase.EXECUTION));
 
         vm.warp(block.timestamp + EXEC_WIN);
-        fund.syncPhase(); // EXECUTION → SETTLED → advance → COMMIT (epoch 2)
+        fund.syncPhase(); // EXECUTION → advance → COMMIT (epoch 2)
         assertEq(fund.currentEpoch(), 2);
     }
 
-    /// Wall-clock opens the auction, manual driver closes phases in
-    /// the middle. syncPhase must be a no-op after each nextPhase
-    /// since the manual driver already advanced.
+    /// Wall-clock and manual driver interleaved to close phases. syncPhase
+    /// must be a no-op after each nextPhase since the manual driver
+    /// already advanced.
     function test_mixed_wallClockOpen_manualClose() public {
-        fund.syncPhase(); // wall-clock: opens epoch 1 COMMIT
+        // Epoch 1 COMMIT already open from setUp.
         uint256 bond = fund.currentBond();
 
         vm.prank(runner1);
@@ -1074,13 +1208,12 @@ contract AuctionInvariantsTest is EpochTest {
             "syncPhase noop: execution deadline not reached");
     }
 
-    /// Manual open + commit + manual close commit, then wall-clock
-    /// warp past the FULL epoch. syncPhase must handle the auction
-    /// that was manually advanced to REVEAL but whose reveal window
-    /// expired on the wall-clock.
+    /// Commit + manual close of commit, then wall-clock warp past the
+    /// FULL epoch. syncPhase must handle the auction that was manually
+    /// advanced to REVEAL but whose reveal window expired on the
+    /// wall-clock.
     function test_mixed_manualPartial_wallClockFinishesEpoch() public {
-        fund.nextPhase(); // manual: IDLE → COMMIT
-
+        // Epoch 1 COMMIT already open from setUp.
         uint256 bond = fund.currentBond();
         vm.prank(runner1);
         fund.commit{value: bond}(_commitHash(runner1, 0.005 ether, bytes32("r1")));
@@ -1090,16 +1223,16 @@ contract AuctionInvariantsTest is EpochTest {
         vm.warp(block.timestamp + EPOCH_DUR * 2);
         fund.syncPhase();
 
-        // The auction was in REVEAL with no reveals → SETTLED (forfeit
+        // The auction was in REVEAL with no reveals → EXECUTION (forfeit
         // all non-revealer bonds). Then epoch advance + open.
         assertGt(fund.currentEpoch(), 1, "advanced past stuck epoch");
     }
 
-    /// Interleave: open via manual, warp just past commit, syncPhase
-    /// closes commit (wall-clock), then manual nextPhase closes reveal.
-    /// Verifies both drivers can contribute to the same epoch.
+    /// Interleave: warp just past commit, syncPhase closes commit
+    /// (wall-clock), then manual nextPhase closes reveal. Verifies both
+    /// drivers can contribute to the same epoch.
     function test_mixed_alternatingDrivers_sameEpoch() public {
-        fund.nextPhase(); // manual: IDLE → COMMIT
+        // Epoch 1 COMMIT already open from setUp.
         uint256 bond = fund.currentBond();
 
         vm.prank(runner1);
@@ -1123,7 +1256,7 @@ contract AuctionInvariantsTest is EpochTest {
     /// Seed captured at REVEAL → EXECUTION via manual driver, same as
     /// wall-clock. Input hash bound at the same transition.
     function test_nextPhase_seedCapturedAtRevealClose() public {
-        fund.nextPhase(); // IDLE → COMMIT
+        // Epoch 1 COMMIT already open from setUp.
         uint256 bond = fund.currentBond();
 
         vm.prank(runner1);
@@ -1148,9 +1281,10 @@ contract AuctionInvariantsTest is EpochTest {
     // ── I2: transition cleanup exactly-once under manual driver ──────
 
     /// Non-revealer forfeit via manual driver: bond forfeited exactly
-    /// once, repeated nextPhase calls don't double-forfeit.
+    /// once at the REVEAL → EXECUTION transition, repeated nextPhase
+    /// calls don't double-forfeit.
     function test_I2_manualDriver_nonRevealerForfeit_exactlyOnce() public {
-        fund.nextPhase(); // open
+        // Epoch 1 COMMIT already open from setUp.
         uint256 bond = fund.currentBond();
         uint256 treasuryBefore = address(fund).balance;
 
@@ -1158,22 +1292,23 @@ contract AuctionInvariantsTest is EpochTest {
         fund.commit{value: bond}(_commitHash(runner1, 0.005 ether, bytes32("r1")));
 
         fund.nextPhase(); // COMMIT → REVEAL
-        fund.nextPhase(); // REVEAL → SETTLED (0 reveals, bond forfeited)
+        fund.nextPhase(); // REVEAL → EXECUTION (0 reveals, bond forfeited)
 
         assertEq(address(fund).balance, treasuryBefore + bond, "I2: one forfeit via manual");
 
         // Advance to next epoch + open. Treasury should only gain from
         // the one forfeit, not any phantom re-forfeit.
         uint256 afterForfeit = address(fund).balance;
-        fund.nextPhase(); // SETTLED → advance + open
-        fund.nextPhase(); // close empty COMMIT
-        fund.nextPhase(); // advance again
+        fund.nextPhase(); // EXECUTION → COMMIT (epoch 2)
+        fund.nextPhase(); // epoch 2: COMMIT → REVEAL (no commits)
+        fund.nextPhase(); // epoch 2: REVEAL → EXECUTION
         assertEq(address(fund).balance, afterForfeit, "I2: no double-forfeit across epochs");
     }
 
-    /// Winner forfeit via manual driver runs exactly once.
+    /// Winner forfeit via manual driver runs exactly once — at the
+    /// EXECUTION → COMMIT(next) transition.
     function test_I2_manualDriver_winnerForfeit_exactlyOnce() public {
-        fund.nextPhase(); // open
+        // Epoch 1 COMMIT already open from setUp.
         uint256 bond = fund.currentBond();
         uint256 treasuryBefore = address(fund).balance;
 
@@ -1184,11 +1319,13 @@ contract AuctionInvariantsTest is EpochTest {
         fund.reveal(0.005 ether, bytes32("r1"));
         fund.nextPhase(); // REVEAL → EXECUTION
 
-        fund.nextPhase(); // EXECUTION → SETTLED (winner forfeit)
+        fund.nextPhase(); // EXECUTION → COMMIT(epoch 2) with winner forfeit
         assertEq(address(fund).balance, treasuryBefore + bond, "I2: winner bond forfeited once");
 
         uint256 afterForfeit = address(fund).balance;
-        fund.nextPhase(); // SETTLED → advance + open
+        // Further advances through empty epoch 2 must not re-forfeit.
+        fund.nextPhase(); // epoch 2: COMMIT → REVEAL
+        fund.nextPhase(); // epoch 2: REVEAL → EXECUTION
         assertEq(address(fund).balance, afterForfeit, "I2: no re-forfeit on advance");
     }
 
@@ -1200,7 +1337,7 @@ contract AuctionInvariantsTest is EpochTest {
         uint256 systemTotal = address(fund).balance + address(am).balance
             + runner1.balance + runner2.balance;
 
-        fund.nextPhase(); // open
+        // Epoch 1 COMMIT already open from setUp.
         uint256 bond = fund.currentBond();
 
         vm.prank(runner1);
@@ -1219,7 +1356,7 @@ contract AuctionInvariantsTest is EpochTest {
         fund.nextPhase(); // REVEAL → EXECUTION (non-revealer bonds = 0 here)
         assertEq(_systemTotal(), systemTotal, "I3: conserved after reveal close");
 
-        fund.nextPhase(); // EXECUTION → SETTLED (winner forfeit)
+        fund.nextPhase(); // EXECUTION → COMMIT(epoch 2) with winner forfeit
         assertEq(_systemTotal(), systemTotal, "I3: conserved after forfeit");
 
         // runner1 claims non-winner bond
@@ -1235,10 +1372,12 @@ contract AuctionInvariantsTest is EpochTest {
 
     // ── I5: freeze atomicity under manual driver ─────────────────────
 
-    /// Snapshot opened by nextPhase is immutable: subsequent mutations
-    /// (donations, inflows) do not change the frozen snapshot.
+    /// Snapshot opened at setUp via setAuctionManager is immutable:
+    /// subsequent mutations (donations, inflows) do not change the
+    /// frozen snapshot.
     function test_I5_manualDriver_snapshotImmutable() public {
-        fund.nextPhase(); // opens epoch 1, freezes snapshot
+        // Epoch 1 already opened at setUp (via setAuctionManager's eager
+        // _openAuction), freezing the snapshot.
         bytes32 hashAtOpen = fund.computeInputHashForEpoch(1);
 
         TheHumanFund.EpochSnapshot memory snapBefore = fund.getEpochSnapshot(1);
@@ -1259,7 +1398,7 @@ contract AuctionInvariantsTest is EpochTest {
 
     /// Seed captured via nextPhase is stable across repeated calls.
     function test_I6_manualDriver_seedStableAfterCapture() public {
-        fund.nextPhase(); // open
+        // Epoch 1 COMMIT already open from setUp.
         uint256 bond = fund.currentBond();
 
         vm.prank(runner1);
@@ -1273,22 +1412,23 @@ contract AuctionInvariantsTest is EpochTest {
         assertTrue(seed != 0, "I6: seed captured");
 
         // Walk through forfeit + next epoch — seed must not change
-        fund.nextPhase(); // EXECUTION → SETTLED
-        fund.nextPhase(); // advance + open epoch 2
+        fund.nextPhase(); // EXECUTION → COMMIT (epoch 2) with forfeit
+        fund.nextPhase(); // epoch 2: COMMIT → REVEAL
         assertEq(am.getRandomnessSeed(1), seed, "I6: seed stable after epoch advance");
     }
 
     // ── Derived: no stuck states via manual driver ───────────────────
 
     /// From any phase, a finite sequence of nextPhase calls reaches a
-    /// new epoch — no wall-clock needed.
+    /// new epoch — no wall-clock needed. Quiescence in the 3-phase model
+    /// means "cleanly advanced to the next epoch's COMMIT."
     function test_derived_noStuckStates_manualDriver() public {
         uint256 bond;
 
-        // Case A: pristine IDLE
+        // Case A: pristine (epoch 1 COMMIT, no commits)
         uint256 start = fund.currentEpoch();
         _advanceOneEpochManual();
-        assertGt(fund.currentEpoch(), start, "A: advanced from IDLE");
+        assertGt(fund.currentEpoch(), start, "A: advanced from fresh COMMIT");
 
         // Case B: mid-COMMIT with commits
         start = fund.currentEpoch();
@@ -1307,25 +1447,24 @@ contract AuctionInvariantsTest is EpochTest {
         vm.prank(runner1);
         fund.reveal(0.005 ether, bytes32("stuck-c"));
         fund.nextPhase(); // REVEAL → EXECUTION
-        fund.nextPhase(); // EXECUTION → SETTLED (forfeit)
-        fund.nextPhase(); // advance + open
+        fund.nextPhase(); // EXECUTION → COMMIT(next) with forfeit
         assertGt(fund.currentEpoch(), start, "C: advanced from EXECUTION");
     }
 
-    /// Helper: advance exactly one epoch from a fresh COMMIT via manual
-    /// forfeit (open → no-commit → settle → advance).
+    /// Helper: from a fresh COMMIT (no commits), advance exactly one
+    /// epoch via the 3-phase cycle.
     function _advanceOneEpochManual() internal {
-        fund.nextPhase(); // open COMMIT
-        fund.nextPhase(); // COMMIT → SETTLED (0 commits)
-        fund.nextPhase(); // SETTLED → advance + open
+        fund.nextPhase(); // COMMIT → REVEAL
+        fund.nextPhase(); // REVEAL → EXECUTION (0 commits, 0 reveals)
+        fund.nextPhase(); // EXECUTION → COMMIT (next epoch)
     }
 
     /// Helper: from inside a COMMIT with commits, drain to next epoch
-    /// via manual forfeit path.
+    /// via the manual forfeit path.
     function _drainToNextEpochManual() internal {
         fund.nextPhase(); // COMMIT → REVEAL
-        fund.nextPhase(); // REVEAL → SETTLED (0 reveals, forfeit)
-        fund.nextPhase(); // SETTLED → advance + open
+        fund.nextPhase(); // REVEAL → EXECUTION (0 reveals, forfeit)
+        fund.nextPhase(); // EXECUTION → COMMIT (next epoch)
     }
 
     // ── Derived: nextPhase → resetAuction non-confiscation ───────────
@@ -1333,7 +1472,7 @@ contract AuctionInvariantsTest is EpochTest {
     /// Interleaving nextPhase and resetAuction: committer's bond is
     /// never confiscated by the combination.
     function test_derived_nextPhase_then_resetAuction_nonConfiscation() public {
-        fund.nextPhase(); // open
+        // Epoch 1 COMMIT already open from setUp.
         uint256 bond = fund.currentBond();
         uint256 r1Before = runner1.balance;
 
@@ -1357,7 +1496,7 @@ contract AuctionInvariantsTest is EpochTest {
     function test_derived_driverEquivalence_fullState() public {
         // ── Manual path ──
         uint256 snap = vm.snapshotState();
-        fund.nextPhase();
+        // Epoch 1 COMMIT already open from setUp.
         uint256 bond = fund.currentBond();
         vm.prank(runner1);
         fund.commit{value: bond}(_commitHash(runner1, 0.005 ether, bytes32("r1")));
@@ -1369,8 +1508,7 @@ contract AuctionInvariantsTest is EpochTest {
         vm.prank(runner2);
         fund.reveal(0.003 ether, bytes32("r2"));
         fund.nextPhase(); // REVEAL → EXECUTION
-        fund.nextPhase(); // EXECUTION → SETTLED (forfeit)
-        fund.nextPhase(); // advance + open
+        fund.nextPhase(); // EXECUTION → COMMIT(epoch 2) with forfeit
 
         uint256 mTreasury = address(fund).balance;
         uint256 mAM = address(am).balance;
@@ -1379,7 +1517,7 @@ contract AuctionInvariantsTest is EpochTest {
 
         // ── Wall-clock path ──
         vm.revertToState(snap);
-        fund.syncPhase();
+        // Epoch 1 already open.
         bond = fund.currentBond();
         vm.prank(runner1);
         fund.commit{value: bond}(_commitHash(runner1, 0.005 ether, bytes32("r1")));
@@ -1401,30 +1539,10 @@ contract AuctionInvariantsTest is EpochTest {
         assertEq(fund.currentEpoch(), mEpoch, "equiv: epoch");
     }
 
-    // ── Edge: forceClosePhase revert on IDLE/SETTLED ─────────────────
-
-    /// AM.forceClosePhase reverts if no auction is in-flight.
-    function test_edge_forceClosePhase_revertsWhenIdle() public {
-        vm.prank(address(fund));
-        vm.expectRevert(AuctionManager.WrongPhase.selector);
-        am.forceClosePhase();
-    }
-
-    function test_edge_forceClosePhase_revertsWhenSettled() public {
-        // Open, commit, drain to SETTLED via nextPhase (no wall-clock
-        // auto-open that would immediately transition to COMMIT).
-        fund.nextPhase(); // IDLE → COMMIT
-        fund.nextPhase(); // COMMIT → SETTLED (0 commits)
-        // AM is now SETTLED — forceClosePhase should revert.
-        vm.prank(address(fund));
-        vm.expectRevert(AuctionManager.WrongPhase.selector);
-        am.forceClosePhase();
-    }
-
     // ── Edge: nextPhase with no AM ───────────────────────────────────
 
     function test_edge_nextPhase_revertsWithNoAM() public {
-        // Deploy a bare fund with no AM
+        // Deploy a bare fund with no AM (don't call setAuctionManager).
         TheHumanFund bare = new TheHumanFund{value: 1 ether}(
             1000, 0.01 ether,
             address(0xBEEF), address(0)
@@ -1435,10 +1553,10 @@ contract AuctionInvariantsTest is EpochTest {
 
     // ── Edge: partial phase close in _advanceToNow ───────────────────
 
-    /// Wall-clock past commit but not reveal: syncPhase closes COMMIT
-    /// only, leaving AM in REVEAL.
+    /// Wall-clock past commit but not reveal: syncPhase advances exactly
+    /// one phase (COMMIT → REVEAL) and stops, leaving AM in REVEAL.
     function test_edge_partialPhaseClose_commitOnly() public {
-        fund.syncPhase(); // open COMMIT
+        // Epoch 1 COMMIT already open from setUp.
         uint256 bond = fund.currentBond();
 
         vm.prank(runner1);
@@ -1458,5 +1576,283 @@ contract AuctionInvariantsTest is EpochTest {
         // Runner can still reveal
         vm.prank(runner1);
         fund.reveal(0.005 ether, bytes32("r1"));
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // META-INVARIANT — The fund always holds exactly one in-flight
+    //                  auction (except across the atomic EXECUTION→COMMIT
+    //                  tx boundary and under FREEZE_SUNSET).
+    // ══════════════════════════════════════════════════════════════════
+
+    /// At any observable point outside a single tx or sunset, the AM's
+    /// `currentAuctionEpoch` equals the fund's `currentEpoch` and the AM
+    /// phase is one of {COMMIT, REVEAL, EXECUTION}. Walk through all
+    /// 3 phases of several epochs and assert at each step.
+    function test_meta_alwaysOneAuction_acrossFullLifecycle() public {
+        for (uint256 e = 0; e < 3; e++) {
+            uint256 expectedEpoch = fund.currentEpoch();
+
+            // COMMIT phase
+            assertEq(am.currentAuctionEpoch(), expectedEpoch, "meta: live in COMMIT");
+            assertEq(uint8(am.getPhase(expectedEpoch)),
+                     uint8(IAuctionManager.AuctionPhase.COMMIT), "meta: COMMIT phase");
+
+            uint256 bond = fund.currentBond();
+            bytes32 salt = bytes32(uint256(e | 0xCAFE));
+            vm.prank(runner1);
+            fund.commit{value: bond}(_commitHash(runner1, 0.005 ether, salt));
+
+            // REVEAL phase (via manual driver)
+            fund.nextPhase();
+            assertEq(am.currentAuctionEpoch(), expectedEpoch, "meta: live in REVEAL");
+            assertEq(uint8(am.getPhase(expectedEpoch)),
+                     uint8(IAuctionManager.AuctionPhase.REVEAL), "meta: REVEAL phase");
+
+            vm.prank(runner1);
+            fund.reveal(0.005 ether, salt);
+
+            // EXECUTION phase
+            fund.nextPhase();
+            assertEq(am.currentAuctionEpoch(), expectedEpoch, "meta: live in EXECUTION");
+            assertEq(uint8(am.getPhase(expectedEpoch)),
+                     uint8(IAuctionManager.AuctionPhase.EXECUTION), "meta: EXEC phase");
+
+            // Submit to cleanly roll into the next epoch
+            vm.prank(runner1);
+            fund.submitAuctionResult(
+                abi.encodePacked(uint8(0)), bytes("noop"), bytes("mock"),
+                EPOCH_TEST_VERIFIER_ID, -1, ""
+            );
+            fund.nextPhase(); // cross boundary
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // BEHAVIORAL COMPLETENESS — mechanical invariants not yet covered.
+    // ══════════════════════════════════════════════════════════════════
+
+    /// Commit requires `msg.value >= currentBond`; under-bond reverts.
+    function test_commit_underBond_reverts() public {
+        uint256 bond = fund.currentBond();
+        vm.prank(runner1);
+        vm.expectRevert();
+        fund.commit{value: bond - 1}(_commitHash(runner1, 1, bytes32("s")));
+    }
+
+    /// Over-bonded commits accept the excess — the AM only takes exactly
+    /// `currentBond`, the rest is returned (or becomes part of the fund,
+    /// depending on contract policy). Either way the tx does not revert,
+    /// the commit is recorded, and the committer isn't overcharged on
+    /// claim time. We assert the recorded commit succeeded.
+    function test_commit_overBond_accepted() public {
+        uint256 bond = fund.currentBond();
+        vm.prank(runner1);
+        fund.commit{value: bond + 0.5 ether}(_commitHash(runner1, 1, bytes32("s")));
+        // Recorded: runner1 is a committer for epoch 1.
+        address[] memory committers = am.getCommitters(1);
+        assertEq(committers.length, 1, "commit recorded despite over-bond");
+        assertEq(committers[0], runner1);
+    }
+
+    /// submitAuctionResult must NEVER revert on a verified proof, even if
+    /// the action bytes are malformed or the action execution fails. The
+    /// winner must still receive bounty + bond-back. This is load-bearing
+    /// for liveness: a faulty enclave output cannot DoS payment.
+    function test_submit_invalidAction_stillPaysWinner() public {
+        // Walk epoch 1 into EXECUTION with runner1 as the winner.
+        uint256 bond = fund.currentBond();
+        bytes32 salt = bytes32(uint256(0xDEAD));
+        vm.prank(runner1);
+        fund.commit{value: bond}(_commitHash(runner1, 0.003 ether, salt));
+        fund.nextPhase();
+        vm.prank(runner1);
+        fund.reveal(0.003 ether, salt);
+        fund.nextPhase();
+
+        uint256 runnerBefore = runner1.balance;
+        uint256 winningBid = am.getWinningBid(1);
+
+        // Submit with a malformed action (unrecognized action type).
+        vm.prank(runner1);
+        fund.submitAuctionResult(
+            abi.encodePacked(uint8(99), uint256(0xBAD)), // garbage action
+            bytes("reasoning"),
+            bytes("mock"),
+            EPOCH_TEST_VERIFIER_ID,
+            -1, ""
+        );
+
+        // Winner got bond refund + bounty regardless of action validity.
+        assertEq(runner1.balance, runnerBefore + bond + winningBid,
+            "winner paid bond+bounty despite invalid action");
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // MAX-BID & BOND FORMULAS — the ceiling/bond are deterministic
+    //   functions of their respective counters:
+    //     effectiveMaxBid == min(treasury * MAX_BID_BPS / 10000,
+    //                            initialMaxBid * (1 + E)^consecutiveMissedEpochs)
+    //     currentBond     == min(BOND_CAP,
+    //                            initialBond   * (1 + E)^consecutiveStalledEpochs)
+    //   where E = AUTO_ESCALATION_BPS / 10000.
+    // ══════════════════════════════════════════════════════════════════
+
+    /// Compute `initialMaxBid * (1 + AUTO_ESCALATION_BPS/10000)^n`, capped
+    /// at `treasury * MAX_BID_BPS / 10000`, as per the spec.
+    function _expectedMaxBid(uint256 initialMaxBid, uint256 n, uint256 treasury) internal view returns (uint256) {
+        uint256 e = initialMaxBid;
+        for (uint256 i = 0; i < n; i++) {
+            e = e + (e * fund.AUTO_ESCALATION_BPS()) / 10000;
+        }
+        uint256 treasuryCap = (treasury * fund.MAX_BID_BPS()) / 10000;
+        return e > treasuryCap ? treasuryCap : e;
+    }
+
+    /// Invariant: `effectiveMaxBid` matches the spec formula at every
+    /// observable point. Fresh deploy → n=0. After a miss, n=1. Etc.
+    function test_invariant_effectiveMaxBid_formula_initial() public {
+        uint256 initialMaxBid = fund.maxBid();
+        uint256 treasury = address(fund).balance;
+        assertEq(
+            fund.effectiveMaxBid(),
+            _expectedMaxBid(initialMaxBid, 0, treasury),
+            "formula holds at n=0"
+        );
+    }
+
+    function test_invariant_effectiveMaxBid_formula_afterMisses() public {
+        uint256 initialMaxBid = fund.maxBid();
+
+        // Miss 3 epochs via wall-clock fast-forward.
+        vm.warp(block.timestamp + 3 * EPOCH_DUR);
+        fund.syncPhase();
+        uint256 missed = fund.consecutiveMissedEpochs();
+        assertGe(missed, 3, "3+ misses after 3-epoch warp");
+
+        uint256 treasury = address(fund).balance;
+        assertEq(
+            fund.effectiveMaxBid(),
+            _expectedMaxBid(initialMaxBid, missed, treasury),
+            "formula holds after misses"
+        );
+    }
+
+    /// The snapshot captures effectiveMaxBid at auction open; mid-epoch
+    /// treasury changes don't alter the snapshot's `maxBid` field.
+    function test_invariant_effectiveMaxBid_frozenAtOpen() public {
+        uint256 snapBidBefore = fund.getEpochSnapshot(1).maxBid;
+
+        // Donate mid-epoch — would change a live computation but not the snapshot.
+        vm.deal(address(this), 5 ether);
+        (bool ok, ) = address(fund).call{value: 1 ether}("");
+        require(ok, "donate failed");
+
+        assertEq(fund.getEpochSnapshot(1).maxBid, snapBidBefore,
+                 "snapshot maxBid immutable after mid-epoch treasury change");
+    }
+
+    /// `consecutiveMissedEpochs` resets on successful execution.
+    function test_invariant_missed_resetsOnSuccess() public {
+        // Miss twice to raise the counter
+        vm.warp(block.timestamp + 2 * EPOCH_DUR);
+        fund.syncPhase();
+        assertGt(fund.consecutiveMissedEpochs(), 0, "pre: missed > 0");
+
+        // Successful epoch → resets
+        speedrunEpoch(fund, abi.encodePacked(uint8(0)), "success");
+        assertEq(fund.consecutiveMissedEpochs(), 0, "missed resets on success");
+    }
+
+    /// `consecutiveMissedEpochs` increments by 1 on an epoch end with no
+    /// successful execution (silence, forfeit).
+    function test_invariant_missed_incrementsOnEpochEnd_noSuccess() public {
+        uint256 before = fund.consecutiveMissedEpochs();
+        // Miss epoch via manual driver: 3 nextPhase calls = full empty cycle
+        fund.nextPhase(); fund.nextPhase(); fund.nextPhase();
+        assertEq(fund.consecutiveMissedEpochs(), before + 1,
+                 "missed += 1 on epoch end without success");
+    }
+
+    /// `consecutiveMissedEpochs` increments by N when the wall-clock fast-
+    /// forwards past N epochs.
+    function test_invariant_missed_fastForward_incrementsByN() public {
+        uint256 before = fund.consecutiveMissedEpochs();
+        uint256 jumps = 5;
+        vm.warp(block.timestamp + jumps * EPOCH_DUR);
+        fund.syncPhase();
+        assertGe(fund.consecutiveMissedEpochs(), before + jumps,
+                 "missed += N on N-epoch fast-forward");
+    }
+
+    /// `currentBond` escalates ONLY on winner-forfeit (stalled signal),
+    /// not on silence (no winner) or success.
+    function test_invariant_bond_escalatesOnlyOnWinnerForfeit() public {
+        uint256 base = fund.currentBond();
+
+        // Silence (no commits) should NOT escalate the bond.
+        // Miss epoch via manual driver: 3 nextPhase calls = full empty cycle
+        fund.nextPhase(); fund.nextPhase(); fund.nextPhase();
+        assertEq(fund.currentBond(), base, "no escalation on silence");
+
+        // Winner forfeits (commit + reveal, no submit) → escalate.
+        uint256 bond = fund.currentBond();
+        vm.prank(runner1);
+        fund.commit{value: bond}(_commitHash(runner1, 0.005 ether, bytes32("w")));
+        fund.nextPhase();
+        vm.prank(runner1);
+        fund.reveal(0.005 ether, bytes32("w"));
+        fund.nextPhase(); // REVEAL → EXECUTION
+        // Don't submit — winner forfeits at the EXECUTION → COMMIT boundary.
+        fund.nextPhase(); // EXECUTION → COMMIT of next epoch (forfeit fires)
+
+        uint256 expectedBond = base + (base * fund.AUTO_ESCALATION_BPS()) / 10000;
+        assertEq(fund.currentBond(), expectedBond, "bond escalates 10% on winner forfeit");
+    }
+
+    /// `currentBond` resets to initial (BASE_BOND) on successful execution.
+    function test_invariant_bond_resetsOnSuccess() public {
+        // First escalate via winner forfeit.
+        uint256 base = fund.currentBond();
+        uint256 bond = fund.currentBond();
+        vm.prank(runner1);
+        fund.commit{value: bond}(_commitHash(runner1, 0.005 ether, bytes32("w")));
+        fund.nextPhase();
+        vm.prank(runner1);
+        fund.reveal(0.005 ether, bytes32("w"));
+        fund.nextPhase();
+        fund.nextPhase(); // forfeit
+        assertGt(fund.currentBond(), base, "bond escalated post-forfeit");
+
+        // Successful epoch resets to base.
+        speedrunEpoch(fund, abi.encodePacked(uint8(0)), "reset");
+        assertEq(fund.currentBond(), base, "bond resets on success");
+    }
+
+    /// Policy sidecar failure (invalid slot) must NOT revert the submission.
+    /// Same liveness concern: bad policy text can't block payment.
+    function test_submit_invalidPolicySlot_stillSucceeds() public {
+        uint256 bond = fund.currentBond();
+        bytes32 salt = bytes32(uint256(0xF00D));
+        vm.prank(runner1);
+        fund.commit{value: bond}(_commitHash(runner1, 0.003 ether, salt));
+        fund.nextPhase();
+        vm.prank(runner1);
+        fund.reveal(0.003 ether, salt);
+        fund.nextPhase();
+
+        // Submit with an invalid policy slot (slot 99 is out of range).
+        vm.prank(runner1);
+        fund.submitAuctionResult(
+            abi.encodePacked(uint8(0)),
+            bytes("reasoning"),
+            bytes("mock"),
+            EPOCH_TEST_VERIFIER_ID,
+            int8(99),            // invalid slot
+            "invalid"
+        );
+
+        // Execution still recorded; epoch marked executed.
+        ( , , , , , , bool executed) = fund.getEpochRecord(1);
+        assertTrue(executed, "executed despite bad policy sidecar");
     }
 }

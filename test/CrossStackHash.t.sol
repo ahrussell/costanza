@@ -130,8 +130,7 @@ contract CrossStackHashTest is EpochTest {
     function _buildStateJson(uint256 epoch) internal view returns (string memory) {
         // Build the flat epoch_state JSON that compute_input_hash() expects.
         // Scalar fields are read from the FROZEN snapshot for the given
-        // epoch — this is the single source of truth after the
-        // pure-_hashSnapshot refactor.
+        // epoch — the single source of truth for the input hash.
         TheHumanFund.EpochSnapshot memory snap = fund.getEpochSnapshot(epoch);
 
         string memory scalars = string.concat(
@@ -203,7 +202,7 @@ contract CrossStackHashTest is EpochTest {
         // bound matches the snapshot's messageHead/messageCount, not the
         // live unread queue (which may include post-freeze messages).
         uint256 unread = count - head;
-        uint256 maxMsgs = 5; // MAX_MESSAGES_PER_EPOCH
+        uint256 maxMsgs = 3; // MAX_MESSAGES_PER_EPOCH
         uint256 emit_ = unread > maxMsgs ? maxMsgs : unread;
         if (emit_ == 0) return "[]";
 

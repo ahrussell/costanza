@@ -23,7 +23,7 @@ Contract-side reference:
   WorldView.stateHash()              -> _hash_worldview()
 """
 
-MAX_MESSAGES_PER_EPOCH = 5
+MAX_MESSAGES_PER_EPOCH = 3
 MAX_HISTORY_ENTRIES = 10
 WORLDVIEW_SLOTS = 10
 DEFAULT_EPOCH_DURATION = 86400
@@ -127,9 +127,8 @@ def _hash_state(s: dict) -> bytes:
         ("uint256", s.get("epoch_duration", DEFAULT_EPOCH_DURATION)),
         ("uint256", s.get("message_head", 0)),
         ("uint256", s.get("message_count", 0)),
-        # nonprofit_count is a new snapshot field added with the pure
-        # _hashSnapshot refactor. Bounds the nonprofit rolling hash on
-        # both sides so admin-added nonprofits mid-auction are invisible.
+        # Bounds the nonprofit rolling hash on both sides so admin-added
+        # nonprofits mid-auction are invisible.
         ("uint256", s.get("nonprofit_count", len(s.get("nonprofits", [])))),
     ))
 
@@ -246,9 +245,9 @@ def _hash_worldview(policies: list) -> bytes:
         ));
 
     All 10 slots are included for byte-exact hash equivalence with the
-    contract. Slot 0 is reserved (legacy "diary style" slot) and the
-    contract rejects writes to it, so in practice it always hashes as
-    the empty string — but it must still appear in the hash input.
+    contract. Slot 0 is reserved (the contract rejects writes to it),
+    so in practice it always hashes as the empty string — but it must
+    still appear in the hash input.
 
     Zero-length worldview → b'\\x00' * 32 (matches bytes32(0) sentinel).
     """

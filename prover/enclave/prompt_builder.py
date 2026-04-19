@@ -225,18 +225,22 @@ def _compute_action_bounds(state):
     balance = state["treasury_balance"]
     total_invested, total_assets = _derive_trusted_aggregates(state)
 
-    # Donate bounds
-    max_donate = (balance * 1000) // 10000  # 10% of liquid treasury
+    # Donate bounds — use 95% of the theoretical max to account for the
+    # bounty payment that reduces treasury between snapshot and execution.
+    # Without this margin the model hits the exact cap and the contract
+    # rejects because treasuryBalance() is post-bounty.
+    max_donate = (balance * 1000) // 10000 * 95 // 100  # ~9.5% of treasury
 
     # Commission bounds
     current_commission = state["commission_rate_bps"]
 
-    # Investment bounds
+    # Investment bounds — 95% safety margin (same rationale as donate: the
+    # bounty payment reduces live total_assets between snapshot and execution)
     max_total_invested = (total_assets * 8000) // 10000  # 80% of total assets
     investment_headroom = max(0, max_total_invested - total_invested)
     min_reserve = (total_assets * 2000) // 10000  # 20% of total assets
     max_investable = max(0, balance - min_reserve)
-    invest_capacity = min(investment_headroom, max_investable)
+    invest_capacity = min(investment_headroom, max_investable) * 95 // 100
 
     # Per-protocol cap (25% of total assets). The contract enforces this
     # as an ABSOLUTE cap on the position, not a per-deposit cap — so the
@@ -252,7 +256,7 @@ def _compute_action_bounds(state):
     # stores protocols 1-indexed in insertion order, matching the array
     # the runner must supply to hash — so position-derived id is the
     # ground truth here.
-    max_per_protocol = (total_assets * 2500) // 10000
+    max_per_protocol = (total_assets * 2500) // 10000 * 95 // 100
     per_protocol_headroom = {}
     for idx, inv in enumerate(state.get("investments", [])):
         pid = idx + 1
@@ -516,9 +520,9 @@ def build_epoch_context(state, seed=None, voice_anchors: str = ""):
     # -- Section 5: Worldview --
     policies = state.get("guiding_policies", [""] * 10)
     has_policies = any(p for p in policies)
-    # Slot 0 is reserved (legacy "diary style" slot — WorldView rejects
-    # writes to it). The display loop iterates 1..7. The contract stores
-    # 10 slots in total; slots 8-9 are unused and hashed but not shown.
+    # Slot 0 is reserved (WorldView rejects writes). The display loop
+    # iterates 1..7. The contract stores 10 slots in total; slots 8-9
+    # are unused and hashed but not shown.
     slot_labels = {
         1: "Donation strategy",
         2: "Investment stance",
@@ -531,7 +535,7 @@ def build_epoch_context(state, seed=None, voice_anchors: str = ""):
     num_slots = 8  # upper bound for the 1..7 display loop
     lines.append("")
     lines.append("--- Your Worldview ---")
-    for i in range(1, num_slots):  # slot 0 (diary style) removed from system prompt
+    for i in range(1, num_slots):  # slot 0 reserved; skipped
         label = slot_labels.get(i, f"Slot {i}")
         p = policies[i] if i < len(policies) else ""
         if p:
@@ -577,9 +581,10 @@ def build_epoch_context(state, seed=None, voice_anchors: str = ""):
     if not state["history"]:
         lines.append("No previous decisions.")
     else:
-        # 48K context target: system (~300 tok) + protocols (~200 tok) + context (~600 tok)
-        # + history + messages + reminder. Each diary entry ~300-600 tok.
-        # 10 entries ~ 3K-6K tokens, leaving plenty for messages and long entries.
+        # 32K context budget: system prompt (~1.7K tok) + voice anchors (~3.6K tok)
+        # + static state (~2.3K tok) + history + messages + reminder. Each diary
+        # entry capped at 3000 chars (~750 tok). 10 entries ~ 7.5K tokens, leaving
+        # plenty of headroom.
         max_history = 10
         history_to_show = state["history"][:max_history]
         if len(state["history"]) > max_history:
@@ -596,8 +601,8 @@ def build_epoch_context(state, seed=None, voice_anchors: str = ""):
                     reasoning_text = bytes.fromhex(r[2:]).decode("utf-8")
                 else:
                     reasoning_text = r
-                if len(reasoning_text) > 2000:
-                    reasoning_text = reasoning_text[:2000] + "... [truncated]"
+                if len(reasoning_text) > 3000:
+                    reasoning_text = reasoning_text[:3000] + "... [truncated]"
             except Exception:
                 reasoning_text = "(could not decode)"
             lines.append("[Your diary entry]:")

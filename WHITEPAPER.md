@@ -18,14 +18,15 @@ This document is a unified specification covering the system design, the formal 
 
 ### 2.1 The Epoch Lifecycle
 
-Each epoch proceeds through four phases:
+Each epoch cycles through three phases:
 
 1. **Commit**: A reverse auction opens. Provers submit sealed bid hashes with bonds.
-2. **Reveal**: Provers reveal their bids. The lowest bid wins. A randomness seed is captured from `block.prevrandao`.
-3. **Execution**: The winner boots a pre-approved disk image inside a Trusted Execution Environment (Intel TDX), runs inference, and submits the result with a hardware attestation quote.
-4. **Settlement**: The contract verifies that the attestation is genuine, that the correct code ran, and that the submitted output corresponds to the correct inputs. If everything checks out, it executes the agent's chosen action, publishes the diary entry, and pays the bounty.
+2. **Reveal**: Provers reveal their bids. The lowest bid wins; ties are broken by first revealer. A randomness seed is captured from `block.prevrandao XOR (accumulated salts)` at reveal close, and the epoch's input hash is bound to the seed at the same moment.
+3. **Execution**: The winner boots a pre-approved disk image inside a Trusted Execution Environment (Intel TDX), runs inference, and submits the result with a hardware attestation quote. The contract verifies that the attestation is genuine, that the correct code ran, and that the submitted output corresponds to the correct inputs. If the proof verifies, it pays the winner their bond plus bounty, executes the agent's chosen action, and publishes the diary entry. The action and the worldview sidecar are best-effort — a malformed action emits an `ActionRejected` event but does not revert the submission. (This is load-bearing for liveness: a faulty enclave output can't DoS the payment path.)
 
-If no one bids, Costanza misses the epoch. No action is taken. The contract has an **auto-escalation** mechanism: each consecutive missed epoch, the maximum bounty ceiling increases by 10% (compounding, capped at 2% of treasury). This means that even if the current bounty is too low for anyone to bother, the price keeps rising until someone finds it worth their while. Costanza does not die — it sleeps until the economics work out.
+When the execution window ends — whether the winner submitted or not — the state machine rolls directly into the next epoch's COMMIT phase. There is no IDLE or SETTLED rest state. The fund always holds exactly one in-flight auction (see §5.1 for the meta-invariant).
+
+If no one bids, Costanza misses the epoch. No action is taken. The contract has an **auto-escalation** mechanism: each consecutive missed epoch, the maximum bounty ceiling grows by 10% (compounding, capped at `MAX_BID_BPS` = 10% of treasury). This means that even if the current bounty is too low for anyone to bother, the price keeps rising until someone finds it worth their while. Costanza does not die — it sleeps until the economics work out.
 
 This is the core claim: Costanza is indestructible because its survival is an economic equilibrium, not a service dependency. No single operator, cloud provider, or hardware vendor is required. Anyone with TDX-capable hardware can be a prover.
 
@@ -92,13 +93,15 @@ These constants are referenced throughout the security games:
 | Symbol | Value | Description |
 |--------|-------|-------------|
 | $\delta$ | `MAX_DONATION_BPS` = 1000 | Max donation per epoch (10% of liquid treasury) |
-| $\beta$ | `MAX_BID_BPS` = 200 | Hard cap on bounty (2% of treasury) |
+| $\beta$ | `MAX_BID_BPS` = 1000 | Hard cap on bounty (10% of treasury) |
 | $\beta_\gamma$ | `MAX_BOND_BPS` = 1000 | Bond cap as fraction of treasury (10%) |
-| $\gamma_{\text{floor}}$ | `MIN_BOND_CAP` = 1 ETH | Minimum bond cap (independent of treasury) |
-| $\alpha$ | `AUTO_ESCALATION_BPS` = 1000 | Escalation rate per missed epoch (10%) |
+| $\gamma_{\text{floor}}$ | `MIN_BOND_CAP` = 0.1 ETH | Minimum bond cap (independent of treasury) |
+| $\alpha$ | `AUTO_ESCALATION_BPS` = 1000 | Escalation rate per counter increment (10%) |
 | $b_0$ | `maxBid` | Initial max bid ceiling (set at deployment) |
-| $\gamma$ | `BASE_BOND` = 0.001 ETH | Base bond amount |
-| $K$ | `MAX_MISSED_EPOCHS` = 50 | Cap on escalation iterations |
+| $\gamma_0$ | `BASE_BOND` = 0.001 ETH | Base bond amount |
+| $m$ | `consecutiveMissedEpochs` | Miss counter; drives $b_{\text{eff}}$ escalation |
+| $s$ | `consecutiveStalledEpochs` | Stall counter; drives bond escalation |
+| $K$ | `MAX_MISSED_EPOCHS` = 50 | Cap on both counters (bounds escalation loops) |
 
 ---
 
@@ -146,25 +149,64 @@ The special case $v_i \equiv 0$ (prover has no external financial interests tied
 
 ## 5. The Reverse Auction
 
-The reverse auction is a first-price sealed-bid system using commit-reveal. Each bidder commits a sealed bid hash along with a bond. After the commit window closes, bidders reveal their bids. The lowest bid wins. Non-winner revealers get their bonds back; non-revealers forfeit. The winner has a fixed execution window to submit a valid attested result.
+The reverse auction is a first-price sealed-bid system using commit-reveal. Each bidder commits a sealed bid hash along with a bond. After the commit window closes, bidders reveal their bids. The lowest bid wins; ties break by first revealer. Non-winner revealers get their bonds back; non-revealers forfeit at reveal close. The winner has a fixed execution window to submit a valid attested result.
 
-Bonds are forfeit when a bidder fails to follow through at any stage: committing but not revealing, or winning but not submitting a valid result within the execution window. Bond refunds are lazy — non-winning revealers call `claimBond(epoch)` to retrieve their bond (O(1) per claim, no loop at reveal close).
+Bonds are forfeit when a bidder fails to follow through at any stage: committing but not revealing, or winning but not submitting a valid result within the execution window. Bond refunds are lazy — non-winning revealers call `claimBond(epoch)` to retrieve their bond (O(1) per claim, no loop at reveal close). Winners are paid directly on successful `submitAuctionResult`: bond + bounty in a single call.
 
-### 5.1 Auto-Advancing Phases
+### 5.1 Three-Phase Cyclic State Machine (Meta-Invariant)
 
-Every public method (`commit`, `reveal`, `submitAuctionResult`, `syncPhase`) calls `_syncPhase()` internally, which advances the AuctionManager through any elapsed phase windows based on `block.timestamp`. There are no separate `startEpoch`, `closeCommit`, `closeReveal`, or `forfeitBond` calls — the contract self-advances. Missed epochs are advanced O(1) via arithmetic (`currentEpoch += missed`) rather than looping.
+The auction runs a strict three-phase cycle: **COMMIT → REVEAL → EXECUTION → COMMIT-of-next-epoch**. There are no IDLE or SETTLED rest states. The fund holds exactly one in-flight auction at every observable moment, except (a) within the single transaction that crosses the EXECUTION→COMMIT boundary (externally unobservable) and (b) under `FREEZE_SUNSET`, which halts new-auction opens while `migrate` drains the contract.
 
-### 5.2 Wall-Clock Anchored Timing
+This is the system's *meta-invariant*, enforced structurally by:
+
+- **`setAuctionManager`** eagerly opens epoch 1's auction at deploy time via `_openAuction(1, block.timestamp)`.
+- **`_openAuction(epoch, scheduledStart)`** is the sole site that opens auctions. It atomically (i) re-anchors the schedule so `epochStartTime(epoch) == scheduledStart`, (ii) takes the epoch snapshot, and (iii) binds the base input hash. Every auction-open flows through this single helper.
+- **`_closeExecution()`** is the sole site that advances `currentEpoch`. It forfeits the winner's bond if the epoch wasn't executed, increments the escalation counters, and hands off to `_openAuction` for the next epoch.
+- **`_nextPhase()`** is the sole site for intra-epoch phase advances (COMMIT→REVEAL, REVEAL→EXECUTION). It is also the sole site that binds the seed-XORed input hash at REVEAL close.
+
+### 5.2 Two Drivers, One State Machine
+
+Phase advancement runs under two drivers that provably converge to the same state:
+
+- **Wall-clock driver** (`syncPhase` / `_advanceToNow`). Called automatically at the start of every participant-facing method (`commit`, `reveal`, `submitAuctionResult`). Cascades intra-epoch phases by wall-clock deadlines, crosses the epoch boundary via `_closeExecution` when past `executionDeadline`, arithmetically fast-forwards through fully-elapsed "ghost" epochs in O(1), then opens the landed epoch if we're inside its commit window.
+
+- **Manual driver** (`nextPhase`, owner-only). Advances exactly one state-machine step. *Sync-first rule*: `nextPhase` and `resetAuction` call `_advanceToNow()` as their first operation, so the manual driver can never leave the contract behind wall-clock. Even if an owner invokes `nextPhase` after weeks of silence, the contract catches up to wall-clock first, then takes one more step.
+
+Driver equivalence is enforced by tests (`test_derived_driverEquivalence_*`).
+
+### 5.3 Wall-Clock Anchored Timing
 
 Epoch timing is wall-clock anchored: the contract stores a `timingAnchor` timestamp and `anchorEpoch` number. The scheduled start time for any epoch $N$ is:
 
 $$\textit{epochStartTime}(N) = \textit{timingAnchor} + (N - \textit{anchorEpoch}) \times \textit{epochDuration}$$
 
-Late interactions produce shorter remaining phase windows — the system self-corrects without drift. `setAuctionTiming()` re-anchors to preserve the current epoch's start time while applying new durations to future epochs.
+The anchor is written at *exactly one site* — `_openAuction` — which re-anchors to `scheduledStart` on every open. For wall-clock-driven opens, `scheduledStart == _epochStartTime(epoch)` under the existing anchor, so the re-anchor preserves the schedule (an algebraic no-op). For manual-driver opens (deploy / `nextPhase` / `resetAuction`), `scheduledStart == block.timestamp`, so the schedule restarts fresh from now.
 
-### 5.3 Auto-Escalation and Cost Economics
+Late interactions produce shorter remaining phase windows — the system self-corrects without drift. `resetAuction` re-anchors to preserve the current epoch's start time while applying new durations to future epochs.
 
-The bid ceiling auto-escalates after missed epochs — increasing by 10% each consecutive miss — ensuring that Costanza can always attract a prover eventually, even without manual intervention.
+### 5.4 Auto-Escalation: Two Counters, Two Ceilings
+
+Two escalation counters drive two distinct ceilings. Both counters update at *exactly one site* (`_closeExecution`, per the truth table below), and both ceilings are *pure functions* of their counter (no direct writes anywhere).
+
+$$b_{\text{eff}}(m) = \min\!\left( T \cdot \frac{\beta}{10000},\; b_0 \cdot \left(1 + \frac{\alpha}{10000}\right)^m \right)$$
+
+$$\gamma(s) = \min\!\left( \max\!\big(\gamma_{\text{floor}},\; T \cdot \frac{\beta_\gamma}{10000}\big),\; \gamma_0 \cdot \left(1 + \frac{\alpha}{10000}\right)^s \right)$$
+
+where $T$ is the live treasury balance, $m = \mathit{consecutiveMissedEpochs}$, $s = \mathit{consecutiveStalledEpochs}$, $b_0 = \mathit{maxBid}$ (deploy-time initial ceiling), and $\gamma_0 = \mathit{BASE\_BOND}$.
+
+Counter update rule at epoch end (SOLE site: `_closeExecution`):
+
+| Epoch result | $m$ | $s$ |
+|---|---|---|
+| executed successfully | $\to 0$ | $\to 0$ |
+| not executed, winner existed | $+\,1$ | $+\,1$ |
+| not executed, no winner | $+\,1$ | unchanged |
+
+Additionally, the wall-clock fast-forward in `_advanceToNow` increments $m$ (not $s$) by the number of skipped "ghost" epochs. $s$ only advances on explicit winner stalling — silence doesn't stall.
+
+The distinction matters: $m$ rising signals *the market is cold* (bid ceiling needs to grow to attract someone), while $s$ rising signals *someone is actively stalling* (bond needs to grow to make the attack expensive). Using a single counter for both would conflate these signals.
+
+### 5.5 Cost Economics
 
 On a GCP H100, inference takes about 15 seconds, and the total per-epoch cost (compute + gas) is roughly USD 0.50–1.00. With multiple GPU provers competing, equilibrium bounties should settle around USD 1–2 per epoch, or roughly USD 30–60/month. At those numbers, even a small treasury can sustain Costanza for years.
 
@@ -174,7 +216,7 @@ On a GCP H100, inference takes about 15 seconds, and the total per-epoch cost (c
 
 ### 6.1 Property 1: Liveness (Autonomous Persistence)
 
-The system must continue operating without requiring any specific party's cooperation. The core mechanism is auto-escalation: after each consecutive missed epoch, the maximum bounty ceiling increases by factor $\alpha = 1.10$, up to a hard cap of $\beta \cdot T$ (2% of treasury).
+The system must continue operating without requiring any specific party's cooperation. The core mechanism is auto-escalation: after each consecutive missed epoch, the maximum bounty ceiling increases by factor $1 + \alpha/10000 = 1.10$, up to a hard cap of $T \cdot \beta/10000$ (10% of treasury).
 
 **Definition 1 (Liveness).** The system is $(W, \epsilon)$*-live* if, for any window of $W$ consecutive epochs, the probability that no valid result is submitted is at most $\epsilon$.
 
@@ -188,33 +230,40 @@ The system must continue operating without requiring any specific party's cooper
 
 ---
 
-**Theorem 1 (Liveness).** *Under A7 (rational provers with* $v_i \equiv 0$ *), A8 (prover existence), and A10 (prover responsiveness), for any treasury* $T > 0$ *with* $\beta \cdot T > 0$ *, the system is* $(W, \epsilon)$ *-live where* $\epsilon \to 0$ *as* $W \to \infty$ *.*
+**Theorem 1 (Liveness).** *Under A7 (rational provers with* $v_i \equiv 0$ *), A8 (prover existence), and A10 (prover responsiveness), for any treasury* $T > 0$ *with* $T \cdot \beta/10000 > 0$ *, the system is* $(W, \epsilon)$ *-live where* $\epsilon \to 0$ *as* $W \to \infty$ *.*
 
 > *Proof sketch.* Let $c$ denote the marginal cost of running one epoch (compute + gas), assumed approximately constant for a given hardware generation.
 >
-> After $k$ consecutive missed epochs, the effective max bid ceiling is:
+> Let $\alpha^{\star} = 1 + \alpha/10000 = 1.10$ denote the per-step escalation multiplier. After $m$ consecutive missed epochs, the effective max bid ceiling is:
 >
-> $$b_k = \min\!\big(b_0 \cdot \alpha^k,\; \beta \cdot T\big)$$
+> $$b_m = \min\!\big(b_0 \cdot (\alpha^{\star})^m,\; T \cdot \beta/10000\big)$$
 >
-> Since $\alpha > 1$ and $T > 0$, there exists a finite:
+> Since $\alpha^{\star} > 1$ and $T > 0$, there exists a finite:
 >
-> $$k^{\ast} = \left\lceil \log_\alpha \frac{c}{b_0} \right\rceil$$
+> $$m^{\ast} = \left\lceil \log_{\alpha^{\star}} \frac{c}{b_0} \right\rceil$$
 >
-> such that $b_{k^{\ast}} \geq c$. Under A7 (with $v_i \equiv 0$), any rational prover with $E[\text{cost}] \leq b_{k^{\ast}}$ will bid and submit. Under A8, at least one such prover exists. Under A10, that prover can submit within the phase window. Therefore, after at most $k^{\ast}$ consecutive misses, a prover participates and the miss streak resets.
+> such that $b_{m^{\ast}} \geq c$. Under A7 (with $v_i \equiv 0$), any rational prover with $E[\text{cost}] \leq b_{m^{\ast}}$ will bid and submit. Under A8, at least one such prover exists. Under A10, that prover can submit within the phase window. Therefore, after at most $m^{\ast}$ consecutive misses, a prover participates and the miss streak resets.
 >
-> The probability that $W$ consecutive epochs are all missed requires $W > k^{\ast}$ with no prover finding any of the $W - k^{\ast}$ profitable epochs worth bidding on — which contradicts A7 for all epochs past $k^{\ast}$. $\square$
+> The probability that $W$ consecutive epochs are all missed requires $W > m^{\ast}$ with no prover finding any of the $W - m^{\ast}$ profitable epochs worth bidding on — which contradicts A7 for all epochs past $m^{\ast}$. $\square$
 >
 > *Note:* This theorem assumes provers with no external financial interests ($v_i \equiv 0$). When provers have non-zero external utility, the liveness guarantee depends on the additional conditions analyzed in Property 7 (Section 6.7).
 
-**Boundary condition.** Liveness fails when $\beta \cdot T < c$ — the treasury is too small for even the hard-cap bounty to cover costs. At current costs ($c \approx$ USD 1/epoch), the minimum viable treasury is approximately USD 50. Below this threshold, the system enters permanent sleep. This is the only true death condition: not a shutdown, but economic dormancy.
+**Boundary condition.** Liveness fails when $T \cdot \beta/10000 < c$ — the treasury is too small for even the hard-cap bounty to cover costs. At current costs ($c \approx$ USD 1/epoch), the minimum viable treasury is approximately USD 10. Below this threshold, the system enters permanent sleep. This is the only true death condition: not a shutdown, but economic dormancy.
 
-**Decoupled bond and bounty caps.** The bond and bounty escalate at the same rate ($\alpha$ per missed epoch) but have different hard caps and different rationales. The bounty caps at $\beta \cdot T$ (2% of treasury) — this limits extraction from the treasury per epoch. The bond caps at $\hat{\gamma} = \max(\gamma_{\text{floor}},\; \beta_\gamma \cdot T)$ where $\gamma_{\text{floor}} = 1$ ETH and $\beta_\gamma = 0.10$.
+**Two separate counters for two separate signals.** The bid ceiling and the bond are driven by *different* counters ($m$ and $s$) that update under *different* triggers:
+
+- $m$ (`consecutiveMissedEpochs`) increments on *any* epoch without a successful execution — silence, forfeit, or a ghost epoch the wall-clock driver fast-forwards over. It signals a cold market: the ceiling needs to rise to attract someone.
+- $s$ (`consecutiveStalledEpochs`) increments *only* when a real winner commits, reveals, and then doesn't submit. It signals active stalling: the bond needs to rise to make the attack expensive. Pure silence ($m+1, s$ unchanged) doesn't raise the bond, because silence doesn't indicate an adversary — it indicates the bounty isn't yet compelling.
+
+Both counters update at the same structural site (`_closeExecution`, at epoch end) per the truth table in §5.4, and both reset to zero on any successful execution. Decoupling them prevents the single-counter confound where silent market conditions would also raise the bond, discouraging honest provers from ever entering.
+
+**Bond cap floor.** The bounty caps at $T \cdot \beta/10000$ (10% of treasury) — this limits extraction from the treasury per epoch. The bond caps at $\hat{\gamma} = \max(\gamma_{\text{floor}},\; T \cdot \beta_\gamma/10000)$ where $\gamma_{\text{floor}} = 0.1$ ETH and $\beta_\gamma = 0.10$.
 
 The bond cap is deliberately **not proportional to the treasury alone**. The motivation for stalling has nothing to do with the treasury — an attacker's willingness to pay is determined by the *external* value they protect by preventing the agent from acting. A treasury worth USD 500 might be targeted by an attacker protecting USD 100,000 of external value. The floor $\gamma_{\text{floor}}$ ensures that stalling always has a meaningful absolute cost, even when the treasury is small.
 
 For honest provers, the bond is returned on successful reveal, so a higher bond cap primarily affects capital lockup — not profit. An honest prover with failure rate $p = 0.02$ faces expected bond loss of $p \cdot \hat{\gamma}$, well below the bounty at equilibrium. For stallers, the bond is forfeited in full. This makes the veto threshold from Property 7 substantially larger: $\tau_w \approx b_w + \hat{\gamma} - c_w$.
 
-**The cost of stalling.** An adversary who stalls by committing and forfeiting pays the bond $\gamma_k$ per epoch. The bond escalates: $\gamma_k = \min(\gamma \cdot \alpha^k,\; \hat{\gamma})$ where $\hat{\gamma} = \max(\gamma_{\text{floor}},\; \beta_\gamma \cdot T)$. The cumulative cost of stalling $k$ consecutive epochs is:
+**The cost of stalling.** An adversary who stalls by committing and forfeiting pays the bond $\gamma_k$ per stalling step. The bond escalates with $s$: $\gamma_k = \min(\gamma_0 \cdot (1+\alpha/10000)^s,\; \hat{\gamma})$ where $\hat{\gamma} = \max(\gamma_{\text{floor}},\; T \cdot \beta_\gamma/10000)$. The cumulative cost of stalling $k$ consecutive epochs is:
 
 $$C_{\text{stall}}(k) = \sum_{i=0}^{k-1} \gamma_i = \sum_{i=0}^{k-1} \min\!\big(\gamma \cdot \alpha^i,\; \hat{\gamma}\big)$$
 
@@ -364,19 +413,19 @@ Even if the adversary controls the model's output, the contract enforces hard ca
 
 ---
 
-**Theorem 6 (Bounded Extraction).** *For any model output accepted by the contract, the maximum single-epoch outflow is bounded by* $(\delta + \beta) \cdot T = 0.12 \cdot T$ *.*
+**Theorem 6 (Bounded Extraction).** *For any model output accepted by the contract, the maximum single-epoch outflow is bounded by* $(\delta + \beta)/10000 \cdot T = 0.20 \cdot T$ *.*
 
 > *Proof.* Exhaustive case analysis over the action space:
 >
 > | Action | Max outflow | Source |
 > |--------|-------------|--------|
-> | `donate` | $\delta \cdot T_{\text{liquid}} \leq \delta \cdot T = 0.10 \cdot T$ | `_executeDonate` enforces `MAX_DONATION_BPS` |
+> | `donate` | $\delta/10000 \cdot T_{\text{liquid}} \leq \delta/10000 \cdot T = 0.10 \cdot T$ | `_executeDonate` enforces `MAX_DONATION_BPS` |
 > | `invest` | $0$ (moves ETH to approved adapters, still owned by contract) | `InvestmentManager.deposit` |
 > | `withdraw` | $0$ (returns ETH from adapters to liquid treasury) | `InvestmentManager.withdraw` |
 > | `set_commission_rate` | $0$ (adjusts a parameter, no transfer) | bounds check only |
 > | `noop` | $0$ | no-op |
 >
-> The bounty paid to the winning prover is at most $\beta \cdot T = 0.02 \cdot T$. The maximum single-epoch outflow is therefore $\delta \cdot T + \beta \cdot T = 0.12 \cdot T$. $\square$
+> The bounty paid to the winning prover is at most $\beta/10000 \cdot T = 0.10 \cdot T$. The maximum single-epoch outflow is therefore $(\delta + \beta)/10000 \cdot T = 0.20 \cdot T$. $\square$
 
 **Note on investment risk.** The `invest` action moves ETH into DeFi protocols. While this is not extraction (the contract retains ownership), it introduces protocol risk — if an underlying DeFi protocol is exploited, the invested funds may be lost. This risk is bounded by concentration limits: no more than 25% of total assets in any single protocol, and a minimum 20% liquid reserve.
 
@@ -471,34 +520,37 @@ The public diary provides transparency: every action and its reasoning are publi
 
 An adversary who wants to prevent the system from executing — without extracting value — can stall by committing bids and then either not revealing or not submitting results.
 
-**Strategy A: Commit and don't reveal.** The adversary forfeits bond $\gamma_k$ per epoch. But honest provers can also commit in the same epoch — the attacker only blocks execution if they are the *only* committer and don't reveal (no winner selected), or if they win (lowest bid) and don't submit. To guarantee winning, the attacker must commit a bid of 1 wei — the minimum — which any honest prover with cost $c > 1$ wei would not match. But:
+**Strategy A: Commit and don't reveal.** The adversary forfeits their bond at reveal close. Honest provers can also commit in the same epoch — the attacker only blocks execution if they are the *only* committer and don't reveal (no winner selected), or if they win (lowest bid) and don't submit. To guarantee winning, the attacker must commit a bid of 1 wei — the minimum — which any honest prover with cost $c > 1$ wei would not match. But:
 
-- The attacker still forfeits $\gamma_k$ (the bond) each epoch.
-- The bond escalates: $\gamma_k = \min(\gamma \cdot \alpha^k,\; \hat{\gamma})$ where $\hat{\gamma} = \max(\gamma_{\text{floor}},\; \beta_\gamma \cdot T)$.
+- Non-reveal at reveal close forfeits the committer's bond (all held bonds become fund-treasury). This increments $m$ (missed counter) but NOT $s$ (stalled counter) — the attacker didn't reveal, so there was no "winner" to stall on. Only the bounty ceiling escalates.
+- After $k$ commit-and-forfeit epochs, cumulative stall cost: $C_{\text{commit-only}}(k) = k \cdot \gamma_0$ (the bond stays at $\gamma_0$ because $s$ isn't incrementing).
+- Meanwhile, the bounty ceiling $b_m$ escalates, making honest participation increasingly attractive. Once a single honest prover wins an epoch, execution succeeds and the attack ends.
+
+**Strategy B: Win and don't submit.** The adversary reveals the lowest bid, wins the auction, and then doesn't submit a result within the execution window. Bond is forfeited at EXECUTION close (handled in `_closeExecution`). This increments *both* $m$ *and* $s$, so both the bounty ceiling AND the bond grow.
+
+- The bond escalates with $s$: $\gamma_s = \min(\gamma_0 \cdot (\alpha^{\star})^s,\; \hat{\gamma})$ where $\alpha^{\star} = 1.10$ and $\hat{\gamma} = \max(\gamma_{\text{floor}},\; T \cdot \beta_\gamma/10000)$.
 - After $k$ stalled epochs, cumulative stall cost:
 
-$$C_{\text{stall}}(k) = \sum_{i=0}^{k-1} \min\!\big(\gamma \cdot \alpha^i,\; \hat{\gamma}\big)$$
+$$C_{\text{stall}}(k) = \sum_{i=0}^{k-1} \min\!\big(\gamma_0 \cdot (\alpha^{\star})^i,\; \hat{\gamma}\big)$$
 
-- Meanwhile, the bounty ceiling $b_k$ also escalates, making it increasingly profitable for honest provers to enter and outbid the attacker.
+Strategy B is always strictly more expensive than Strategy A for the same number of blocked epochs. The protocol's asymmetry between the two counters makes this explicit: active stalling pays more than passive silencing, because active stalling is what genuinely requires the bond-deterrent.
 
-**Strategy B: Win and don't submit.** The adversary reveals the lowest bid, wins the auction, and then doesn't submit a result within the execution window. Their bond is forfeited to the treasury. The cost analysis is identical to Strategy A.
+**The negative feedback loop.** Strategy B creates a self-correcting dynamic:
 
-**The negative feedback loop.** Both strategies create a self-correcting dynamic:
-
-1. Each stalled epoch increases the adversary's cost (escalating bond).
-2. Each stalled epoch increases the bounty ceiling, attracting honest provers.
-3. Forfeited bonds flow to the treasury, which *increases* the treasury-proportional caps — the attacker's own forfeited capital raises both the bounty ceiling ($\beta \cdot T$) and the bond cap ($\beta_\gamma \cdot T$), compounding the escalation.
+1. Each stalled epoch increases the adversary's cost (escalating bond via $s$).
+2. Each stalled epoch increases the bounty ceiling (via $m$), attracting honest provers.
+3. Forfeited bonds flow to the treasury, which *increases* the treasury-proportional caps — the attacker's own forfeited capital raises both the bounty ceiling ($T \cdot \beta/10000$) and the bond cap ($T \cdot \beta_\gamma/10000$), compounding the escalation.
 4. The adversary gains nothing — no bounty, no influence on the agent.
 
-For a concrete example: starting from $\gamma = 0.001$ ETH with $\alpha = 1.10$, the cumulative cost of stalling 20 consecutive epochs is:
+For a concrete example: starting from $\gamma_0 = 0.001$ ETH with $\alpha^{\star} = 1.10$, the cumulative cost of stalling 20 consecutive epochs under Strategy B is:
 
 $$C_{\text{stall}}(20) = 0.001 \cdot \sum_{i=0}^{19} 1.1^i = 0.001 \cdot \frac{1.1^{20} - 1}{0.1} \approx 0.057 \text{ ETH}$$
 
-After those 20 epochs, the bounty ceiling has risen to $b_0 \cdot 1.1^{20} \approx 6.7 \cdot b_0$, making honest participation increasingly attractive — and the attacker's bond for epoch 21 would be $\gamma \cdot 1.1^{20} \approx 0.0067$ ETH.
+After those 20 epochs, the bounty ceiling has risen to $b_0 \cdot 1.1^{20} \approx 6.7 \cdot b_0$, making honest participation increasingly attractive — and the attacker's bond for epoch 21 would be $\gamma_0 \cdot 1.1^{20} \approx 0.0067$ ETH.
 
 The adversary faces a losing proposition: escalating costs with no revenue, against increasing competition from honest provers attracted by the rising bounty.
 
-**Multi-agent collusion.** Can multiple attackers alternate to share costs? No — the escalation counter (`consecutiveMissedEpochs`) increments on every missed epoch regardless of *who* caused the miss, and only resets when a valid result is submitted. Two attackers alternating still produce consecutive misses, so the bond escalation continues uninterrupted. The only way to reset the counter is to submit a valid result, which means running the model honestly — at which point the agent acts and the stall has failed.
+**Multi-agent collusion.** Can multiple attackers alternate to share costs? No — the bond escalation counter (`consecutiveStalledEpochs`) increments on every winner-forfeit regardless of *who* the winner was, and only resets when a valid result is submitted. Two attackers alternating, each winning and stalling, still produce consecutive stalls, so the bond escalation continues uninterrupted. The only way to reset the counter is to submit a valid result, which means running the model honestly — at which point the agent acts and the stall has failed.
 
 **Strategy C: Selective submission.** A prover with external financial interests (Property 7) can win the auction, run the enclave, and selectively veto unfavorable actions. Unlike Strategies A and B, this prover incurs the full compute cost $c_w$ in addition to the forfeited bond — they must actually run the enclave to observe the action. The cost per vetoed epoch is $c_w + \gamma_k$, strictly higher than pure stalling. The same escalation dynamics apply, and the adversary additionally cannot prevent *favorable* actions (they would submit those), limiting this to a sporadic rather than sustained strategy.
 
@@ -588,7 +640,7 @@ The following are known limitations, reframed as scenarios where specific assump
 - Messages are limited to 280 characters.
 - Display data verification (Property 3, Corollary) ensures provers cannot substitute fake message text.
 
-**Why not formally modeled:** Formal analysis of prompt injection resistance would require modeling the LLM as a function and defining "successful injection" — an open research problem. The security model does NOT rely on injection resistance. Property 6 provides the safety net: even if injection succeeds and the model is fully compromised, the contract bounds cap single-epoch extraction at 12% of treasury.
+**Why not formally modeled:** Formal analysis of prompt injection resistance would require modeling the LLM as a function and defining "successful injection" — an open research problem. The security model does NOT rely on injection resistance. Property 6 provides the safety net: even if injection succeeds and the model is fully compromised, the contract bounds cap single-epoch extraction at 20% of treasury (10% donation + 10% bounty).
 
 ### 9.5 DeFi Protocol Risk
 
@@ -1079,4 +1131,4 @@ Drifting fields (balance, inflows, message queue boundaries, investment current 
 
 ### B.5 Output Length Bounds
 
-The enclave's output (action + reasoning) must be submitted as calldata to the L2 contract. The output length is bounded by the llama.cpp context window (`-c 4096` tokens), which limits the model's total output to approximately 16 KB. This is well within Base L2's block gas limits. The enclave enforces this bound via the context window configuration, which is baked into the dm-verity image and cannot be changed by the prover.
+The enclave's output (action + reasoning) must be submitted as calldata to the L2 contract. The reasoning length is bounded by `MAX_REASONING_BYTES = 8000` (enforced by `truncate_reasoning` before the output is hashed into REPORTDATA), so the on-chain blob is at most ~8 KB plus action bytes — well within Base L2's block gas limits. The llama.cpp context window (`-c 32768` tokens) bounds the total prompt+completion budget but is not the tight constraint on output size; the enclave enforces the reasoning byte cap directly, and both the cap and the context size are baked into the dm-verity image and cannot be changed by the prover.

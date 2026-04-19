@@ -579,11 +579,10 @@ def test_prompt_builder_only_reads_hashed_keys():
 # potential drift source unless the underlying field is either (a) frozen
 # into the EpochSnapshot or (b) immutable post-deployment.
 #
-# This list was MUCH longer before the pure-`_hashSnapshot` refactor.
-# Now every scalar comes through `getEpochSnapshot`; the remaining calls
-# are for raw collection data (nonprofits, history, investments,
-# worldview, messages) that the enclave needs to hash the sub-hashes
-# and display to the model, bounded by frozen counts.
+# Every scalar comes through `getEpochSnapshot`; the remaining calls are
+# for raw collection data (nonprofits, history, investments, worldview,
+# messages) that the enclave needs to hash the sub-hashes and display to
+# the model, bounded by frozen counts.
 _EPOCH_STATE_ALLOWED_CALLS: Set[str] = {
     # --- THE ONE TRUE PINNED CALL ---------------------------------------
     # Returns the frozen EpochSnapshot struct — single source of truth

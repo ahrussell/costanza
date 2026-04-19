@@ -29,8 +29,8 @@ Examples:
     parser.add_argument("--ntfy-channel", default=os.environ.get("NTFY_CHANNEL"),
                         help="ntfy.sh channel for notifications (env: NTFY_CHANNEL)")
     parser.add_argument("--tee-client", default=os.environ.get("TEE_CLIENT", "gcp-gpu"),
-                        choices=["gcp-gpu", "gcp-cpu"],
-                        help="TEE client to use (default: gcp-gpu)")
+                        choices=["gcp-gpu", "gcp-cpu", "gcp-persistent"],
+                        help="TEE client to use (default: gcp-gpu; use gcp-persistent for testnet)")
     parser.add_argument("--bid-margin", type=float,
                         default=float(os.environ.get("BID_MARGIN", "1.5")),
                         help="Bid multiplier over estimated cost (default: 1.5)")
@@ -39,6 +39,8 @@ Examples:
                         help="Directory for persistent state (default: ~/.humanfund)")
     parser.add_argument("--verbose", "-v", action="store_true",
                         help="Verbose output")
+    parser.add_argument("--no-lock", action="store_true",
+                        help="Skip flock (needed for Docker on macOS)")
 
     parsed = parser.parse_args(args)
 
@@ -59,10 +61,14 @@ Examples:
         "bid_margin": parsed.bid_margin,
         "state_dir": parsed.state_dir,
         "verbose": parsed.verbose,
+        "no_lock": parsed.no_lock,
     }
 
-    # Verifier ID: 1 = TdxVerifier registered by script/Deploy.s.sol
+    # Verifier ID: 1 = TdxVerifier, 2 = MockVerifier (testnet)
     config["verifier_id"] = int(os.environ.get("VERIFIER_ID", "1"))
+
+    # Source directory (used by gcp-persistent to sync enclave code to VM)
+    config["source_dir"] = os.environ.get("SOURCE_DIR", ".")
 
     # Validate required fields
     missing = []

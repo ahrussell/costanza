@@ -76,7 +76,7 @@ contract MessagesTest is EpochTest {
         vm.deal(donor1, 1 ether);
         vm.prank(donor1);
         vm.expectRevert(TheHumanFund.InvalidParams.selector);
-        fund.donateWithMessage{value: 0.005 ether}(0, "Too cheap!");
+        fund.donateWithMessage{value: 0.0005 ether}(0, "Too cheap!");
     }
 
     function test_donate_with_message_and_referral() public {
@@ -148,7 +148,11 @@ contract MessagesTest is EpochTest {
         assertEq(fund.messageCount(), 3);
         assertEq(fund.messageHead(), 0);
 
-        // Execute an epoch (advances head)
+        // Eager open froze epoch 1's snapshot at 0 messages. Burn it empty
+        // so epoch 2's snapshot captures the 3 messages we just queued.
+        _missEpochManual();
+
+        // Run epoch 2 (advances head)
         bytes memory noopAction = bytes(hex"00");
         speedrunEpoch(fund, noopAction, "reasoning");
 
@@ -160,19 +164,22 @@ contract MessagesTest is EpochTest {
     }
 
     function test_message_head_caps_at_max_per_epoch() public {
-        // Send 7 messages (more than MAX_MESSAGES_PER_EPOCH = 5)
+        // Send 5 messages (more than MAX_MESSAGES_PER_EPOCH = 3)
         vm.deal(donor1, 1 ether);
-        for (uint256 i = 0; i < 7; i++) {
+        for (uint256 i = 0; i < 5; i++) {
             vm.prank(donor1);
             fund.donateWithMessage{value: 0.01 ether}(0, "msg");
         }
-        assertEq(fund.messageCount(), 7);
+        assertEq(fund.messageCount(), 5);
 
-        // Execute epoch — should only advance by 5
+        // Burn epoch 1 so epoch 2's snapshot sees the 5 queued messages.
+        _missEpochManual();
+
+        // Execute epoch 2 — should only advance by 3 (cap)
         bytes memory noopAction = bytes(hex"00");
         speedrunEpoch(fund, noopAction, "reasoning");
 
-        assertEq(fund.messageHead(), 5);
+        assertEq(fund.messageHead(), 3);
 
         // 2 unread messages remain
         (address[] memory senders,,,) = fund.getUnreadMessages();
@@ -189,7 +196,7 @@ contract MessagesTest is EpochTest {
 
         // getUnreadMessages returns at most MAX_MESSAGES_PER_EPOCH
         (address[] memory senders,,,) = fund.getUnreadMessages();
-        assertEq(senders.length, 5);
+        assertEq(senders.length, 3);
     }
 
     function test_multiple_epochs_drain_queue() public {
@@ -200,12 +207,19 @@ contract MessagesTest is EpochTest {
             fund.donateWithMessage{value: 0.01 ether}(0, "msg");
         }
 
-        // Epoch 1: advances head to 5
+        // Burn epoch 1 empty (its snapshot froze before the messages arrived).
+        _missEpochManual();
+
+        // Epoch 2: advances head to 3
         bytes memory noopAction = bytes(hex"00");
         speedrunEpoch(fund, noopAction, "reasoning");
-        assertEq(fund.messageHead(), 5);
+        assertEq(fund.messageHead(), 3);
 
-        // Epoch 2: advances head to 7
+        // Epoch 3: advances head to 6
+        speedrunEpoch(fund, noopAction, "reasoning");
+        assertEq(fund.messageHead(), 6);
+
+        // Epoch 4: advances head to 7
         speedrunEpoch(fund, noopAction, "reasoning");
         assertEq(fund.messageHead(), 7);
 
@@ -296,9 +310,9 @@ contract MessagesTest is EpochTest {
     ///      A message sent after that — but before execution — must be
     ///      invisible to the current epoch and appear in the next one.
     function test_message_sent_after_freeze_invisible_until_next_epoch() public {
-        // ── Epoch 1: manually walk through to control the freeze point ──
-        fund.nextPhase(); // opens auction for epoch 1 → freezes snapshot
-        // Snapshot is now frozen with messageCount=0, messageHead=0.
+        // ── Epoch 1: auction opened eagerly in setAuctionManager, so the
+        //    snapshot is already frozen at messageCount=0 when we enter. ──
+        // Snapshot is frozen with messageCount=0, messageHead=0.
 
         // A donor sends a message AFTER the snapshot freeze.
         vm.deal(donor1, 1 ether);
@@ -331,7 +345,7 @@ contract MessagesTest is EpochTest {
         assertEq(fund.messageHead(), 0, "epoch 1 did not consume the late message");
 
         // ── Epoch 2: the late message becomes visible ───────────────────
-        fund.nextPhase(); // SETTLED → advance to epoch 2 + open auction
+        fund.nextPhase(); // EXECUTION → COMMIT of epoch 2 (advance + open auction)
 
         // Epoch 2's snapshot must include the message.
         TheHumanFund.EpochSnapshot memory snap2 = fund.getEpochSnapshot(2);
@@ -360,18 +374,170 @@ contract MessagesTest is EpochTest {
         assertEq(senders.length, 0, "all messages read");
     }
 
+    // ─── Visibility-Boundary Invariant ──────────────────────────────────
+    //
+    // INVARIANT: A message sent at ANY point during epoch N is never visible
+    // to epoch N's execution. It first becomes visible in epoch N+1's
+    // snapshot (frozen at N+1's COMMIT open).
+    //
+    // This is load-bearing for TEE correctness: the enclave's input hash is
+    // bound to the frozen snapshot, so anything the model "sees" must be in
+    // that snapshot. A message arriving after the freeze must NOT leak into
+    // the model's view — otherwise the on-chain input hash would diverge
+    // from what the enclave computed.
+    //
+    // Concretely: under the 3-phase cyclic state machine, the snapshot for
+    // epoch N is frozen when epoch N's COMMIT opens (either at deploy via
+    // setAuctionManager for N=1, or via _openAuction at the EXECUTION→COMMIT
+    // transition for N>1). Any `donateWithMessage` call after that freeze
+    // only affects epoch N+1's snapshot.
+    //
+    // The tests below exercise this across all three phases (COMMIT, REVEAL,
+    // EXECUTION) of epoch N — a message sent in ANY of them is invisible to
+    // epoch N's action execution.
+
+    /// Send a message during epoch N's COMMIT phase. It must NOT appear in
+    /// epoch N's snapshot, and epoch N's execution must NOT consume it.
+    function test_invariant_messageSentInCommit_invisibleUntilNextEpoch() public {
+        // setUp already opened epoch 1 in COMMIT; snapshot frozen at 0 msgs.
+        TheHumanFund.EpochSnapshot memory snapN = fund.getEpochSnapshot(1);
+        assertEq(snapN.messageCount, 0, "epoch 1 frozen pre-message");
+
+        // Message arrives during epoch 1's COMMIT phase.
+        vm.deal(donor1, 1 ether);
+        vm.prank(donor1);
+        fund.donateWithMessage{value: 0.01 ether}(0, "arrived during COMMIT");
+
+        // On-chain counter reflects the send, but the frozen snapshot doesn't.
+        assertEq(fund.messageCount(), 1, "on-chain count reflects send");
+        snapN = fund.getEpochSnapshot(1);
+        assertEq(snapN.messageCount, 0, "epoch 1 snapshot immutable after send");
+
+        // Complete epoch 1 — head must NOT advance (snapshot said 0).
+        speedrunEpoch(fund, abi.encodePacked(uint8(0)), "epoch 1");
+        assertEq(fund.messageHead(), 0, "epoch 1 did not consume the message");
+
+        // Epoch 2's snapshot must now include it.
+        TheHumanFund.EpochSnapshot memory snapNplus1 = fund.getEpochSnapshot(2);
+        assertEq(snapNplus1.messageCount, 1, "epoch 2 snapshot captures it");
+        speedrunEpoch(fund, abi.encodePacked(uint8(0)), "epoch 2");
+        assertEq(fund.messageHead(), 1, "epoch 2 consumed it");
+    }
+
+    /// Same invariant, but the message arrives during epoch N's REVEAL phase.
+    function test_invariant_messageSentInReveal_invisibleUntilNextEpoch() public {
+        // Walk epoch 1 into REVEAL.
+        uint256 bond = fund.currentBond();
+        bytes32 salt = bytes32(uint256(0xF00D));
+        vm.prank(EPOCH_TEST_RUNNER);
+        fund.commit{value: bond}(keccak256(abi.encodePacked(EPOCH_TEST_RUNNER, uint256(1), salt)));
+        fund.nextPhase(); // COMMIT → REVEAL
+
+        // Message arrives during REVEAL.
+        vm.deal(donor1, 1 ether);
+        vm.prank(donor1);
+        fund.donateWithMessage{value: 0.01 ether}(0, "arrived during REVEAL");
+
+        assertEq(fund.messageCount(), 1);
+        assertEq(fund.getEpochSnapshot(1).messageCount, 0, "epoch 1 still frozen at 0");
+
+        // Finish epoch 1 and verify head didn't move.
+        vm.prank(EPOCH_TEST_RUNNER);
+        fund.reveal(1, salt);
+        fund.nextPhase(); // REVEAL → EXECUTION
+        vm.prank(EPOCH_TEST_RUNNER);
+        fund.submitAuctionResult(
+            abi.encodePacked(uint8(0)), bytes("noop"), bytes("mock"),
+            EPOCH_TEST_VERIFIER_ID, -1, ""
+        );
+        fund.nextPhase(); // EXECUTION → COMMIT of epoch 2
+        assertEq(fund.messageHead(), 0, "epoch 1 did not consume the REVEAL-arrival");
+
+        // Epoch 2 sees it.
+        assertEq(fund.getEpochSnapshot(2).messageCount, 1);
+    }
+
+    /// Same invariant, but the message arrives during epoch N's EXECUTION phase.
+    function test_invariant_messageSentInExecution_invisibleUntilNextEpoch() public {
+        // Walk epoch 1 into EXECUTION.
+        uint256 bond = fund.currentBond();
+        bytes32 salt = bytes32(uint256(0xF00D));
+        vm.prank(EPOCH_TEST_RUNNER);
+        fund.commit{value: bond}(keccak256(abi.encodePacked(EPOCH_TEST_RUNNER, uint256(1), salt)));
+        fund.nextPhase();
+        vm.prank(EPOCH_TEST_RUNNER);
+        fund.reveal(1, salt);
+        fund.nextPhase(); // REVEAL → EXECUTION
+
+        // Message arrives during EXECUTION, BEFORE the submit.
+        vm.deal(donor1, 1 ether);
+        vm.prank(donor1);
+        fund.donateWithMessage{value: 0.01 ether}(0, "arrived during EXECUTION");
+
+        assertEq(fund.messageCount(), 1);
+        assertEq(fund.getEpochSnapshot(1).messageCount, 0, "epoch 1 still frozen at 0");
+
+        vm.prank(EPOCH_TEST_RUNNER);
+        fund.submitAuctionResult(
+            abi.encodePacked(uint8(0)), bytes("noop"), bytes("mock"),
+            EPOCH_TEST_VERIFIER_ID, -1, ""
+        );
+        fund.nextPhase(); // cross into epoch 2
+        assertEq(fund.messageHead(), 0, "epoch 1 did not consume the EXECUTION-arrival");
+        assertEq(fund.getEpochSnapshot(2).messageCount, 1, "epoch 2 sees it");
+    }
+
+    /// Stronger property: for any epoch N with snapshot count C, after
+    /// executing epoch N the post-head is at most C (bounded by the frozen
+    /// count, regardless of how many messages have accumulated on-chain).
+    function testFuzz_invariant_headNeverExceedsFrozenSnapshotCount(uint8 messagesBeforeOpen, uint8 messagesAfterOpen) public {
+        // Keep counts bounded so we don't blow the gas budget.
+        vm.assume(messagesBeforeOpen <= 10);
+        vm.assume(messagesAfterOpen <= 10);
+
+        vm.deal(donor1, 10 ether);
+
+        // Queue `messagesBeforeOpen` messages BEFORE epoch 2 opens. These
+        // are invisible to epoch 1 (whose snapshot was frozen at 0 in setUp)
+        // but become visible to epoch 2 at its open. Then roll over.
+        for (uint256 i = 0; i < messagesBeforeOpen; i++) {
+            vm.prank(donor1);
+            fund.donateWithMessage{value: 0.01 ether}(0, "pre");
+        }
+        _missEpochManual(); // rolls epoch 1 → 2; epoch 2 opens here and freezes snapshot
+
+        uint256 headBefore = fund.messageHead();
+        uint256 frozenCount = fund.getEpochSnapshot(2).messageCount;
+        assertEq(frozenCount, messagesBeforeOpen, "snapshot = pre-open count");
+
+        // Queue more mid-epoch. These must NOT affect epoch 2's head advance.
+        for (uint256 i = 0; i < messagesAfterOpen; i++) {
+            vm.prank(donor1);
+            fund.donateWithMessage{value: 0.01 ether}(0, "post");
+        }
+
+        speedrunEpoch(fund, abi.encodePacked(uint8(0)), "e2");
+
+        uint256 advanced = fund.messageHead() - headBefore;
+        // Head advanced by min(frozenCount - head, MAX_MESSAGES_PER_EPOCH=3).
+        uint256 expectedAdvance = frozenCount;
+        if (expectedAdvance > 3) expectedAdvance = 3;
+        assertEq(advanced, expectedAdvance,
+            "head advanced exactly min(frozenCount, cap); post-open msgs invisible");
+    }
+
     // ─── Message Queue Preservation Across Failed/Missed Epochs ─────────
     //
     // messageHead only advances inside _recordAndExecute (successful submission),
     // NOT on failed auctions or missed epochs. These tests lock in that behavior:
     // messages are never dropped, they just wait for the next successful epoch.
 
-    /// @dev Miss an epoch via the on-chain wall-clock path: open an auction,
-    ///      warp past its deadline, let syncPhase drain to SETTLED + advance.
-    ///      Uses absolute-time warp because Forge caches `block.timestamp`
-    ///      within a test frame after vm.warp.
+    /// @dev Miss an epoch via the on-chain wall-clock path: warp past the
+    ///      current epoch's execution deadline and let syncPhase fast-forward
+    ///      (close-execution + advance + open next). Uses absolute-time warp
+    ///      because Forge caches `block.timestamp` within a test frame.
+    ///      Epoch 1 is already open from setUp.
     function _missEpoch() internal {
-        fund.syncPhase();
         uint256 targetEpoch = fund.currentEpoch() + 1;
         vm.warp(fund.epochStartTime(targetEpoch) + 1);
         fund.syncPhase();
@@ -442,12 +608,13 @@ contract MessagesTest is EpochTest {
 
     // ─── Mixed Driver Message Tests ─────────────────────────────────────
 
-    /// @dev Miss an epoch via manual driver: nextPhase through a full
-    ///      forfeit cycle (open → no-commit close → settle → advance).
+    /// @dev Miss an epoch via manual driver: nextPhase through the full
+    ///      cycle with no commits (COMMIT → REVEAL → EXECUTION → COMMIT-next).
+    ///      Epoch 1 is already open from setUp.
     function _missEpochManual() internal {
-        fund.nextPhase(); // open COMMIT
-        fund.nextPhase(); // COMMIT → SETTLED (0 commits)
-        fund.nextPhase(); // SETTLED → advance + open next
+        fund.nextPhase(); // COMMIT → REVEAL (no commits, empty transition)
+        fund.nextPhase(); // REVEAL → EXECUTION (no reveals)
+        fund.nextPhase(); // EXECUTION → COMMIT of next epoch (no winner, no forfeit)
     }
 
     /// Messages survive missed epochs driven by nextPhase (manual).
@@ -468,23 +635,35 @@ contract MessagesTest is EpochTest {
         assertEq(fund.messageHead(), 1, "message consumed after manual misses");
     }
 
-    /// Mixed driver: messages queued, manual open, wall-clock finishes.
+    /// Mixed driver: message queued post-freeze, epoch 1 runs with empty
+    /// snapshot, epoch 2 opens and sees the message, consumes it via a mix
+    /// of manual and wall-clock driver steps.
+    ///
+    /// Under eager open, setAuctionManager froze epoch 1's snapshot at 0
+    /// messages, so a message queued AFTER setUp only becomes visible to
+    /// epoch 2. This test exercises mixed-driver consumption in that epoch.
     function test_message_mixed_manualOpen_wallClockFinish() public {
         vm.deal(donor1, 1 ether);
         vm.prank(donor1);
         fund.donateWithMessage{value: 0.01 ether}(0, "mixed test");
 
-        // Manual open (freezes snapshot with 1 message)
-        fund.nextPhase();
-        TheHumanFund.EpochSnapshot memory snap = fund.getEpochSnapshot(1);
-        assertEq(snap.messageCount, 1, "snapshot sees the message");
+        // Epoch 1 already open from setUp; snapshot frozen at 0 messages.
+        TheHumanFund.EpochSnapshot memory snap1 = fund.getEpochSnapshot(1);
+        assertEq(snap1.messageCount, 0, "epoch 1 snapshot: 0 messages (frozen at setUp)");
 
-        // Wall-clock completes the epoch. Use absolute times to avoid
-        // any evaluation-order issues with block.timestamp + offset.
+        // Complete epoch 1 empty (no commit).
+        _missEpochManual();
+        assertEq(fund.currentEpoch(), 2, "advanced to epoch 2");
+
+        // Epoch 2's snapshot must include the queued message.
+        TheHumanFund.EpochSnapshot memory snap2 = fund.getEpochSnapshot(2);
+        assertEq(snap2.messageCount, 1, "epoch 2 snapshot: 1 message");
+
+        // Wall-clock completes epoch 2.
         uint256 bond = fund.currentBond();
         address runner = EPOCH_TEST_RUNNER;
         bytes32 salt = bytes32(uint256(0xF00D));
-        uint256 auctionStart = am.getStartTime(1);
+        uint256 auctionStart = am.getStartTime(2);
         uint256 commitEnd = auctionStart + am.commitWindow();
         uint256 revealEnd = commitEnd + am.revealWindow();
 
@@ -500,7 +679,7 @@ contract MessagesTest is EpochTest {
             abi.encodePacked(uint8(0)), bytes("noop"), bytes("mock"),
             EPOCH_TEST_VERIFIER_ID, -1, ""
         );
-        assertEq(fund.messageHead(), 1, "mixed: message consumed");
+        assertEq(fund.messageHead(), 1, "mixed: message consumed in epoch 2");
     }
 
     /// messageHead monotonicity: across an arbitrary sequence of
@@ -546,7 +725,12 @@ contract MessagesTest is EpochTest {
         assertGe(fund.messageHead(), prevHead, "monotonic after epoch 6");
     }
 
-    /// 5-message cap via wall-clock driver (not speedrunEpoch).
+    /// 3-message cap via wall-clock driver (not speedrunEpoch).
+    ///
+    /// Under eager open, epoch 1's snapshot is frozen at 0 messages (setUp
+    /// opened before any donations). So we queue 7 messages post-setUp,
+    /// burn epoch 1 empty, and let epoch 2's snapshot see all 7 messages
+    /// to exercise the per-epoch cap.
     function test_message_cap_wallClock_driver() public {
         vm.deal(donor1, 1 ether);
         for (uint256 i = 0; i < 7; i++) {
@@ -554,12 +738,15 @@ contract MessagesTest is EpochTest {
             fund.donateWithMessage{value: 0.01 ether}(0, "msg");
         }
 
-        // Open auction via wall-clock
-        fund.syncPhase();
+        // Burn epoch 1 empty so epoch 2's snapshot captures all 7 messages.
+        _missEpochManual();
+        assertEq(fund.currentEpoch(), 2);
+
+        // Wall-clock path through epoch 2.
         uint256 bond = fund.currentBond();
         address runner = EPOCH_TEST_RUNNER;
         bytes32 salt = bytes32(uint256(0xF00D));
-        uint256 auctionStart = am.getStartTime(1);
+        uint256 auctionStart = am.getStartTime(2);
         uint256 commitEnd = auctionStart + am.commitWindow();
         uint256 revealEnd = commitEnd + am.revealWindow();
 
@@ -576,27 +763,32 @@ contract MessagesTest is EpochTest {
             EPOCH_TEST_VERIFIER_ID, -1, ""
         );
 
-        // Cap: only 5 consumed, 2 remain
-        assertEq(fund.messageHead(), 5, "wall-clock: cap at 5");
+        // Cap: only 3 consumed, 4 remain
+        assertEq(fund.messageHead(), 3, "wall-clock: cap at 3");
         (address[] memory senders,,,) = fund.getUnreadMessages();
-        assertEq(senders.length, 2, "2 unread remain");
+        assertEq(senders.length, 3, "4 unread remain from the 7-message queue");
     }
 
     /// Messages accumulating across a mix of successful and missed epochs.
+    /// Eager open froze epoch 1 at 0 messages, so the timing shifts by one
+    /// epoch — we burn epoch 1 empty, then exercise the same lifecycle.
     function test_messages_accumulate_across_mixed_lifecycle() public {
         vm.deal(donor1, 10 ether);
         bytes memory noop = abi.encodePacked(uint8(0));
 
-        // Send 3 messages, execute epoch 1 → head to 3
+        // Send 3 messages (they'll appear in epoch 2's snapshot)
         for (uint256 i = 0; i < 3; i++) {
             vm.prank(donor1);
             fund.donateWithMessage{value: 0.01 ether}(0, "batch1");
         }
-        speedrunEpoch(fund, noop, "epoch 1");
+        // Burn epoch 1 empty (frozen at 0 messages from setUp's eager open)
+        _missEpochManual();
+        // Execute epoch 2 → consumes all 3 batch1 messages
+        speedrunEpoch(fund, noop, "epoch 2");
         assertEq(fund.messageHead(), 3);
 
-        // Send 4 more, miss an epoch, then execute
-        for (uint256 i = 0; i < 4; i++) {
+        // Send 3 more, miss an epoch, then execute
+        for (uint256 i = 0; i < 3; i++) {
             vm.prank(donor1);
             fund.donateWithMessage{value: 0.01 ether}(0, "batch2");
         }
@@ -604,10 +796,10 @@ contract MessagesTest is EpochTest {
         // Messages survive the miss
         assertEq(fund.messageHead(), 3, "miss didn't advance head");
 
-        speedrunEpoch(fund, noop, "epoch 3");
-        // head advances by min(4, 5) = 4 → head = 7
-        assertEq(fund.messageHead(), 7, "consumed batch2 after miss");
-        assertEq(fund.messageCount(), 7, "total count");
+        speedrunEpoch(fund, noop, "epoch 4");
+        // head advances by min(3, 3) = 3 → head = 6
+        assertEq(fund.messageHead(), 6, "consumed batch2 after miss");
+        assertEq(fund.messageCount(), 6, "total count");
         (address[] memory senders,,,) = fund.getUnreadMessages();
         assertEq(senders.length, 0, "all read");
     }
@@ -639,7 +831,7 @@ contract MessagesTest is EpochTest {
     }
 
     function testFuzz_messageDonation_belowMinimum_reverts(uint256 amount) public {
-        amount = bound(amount, 0.001 ether, 0.01 ether - 1);
+        amount = bound(amount, 0.0001 ether, 0.001 ether - 1);
         vm.deal(donor1, amount);
         vm.prank(donor1);
         vm.expectRevert(TheHumanFund.InvalidParams.selector);
@@ -647,7 +839,7 @@ contract MessagesTest is EpochTest {
     }
 
     function testFuzz_messageDonation_validAmount(uint256 amount) public {
-        amount = bound(amount, 0.01 ether, 1 ether);
+        amount = bound(amount, 0.001 ether, 1 ether);
         vm.deal(donor1, amount);
         vm.prank(donor1);
         fund.donateWithMessage{value: amount}(0, "Fuzz test");
@@ -669,9 +861,8 @@ contract MessagesTest is EpochTest {
         vm.prank(address(bad));
         uint256 codeId = fund.mintReferralCode();
 
-        // Start epoch 1 and warp past its scheduled end so a mid-call
-        // syncPhase from the referrer would advance the epoch.
-        fund.syncPhase();
+        // Epoch 1 already open from setUp. Warp past its scheduled end so a
+        // mid-call syncPhase from the referrer would advance the epoch.
         uint256 epochDuration = fund.epochDuration();
         vm.warp(block.timestamp + 3 * epochDuration);
 
@@ -707,7 +898,7 @@ contract MessagesTest is EpochTest {
     // regardless of how chaotic the driver interleaving is.
     // ═══════════════════════════════════════════════════════════════════
 
-    uint256 constant MAX_MSGS_PER_EPOCH = 5;
+    uint256 constant MAX_MSGS_PER_EPOCH = 3;
 
     /// @dev Chaotic fuzz test for the message queue. Sends messages at
     ///      random times, mixes drivers (speedrunEpoch, manual nextPhase,
@@ -758,7 +949,12 @@ contract MessagesTest is EpochTest {
                 // resetAuction
                 fund.resetAuction(1200, 1200, 82800);
             } else if (action == 4) {
-                // Single nextPhase step
+                // Walk one full epoch via owner nextPhase (3 steps). Always
+                // ends back in COMMIT so subsequent speedrunEpoch rolls are
+                // legal. Equivalent to _missEpochManual but exercises the
+                // manual driver explicitly.
+                fund.nextPhase();
+                fund.nextPhase();
                 fund.nextPhase();
             } else {
                 // Skip (inactivity)

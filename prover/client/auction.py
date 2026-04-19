@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Auction actions — commit, reveal, submit, sync.
 
-With the v2 contract, phase advancement is automatic (via syncPhase).
-The client only needs to call the action appropriate for the current
-wall-clock phase. Each action auto-syncs the contract state first.
+Phase advancement is automatic (via syncPhase). The client only needs
+to call the action appropriate for the current wall-clock phase. Each
+action auto-syncs the contract state first.
 """
 
 import logging
@@ -17,19 +17,20 @@ from .state import save as save_state
 
 logger = logging.getLogger(__name__)
 
-# Auction phases (matches contract enum)
-IDLE = 0
-COMMIT = 1
-REVEAL = 2
-EXECUTION = 3
-SETTLED = 4
+# Auction phases (matches contract enum).
+# COMMIT → REVEAL → EXECUTION → COMMIT-of-next-epoch. The contract
+# always holds exactly one in-flight auction (except under
+# FREEZE_SUNSET). `getPhase(pastEpoch)` returns EXECUTION as a
+# terminal marker for finished epochs.
+COMMIT = 0
+REVEAL = 1
+EXECUTION = 2
 
-PHASE_NAMES = {IDLE: "IDLE", COMMIT: "COMMIT", REVEAL: "REVEAL",
-               EXECUTION: "EXECUTION", SETTLED: "SETTLED"}
+PHASE_NAMES = {COMMIT: "COMMIT", REVEAL: "REVEAL", EXECUTION: "EXECUTION"}
 
 # Gas limits for auction transactions
-GAS_SYNC_PHASE = 800_000       # syncPhase may chain through multiple transitions
-GAS_COMMIT = 800_000           # commit auto-syncs (may open auction)
+GAS_SYNC_PHASE = 1_500_000     # syncPhase may chain through multiple transitions + Chainlink snapshot
+GAS_COMMIT = 1_500_000         # commit auto-syncs (may open auction + Chainlink snapshot)
 GAS_REVEAL = 500_000           # reveal auto-syncs (may close commit)
 GAS_SUBMIT_RESULT = 15_000_000 # DCAP verification is expensive; auto-syncs (may close reveal)
 GAS_CLAIM_BOND = 100_000

@@ -39,6 +39,7 @@ from .action_encoder import parse_action, encode_action_bytes, validate_and_clam
 from .input_hash import compute_input_hash, _keccak256
 from .attestation import get_tdx_quote, compute_report_data
 from .prompt_builder import build_epoch_context, build_full_prompt
+from .voice_anchors import parse_anchors, select_anchors, VOICE_ANCHOR_K
 
 # ─── Configuration ──────────────────────────────────────────────────────
 
@@ -174,7 +175,7 @@ def start_llama_server() -> subprocess.Popen:
     cmd = [
         LLAMA_SERVER_BIN,
         "-m", MODEL_PATH,
-        "-c", "16384",
+        "-c", "32768",
         "--host", "127.0.0.1",
         "--port", str(LLAMA_SERVER_PORT),
     ]
@@ -321,8 +322,24 @@ def main():
 
         anchors_path = Path(VOICE_ANCHORS_PATH)
         if anchors_path.exists():
-            voice_anchors = anchors_path.read_text().strip()
-            log(f"  Voice anchors: {len(voice_anchors)} chars, sha256={hashlib.sha256(voice_anchors.encode()).hexdigest()[:16]}...")
+            full_anchors_text = anchors_path.read_text().strip()
+            log(
+                f"  Voice anchors: {len(full_anchors_text)} chars, "
+                f"sha256={hashlib.sha256(full_anchors_text.encode()).hexdigest()[:16]}..."
+            )
+            # Deterministic seed-bound rotation: show the model VOICE_ANCHOR_K
+            # of the full entry set per epoch, selected by the same seed that
+            # is XOR'd into `epochInputHash`. The anchors file is measured in
+            # RTMR[2] via dm-verity and the seed is bound on-chain, so the
+            # selection is integrity-protected transitively (no extra hash).
+            anchors_header, anchor_entries = parse_anchors(full_anchors_text)
+            voice_anchors = select_anchors(
+                anchors_header, anchor_entries, seed=seed, k=VOICE_ANCHOR_K
+            )
+            log(
+                f"  Voice anchors: {len(anchor_entries)} parsed, "
+                f"{VOICE_ANCHOR_K} selected via seed={seed}"
+            )
         else:
             voice_anchors = ""
             log(f"  Voice anchors: not found at {VOICE_ANCHORS_PATH}, continuing without")
@@ -367,8 +384,12 @@ def main():
         # Step 5: Start llama-server and run inference
         log("")
         log("Step 5: Running inference...")
-        llama_proc = start_llama_server()
-        wait_for_llama_server()
+        external_llama = os.environ.get("LLAMA_SERVER_EXTERNAL", "").strip() == "1"
+        if external_llama:
+            log("  LLAMA_SERVER_EXTERNAL=1 — using already-running llama-server")
+        else:
+            llama_proc = start_llama_server()
+            wait_for_llama_server()
 
         # run_three_pass_inference internally retries just Pass 3 (the cheap
         # action-JSON pass) with an incrementing seed if parse_action fails.
@@ -376,7 +397,7 @@ def main():
         # be None and we fall back to a no-action result with a system note
         # so Costanza can see what happened next epoch.
         inference = run_three_pass_inference(
-            full_prompt, seed=llama_seed, llama_url=LLAMA_SERVER_URL
+            full_prompt, seed=llama_seed, llama_url=LLAMA_SERVER_URL,
         )
         action_json = inference.get("parsed_action")
         system_notes = []  # list[str] of clamp / fallback notices for the diary
@@ -400,18 +421,27 @@ def main():
                     log(f"  Clamp: {n}")
                 system_notes.extend(clamp_notes)
 
-        # Step 6: Encode action + append system notes to reasoning.
-        # CRITICAL: system notes MUST be appended BEFORE truncate_reasoning()
+        # Step 6: Encode action + inject system notes into the diary.
+        # CRITICAL: system notes MUST be injected BEFORE truncate_reasoning()
         # because the contract's REPORTDATA is sha256(inputHash || outputHash)
         # where outputHash covers the reasoning. Editing reasoning after
         # hashing would break attestation.
+        #
+        # Notes go inside the <diary> block so the model sees them in
+        # future epochs' decision history.
         log("")
         log("Step 6: Encoding action...")
         reasoning = inference["reasoning"]
         if system_notes:
-            reasoning = reasoning.rstrip() + "\n\n" + "\n".join(
+            notes_block = "\n\n" + "\n".join(
                 f"[System note: {n}]" for n in system_notes
             )
+            # Insert before </diary> if present, otherwise append
+            diary_close_idx = reasoning.rfind("</diary>")
+            if diary_close_idx >= 0:
+                reasoning = reasoning[:diary_close_idx] + notes_block + "\n" + reasoning[diary_close_idx:]
+            else:
+                reasoning = reasoning.rstrip() + notes_block
         reasoning = truncate_reasoning(reasoning)
         action_bytes = encode_action_bytes(action_json)
         log(f"  Action bytes: {len(action_bytes)} bytes")
@@ -451,7 +481,7 @@ def main():
         sys.exit(1)
 
     finally:
-        # Kill llama-server
+        # Kill llama-server (only if we started it — not in LLAMA_SERVER_EXTERNAL mode)
         if llama_proc and llama_proc.poll() is None:
             log("Stopping llama-server...")
             llama_proc.terminate()

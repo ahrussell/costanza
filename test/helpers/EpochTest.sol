@@ -8,15 +8,19 @@ import "./MockProofVerifier.sol";
 
 /// @dev Shared base for tests that drive the contract through full epochs.
 ///
-/// `speedrunEpoch` drives one epoch through the real auction path using
-/// the owner's `nextPhase()` manual driver — no `vm.warp` needed. Each
-/// call: opens auction → commit → close commit → reveal → close reveal
-/// → submitAuctionResult → advance to next epoch.
+/// `speedrunEpoch` drives one epoch through the real auction path using the
+/// owner's `nextPhase()` manual driver — no `vm.warp` needed. In the 3-phase
+/// cyclic model, `nextPhase()` always advances the state machine by exactly
+/// one step: COMMIT → REVEAL → EXECUTION → COMMIT (of the next epoch).
+///
+/// The very first auction (epoch 1's COMMIT) is opened by `setAuctionManager`
+/// at deploy time, so every `speedrunEpoch` call assumes we're entering at
+/// COMMIT of `currentEpoch`.
 ///
 /// Every test class that inherits EpochTest must call
 /// `_registerMockVerifier(fund)` in its own `setUp()` after
-/// `setAuctionManager`. This deploys a MockProofVerifier at a
-/// reserved verifier slot so `submitAuctionResult` can verify proofs.
+/// `setAuctionManager`. This deploys a MockProofVerifier at a reserved
+/// verifier slot so `submitAuctionResult` can verify proofs.
 abstract contract EpochTest is Test {
     /// @dev Reserved verifier ID for the mock. Slot 7 avoids collision
     ///      with real verifier tests that use slot 1.
@@ -35,17 +39,22 @@ abstract contract EpochTest is Test {
     }
 
     /// @dev Execute one epoch's action via the real auction path and
-    ///      advance `currentEpoch`. Uses the owner's `nextPhase()` as
-    ///      the manual driver — time-independent, no vm.warp.
+    ///      advance `currentEpoch` to the next epoch's COMMIT phase.
     ///
-    ///      Flow:
-    ///        1. nextPhase() — opens auction (IDLE/SETTLED → COMMIT)
-    ///        2. commit (EPOCH_TEST_RUNNER, minimum bid, fixed salt)
-    ///        3. nextPhase() — COMMIT → REVEAL
-    ///        4. reveal
-    ///        5. nextPhase() — REVEAL → EXECUTION (captures seed)
-    ///        6. submitAuctionResult (executes the action)
-    ///        7. nextPhase() — SETTLED → advance epoch + open next
+    ///      Precondition: phase == COMMIT of currentEpoch. Either this is
+    ///      the first speedrunEpoch after setAuctionManager (which eagerly
+    ///      opened epoch 1), or the prior speedrunEpoch's final nextPhase()
+    ///      left us in COMMIT of the subsequent epoch.
+    ///
+    ///      Flow (3 `nextPhase` calls, each a monotonic state-machine step):
+    ///        1. commit (EPOCH_TEST_RUNNER, 1-wei bid, fixed salt)
+    ///        2. nextPhase() — COMMIT → REVEAL
+    ///        3. reveal
+    ///        4. nextPhase() — REVEAL → EXECUTION (captures seed, binds input hash)
+    ///        5. submitAuctionResult (executes action; sets epochs[e].executed)
+    ///        6. nextPhase() — EXECUTION → COMMIT of next epoch
+    ///                         (_closeExecution sees executed=true, skips forfeit,
+    ///                          resets missed counter, opens the next auction)
     function speedrunEpoch(
         TheHumanFund fund,
         bytes memory action,
@@ -72,16 +81,13 @@ abstract contract EpochTest is Test {
         int8 policySlot,
         string memory policyText
     ) private {
-        // 1. Ensure an auction is open for currentEpoch. If the prior
-        //    speedrunEpoch already opened it (step 7 advances + opens),
-        //    skip the opening call.
         IAuctionManager am = fund.auctionManager();
-        IAuctionManager.AuctionPhase phase = am.getPhase(fund.currentEpoch());
-        if (phase != IAuctionManager.AuctionPhase.COMMIT) {
-            fund.nextPhase();
-        }
+        require(
+            am.getPhase(fund.currentEpoch()) == IAuctionManager.AuctionPhase.COMMIT,
+            "speedrunEpoch: expected COMMIT phase (auction not open or caller drift?)"
+        );
 
-        // 2. Commit with minimum bid + fixed salt
+        // 1. Commit with minimum bid + fixed salt
         uint256 bond = fund.currentBond();
         uint256 bidAmount = 1; // 1 wei — minimum nonzero
         bytes32 salt = bytes32(uint256(0xF00D));
@@ -89,24 +95,24 @@ abstract contract EpochTest is Test {
         vm.prank(EPOCH_TEST_RUNNER);
         fund.commit{value: bond}(commitHash);
 
-        // 3. Close commit → REVEAL
+        // 2. nextPhase — COMMIT → REVEAL
         fund.nextPhase();
 
-        // 4. Reveal
+        // 3. Reveal
         vm.prank(EPOCH_TEST_RUNNER);
         fund.reveal(bidAmount, salt);
 
-        // 5. Close reveal → EXECUTION (captures seed, binds input hash)
+        // 4. nextPhase — REVEAL → EXECUTION (captures seed, binds input hash)
         fund.nextPhase();
 
-        // 6. Submit auction result — runner executes the action
+        // 5. Submit result (runner executes the action; sets epochs[e].executed)
         vm.prank(EPOCH_TEST_RUNNER);
         fund.submitAuctionResult(
             action, reasoning, bytes("mock"), EPOCH_TEST_VERIFIER_ID,
             policySlot, policyText
         );
 
-        // 7. Advance to next epoch + open auction
+        // 6. nextPhase — EXECUTION → COMMIT of next epoch (opens new auction)
         fund.nextPhase();
     }
 }
