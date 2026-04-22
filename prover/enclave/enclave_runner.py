@@ -147,40 +147,85 @@ def write_error(error: str):
 
 # ─── llama-server management ───────────────────────────────────────────
 
+def require_nvidia_cc():
+    """Abort if NVIDIA Confidential Compute mode is not engaged on the GPU.
+
+    `humanfund-gpu-cc.service` attempts to enable CC mode on boot, but it's
+    best-effort (3 retries then shrug). Without this gate the enclave would
+    silently run inference with CC disabled. Hard-fail here so the TDX
+    quote is never produced — the prover client then times out and the
+    epoch forfeits cleanly instead of producing unattested output.
+    """
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "conf-compute", "-f"],
+            capture_output=True, text=True, timeout=10
+        )
+    except FileNotFoundError:
+        raise RuntimeError("nvidia-smi not found — cannot verify CC mode")
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("nvidia-smi conf-compute timed out")
+
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"nvidia-smi conf-compute failed (rc={result.returncode}): "
+            f"{result.stderr.strip()}"
+        )
+
+    output = result.stdout
+    # Expected lines (driver 580+):
+    #   CC status: ON
+    #   CC mode: ...
+    #   Ready-state: READY
+    status_on = "CC status: ON" in output
+    ready = "Ready-state: READY" in output or "Ready state: READY" in output
+    if not (status_on and ready):
+        raise RuntimeError(
+            "NVIDIA CC not engaged. nvidia-smi conf-compute -f output:\n" + output
+        )
+    log("  NVIDIA CC: ON, Ready-state: READY")
+
+
 def start_llama_server() -> subprocess.Popen:
-    """Start the local llama-server process."""
+    """Start the local llama-server process with deterministic flags.
+
+    Production enclave requires GPU — no CPU fallback. Any CPU-side
+    inference would diverge from the GPU baseline committed in the
+    validation battery. If nvidia-smi is unavailable or reports no GPU,
+    the enclave aborts before ever producing a TDX quote.
+    """
     if not os.path.exists(LLAMA_SERVER_BIN):
         raise RuntimeError(f"llama-server not found at {LLAMA_SERVER_BIN}")
     if not os.path.exists(MODEL_PATH):
         raise RuntimeError(f"Model not found at {MODEL_PATH}")
 
-    log(f"Starting llama-server (model: {MODEL_PATH})...")
-
-    # Detect GPU
-    gpu_layers = ""
     try:
         result = subprocess.run(
             ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
             capture_output=True, text=True, timeout=5
         )
-        if result.returncode == 0 and result.stdout.strip():
-            gpu_layers = "-ngl 99"
-            log(f"  GPU detected: {result.stdout.strip()}")
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        raise RuntimeError(f"GPU required but nvidia-smi unavailable: {e}")
+    if result.returncode != 0 or not result.stdout.strip():
+        raise RuntimeError(f"GPU required but nvidia-smi returned no device: {result.stderr.strip()}")
+    log(f"Starting llama-server (model: {MODEL_PATH}, GPU: {result.stdout.strip()})...")
 
-    if not gpu_layers:
-        log("  No GPU detected, using CPU inference")
-
+    # Determinism-critical flags — order must not vary across builds.
+    #   -ngl 99         full GPU offload (all layers)
+    #   -b 1            physical batch size 1
+    #   --parallel 1    single server slot, no request parallelism
+    #   --flash-attn 0  disable flash attention (reduction-order varies)
     cmd = [
         LLAMA_SERVER_BIN,
         "-m", MODEL_PATH,
         "-c", "32768",
         "--host", "127.0.0.1",
         "--port", str(LLAMA_SERVER_PORT),
+        "-ngl", "99",
+        "-b", "1",
+        "--parallel", "1",
+        "--flash-attn", "0",
     ]
-    if gpu_layers:
-        cmd.extend(gpu_layers.split())
 
     proc = subprocess.Popen(
         cmd,
@@ -391,6 +436,7 @@ def main():
         if external_llama:
             log("  LLAMA_SERVER_EXTERNAL=1 — using already-running llama-server")
         else:
+            require_nvidia_cc()
             llama_proc = start_llama_server()
             wait_for_llama_server()
 

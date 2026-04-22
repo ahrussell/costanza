@@ -142,6 +142,8 @@ RemainAfterExit=yes
 Environment=MODEL_PATH=/models/model.gguf
 Environment=LLAMA_SERVER_BIN=/opt/humanfund/bin/llama-server
 Environment=LD_LIBRARY_PATH=/opt/humanfund/bin
+Environment=CUBLAS_WORKSPACE_CONFIG=:4096:8
+Environment=OMP_NUM_THREADS=1
 ExecStart=/opt/humanfund/venv/bin/python3 -m enclave.enclave_runner
 WorkingDirectory=/opt/humanfund
 [Install]
