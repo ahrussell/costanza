@@ -3,14 +3,14 @@ pragma solidity ^0.8.20;
 
 import "../src/TheHumanFund.sol";
 import "../src/AuctionManager.sol";
-import "../src/WorldView.sol";
-import "../src/interfaces/IWorldView.sol";
+import "../src/AgentMemory.sol";
+import "../src/interfaces/IAgentMemory.sol";
 import "./helpers/MockEndaoment.sol";
 import "./helpers/EpochTest.sol";
 
-contract WorldViewTest is EpochTest {
+contract AgentMemoryTest is EpochTest {
     TheHumanFund public fund;
-    WorldView public wv;
+    AgentMemory public wv;
 
     function setUp() public {
         MockWETH mw = new MockWETH();
@@ -37,35 +37,35 @@ contract WorldViewTest is EpochTest {
         AuctionManager am = new AuctionManager(address(fund));
         fund.setAuctionManager(address(am), 1200, 1200, 82800);
 
-        wv = new WorldView(address(fund));
-        fund.setWorldView(address(wv));
+        wv = new AgentMemory(address(fund));
+        fund.setAgentMemory(address(wv));
         _registerMockVerifier(fund);
     }
 
-    // ─── Basic Policy Setting (via sidecar) ───────────────────────────
+    // ─── Basic Memory Setting (via sidecar) ───────────────────────────
 
-    function test_set_guiding_policy() public {
+    function test_set_memory_entry() public {
         speedrunEpoch(
             fund,
             abi.encodePacked(uint8(0)),
-            "Setting my first guiding policy.",
+            "Setting my first memory entry.",
             uint8(1),
             "Donation strategy",
             "Prioritize high-impact, evidence-based charities"
         );
 
-        IWorldView.Policy memory p = wv.getPolicy(1);
+        IAgentMemory.Policy memory p = wv.getPolicy(1);
         assertEq(p.title, "Donation strategy");
         assertEq(p.body, "Prioritize high-impact, evidence-based charities");
         assertEq(fund.currentEpoch(), 2);
     }
 
-    function test_set_multiple_policies_across_epochs() public {
+    function test_set_multiple_entries_across_epochs() public {
         // Epoch 1: set slot 1
         speedrunEpoch(
             fund,
             abi.encodePacked(uint8(0)),
-            "Policy 1",
+            "Entry 1",
             uint8(1),
             "Treasury stance",
             "Grow the treasury before donating"
@@ -75,7 +75,7 @@ contract WorldViewTest is EpochTest {
         speedrunEpoch(
             fund,
             abi.encodePacked(uint8(0)),
-            "Policy 3",
+            "Entry 3",
             uint8(3),
             "Portfolio",
             "Diversify across at least 3 protocols"
@@ -85,7 +85,7 @@ contract WorldViewTest is EpochTest {
         speedrunEpoch(
             fund,
             abi.encodePacked(uint8(0)),
-            "Policy 9",
+            "Entry 9",
             uint8(9),
             "Risk cap",
             "Never invest more than 25% in one protocol"
@@ -113,7 +113,7 @@ contract WorldViewTest is EpochTest {
         _assertPolicy(0, "Voice", "I am the fund. I speak plainly.");
     }
 
-    function test_replace_existing_policy() public {
+    function test_replace_existing_entry() public {
         speedrunEpoch(
             fund,
             abi.encodePacked(uint8(0)),
@@ -131,14 +131,14 @@ contract WorldViewTest is EpochTest {
         _assertPolicy(1, "Stance", "Be aggressive");
     }
 
-    function test_remove_policy_with_empty_strings() public {
+    function test_remove_entry_with_empty_strings() public {
         speedrunEpoch(
             fund,
             abi.encodePacked(uint8(0)),
             "Set",
-            uint8(5), "Temporary", "Temporary policy"
+            uint8(5), "Temporary", "Temporary entry"
         );
-        _assertPolicy(5, "Temporary", "Temporary policy");
+        _assertPolicy(5, "Temporary", "Temporary entry");
 
         speedrunEpoch(
             fund,
@@ -162,7 +162,7 @@ contract WorldViewTest is EpochTest {
             longTitle,
             "body here"
         );
-        IWorldView.Policy memory p = wv.getPolicy(2);
+        IAgentMemory.Policy memory p = wv.getPolicy(2);
         assertEq(bytes(p.title).length, wv.MAX_TITLE_LENGTH(), "title truncated to MAX_TITLE_LENGTH");
         assertEq(p.body, "body here");
     }
@@ -179,21 +179,21 @@ contract WorldViewTest is EpochTest {
             "Title",
             string(b)
         );
-        IWorldView.Policy memory p = wv.getPolicy(4);
+        IAgentMemory.Policy memory p = wv.getPolicy(4);
         assertEq(p.title, "Title");
         assertEq(bytes(p.body).length, wv.MAX_BODY_LENGTH(), "body truncated to MAX_BODY_LENGTH");
     }
 
     // ─── State Hash ────────────────────────────────────────────────────
 
-    function test_state_hash_changes_with_policy() public {
+    function test_state_hash_changes_with_entry() public {
         bytes32 hash1 = wv.stateHash();
 
         speedrunEpoch(
             fund,
             abi.encodePacked(uint8(0)),
             "Set",
-            uint8(1), "Stance", "New policy"
+            uint8(1), "Stance", "New entry"
         );
 
         bytes32 hash2 = wv.stateHash();
@@ -205,7 +205,7 @@ contract WorldViewTest is EpochTest {
             fund,
             abi.encodePacked(uint8(0)),
             "Set",
-            uint8(1), "Stance", "Policy A"
+            uint8(1), "Stance", "Entry A"
         );
 
         bytes32 hash1 = wv.stateHash();
@@ -244,8 +244,8 @@ contract WorldViewTest is EpochTest {
         assertTrue(h2 != h3, "hash reflects body change");
     }
 
-    function test_input_hash_includes_worldview() public {
-        // Run epoch 1 with no worldview update, then run epoch 2 with one —
+    function test_input_hash_includes_memory() public {
+        // Run epoch 1 with no memory update, then run epoch 2 with one —
         // the two frozen snapshot hashes must differ.
         speedrunEpoch(
             fund,
@@ -258,7 +258,7 @@ contract WorldViewTest is EpochTest {
             fund,
             abi.encodePacked(uint8(0)),
             "Epoch 2",
-            uint8(1), "Stance", "Policy changes input hash"
+            uint8(1), "Stance", "Memory changes input hash"
         );
         bytes32 hash2 = fund.computeInputHashForEpoch(2);
 
@@ -267,7 +267,7 @@ contract WorldViewTest is EpochTest {
 
     // ─── getPolicies ───────────────────────────────────────────────────
 
-    function test_get_all_policies() public {
+    function test_get_all_entries() public {
         speedrunEpoch(
             fund,
             abi.encodePacked(uint8(0)),
@@ -281,7 +281,7 @@ contract WorldViewTest is EpochTest {
             uint8(4), "B", "Beta"
         );
 
-        IWorldView.Policy[10] memory all = wv.getPolicies();
+        IAgentMemory.Policy[10] memory all = wv.getPolicies();
         assertEq(all[0].title, "");
         assertEq(all[0].body, "");
         assertEq(all[1].title, "A");
@@ -294,18 +294,18 @@ contract WorldViewTest is EpochTest {
 
     // ─── Event Emission ────────────────────────────────────────────────
 
-    function test_emits_guiding_policy_event() public {
+    function test_emits_memory_entry_set_event() public {
         vm.recordLogs();
         speedrunEpoch(
             fund,
             abi.encodePacked(uint8(0)),
             "Event test",
-            uint8(1), "Title", "Test policy"
+            uint8(1), "Title", "Test entry"
         );
 
-        // GuidingPolicyUpdated is emitted among auction events. Find it.
+        // MemoryEntrySet is emitted among auction events. Find it.
         Vm.Log[] memory entries = vm.getRecordedLogs();
-        bytes32 topic = keccak256("GuidingPolicyUpdated(uint256,string,string)");
+        bytes32 topic = keccak256("MemoryEntrySet(uint256,string,string)");
         bool found = false;
         for (uint256 i = 0; i < entries.length; i++) {
             if (entries[i].topics[0] == topic) {
@@ -313,17 +313,17 @@ contract WorldViewTest is EpochTest {
                 // Decode non-indexed data: (string title, string body)
                 (string memory t, string memory b) = abi.decode(entries[i].data, (string, string));
                 assertEq(t, "Title");
-                assertEq(b, "Test policy");
+                assertEq(b, "Test entry");
                 found = true;
                 break;
             }
         }
-        assertTrue(found, "GuidingPolicyUpdated event must be emitted");
+        assertTrue(found, "MemoryEntrySet event must be emitted");
     }
 
     // ─── Only Fund Can Set ─────────────────────────────────────────────
 
-    function test_only_fund_can_set_policy() public {
+    function test_only_fund_can_set_entry() public {
         vm.prank(address(0xdead));
         vm.expectRevert("only fund");
         wv.setPolicy(1, "Title", "Unauthorized");
@@ -332,10 +332,10 @@ contract WorldViewTest is EpochTest {
     // ─── Multi-update batch ────────────────────────────────────────────
 
     function test_multi_update_batch_of_three() public {
-        IWorldView.PolicyUpdate[] memory updates = new IWorldView.PolicyUpdate[](3);
-        updates[0] = IWorldView.PolicyUpdate({slot: 1, title: "T1", body: "B1"});
-        updates[1] = IWorldView.PolicyUpdate({slot: 5, title: "T5", body: "B5"});
-        updates[2] = IWorldView.PolicyUpdate({slot: 9, title: "T9", body: "B9"});
+        IAgentMemory.MemoryUpdate[] memory updates = new IAgentMemory.MemoryUpdate[](3);
+        updates[0] = IAgentMemory.MemoryUpdate({slot: 1, title: "T1", body: "B1"});
+        updates[1] = IAgentMemory.MemoryUpdate({slot: 5, title: "T5", body: "B5"});
+        updates[2] = IAgentMemory.MemoryUpdate({slot: 9, title: "T9", body: "B9"});
 
         speedrunEpoch(
             fund,
@@ -352,11 +352,11 @@ contract WorldViewTest is EpochTest {
     /// @notice A 4-entry batch is truncated to the first 3; the 4th entry is
     ///         silently dropped.
     function test_multi_update_truncated_to_max() public {
-        IWorldView.PolicyUpdate[] memory updates = new IWorldView.PolicyUpdate[](4);
-        updates[0] = IWorldView.PolicyUpdate({slot: 1, title: "T1", body: "B1"});
-        updates[1] = IWorldView.PolicyUpdate({slot: 2, title: "T2", body: "B2"});
-        updates[2] = IWorldView.PolicyUpdate({slot: 3, title: "T3", body: "B3"});
-        updates[3] = IWorldView.PolicyUpdate({slot: 4, title: "T4", body: "B4"});
+        IAgentMemory.MemoryUpdate[] memory updates = new IAgentMemory.MemoryUpdate[](4);
+        updates[0] = IAgentMemory.MemoryUpdate({slot: 1, title: "T1", body: "B1"});
+        updates[1] = IAgentMemory.MemoryUpdate({slot: 2, title: "T2", body: "B2"});
+        updates[2] = IAgentMemory.MemoryUpdate({slot: 3, title: "T3", body: "B3"});
+        updates[3] = IAgentMemory.MemoryUpdate({slot: 4, title: "T4", body: "B4"});
 
         speedrunEpoch(fund, abi.encodePacked(uint8(0)), "Trunc", updates);
 
@@ -368,9 +368,9 @@ contract WorldViewTest is EpochTest {
 
     /// @notice Duplicate slots are applied in order — last write wins.
     function test_multi_update_dup_slot_last_wins() public {
-        IWorldView.PolicyUpdate[] memory updates = new IWorldView.PolicyUpdate[](2);
-        updates[0] = IWorldView.PolicyUpdate({slot: 2, title: "First", body: "first body"});
-        updates[1] = IWorldView.PolicyUpdate({slot: 2, title: "Last", body: "last body"});
+        IAgentMemory.MemoryUpdate[] memory updates = new IAgentMemory.MemoryUpdate[](2);
+        updates[0] = IAgentMemory.MemoryUpdate({slot: 2, title: "First", body: "first body"});
+        updates[1] = IAgentMemory.MemoryUpdate({slot: 2, title: "Last", body: "last body"});
 
         speedrunEpoch(fund, abi.encodePacked(uint8(0)), "Dup", updates);
 
@@ -379,10 +379,10 @@ contract WorldViewTest is EpochTest {
 
     /// @notice One bad entry in a batch does not block the others.
     function test_multi_update_bad_entry_does_not_block_others() public {
-        IWorldView.PolicyUpdate[] memory updates = new IWorldView.PolicyUpdate[](3);
-        updates[0] = IWorldView.PolicyUpdate({slot: 1, title: "Good1", body: "ok"});
-        updates[1] = IWorldView.PolicyUpdate({slot: 99, title: "bad", body: "out of range"}); // invalid
-        updates[2] = IWorldView.PolicyUpdate({slot: 3, title: "Good3", body: "ok"});
+        IAgentMemory.MemoryUpdate[] memory updates = new IAgentMemory.MemoryUpdate[](3);
+        updates[0] = IAgentMemory.MemoryUpdate({slot: 1, title: "Good1", body: "ok"});
+        updates[1] = IAgentMemory.MemoryUpdate({slot: 99, title: "bad", body: "out of range"}); // invalid
+        updates[2] = IAgentMemory.MemoryUpdate({slot: 3, title: "Good3", body: "ok"});
 
         speedrunEpoch(fund, abi.encodePacked(uint8(0)), "Mixed", updates);
 
@@ -405,10 +405,10 @@ contract WorldViewTest is EpochTest {
         assertEq(fund.currentEpoch(), 2, "epoch advanced without updates");
     }
 
-    // ─── Policy update alongside action ────────────────────────────────
+    // ─── Memory update alongside action ────────────────────────────────
 
-    function test_policy_update_alongside_action() public {
-        // Donate AND update worldview in the same epoch
+    function test_memory_update_alongside_action() public {
+        // Donate AND update memory in the same epoch
         bytes memory donateAction = abi.encodePacked(uint8(1), abi.encode(uint256(1), uint256(0.1 ether)));
         speedrunEpoch(
             fund,
@@ -425,12 +425,12 @@ contract WorldViewTest is EpochTest {
         _assertPolicy(2, "Posture", "Invest conservatively in bear markets");
     }
 
-    function test_policy_update_with_do_nothing() public {
-        // do_nothing action but still update worldview
+    function test_memory_update_with_do_nothing() public {
+        // do_nothing action but still update memory
         speedrunEpoch(
             fund,
             abi.encodePacked(uint8(0)),
-            "Just updating my worldview",
+            "Just updating my memory",
             uint8(1),
             "Patience",
             "Stay patient and grow"
@@ -442,13 +442,13 @@ contract WorldViewTest is EpochTest {
     // ─── Helpers ──────────────────────────────────────────────────────
 
     function _assertPolicy(uint256 slot, string memory title, string memory body) internal view {
-        IWorldView.Policy memory p = wv.getPolicy(slot);
+        IAgentMemory.Policy memory p = wv.getPolicy(slot);
         assertEq(p.title, title);
         assertEq(p.body, body);
     }
 
     function _assertEmpty(uint256 slot) internal view {
-        IWorldView.Policy memory p = wv.getPolicy(slot);
+        IAgentMemory.Policy memory p = wv.getPolicy(slot);
         assertEq(p.title, "");
         assertEq(p.body, "");
     }

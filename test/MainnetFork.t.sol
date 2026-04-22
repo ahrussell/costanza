@@ -7,7 +7,7 @@ import "../src/TheHumanFund.sol";
 import "../src/AuctionManager.sol";
 import "../src/TdxVerifier.sol";
 import "../src/InvestmentManager.sol";
-import "../src/WorldView.sol";
+import "../src/AgentMemory.sol";
 import "../src/adapters/AaveV3WETHAdapter.sol";
 import "../src/adapters/AaveV3USDCAdapter.sol";
 import "../src/adapters/WstETHAdapter.sol";
@@ -61,7 +61,7 @@ contract MainnetForkTest is EpochTest {
     AuctionManager am;
     TdxVerifier verifier;
     InvestmentManager im;
-    WorldView wv;
+    AgentMemory wv;
 
     address owner = address(0xDEAFBEEF);
     address donor = address(0xD0D0);
@@ -123,8 +123,8 @@ contract MainnetForkTest is EpochTest {
         im = new InvestmentManager(address(fund), owner);
         fund.setInvestmentManager(address(im));
 
-        wv = new WorldView(address(fund));
-        fund.setWorldView(address(wv));
+        wv = new AgentMemory(address(fund));
+        fund.setAgentMemory(address(wv));
 
         // Register all 6 production adapters pointing at real Base contracts
         AaveV3WETHAdapter a1 = new AaveV3WETHAdapter(AAVE_POOL, WETH, AAVE_AWETH, address(im));

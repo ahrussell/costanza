@@ -49,7 +49,7 @@ ENVVARS
 # ─── Step 2: Deploy contracts ────────────────────────────────────────
 cat << 'DEPLOY'
 
-# Deploy all contracts (TheHumanFund + TdxVerifier + AuctionManager + InvestmentManager + WorldView + adapters):
+# Deploy all contracts (TheHumanFund + TdxVerifier + AuctionManager + InvestmentManager + AgentMemory + adapters):
 forge script deploy/mainnet/Deploy.s.sol:Deploy \
   --rpc-url $RPC_URL \
   --broadcast \
@@ -61,7 +61,7 @@ forge script deploy/mainnet/Deploy.s.sol:Deploy \
 #   AuctionManager:    0x...
 #   TdxVerifier:       0x...
 #   InvestmentManager: 0x...
-#   WorldView:         0x...
+#   AgentMemory:       0x...
 
 DEPLOY
 

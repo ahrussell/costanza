@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "./interfaces/IWorldView.sol";
+import "./interfaces/IAgentMemory.sol";
 
-/// @title WorldView
-/// @notice Stores the agent's guiding policies. Only the fund contract can
+/// @title AgentMemory
+/// @notice Stores the agent's memory. Only the fund contract can
 ///         update them. All 10 slots (0..9) are writable; the model owns the
 ///         category taxonomy by writing its own titles. The storage array
 ///         and stateHash() cover all 10 slots for byte-exact hash equivalence
 ///         with the enclave's _hash_worldview mirror.
-contract WorldView is IWorldView {
+contract AgentMemory is IAgentMemory {
     uint256 public constant NUM_POLICIES = 10;
     uint256 public constant MAX_TITLE_LENGTH = 64;
     uint256 public constant MAX_BODY_LENGTH = 280;
@@ -17,16 +17,16 @@ contract WorldView is IWorldView {
     address public fund;
     Policy[10] internal _policies;
 
-    event GuidingPolicyUpdated(uint256 indexed slot, string title, string body);
+    event MemoryEntrySet(uint256 indexed slot, string title, string body);
 
     constructor(address _fund) {
         fund = _fund;
     }
 
-    /// @notice Set a guiding policy. Only callable by the fund contract.
-    /// @param slot  Policy slot (0..9). All slots are writable.
+    /// @notice Set a memory entry. Only callable by the fund contract.
+    /// @param slot  Memory slot (0..9). All slots are writable.
     /// @param title Short model-authored header (truncated to MAX_TITLE_LENGTH).
-    /// @param body  Policy text (truncated to MAX_BODY_LENGTH).
+    /// @param body  Memory text (truncated to MAX_BODY_LENGTH).
     function setPolicy(
         uint256 slot,
         string calldata title,
@@ -39,21 +39,21 @@ contract WorldView is IWorldView {
         string memory b = _truncate(body, MAX_BODY_LENGTH);
 
         _policies[slot] = Policy({title: t, body: b});
-        emit GuidingPolicyUpdated(slot, t, b);
+        emit MemoryEntrySet(slot, t, b);
     }
 
-    /// @notice Get a single policy by slot.
+    /// @notice Get a single memory entry by slot.
     function getPolicy(uint256 slot) external view override returns (Policy memory) {
         require(slot < NUM_POLICIES, "invalid slot");
         return _policies[slot];
     }
 
-    /// @notice Get all 10 policies.
+    /// @notice Get all 10 memory entries.
     function getPolicies() external view override returns (Policy[10] memory) {
         return _policies;
     }
 
-    /// @notice Deterministic hash of all policies for input-hash binding.
+    /// @notice Deterministic hash of all memory entries for input-hash binding.
     /// @dev    Expanded form over 20 strings (title + body per slot, 10 slots)
     ///         so the Python enclave mirror can match byte-for-byte.
     function stateHash() external view override returns (bytes32) {

@@ -130,8 +130,8 @@ contract TheHumanFundAuctionTest is EpochTest {
         bytes32 inputHash = fund.epochInputHashes(epoch);
         bytes memory action = _doNothingAction();
         bytes memory reasoning = bytes("The fund is conserving resources.");
-        IWorldView.PolicyUpdate[] memory updates = _emptyUpdates();
-        // outputHash now binds the worldview update batch in addition to
+        IAgentMemory.MemoryUpdate[] memory updates = _emptyUpdates();
+        // outputHash now binds the memory update batch in addition to
         // action + reasoning — see _computeOutputHash in TheHumanFund.sol.
         bytes32 outputHash = fund.computeOutputHash(action, reasoning, updates);
         bytes32 expectedReportData = sha256(abi.encodePacked(inputHash, outputHash));

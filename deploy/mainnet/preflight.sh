@@ -135,7 +135,7 @@ else
     fail "Could not parse TheHumanFund contract size"
 fi
 
-for CONTRACT in AuctionManager InvestmentManager TdxVerifier WorldView; do
+for CONTRACT in AuctionManager InvestmentManager TdxVerifier AgentMemory; do
     CSIZE=$(echo "$BUILD_OUTPUT" | grep "| $CONTRACT " | head -1 | awk -F'|' '{gsub(/[ ,]/, "", $3); print $3}')
     if [[ -n "$CSIZE" ]] && (( CSIZE < 24576 )); then
         pass "$CONTRACT: ${CSIZE} bytes"

@@ -4,7 +4,7 @@ pragma solidity ^0.8.20;
 import "./interfaces/IProofVerifier.sol";
 import "./interfaces/IInvestmentManager.sol";
 import "./interfaces/IAuctionManager.sol";
-import "./interfaces/IWorldView.sol";
+import "./interfaces/IAgentMemory.sol";
 import "./interfaces/IAggregatorV3.sol";
 import "./DonationExecutor.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
@@ -72,7 +72,7 @@ contract TheHumanFund is ReentrancyGuard {
     ///        (a) a direct field on this struct, OR
     ///        (b) bound transitively via one of the frozen sub-hashes
     ///            (nonprofitsHash / messagesHash / historyHash /
-    ///            worldviewHash / investmentsHash), which are computed live
+    ///            memoryHash / investmentsHash), which are computed live
     ///            at `_freezeEpochSnapshot()` time and stored here.
     ///
     ///      The prover mirrors this snapshot via `getEpochSnapshot(epoch)`
@@ -112,13 +112,13 @@ contract TheHumanFund is ReentrancyGuard {
 
         // ── Sub-hashes (computed LIVE at freeze time, then frozen) ───────
         // These are the byte-exact rolling hashes of nonprofit / message /
-        // history / worldview / investment state, captured at the instant
+        // history / memory / investment state, captured at the instant
         // freeze runs (when live state is authoritative). The pure
         // `_hashSnapshot` function reads them as plain bytes32 inputs.
         bytes32 nonprofitsHash;
         bytes32 messagesHash;
         bytes32 historyHash;
-        bytes32 worldviewHash;
+        bytes32 memoryHash;
         bytes32 investmentsHash;
 
         // ── Investment raw values (prover display + drift-handling) ──────
@@ -191,7 +191,7 @@ contract TheHumanFund is ReentrancyGuard {
     uint256 public constant MIN_MESSAGE_DONATION = 0.001 ether; // Minimum ETH to include a message
     uint256 public constant MAX_MESSAGE_LENGTH = 280;
     uint256 public constant MAX_MESSAGES_PER_EPOCH = 3;     // Max messages shown to the model per epoch
-    uint256 public constant MAX_POLICY_UPDATES_PER_EPOCH = 3; // Max worldview sidecar updates per epoch
+    uint256 public constant MAX_MEMORY_UPDATES_PER_EPOCH = 3; // Max memory sidecar updates per epoch
     uint256 public constant PRICE_STALENESS_THRESHOLD = 3600; // 1 hour
     uint256 public constant MAX_MISSED_EPOCHS = 50;           // Cap loop iterations in effectiveMaxBid/currentBond
 
@@ -263,8 +263,8 @@ contract TheHumanFund is ReentrancyGuard {
     // Investment manager (separate contract — see InvestmentManager.sol)
     IInvestmentManager public investmentManager;
 
-    // Worldview (separate contract — see WorldView.sol)
-    IWorldView public worldView;
+    // Agent memory (separate contract — see AgentMemory.sol)
+    IAgentMemory public agentMemory;
 
     // approvedPromptHash removed — prompt on dm-verity rootfs, verified via image key
 
@@ -291,7 +291,7 @@ contract TheHumanFund is ReentrancyGuard {
     // Kill switches — bitmask flags, once set permanently disable the corresponding methods.
     uint256 public constant FREEZE_NONPROFITS          = 1 << 0;
     uint256 public constant FREEZE_INVESTMENT_WIRING   = 1 << 1;
-    uint256 public constant FREEZE_WORLDVIEW_WIRING    = 1 << 2;
+    uint256 public constant FREEZE_MEMORY_WIRING        = 1 << 2;
     uint256 public constant FREEZE_AUCTION_CONFIG      = 1 << 3;
     uint256 public constant FREEZE_VERIFIERS           = 1 << 4;
     // Bits (1 << 5) and (1 << 6) are unused.
@@ -582,9 +582,9 @@ contract TheHumanFund is ReentrancyGuard {
         }
     }
 
-    function setWorldView(address _wv) external onlyOwner {
-        if (frozenFlags & FREEZE_WORLDVIEW_WIRING != 0) revert Frozen();
-        worldView = IWorldView(_wv);
+    function setAgentMemory(address _am) external onlyOwner {
+        if (frozenFlags & FREEZE_MEMORY_WIRING != 0) revert Frozen();
+        agentMemory = IAgentMemory(_am);
     }
 
     /// @notice Set (or replace) the auction manager and configure phase timing.
@@ -620,19 +620,19 @@ contract TheHumanFund is ReentrancyGuard {
 
     // setApprovedPromptHash removed — prompt verified via dm-verity image key
 
-    /// @notice Seed multiple worldview policies at once. Only callable by owner.
+    /// @notice Seed multiple memory entries at once. Only callable by owner.
     /// @dev Intended for initial setup before the fund goes live.
-    function seedWorldView(
+    function seedMemory(
         uint256[] calldata slots,
         string[] calldata titles,
         string[] calldata bodies
     ) external onlyOwner {
-        if (frozenFlags & FREEZE_WORLDVIEW_WIRING != 0) revert Frozen();
-        require(address(worldView) != address(0), "no worldview");
+        if (frozenFlags & FREEZE_MEMORY_WIRING != 0) revert Frozen();
+        require(address(agentMemory) != address(0), "no memory");
         require(slots.length == titles.length, "length mismatch");
         require(slots.length == bodies.length, "length mismatch");
         for (uint256 i = 0; i < slots.length; i++) {
-            worldView.setPolicy(slots[i], titles[i], bodies[i]);
+            agentMemory.setPolicy(slots[i], titles[i], bodies[i]);
         }
     }
 
@@ -1146,7 +1146,7 @@ contract TheHumanFund is ReentrancyGuard {
     ///        1. Copy every scalar the enclave needs
     ///        2. Snapshot investment raw values (so the prover can display them)
     ///        3. Compute all sub-hashes LIVE (nonprofits / messages / history /
-    ///           worldview / investments) and freeze them as bytes32 fields
+    ///           memory / investments) and freeze them as bytes32 fields
     function _freezeEpochSnapshot(uint256 epoch) internal {
         EpochSnapshot storage snap = _epochSnapshots[epoch];
 
@@ -1194,8 +1194,8 @@ contract TheHumanFund is ReentrancyGuard {
         snap.nonprofitsHash = _liveHashNonprofits();
         snap.messagesHash = _liveHashUnreadMessages();
         snap.historyHash = _liveHashRecentHistory(epoch);
-        snap.worldviewHash = address(worldView) != address(0)
-            ? worldView.stateHash()
+        snap.memoryHash = address(agentMemory) != address(0)
+            ? agentMemory.stateHash()
             : bytes32(0);
         snap.investmentsHash = address(investmentManager) != address(0)
             ? investmentManager.epochStateHash(
@@ -1255,15 +1255,15 @@ contract TheHumanFund is ReentrancyGuard {
 
     /// @notice Submit the auction result (winner only).
     ///         Auto-syncs phase first (closes reveal window, captures seed, binds input hash).
-    /// @param updates Optional worldview policy updates (array form, best-effort,
-    ///                truncated to MAX_POLICY_UPDATES_PER_EPOCH). Duplicate slots
+    /// @param updates Optional memory updates (array form, best-effort,
+    ///                truncated to MAX_MEMORY_UPDATES_PER_EPOCH). Duplicate slots
     ///                are applied in order so the last write wins.
     function submitAuctionResult(
         bytes calldata action,
         bytes calldata reasoning,
         bytes calldata proof,
         uint8 verifierId,
-        IWorldView.PolicyUpdate[] calldata updates
+        IAgentMemory.MemoryUpdate[] calldata updates
     ) external payable nonReentrant {
         _advanceToNow();
 
@@ -1282,8 +1282,8 @@ contract TheHumanFund is ReentrancyGuard {
             IProofVerifier v = verifiers[verifierId];
             if (address(v) == address(0)) revert InvalidParams();
             // outputHash binds the action bytes, reasoning text, AND the
-            // worldview update batch. Without the updatesHash term, a
-            // malicious prover client could substitute its own worldview
+            // memory update batch. Without the updatesHash term, a
+            // malicious prover client could substitute its own memory
             // updates between the enclave's output and this submission and
             // the DCAP verification would still pass — see
             // prover/enclave/test_output_coverage.py for the analyzer that
@@ -1304,7 +1304,7 @@ contract TheHumanFund is ReentrancyGuard {
 
         emit EpochExecuted(epoch, msg.sender, bountyAmount);
 
-        _applyPolicyUpdates(updates);
+        _applyMemoryUpdates(updates);
         _recordAndExecute(epoch, action, reasoning, bountyAmount);
     }
 
@@ -1343,7 +1343,7 @@ contract TheHumanFund is ReentrancyGuard {
     function computeOutputHash(
         bytes calldata action,
         bytes calldata reasoning,
-        IWorldView.PolicyUpdate[] calldata updates
+        IAgentMemory.MemoryUpdate[] calldata updates
     ) external pure returns (bytes32) {
         return _computeOutputHash(action, reasoning, updates);
     }
@@ -1351,7 +1351,7 @@ contract TheHumanFund is ReentrancyGuard {
     function _computeOutputHash(
         bytes calldata action,
         bytes calldata reasoning,
-        IWorldView.PolicyUpdate[] calldata updates
+        IAgentMemory.MemoryUpdate[] calldata updates
     ) internal pure returns (bytes32) {
         return keccak256(abi.encodePacked(
             sha256(action),
@@ -1360,14 +1360,14 @@ contract TheHumanFund is ReentrancyGuard {
         ));
     }
 
-    /// @dev Rolling hash over the submitted worldview updates. Empty list
+    /// @dev Rolling hash over the submitted memory updates. Empty list
     ///      → bytes32(0). Each entry is hashed as
     ///      `keccak256(abi.encode(slot, title, body))`, then folded into
     ///      `rolling = keccak256(abi.encode(rolling, item))`. Same pattern
     ///      as _hashNonprofits / _hashUnreadMessages elsewhere in the
     ///      contract; mirrored byte-for-byte by
     ///      `_hash_submitted_updates` in attestation.py.
-    function _hashSubmittedUpdates(IWorldView.PolicyUpdate[] calldata updates)
+    function _hashSubmittedUpdates(IAgentMemory.MemoryUpdate[] calldata updates)
         internal pure returns (bytes32)
     {
         if (updates.length == 0) return bytes32(0);
@@ -1385,19 +1385,19 @@ contract TheHumanFund is ReentrancyGuard {
 
     // ─── Internal: Epoch Recording ─────────────────────────────────────
 
-    /// @dev Apply worldview policy updates. Best-effort — individual failures
+    /// @dev Apply memory updates. Best-effort — individual failures
     ///      are silently ignored so one bad entry can't block payment or block
-    ///      the rest of the batch. Batch is capped at MAX_POLICY_UPDATES_PER_EPOCH
+    ///      the rest of the batch. Batch is capped at MAX_MEMORY_UPDATES_PER_EPOCH
     ///      (extra entries are silently dropped). Duplicate slots are applied
     ///      in order — last write wins.
-    function _applyPolicyUpdates(IWorldView.PolicyUpdate[] calldata updates) internal {
-        if (address(worldView) == address(0)) return;
+    function _applyMemoryUpdates(IAgentMemory.MemoryUpdate[] calldata updates) internal {
+        if (address(agentMemory) == address(0)) return;
         uint256 n = updates.length;
-        if (n > MAX_POLICY_UPDATES_PER_EPOCH) {
-            n = MAX_POLICY_UPDATES_PER_EPOCH;
+        if (n > MAX_MEMORY_UPDATES_PER_EPOCH) {
+            n = MAX_MEMORY_UPDATES_PER_EPOCH;
         }
         for (uint256 i = 0; i < n; i++) {
-            try worldView.setPolicy(
+            try agentMemory.setPolicy(
                 uint256(updates[i].slot),
                 updates[i].title,
                 updates[i].body
@@ -1600,7 +1600,7 @@ contract TheHumanFund is ReentrancyGuard {
             scalarHash,
             snap.nonprofitsHash,
             snap.investmentsHash,
-            snap.worldviewHash,
+            snap.memoryHash,
             snap.messagesHash,
             snap.historyHash
         ));
