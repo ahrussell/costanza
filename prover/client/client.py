@@ -493,19 +493,42 @@ def _submit_result(chain, config, tee_result, auction, saved, state_dir, ntfy):
     reasoning_bytes = tee_result["reasoning"].encode("utf-8")
     attestation_bytes = bytes.fromhex(tee_result["attestation_quote"].replace("0x", ""))
 
-    # Extract optional worldview update
+    # Extract optional worldview updates — now a list of {slot, title, body}
+    # sidecar entries (up to 3 per epoch). The enclave validator has already
+    # clamped slot range, title/body length, and list size; this client-side
+    # extraction is just shape normalization for web3.py encoding.
     action_json = tee_result.get("action", {})
-    worldview = action_json.get("worldview") or action_json.get("params", {}).get("worldview")
-    if worldview and isinstance(worldview, dict):
-        policy_slot = int(worldview.get("slot", -1))
-        policy_text = str(worldview.get("policy", ""))
-    else:
-        policy_slot = -1
-        policy_text = ""
+    raw_wv = action_json.get("worldview") or action_json.get("params", {}).get("worldview")
+    worldview_updates = []
+    if isinstance(raw_wv, list):
+        for entry in raw_wv:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                slot = int(entry.get("slot"))
+            except (TypeError, ValueError):
+                continue
+            if slot < 0 or slot > 9:
+                continue
+            title = str(entry.get("title", ""))[:64]
+            body = str(entry.get("body", entry.get("policy", "")))[:280]
+            worldview_updates.append((slot, title, body))
+        # Belt-and-suspenders: contract caps at 3.
+        worldview_updates = worldview_updates[:3]
+    elif isinstance(raw_wv, dict):
+        # Legacy single-object shape — wrap defensively.
+        try:
+            slot = int(raw_wv.get("slot"))
+            if 0 <= slot <= 9:
+                title = str(raw_wv.get("title", ""))[:64]
+                body = str(raw_wv.get("body", raw_wv.get("policy", "")))[:280]
+                worldview_updates.append((slot, title, body))
+        except (TypeError, ValueError):
+            pass
 
     verifier_id = config["verifier_id"]
-    logger.info("Submitting result (verifier=%d, policy_slot=%d, attempt=%d/%d)...",
-               verifier_id, policy_slot, attempts + 1, MAX_SUBMIT_RETRIES)
+    logger.info("Submitting result (verifier=%d, worldview_updates=%d, attempt=%d/%d)...",
+               verifier_id, len(worldview_updates), attempts + 1, MAX_SUBMIT_RETRIES)
 
     try:
         receipt = submit_result(
@@ -514,8 +537,7 @@ def _submit_result(chain, config, tee_result, auction, saved, state_dir, ntfy):
             reasoning=reasoning_bytes,
             proof=attestation_bytes,
             verifier_id=verifier_id,
-            policy_slot=policy_slot,
-            policy_text=policy_text,
+            worldview_updates=worldview_updates,
         )
         logger.info("Result submitted! tx=%s", receipt['transactionHash'].hex())
 

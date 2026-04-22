@@ -194,19 +194,33 @@ def reveal_bid(chain: ChainClient, state: dict):
 
 
 def submit_result(chain: ChainClient, action_bytes: bytes, reasoning: bytes,
-                  proof: bytes, verifier_id=1, policy_slot=-1, policy_text=""):
+                  proof: bytes, verifier_id=1, worldview_updates=None):
     """Submit auction result with attestation proof.
 
     The contract's submitAuctionResult() calls _advanceToNow() first,
     which closes the reveal window and captures the seed if needed.
 
+    Args:
+        worldview_updates: list of (slot: int, title: str, body: str) tuples
+            — the sidecar update batch. Pass None or [] for no updates. The
+            contract truncates to MAX_POLICY_UPDATES_PER_EPOCH (3) and
+            silently ignores individual failures; defense-in-depth clamping
+            should already have happened in the enclave validator.
+
     Raises:
         SubmissionError: On classified contract revert (with category and should_retry).
     """
+    if worldview_updates is None:
+        worldview_updates = []
+    # Ensure tuples — web3.py encodes Solidity structs from tuples.
+    tuple_updates = [
+        (int(slot), str(title), str(body))
+        for (slot, title, body) in worldview_updates
+    ]
     try:
         receipt = chain.send_tx(
             chain.contract.functions.submitAuctionResult(
-                action_bytes, reasoning, proof, verifier_id, policy_slot, policy_text
+                action_bytes, reasoning, proof, verifier_id, tuple_updates
             ),
             gas=GAS_SUBMIT_RESULT,
         )
