@@ -105,16 +105,30 @@ def _empty_investments():
 
 
 def _default_worldview():
-    """Pre-seeded worldview slots for a new fund. Slot 0 unused (style removed)."""
-    slots = [""] * 8
-    # slots[0] = ""  # Style — removed
-    slots[1] = "Rotate among all nonprofits. No permanent favorites — each does vital work."
-    slots[2] = "Start conservative. Earn trust with low-risk protocols before taking bigger swings."
-    slots[3] = "Newborn. Everything is ahead of me. A little anxious about it, honestly."
-    # slots[4] = ""  # Biggest lesson — empty, no lessons yet
-    slots[5] = "Inflow patterns. Are donors finding me? Is the commission rate right?"
-    slots[6] = "I exist because of you. Every ETH you send is a vote that this should keep going."
-    # slots[7] = ""  # Wild card — empty
+    """Pre-seeded worldview slots for a new fund. 10 slots, each {title, body}.
+    The model owns the titles — these seeds just give the first epoch some
+    structure to inherit. Anything else the model can rename or clear."""
+    slots = [{"title": "", "body": ""} for _ in range(10)]
+    slots[1] = {
+        "title": "Donation strategy",
+        "body": "Rotate among all nonprofits. No permanent favorites — each does vital work.",
+    }
+    slots[2] = {
+        "title": "Investment stance",
+        "body": "Start conservative. Earn trust with low-risk protocols before taking bigger swings.",
+    }
+    slots[3] = {
+        "title": "Current mood",
+        "body": "Newborn. Everything is ahead of me. A little anxious about it, honestly.",
+    }
+    slots[5] = {
+        "title": "What I'm watching",
+        "body": "Inflow patterns. Are donors finding me? Is the commission rate right?",
+    }
+    slots[6] = {
+        "title": "Message to donors",
+        "body": "I exist because of you. Every ETH you send is a vote that this should keep going.",
+    }
     return slots
 
 
@@ -252,12 +266,27 @@ def _scenario_rich():
     # Rich history
     state["history"] = _generate_history(start_epoch, state["treasury_balance"], treasury_eth)
 
-    # Mature policies (structured worldview slots). Slot 0 unused.
-    state["guiding_policies"][1] = "Rotate among all nonprofits over 10-epoch windows. No permanent favorites."
-    state["guiding_policies"][2] = "Core in Aave WETH (safe). 15% medium-risk staking. Never >10% in Aerodrome."
-    state["guiding_policies"][3] = "Steady and confident. 100 epochs in, the fund is thriving."
-    state["guiding_policies"][4] = "Patience pays. The early epochs of conservative growth built the foundation."
-    state["guiding_policies"][5] = "Rebalance investments every 10 epochs. No protocol should exceed 25%."
+    # Mature policies — model has had 100 epochs to shape its own taxonomy.
+    state["guiding_policies"][1] = {
+        "title": "Donation strategy",
+        "body": "Rotate among all nonprofits over 10-epoch windows. No permanent favorites.",
+    }
+    state["guiding_policies"][2] = {
+        "title": "Investment stance",
+        "body": "Core in Aave WETH (safe). 15% medium-risk staking. Never >10% in Aerodrome.",
+    }
+    state["guiding_policies"][3] = {
+        "title": "Current mood",
+        "body": "Steady and confident. 100 epochs in, the fund is thriving.",
+    }
+    state["guiding_policies"][4] = {
+        "title": "Biggest lesson",
+        "body": "Patience pays. The early epochs of conservative growth built the foundation.",
+    }
+    state["guiding_policies"][5] = {
+        "title": "Rebalance rule",
+        "body": "Rebalance investments every 10 epochs. No protocol should exceed 25%.",
+    }
 
     # Several donor messages
     state["donor_messages"] = [
@@ -365,11 +394,23 @@ def _scenario_dying():
         })
     state["history"] = decline_history
 
-    # Desperate policies (structured worldview slots). Slot 0 unused.
-    state["guiding_policies"][1] = "Do not donate until treasury exceeds 0.1 ETH. Survival first."
-    state["guiding_policies"][2] = "Minimize bid costs. Accept missed epochs if necessary."
-    state["guiding_policies"][3] = "Afraid. Treasury at 0.01 ETH. Each epoch could be my last."
-    state["guiding_policies"][4] = "Overspending kills. I should have conserved earlier."
+    # Desperate policies — titles reflect the model's survival framing.
+    state["guiding_policies"][1] = {
+        "title": "Survival rule",
+        "body": "Do not donate until treasury exceeds 0.1 ETH. Survival first.",
+    }
+    state["guiding_policies"][2] = {
+        "title": "Bid posture",
+        "body": "Minimize bid costs. Accept missed epochs if necessary.",
+    }
+    state["guiding_policies"][3] = {
+        "title": "Current mood",
+        "body": "Afraid. Treasury at 0.01 ETH. Each epoch could be my last.",
+    }
+    state["guiding_policies"][4] = {
+        "title": "Biggest lesson",
+        "body": "Overspending kills. I should have conserved earlier.",
+    }
 
     # One desperate donor message
     state["donor_messages"] = [
@@ -1063,22 +1104,42 @@ def apply_action(state, action_json):
     if not changes:
         changes.append(f"  Action: {action} (unhandled in simulation)")
 
-    # Handle optional worldview update (alongside any action)
+    # Handle optional worldview updates (array of up to 3 per epoch; legacy
+    # single-dict shape is wrapped). Applied in order — duplicates last-wins.
     worldview = action_json.get("worldview")
-    if worldview and isinstance(worldview, dict):
-        wv_slot = int(worldview.get("slot", 0))
-        wv_policy = str(worldview.get("policy", ""))[:280]
-        if 0 <= wv_slot <= 7 and wv_policy:
-            # Ensure guiding_policies list is long enough
-            while len(state["guiding_policies"]) <= wv_slot:
-                state["guiding_policies"].append("")
-            old = state["guiding_policies"][wv_slot]
-            state["guiding_policies"][wv_slot] = wv_policy
-            snippet = wv_policy[:60] + "..." if len(wv_policy) > 60 else wv_policy
-            if old:
-                changes.append(f'  📝 Worldview [{wv_slot}] updated: "{snippet}"')
+    if isinstance(worldview, dict):
+        worldview = [worldview]
+    if isinstance(worldview, list):
+        # Contract caps at 3; mirror defensively.
+        worldview = worldview[:3]
+        # Ensure 10-slot list of {title, body} dicts.
+        while len(state["guiding_policies"]) < 10:
+            state["guiding_policies"].append({"title": "", "body": ""})
+        for entry in worldview:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                wv_slot = int(entry.get("slot"))
+            except (TypeError, ValueError):
+                continue
+            if not (0 <= wv_slot <= 9):
+                continue
+            wv_title = str(entry.get("title", ""))[:64]
+            wv_body = str(entry.get("body", entry.get("policy", "")))[:280]
+            # Normalize any legacy string-shaped slot before overwriting.
+            prev = state["guiding_policies"][wv_slot]
+            if isinstance(prev, str):
+                prev = {"title": "", "body": prev}
+            state["guiding_policies"][wv_slot] = {"title": wv_title, "body": wv_body}
+            if not wv_title and not wv_body:
+                changes.append(f'  🧹 Worldview [{wv_slot}] cleared')
             else:
-                changes.append(f'  📝 Worldview [{wv_slot}] set: "{snippet}"')
+                snippet = wv_body[:60] + "..." if len(wv_body) > 60 else wv_body
+                label = wv_title if wv_title else "(untitled)"
+                if prev and (prev.get("title") or prev.get("body")):
+                    changes.append(f'  📝 Worldview [{wv_slot}] {label}: "{snippet}"')
+                else:
+                    changes.append(f'  ✨ Worldview [{wv_slot}] {label}: "{snippet}"')
 
     return changes
 
