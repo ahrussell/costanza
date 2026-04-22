@@ -1126,13 +1126,14 @@ def apply_action(state, action_json):
                 continue
             mem_title = str(entry.get("title", ""))[:64]
             mem_body = str(entry.get("body", ""))[:280]
+            prev = state["memories"][mem_slot]
             state["memories"][mem_slot] = {"title": mem_title, "body": mem_body}
             if not mem_title and not mem_body:
                 changes.append(f'  🧹 Memory [{mem_slot}] cleared')
             else:
                 snippet = mem_body[:60] + "..." if len(mem_body) > 60 else mem_body
                 label = mem_title if mem_title else "(untitled)"
-                if prev and (prev.get("title") or prev.get("body")):
+                if isinstance(prev, dict) and (prev.get("title") or prev.get("body")):
                     changes.append(f'  📝 Memory [{mem_slot}] {label}: "{snippet}"')
                 else:
                     changes.append(f'  ✨ Memory [{mem_slot}] {label}: "{snippet}"')
