@@ -179,6 +179,16 @@ vm_run "
     sudo /opt/humanfund/venv/bin/pip install --no-cache-dir --require-hashes \
         -r /tmp/requirements.txt
 "
+
+# NVIDIA GPU attestation SDK. Not hash-pinned (too many transitive deps),
+# but version-pinned. Post-build integrity covered by dm-verity RTMR[2].
+gcloud compute scp "prover/enclave/requirements-nvidia.txt" \
+    "$VM_NAME:/tmp/requirements-nvidia.txt" \
+    --project="$GCP_PROJECT" --zone="$GCP_ZONE" 2>&1
+vm_run "
+    sudo /opt/humanfund/venv/bin/pip install --no-cache-dir \
+        -r /tmp/requirements-nvidia.txt
+"
 echo "  Done."
 
 # ─── Step 6: Download model weights ──────────────────────────────────

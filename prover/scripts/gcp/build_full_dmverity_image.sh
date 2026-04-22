@@ -110,6 +110,22 @@ tar czf /tmp/tee-upload.tar.gz -C "$PROJECT_ROOT" prover/enclave/ prover/prompts
 vm_scp "/tmp/tee-upload.tar.gz" "/tmp/"
 vm_run "cd /tmp && tar xzf tee-upload.tar.gz && sudo cp -r prover/enclave /opt/humanfund/ && sudo cp prover/prompts/system.txt /opt/humanfund/system_prompt.txt && sudo cp prover/prompts/voice_anchors.txt /opt/humanfund/voice_anchors.txt 2>/dev/null || true"
 
+# ─── Upload pinned NVIDIA RIMs (driver + VBIOS) ───────────────────────
+# These are NVIDIA-signed Reference Integrity Manifests containing the
+# golden measurements the enclave's gpu_attest.py will match the live
+# GPU's attestation report against. Refresh procedure lives in
+# prover/scripts/gcp/nvidia_artifacts/README.md.
+NVIDIA_ARTIFACTS_DIR="$PROJECT_ROOT/prover/scripts/gcp/nvidia_artifacts"
+if [ ! -f "$NVIDIA_ARTIFACTS_DIR/driver_rim.xml" ] || [ ! -f "$NVIDIA_ARTIFACTS_DIR/vbios_rim.xml" ]; then
+    echo "FATAL: NVIDIA RIMs missing from $NVIDIA_ARTIFACTS_DIR/"
+    echo "  Run prover/scripts/gcp/fetch_nvidia_rims.py on an H100 VM and commit the output."
+    exit 1
+fi
+echo "─── Uploading NVIDIA RIMs ───"
+vm_scp "$NVIDIA_ARTIFACTS_DIR/driver_rim.xml" "/tmp/driver_rim.xml"
+vm_scp "$NVIDIA_ARTIFACTS_DIR/vbios_rim.xml" "/tmp/vbios_rim.xml"
+vm_run "sudo mkdir -p /opt/humanfund/nvidia && sudo cp /tmp/driver_rim.xml /tmp/vbios_rim.xml /opt/humanfund/nvidia/"
+
 # Only bake SSH key in debug mode — production images must not have SSH keys
 if $ENABLE_SSH; then
     LOCAL_PUBKEY="$HOME/.ssh/google_compute_engine.pub"

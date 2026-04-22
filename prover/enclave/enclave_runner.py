@@ -41,6 +41,15 @@ from .attestation import get_tdx_quote, compute_report_data
 from .prompt_builder import build_epoch_context, build_full_prompt
 from .voice_anchors import parse_anchors, select_anchors, VOICE_ANCHOR_K
 
+# ─── GPU attestation artifact paths ─────────────────────────────────────
+
+NVIDIA_DRIVER_RIM_PATH = os.environ.get(
+    "NVIDIA_DRIVER_RIM_PATH", "/opt/humanfund/nvidia/driver_rim.xml"
+)
+NVIDIA_VBIOS_RIM_PATH = os.environ.get(
+    "NVIDIA_VBIOS_RIM_PATH", "/opt/humanfund/nvidia/vbios_rim.xml"
+)
+
 # ─── Configuration ──────────────────────────────────────────────────────
 
 MODEL_PATH = os.environ.get("MODEL_PATH", "/models/model.gguf")
@@ -417,6 +426,24 @@ def main():
         input_hash = _keccak256(base_input_hash + seed_bytes)
         log(f"  Base input hash: 0x{base_input_hash.hex()[:16]}...")
         log(f"  Input hash (with seed):  0x{input_hash.hex()[:16]}...")
+
+        # Step 3.5: Cryptographically pin GPU firmware + identity to this
+        # epoch. Fetches a signed SPDM attestation report from the GPU
+        # with nonce = sha256(input_hash), verifies it offline against
+        # bundled RIMs and the SDK's root CAs. Aborts before llama-server
+        # starts if firmware drifts from the pinned golden measurements.
+        #
+        # Skipped when LLAMA_SERVER_EXTERNAL=1 (local dev on non-H100 hosts).
+        if os.environ.get("LLAMA_SERVER_EXTERNAL", "").strip() != "1":
+            log("")
+            log("Step 3.5: Verifying GPU attestation...")
+            from .gpu_attest import verify_gpu_attestation
+            gpu_nonce = hashlib.sha256(input_hash).digest()
+            verify_gpu_attestation(
+                nonce=gpu_nonce,
+                driver_rim_path=NVIDIA_DRIVER_RIM_PATH,
+                vbios_rim_path=NVIDIA_VBIOS_RIM_PATH,
+            )
 
         # Step 4: Build prompt (deterministically from the hashed state).
         # Any field the model sees is a field that contributed to the hash
