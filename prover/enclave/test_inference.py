@@ -44,7 +44,7 @@ class TestTwoPassInference(unittest.TestCase):
         """Verify each pass builds the right prompt with correct params."""
         mock_call.side_effect = [
             make_llama_response("Today I give with joy."),        # Pass 1: diary
-            make_llama_response('"action": "noop", "params": {}}'),  # Pass 2: action
+            make_llama_response('"action": "do_nothing", "params": {}}'),  # Pass 2: action
         ]
 
         prompt = "<diary>\n"
@@ -77,7 +77,7 @@ class TestTwoPassInference(unittest.TestCase):
         """Default sampler should match v19 baseline: top_p=1.0, top_k=0, min_p=0.05."""
         mock_call.side_effect = [
             make_llama_response("diary"),
-            make_llama_response('"action":"noop","params":{}}'),
+            make_llama_response('"action":"do_nothing","params":{}}'),
         ]
 
         run_two_pass_inference("<diary>\n", seed=1)
@@ -92,7 +92,7 @@ class TestTwoPassInference(unittest.TestCase):
         """Verify the return dict has all expected keys with correct values."""
         mock_call.side_effect = [
             make_llama_response("poetic diary entry here"),
-            make_llama_response('"action": "noop", "params": {}}'),
+            make_llama_response('"action": "do_nothing", "params": {}}'),
         ]
 
         result = run_two_pass_inference("<diary>\n", seed=1)
@@ -100,13 +100,13 @@ class TestTwoPassInference(unittest.TestCase):
         # thinking is always "" in v19 (no scratchpad pass).
         self.assertEqual(result["thinking"], "")
         self.assertEqual(result["reasoning"], "poetic diary entry here")
-        self.assertIn('"action": "noop"', result["action_text"])
+        self.assertIn('"action": "do_nothing"', result["action_text"])
         self.assertTrue(result["action_text"].startswith("{"))
         self.assertEqual(result["elapsed_seconds"], 2.0)  # 2 passes x 1s each
         self.assertEqual(result["tokens"]["prompt_tokens"], 200)
         self.assertEqual(result["tokens"]["completion_tokens"], 100)
         self.assertIsNotNone(result["parsed_action"])
-        self.assertEqual(result["parsed_action"]["action"], "noop")
+        self.assertEqual(result["parsed_action"]["action"], "do_nothing")
         self.assertEqual(result["action_attempts"], 1)
 
     @patch("prover.enclave.inference.call_llama")
@@ -139,32 +139,32 @@ class TestTwoPassInference(unittest.TestCase):
         self.assertEqual(action["params"]["nonprofit_id"], 2)
 
     @patch("prover.enclave.inference.call_llama")
-    def test_noop_action_parseable(self, mock_call):
-        """Noop action should parse correctly from 2-pass output."""
+    def test_do_nothing_action_parseable(self, mock_call):
+        """do_nothing action should parse correctly from 2-pass output."""
         mock_call.side_effect = [
             make_llama_response("I shall rest"),
-            make_llama_response('"action": "noop", "params": {}}'),
+            make_llama_response('"action": "do_nothing", "params": {}}'),
         ]
 
         result = run_two_pass_inference("<diary>\n")
         action = parse_action(result["text"])
 
         self.assertIsNotNone(action)
-        self.assertEqual(action["action"], "noop")
+        self.assertEqual(action["action"], "do_nothing")
 
     @patch("prover.enclave.inference.call_llama")
     def test_action_with_worldview_parseable(self, mock_call):
         """Action with worldview update should parse correctly."""
         mock_call.side_effect = [
             make_llama_response("A shift in the wind"),
-            make_llama_response('"action": "noop", "params": {}, "worldview": {"slot": 3, "policy": "Hopeful"}}'),
+            make_llama_response('"action": "do_nothing", "params": {}, "worldview": {"slot": 3, "policy": "Hopeful"}}'),
         ]
 
         result = run_two_pass_inference("<diary>\n")
         action = parse_action(result["text"])
 
         self.assertIsNotNone(action)
-        self.assertEqual(action["action"], "noop")
+        self.assertEqual(action["action"], "do_nothing")
         self.assertEqual(action["worldview"]["slot"], 3)
 
     @patch("prover.enclave.inference.call_llama")
@@ -175,7 +175,7 @@ class TestTwoPassInference(unittest.TestCase):
             make_llama_response("diary here"),
             make_llama_response("GARBAGE NOT JSON"),       # attempt 1
             make_llama_response("STILL GARBAGE"),          # attempt 2
-            make_llama_response('"action":"noop","params":{}}'),  # attempt 3
+            make_llama_response('"action":"do_nothing","params":{}}'),  # attempt 3
         ]
 
         result = run_two_pass_inference("<diary>\n", seed=1000)
@@ -212,7 +212,7 @@ class TestTwoPassInference(unittest.TestCase):
         """If the stop token is missed, the first </diary> in pass 1 output is still clipped."""
         mock_call.side_effect = [
             make_llama_response("real diary body</diary>\nleaked action"),
-            make_llama_response('"action":"noop","params":{}}'),
+            make_llama_response('"action":"do_nothing","params":{}}'),
         ]
 
         result = run_two_pass_inference("<diary>\n")
@@ -230,7 +230,7 @@ class TestBackwardCompatibility(unittest.TestCase):
         """run_three_pass_inference should delegate to run_two_pass_inference."""
         mock_call.side_effect = [
             make_llama_response("diary"),
-            make_llama_response('"action":"noop","params":{}}'),
+            make_llama_response('"action":"do_nothing","params":{}}'),
         ]
 
         result = run_three_pass_inference("<diary>\n", seed=99)

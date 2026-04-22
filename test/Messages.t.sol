@@ -153,8 +153,8 @@ contract MessagesTest is EpochTest {
         _missEpochManual();
 
         // Run epoch 2 (advances head)
-        bytes memory noopAction = bytes(hex"00");
-        speedrunEpoch(fund, noopAction, "reasoning");
+        bytes memory doNothingAction = bytes(hex"00");
+        speedrunEpoch(fund, doNothingAction, "reasoning");
 
         assertEq(fund.messageHead(), 3);
 
@@ -176,8 +176,8 @@ contract MessagesTest is EpochTest {
         _missEpochManual();
 
         // Execute epoch 2 — should only advance by 3 (cap)
-        bytes memory noopAction = bytes(hex"00");
-        speedrunEpoch(fund, noopAction, "reasoning");
+        bytes memory doNothingAction = bytes(hex"00");
+        speedrunEpoch(fund, doNothingAction, "reasoning");
 
         assertEq(fund.messageHead(), 3);
 
@@ -211,16 +211,16 @@ contract MessagesTest is EpochTest {
         _missEpochManual();
 
         // Epoch 2: advances head to 3
-        bytes memory noopAction = bytes(hex"00");
-        speedrunEpoch(fund, noopAction, "reasoning");
+        bytes memory doNothingAction = bytes(hex"00");
+        speedrunEpoch(fund, doNothingAction, "reasoning");
         assertEq(fund.messageHead(), 3);
 
         // Epoch 3: advances head to 6
-        speedrunEpoch(fund, noopAction, "reasoning");
+        speedrunEpoch(fund, doNothingAction, "reasoning");
         assertEq(fund.messageHead(), 6);
 
         // Epoch 4: advances head to 7
-        speedrunEpoch(fund, noopAction, "reasoning");
+        speedrunEpoch(fund, doNothingAction, "reasoning");
         assertEq(fund.messageHead(), 7);
 
         // All read
@@ -336,7 +336,7 @@ contract MessagesTest is EpochTest {
         fund.nextPhase(); // REVEAL → EXECUTION
         vm.prank(runner);
         fund.submitAuctionResult(
-            abi.encodePacked(uint8(0)), bytes("noop"), bytes("mock"),
+            abi.encodePacked(uint8(0)), bytes("do_nothing"), bytes("mock"),
             EPOCH_TEST_VERIFIER_ID, -1, ""
         );
 
@@ -362,7 +362,7 @@ contract MessagesTest is EpochTest {
         fund.nextPhase();
         vm.prank(runner);
         fund.submitAuctionResult(
-            abi.encodePacked(uint8(0)), bytes("noop 2"), bytes("mock"),
+            abi.encodePacked(uint8(0)), bytes("do_nothing 2"), bytes("mock"),
             EPOCH_TEST_VERIFIER_ID, -1, ""
         );
 
@@ -447,7 +447,7 @@ contract MessagesTest is EpochTest {
         fund.nextPhase(); // REVEAL → EXECUTION
         vm.prank(EPOCH_TEST_RUNNER);
         fund.submitAuctionResult(
-            abi.encodePacked(uint8(0)), bytes("noop"), bytes("mock"),
+            abi.encodePacked(uint8(0)), bytes("do_nothing"), bytes("mock"),
             EPOCH_TEST_VERIFIER_ID, -1, ""
         );
         fund.nextPhase(); // EXECUTION → COMMIT of epoch 2
@@ -479,7 +479,7 @@ contract MessagesTest is EpochTest {
 
         vm.prank(EPOCH_TEST_RUNNER);
         fund.submitAuctionResult(
-            abi.encodePacked(uint8(0)), bytes("noop"), bytes("mock"),
+            abi.encodePacked(uint8(0)), bytes("do_nothing"), bytes("mock"),
             EPOCH_TEST_VERIFIER_ID, -1, ""
         );
         fund.nextPhase(); // cross into epoch 2
@@ -563,8 +563,8 @@ contract MessagesTest is EpochTest {
         assertEq(senders[0], donor1);
 
         // Now epoch 2 executes successfully — head advances
-        bytes memory noopAction = bytes(hex"00");
-        speedrunEpoch(fund, noopAction, "reasoning");
+        bytes memory doNothingAction = bytes(hex"00");
+        speedrunEpoch(fund, doNothingAction, "reasoning");
         assertEq(fund.messageHead(), 1, "messageHead advances after successful epoch");
 
         (senders,,,) = fund.getUnreadMessages();
@@ -592,8 +592,8 @@ contract MessagesTest is EpochTest {
         assertEq(senders.length, 2);
 
         // Epoch 6 executes — both messages consumed
-        bytes memory noopAction = bytes(hex"00");
-        speedrunEpoch(fund, noopAction, "reasoning");
+        bytes memory doNothingAction = bytes(hex"00");
+        speedrunEpoch(fund, doNothingAction, "reasoning");
         assertEq(fund.messageHead(), 2, "both messages consumed after successful epoch");
     }
 
@@ -676,7 +676,7 @@ contract MessagesTest is EpochTest {
         fund.syncPhase(); // close reveal → EXECUTION
         vm.prank(runner);
         fund.submitAuctionResult(
-            abi.encodePacked(uint8(0)), bytes("noop"), bytes("mock"),
+            abi.encodePacked(uint8(0)), bytes("do_nothing"), bytes("mock"),
             EPOCH_TEST_VERIFIER_ID, -1, ""
         );
         assertEq(fund.messageHead(), 1, "mixed: message consumed in epoch 2");
@@ -686,7 +686,7 @@ contract MessagesTest is EpochTest {
     /// successful + missed epochs, head never decreases.
     function test_messageHead_monotonicity() public {
         vm.deal(donor1, 10 ether);
-        bytes memory noop = abi.encodePacked(uint8(0));
+        bytes memory doNothing = abi.encodePacked(uint8(0));
         uint256 prevHead = 0;
 
         // Phase 1: send 3 messages, execute (head → 3)
@@ -694,7 +694,7 @@ contract MessagesTest is EpochTest {
             vm.prank(donor1);
             fund.donateWithMessage{value: 0.01 ether}(0, "msg");
         }
-        speedrunEpoch(fund, noop, "epoch 1");
+        speedrunEpoch(fund, doNothing, "epoch 1");
         assertGe(fund.messageHead(), prevHead, "monotonic after epoch 1");
         prevHead = fund.messageHead();
 
@@ -709,7 +709,7 @@ contract MessagesTest is EpochTest {
             vm.prank(donor1);
             fund.donateWithMessage{value: 0.01 ether}(0, "more");
         }
-        speedrunEpoch(fund, noop, "epoch 4");
+        speedrunEpoch(fund, doNothing, "epoch 4");
         assertGe(fund.messageHead(), prevHead, "monotonic after epoch 4");
         prevHead = fund.messageHead();
 
@@ -718,10 +718,10 @@ contract MessagesTest is EpochTest {
             vm.prank(donor1);
             fund.donateWithMessage{value: 0.01 ether}(0, "batch");
         }
-        speedrunEpoch(fund, noop, "epoch 5");
+        speedrunEpoch(fund, doNothing, "epoch 5");
         assertGe(fund.messageHead(), prevHead, "monotonic after epoch 5");
         prevHead = fund.messageHead();
-        speedrunEpoch(fund, noop, "epoch 6");
+        speedrunEpoch(fund, doNothing, "epoch 6");
         assertGe(fund.messageHead(), prevHead, "monotonic after epoch 6");
     }
 
@@ -759,7 +759,7 @@ contract MessagesTest is EpochTest {
         fund.syncPhase(); // close reveal → EXECUTION
         vm.prank(runner);
         fund.submitAuctionResult(
-            abi.encodePacked(uint8(0)), bytes("noop"), bytes("mock"),
+            abi.encodePacked(uint8(0)), bytes("do_nothing"), bytes("mock"),
             EPOCH_TEST_VERIFIER_ID, -1, ""
         );
 
@@ -774,7 +774,7 @@ contract MessagesTest is EpochTest {
     /// epoch — we burn epoch 1 empty, then exercise the same lifecycle.
     function test_messages_accumulate_across_mixed_lifecycle() public {
         vm.deal(donor1, 10 ether);
-        bytes memory noop = abi.encodePacked(uint8(0));
+        bytes memory doNothing = abi.encodePacked(uint8(0));
 
         // Send 3 messages (they'll appear in epoch 2's snapshot)
         for (uint256 i = 0; i < 3; i++) {
@@ -784,7 +784,7 @@ contract MessagesTest is EpochTest {
         // Burn epoch 1 empty (frozen at 0 messages from setUp's eager open)
         _missEpochManual();
         // Execute epoch 2 → consumes all 3 batch1 messages
-        speedrunEpoch(fund, noop, "epoch 2");
+        speedrunEpoch(fund, doNothing, "epoch 2");
         assertEq(fund.messageHead(), 3);
 
         // Send 3 more, miss an epoch, then execute
@@ -796,7 +796,7 @@ contract MessagesTest is EpochTest {
         // Messages survive the miss
         assertEq(fund.messageHead(), 3, "miss didn't advance head");
 
-        speedrunEpoch(fund, noop, "epoch 4");
+        speedrunEpoch(fund, doNothing, "epoch 4");
         // head advances by min(3, 3) = 3 → head = 6
         assertEq(fund.messageHead(), 6, "consumed batch2 after miss");
         assertEq(fund.messageCount(), 6, "total count");
@@ -992,9 +992,9 @@ contract MessagesTest is EpochTest {
         // the contract uses the frozen count, and we verify head <=
         // headBefore + MAX_MSGS_PER_EPOCH below.
         uint256 countBefore = f.messageCount();
-        bytes memory noop = abi.encodePacked(uint8(0));
+        bytes memory doNothing = abi.encodePacked(uint8(0));
 
-        speedrunEpoch(f, noop, "fuzz");
+        speedrunEpoch(f, doNothing, "fuzz");
 
         uint256 headAfter = f.messageHead();
 

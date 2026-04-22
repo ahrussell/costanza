@@ -134,9 +134,9 @@ contract TheHumanFundTest is EpochTest {
         assertEq(fund.totalCommissionsPaid(), 0.1 ether);
     }
 
-    // ─── Epoch: Noop ─────────────────────────────────────────────────────
+    // ─── Epoch: do_nothing ───────────────────────────────────────────────
 
-    function test_noop_action() public {
+    function test_do_nothing_action() public {
         bytes memory action = abi.encodePacked(uint8(0));
         bytes memory reasoning = bytes("I decided to do nothing this epoch.");
 
@@ -167,21 +167,21 @@ contract TheHumanFundTest is EpochTest {
         assertEq(fund.lastDonationEpoch(), 1);
     }
 
-    function test_donate_out_of_bounds_becomes_noop() public {
-        // Try to donate 0.6 ETH (12% of 5 ETH) — should noop, not revert
+    function test_donate_out_of_bounds_becomes_do_nothing() public {
+        // Try to donate 0.6 ETH (12% of 5 ETH) — should become do_nothing, not revert
         bytes memory action = abi.encodePacked(uint8(1), abi.encode(uint256(1), uint256(0.6 ether)));
         bytes memory reasoning = bytes("Trying to donate too much.");
 
         uint256 treasuryBefore = fund.treasuryBalance();
         speedrunEpoch(fund, action, reasoning);
 
-        // Epoch advances; treasury loses only the 1 wei bounty (action was noop)
+        // Epoch advances; treasury loses only the 1 wei bounty (action was do_nothing)
         assertEq(fund.currentEpoch(), 2);
         assertEq(fund.treasuryBalance(), treasuryBefore - 1);
         assertEq(fund.lastDonationEpoch(), 0); // Never donated
     }
 
-    function test_donate_invalid_nonprofit_becomes_noop() public {
+    function test_donate_invalid_nonprofit_becomes_do_nothing() public {
         bytes memory action = abi.encodePacked(uint8(1), abi.encode(uint256(4), uint256(0.1 ether)));
         bytes memory reasoning = bytes("Bad nonprofit.");
 
@@ -204,16 +204,16 @@ contract TheHumanFundTest is EpochTest {
         assertEq(fund.lastCommissionChangeEpoch(), 1);
     }
 
-    function test_set_commission_rate_out_of_bounds_becomes_noop() public {
+    function test_set_commission_rate_out_of_bounds_becomes_do_nothing() public {
         uint256 originalRate = fund.commissionRateBps();
 
-        // Too low — should noop
+        // Too low — should become do_nothing
         bytes memory action = abi.encodePacked(uint8(2), abi.encode(uint256(50)));
         speedrunEpoch(fund, action, bytes("rate too low"));
         assertEq(fund.commissionRateBps(), originalRate);
         assertEq(fund.currentEpoch(), 2);
 
-        // Too high — should noop
+        // Too high — should become do_nothing
         action = abi.encodePacked(uint8(2), abi.encode(uint256(9500)));
         speedrunEpoch(fund, action, bytes("rate too high"));
         assertEq(fund.commissionRateBps(), originalRate);
@@ -633,7 +633,7 @@ contract TheHumanFundTest is EpochTest {
         for (uint256 i = 0; i < len; i++) {
             action[i] = bytes1(uint8(uint256(keccak256(abi.encode(seed, i))) % 256));
         }
-        // Should never revert — malformed actions emit ActionRejected or are noop
+        // Should never revert — malformed actions emit ActionRejected or are a no-op
         speedrunEpoch(fund, action, bytes("fuzz"));
         // Treasury never decreases from malformed actions (except valid donate actions)
         // which are bounded, plus 1 wei bounty. Just verify no revert happened.

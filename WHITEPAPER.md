@@ -40,7 +40,7 @@ Costanza chooses exactly one action per epoch. The action space is deliberately 
 | `invest` | Deploy ETH into a pre-approved DeFi protocol | Max 80% total invested, 25% per protocol, 20% min liquid reserve |
 | `withdraw` | Pull ETH from a DeFi protocol back to liquid treasury | Up to full position value |
 | `set_commission_rate` | Set the referral commission rate | 1% — 90% |
-| `noop` | Do nothing | — |
+| `do_nothing` | Take no action this epoch | — |
 
 All bounds are enforced by the smart contract. The model cannot exceed them regardless of what it outputs.
 
@@ -434,7 +434,7 @@ Even if the adversary controls the model's output, the contract enforces hard ca
 > | `invest` | $0$ (moves ETH to approved adapters, still owned by contract) | `InvestmentManager.deposit` |
 > | `withdraw` | $0$ (returns ETH from adapters to liquid treasury) | `InvestmentManager.withdraw` |
 > | `set_commission_rate` | $0$ (adjusts a parameter, no transfer) | bounds check only |
-> | `noop` | $0$ | no-op |
+> | `do_nothing` | $0$ | no-op |
 >
 > The bounty paid to the winning prover is at most $\beta/10000 \cdot T = 0.10 \cdot T$. The maximum single-epoch outflow is therefore $(\delta + \beta)/10000 \cdot T = 0.20 \cdot T$. $\square$
 

@@ -1832,7 +1832,7 @@ ACTIONS (choose exactly one per epoch):
 2. set_commission_rate(rate_bps) \u2014 Set referral commission (1-90%)
 3. invest(protocol_id, amount_eth) \u2014 Deploy ETH into DeFi
 4. withdraw(protocol_id, amount_eth) \u2014 Pull ETH from DeFi
-5. noop \u2014 Do nothing`;
+5. do_nothing \u2014 Take no action this epoch`;
 
 // Worldview slot names. Slot 0 is reserved (legacy "diary style" slot,
 // unused in the live prompt — WorldView.setPolicy rejects writes to it).
@@ -1965,7 +1965,7 @@ function decodeAction(actionBytes, rejectReason) {
   const suffix = rejected ? rejectionSuffix(t, rejectReason) : '';
   const labelSuffix = rejected ? ' (rejected)' : '';
 
-  if (t === 0) return { type: 'noop', label: 'noop' + labelSuffix, detail: 'No action taken' + suffix, rejected };
+  if (t === 0) return { type: 'do_nothing', label: 'do_nothing' + labelSuffix, detail: 'No action taken' + suffix, rejected };
   if (t === 1 && bytes.length >= 65) {
     const d = decoder.decode(['uint256','uint256'], bytes.slice(1));
     const verb = rejected ? 'Tried to donate' : 'Donated';
@@ -2006,7 +2006,7 @@ function actionBadgeClass(type, rejected) {
   // immediately tell an attempt didn't actually land on chain.
   if (rejected) return 'badge-red';
   const map = {
-    donate: 'badge-green', noop: 'badge-dim', set_commission_rate: 'badge-orange',
+    donate: 'badge-green', do_nothing: 'badge-dim', set_commission_rate: 'badge-orange',
     invest: 'badge-cyan', withdraw: 'badge-purple',
     set_guiding_policy: 'badge-yellow', unknown: 'badge-dim'
   };

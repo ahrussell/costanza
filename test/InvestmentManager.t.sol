@@ -152,7 +152,7 @@ contract InvestmentManagerTest is EpochTest {
 
     function test_depositExceedsMaxTotal() public {
         // Max total is 80%. Treasury is 10 ETH. Max invest = 8 ETH.
-        // Try to invest 9 ETH — should fail silently (noop via try/catch)
+        // Try to invest 9 ETH — should fail silently (no-op via try/catch)
         bytes memory action = abi.encodePacked(uint8(3), abi.encode(uint256(1), uint256(9 ether)));
         uint256 balBefore = address(fund).balance;
         speedrunEpoch(fund, action, "too much");
@@ -240,7 +240,7 @@ contract InvestmentManagerTest is EpochTest {
     }
 
     function test_withdrawFromEmptyPosition() public {
-        // Try to withdraw when nothing invested — should noop
+        // Try to withdraw when nothing invested — should be a no-op
         bytes memory action = abi.encodePacked(uint8(4), abi.encode(uint256(1), uint256(1 ether)));
         uint256 balBefore = address(fund).balance;
         speedrunEpoch(fund, action, "withdraw empty");
@@ -339,7 +339,7 @@ contract InvestmentManagerTest is EpochTest {
         bytes memory action = abi.encodePacked(uint8(3), abi.encode(uint256(1), uint256(0.1 ether)));
         uint256 balBefore = address(fund2).balance;
         speedrunEpoch(fund2, action, "invest without IM");
-        assertEq(address(fund2).balance, balBefore - 1); // noop, -1 wei bounty
+        assertEq(address(fund2).balance, balBefore - 1); // no-op, -1 wei bounty
     }
 
     // ─── Bounds Management ───────────────────────────────────────────────

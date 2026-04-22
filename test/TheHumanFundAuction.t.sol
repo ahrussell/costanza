@@ -74,7 +74,7 @@ contract TheHumanFundAuctionTest is EpochTest {
 
     // ─── Helpers ────────────────────────────────────────────────────────────
 
-    function _noopAction() internal pure returns (bytes memory) {
+    function _doNothingAction() internal pure returns (bytes memory) {
         return abi.encodePacked(uint8(0));
     }
 
@@ -128,7 +128,7 @@ contract TheHumanFundAuctionTest is EpochTest {
 
     function _submitAttestedResult(address runner, uint256 epoch) internal {
         bytes32 inputHash = fund.epochInputHashes(epoch);
-        bytes memory action = _noopAction();
+        bytes memory action = _doNothingAction();
         bytes memory reasoning = bytes("The fund is conserving resources.");
         bytes32 outputHash = keccak256(abi.encodePacked(sha256(action), sha256(reasoning)));
         bytes32 expectedReportData = sha256(abi.encodePacked(inputHash, outputHash));
@@ -861,7 +861,7 @@ contract TheHumanFundAuctionTest is EpochTest {
 
         vm.prank(runner1);
         vm.expectRevert(TheHumanFund.ProofFailed.selector);
-        fund.submitAuctionResult(_noopAction(), bytes("test"), bytes("mock"), uint8(1), -1, "");
+        fund.submitAuctionResult(_doNothingAction(), bytes("test"), bytes("mock"), uint8(1), -1, "");
     }
 
     function test_nonWinner_cannotSubmit() public {
@@ -869,7 +869,7 @@ contract TheHumanFundAuctionTest is EpochTest {
 
         vm.prank(runner2);
         vm.expectRevert(TheHumanFund.Unauthorized.selector);
-        fund.submitAuctionResult(_noopAction(), bytes("hax"), bytes("mock"), uint8(1), -1, "");
+        fund.submitAuctionResult(_doNothingAction(), bytes("hax"), bytes("mock"), uint8(1), -1, "");
     }
 
     function test_submit_twice_reverts() public {
@@ -881,7 +881,7 @@ contract TheHumanFundAuctionTest is EpochTest {
         // the epochs[epoch].executed guard at the top of submitAuctionResult.
         vm.prank(runner1);
         vm.expectRevert(TheHumanFund.AlreadyDone.selector);
-        fund.submitAuctionResult(_noopAction(), bytes("again"), bytes("mock"), uint8(1), -1, "");
+        fund.submitAuctionResult(_doNothingAction(), bytes("again"), bytes("mock"), uint8(1), -1, "");
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -1022,11 +1022,11 @@ contract TheHumanFundAuctionTest is EpochTest {
     }
 
     function test_epochContentHashes_accumulate() public {
-        speedrunEpoch(fund, _noopAction(), bytes("First"));
+        speedrunEpoch(fund, _doNothingAction(), bytes("First"));
         bytes32 hash1 = fund.epochContentHashes(1);
         assertTrue(hash1 != bytes32(0));
 
-        speedrunEpoch(fund, _noopAction(), bytes("Second"));
+        speedrunEpoch(fund, _doNothingAction(), bytes("Second"));
         bytes32 hash2 = fund.epochContentHashes(2);
         assertTrue(hash2 != bytes32(0));
         assertTrue(hash1 != hash2);
