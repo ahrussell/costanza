@@ -1281,9 +1281,14 @@ contract TheHumanFund is ReentrancyGuard {
         {
             IProofVerifier v = verifiers[verifierId];
             if (address(v) == address(0)) revert InvalidParams();
-            bytes32 outputHash = keccak256(abi.encodePacked(
-                sha256(action), sha256(reasoning)
-            ));
+            // outputHash binds the action bytes, reasoning text, AND the
+            // worldview update batch. Without the updatesHash term, a
+            // malicious prover client could substitute its own worldview
+            // updates between the enclave's output and this submission and
+            // the DCAP verification would still pass — see
+            // prover/enclave/test_output_coverage.py for the analyzer that
+            // enforces every enclave output the client trusts is bound here.
+            bytes32 outputHash = _computeOutputHash(action, reasoning, updates);
             if (!v.verify{value: msg.value}(epochInputHashes[epoch], outputHash, proof))
                 revert ProofFailed();
             epochProofs[epoch] = proof;
@@ -1323,6 +1328,59 @@ contract TheHumanFund is ReentrancyGuard {
         } catch {
             epochEthUsdPrice = 0;
         }
+    }
+
+    // ─── Internal: Output Hash (must mirror prover/enclave/attestation.py) ─
+
+    /// @notice Compute the outputHash bound by REPORTDATA. Public so the
+    ///         cross-stack FFI test in test/CrossStackHash.t.sol can compare
+    ///         this to the Python `compute_report_data` output for the same
+    ///         inputs.
+    /// @dev    MUST match `compute_report_data` in
+    ///         `prover/enclave/attestation.py` byte-for-byte. Any change
+    ///         here requires a symmetric Python change AND a CrossStackHash
+    ///         test update — otherwise live submissions revert.
+    function computeOutputHash(
+        bytes calldata action,
+        bytes calldata reasoning,
+        IWorldView.PolicyUpdate[] calldata updates
+    ) external pure returns (bytes32) {
+        return _computeOutputHash(action, reasoning, updates);
+    }
+
+    function _computeOutputHash(
+        bytes calldata action,
+        bytes calldata reasoning,
+        IWorldView.PolicyUpdate[] calldata updates
+    ) internal pure returns (bytes32) {
+        return keccak256(abi.encodePacked(
+            sha256(action),
+            sha256(reasoning),
+            _hashSubmittedUpdates(updates)
+        ));
+    }
+
+    /// @dev Rolling hash over the submitted worldview updates. Empty list
+    ///      → bytes32(0). Each entry is hashed as
+    ///      `keccak256(abi.encode(slot, title, body))`, then folded into
+    ///      `rolling = keccak256(abi.encode(rolling, item))`. Same pattern
+    ///      as _hashNonprofits / _hashUnreadMessages elsewhere in the
+    ///      contract; mirrored byte-for-byte by
+    ///      `_hash_submitted_updates` in attestation.py.
+    function _hashSubmittedUpdates(IWorldView.PolicyUpdate[] calldata updates)
+        internal pure returns (bytes32)
+    {
+        if (updates.length == 0) return bytes32(0);
+        bytes32 rolling = bytes32(0);
+        for (uint256 i = 0; i < updates.length; i++) {
+            bytes32 itemHash = keccak256(abi.encode(
+                updates[i].slot,
+                updates[i].title,
+                updates[i].body
+            ));
+            rolling = keccak256(abi.encode(rolling, itemHash));
+        }
+        return rolling;
     }
 
     // ─── Internal: Epoch Recording ─────────────────────────────────────

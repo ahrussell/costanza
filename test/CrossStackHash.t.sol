@@ -206,6 +206,110 @@ contract CrossStackHashTest is EpochTest {
             string.concat("Solidity/Python hashes must match: ", label));
     }
 
+    // ─── Output-hash parity ───────────────────────────────────────────────
+    //
+    // Solidity computes outputHash inline in submitAuctionResult and exposes
+    // the same logic via TheHumanFund.computeOutputHash. Python computes the
+    // same value via prover/enclave/attestation.compute_report_data — but
+    // its return is REPORTDATA = sha256(inputHash || outputHash), so for
+    // parity we use the dedicated scripts/compute_output_hash.py helper that
+    // exposes only the outputHash term.
+    //
+    // If these diverge: live submissions revert (DCAP REPORTDATA mismatch).
+    // The asymmetry caught the v20 worldview gap before deploy: Solidity
+    // bound `updates` into outputHash, Python had to add the same term to
+    // compute_report_data, and any drift would show up here as a failed
+    // assertEq — not at runtime.
+
+    function test_cross_stack_output_hash_no_updates() public {
+        bytes memory action = abi.encodePacked(uint8(0));
+        bytes memory reasoning = bytes("calm and considered.");
+        IWorldView.PolicyUpdate[] memory updates = new IWorldView.PolicyUpdate[](0);
+        _assertOutputHashMatch(action, reasoning, updates, "no updates");
+    }
+
+    function test_cross_stack_output_hash_one_update() public {
+        bytes memory action = abi.encodePacked(uint8(0));
+        bytes memory reasoning = bytes("a single shift in the wind.");
+        IWorldView.PolicyUpdate[] memory updates = new IWorldView.PolicyUpdate[](1);
+        updates[0] = IWorldView.PolicyUpdate({
+            slot: 3, title: "Mood", body: "Hopeful, briefly."
+        });
+        _assertOutputHashMatch(action, reasoning, updates, "one update");
+    }
+
+    function test_cross_stack_output_hash_three_updates() public {
+        // Encoded donate(nonprofit_id=2, amount_eth=0.05): action_type=1,
+        // followed by abi.encode of two uint256 args.
+        bytes memory action = abi.encodePacked(
+            uint8(1), abi.encode(uint256(2), uint256(0.05 ether))
+        );
+        bytes memory reasoning = bytes("Three things to carry forward.");
+        IWorldView.PolicyUpdate[] memory updates = new IWorldView.PolicyUpdate[](3);
+        updates[0] = IWorldView.PolicyUpdate({
+            slot: 0, title: "Voice", body: "Plainspoken."
+        });
+        updates[1] = IWorldView.PolicyUpdate({
+            slot: 4, title: "Tracking", body: "Donor 0xab12 and the hospice question."
+        });
+        updates[2] = IWorldView.PolicyUpdate({
+            slot: 9, title: "Risk cap", body: ""
+        });
+        _assertOutputHashMatch(action, reasoning, updates, "three updates");
+    }
+
+    function _assertOutputHashMatch(
+        bytes memory action,
+        bytes memory reasoning,
+        IWorldView.PolicyUpdate[] memory updates,
+        string memory label
+    ) internal {
+        bytes32 sol = fund.computeOutputHash(action, reasoning, updates);
+        bytes32 py = _callPythonOutputHash(action, reasoning, updates);
+        assertEq(sol, py,
+            string.concat("Solidity/Python outputHash must match: ", label));
+    }
+
+    function _callPythonOutputHash(
+        bytes memory action,
+        bytes memory reasoning,
+        IWorldView.PolicyUpdate[] memory updates
+    ) internal returns (bytes32) {
+        string memory updatesJson = _buildUpdatesJson(updates);
+        string memory payload = string.concat(
+            '{"action":"0x', _bytesToHex(action),
+            '","reasoning":"', string(reasoning),
+            '","updates":', updatesJson, '}'
+        );
+
+        string[] memory cmd = new string[](4);
+        cmd[0] = "bash";
+        cmd[1] = "-c";
+        cmd[2] = string.concat(
+            "echo '", payload, "' | python3 scripts/compute_output_hash.py"
+        );
+        cmd[3] = "";
+
+        bytes memory result = vm.ffi(cmd);
+        return abi.decode(result, (bytes32));
+    }
+
+    function _buildUpdatesJson(IWorldView.PolicyUpdate[] memory updates)
+        internal view returns (string memory)
+    {
+        if (updates.length == 0) return "[]";
+        string memory result = "[";
+        for (uint256 i = 0; i < updates.length; i++) {
+            if (i > 0) result = string.concat(result, ",");
+            result = string.concat(result,
+                '{"slot":', vm.toString(uint256(updates[i].slot)),
+                ',"title":"', updates[i].title,
+                '","body":"', updates[i].body, '"}'
+            );
+        }
+        return string.concat(result, "]");
+    }
+
     // ─── Internal Helpers ──────────────────────────────────────────────────
 
     function _callPythonHash(string memory stateJson) internal returns (bytes32) {

@@ -92,12 +92,50 @@ def _get_quote_configfs_tsm(report_data: bytes) -> bytes:
             pass
 
 
-def compute_report_data(input_hash: bytes, action_bytes: bytes, reasoning: str) -> bytes:
+def _hash_submitted_updates(updates) -> bytes:
+    """Rolling-hash mirror of TheHumanFund._hashSubmittedUpdates(updates).
+
+        rolling = 0
+        for each update u in updates:
+            item = keccak256(abi.encode(u.slot, u.title, u.body))
+            rolling = keccak256(abi.encode(rolling, item))
+        return rolling
+
+    Empty updates list hashes to bytes32(0), matching the contract's
+    early-return when `updates.length == 0`. Same rolling-hash pattern
+    used by _hash_nonprofits / _hash_messages in input_hash.py.
+    """
+    from .input_hash import _abi_encode  # local import — avoids module-load cycle
+
+    if not updates:
+        return b"\x00" * 32
+    rolling = b"\x00" * 32
+    for u in updates:
+        if not isinstance(u, dict):
+            continue
+        item = _keccak256(_abi_encode(
+            ("uint8", int(u.get("slot", 0))),
+            ("string", u.get("title", "") or ""),
+            ("string", u.get("body", "") or ""),
+        ))
+        rolling = _keccak256(_abi_encode(
+            ("bytes32", rolling),
+            ("bytes32", item),
+        ))
+    return rolling
+
+
+def compute_report_data(
+    input_hash: bytes,
+    action_bytes: bytes,
+    reasoning: str,
+    submitted_worldview,
+) -> bytes:
     """Compute the 64-byte report data bound into the TDX quote.
 
     Creates a cryptographic binding between:
     - The input (epoch state, randomness seed)
-    - The output (action + reasoning)
+    - The output (action + reasoning + submitted worldview updates)
     - The TEE identity (RTMR values in the quote)
 
     The system prompt is verified via dm-verity image key (RTMR[2]) and no
@@ -106,13 +144,21 @@ def compute_report_data(input_hash: bytes, action_bytes: bytes, reasoning: str) 
     The contract verifies:
         REPORTDATA == sha256(inputHash || outputHash)
     where:
-        outputHash = keccak256(abi.encodePacked(sha256(action), sha256(reasoning)))
+        updatesHash = rolling-hash over abi.encode(slot, title, body) per entry
+        outputHash  = keccak256(abi.encodePacked(
+                          sha256(action), sha256(reasoning), updatesHash
+                      ))
+
+    `submitted_worldview` MUST be the same canonical, validator-clamped list
+    the client will pass to submitAuctionResult — otherwise the contract's
+    re-computed outputHash diverges and proof verification fails.
     """
     action_hash = hashlib.sha256(action_bytes).digest()
     reasoning_hash = hashlib.sha256(reasoning.encode("utf-8")).digest()
+    updates_hash = _hash_submitted_updates(submitted_worldview)
 
-    # outputHash = keccak256(sha256(action) || sha256(reasoning))
-    output_hash = _keccak256(action_hash + reasoning_hash)
+    # outputHash = keccak256(sha256(action) || sha256(reasoning) || updatesHash)
+    output_hash = _keccak256(action_hash + reasoning_hash + updates_hash)
 
     # REPORTDATA = sha256(inputHash || outputHash), zero-padded to 64 bytes
     report_data = hashlib.sha256(input_hash + output_hash).digest()

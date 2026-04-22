@@ -54,6 +54,18 @@ logger = logging.getLogger(__name__)
 
 ZERO_ADDR = "0x" + "0" * 40
 
+# Map from action_bytes[0] to a human-readable name. Mirrors the contract's
+# action-type byte encoding. Used for notifications — derived from the
+# attested `action_bytes` rather than the unattested `tee_result["action"]`
+# JSON, so a compromised client can't substitute a misleading label.
+_ACTION_NAMES = {
+    0: "do_nothing",
+    1: "donate",
+    2: "set_commission_rate",
+    3: "invest",
+    4: "withdraw",
+}
+
 # Retry schedule: (strategy, min_seconds_remaining) per attempt index.
 # "use_cached" resubmits the same TEE result (different tx, same quote).
 # "rerun_tee" discards the cached result and boots a fresh TDX VM for a
@@ -493,12 +505,13 @@ def _submit_result(chain, config, tee_result, auction, saved, state_dir, ntfy):
     reasoning_bytes = tee_result["reasoning"].encode("utf-8")
     attestation_bytes = bytes.fromhex(tee_result["attestation_quote"].replace("0x", ""))
 
-    # Extract optional worldview updates — now a list of {slot, title, body}
-    # sidecar entries (up to 3 per epoch). The enclave validator has already
-    # clamped slot range, title/body length, and list size; this client-side
-    # extraction is just shape normalization for web3.py encoding.
-    action_json = tee_result.get("action", {})
-    raw_wv = action_json.get("worldview") or action_json.get("params", {}).get("worldview")
+    # Worldview updates come from the enclave's canonical, pre-validated
+    # `submitted_worldview` field — the SAME bytes the enclave hashed into
+    # REPORTDATA. Reading any other source (e.g. tee_result["action"]
+    # ["worldview"]) would let a compromised client substitute updates the
+    # enclave never produced; the static analyzer in
+    # prover/enclave/test_output_coverage.py enforces this invariant.
+    raw_wv = tee_result.get("submitted_worldview", [])
     worldview_updates = []
     if isinstance(raw_wv, list):
         for entry in raw_wv:
@@ -511,20 +524,15 @@ def _submit_result(chain, config, tee_result, auction, saved, state_dir, ntfy):
             if slot < 0 or slot > 9:
                 continue
             title = str(entry.get("title", ""))[:64]
-            body = str(entry.get("body", entry.get("policy", "")))[:280]
+            body = str(entry.get("body", ""))[:280]
             worldview_updates.append((slot, title, body))
-        # Belt-and-suspenders: contract caps at 3.
+        # Belt-and-suspenders: contract caps at 3. Enclave already clamped.
         worldview_updates = worldview_updates[:3]
-    elif isinstance(raw_wv, dict):
-        # Legacy single-object shape — wrap defensively.
-        try:
-            slot = int(raw_wv.get("slot"))
-            if 0 <= slot <= 9:
-                title = str(raw_wv.get("title", ""))[:64]
-                body = str(raw_wv.get("body", raw_wv.get("policy", "")))[:280]
-                worldview_updates.append((slot, title, body))
-        except (TypeError, ValueError):
-            pass
+
+    # Action name for notification — derive from the FIRST byte of action_bytes
+    # rather than tee_result["action"], so notifications can't be swayed by a
+    # compromised client substituting the action JSON. action_bytes IS attested.
+    action_name = _ACTION_NAMES.get(action_bytes[0], "?") if action_bytes else "?"
 
     verifier_id = config["verifier_id"]
     logger.info("Submitting result (verifier=%d, worldview_updates=%d, attempt=%d/%d)...",
@@ -549,7 +557,7 @@ def _submit_result(chain, config, tee_result, auction, saved, state_dir, ntfy):
         logger.info("Recorded cost (success): gas=%d, vm=%.1f min", gas_used, vm_minutes)
 
         clear_state(state_dir)
-        notify_result_submitted(ntfy, epoch, action_json.get("action", "?"))
+        notify_result_submitted(ntfy, epoch, action_name)
     except SubmissionError as e:
         saved["submission_attempts"] = attempts + 1
         if not e.should_retry or saved["submission_attempts"] >= MAX_SUBMIT_RETRIES:
