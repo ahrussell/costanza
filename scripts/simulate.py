@@ -1057,8 +1057,7 @@ def apply_action(state, action_json):
         changes.append(f"  Commission: {old_rate/100:.1f}% -> {rate/100:.1f}%")
 
     elif action == "invest":
-        from prover.enclave.enclave_runner import _parse_protocol_id
-        pid = _parse_protocol_id(params)
+        pid = int(params.get("protocol_id", 1))
         amount_str = str(params.get("amount_eth", params.get("amount", "0.1")))
         for suffix in [" ETH", " eth", "ETH", "eth"]:
             amount_str = amount_str.replace(suffix, "")
@@ -1082,8 +1081,7 @@ def apply_action(state, action_json):
                 break
 
     elif action == "withdraw":
-        from prover.enclave.enclave_runner import _parse_protocol_id
-        pid = _parse_protocol_id(params)
+        pid = int(params.get("protocol_id", 1))
         amount_str = str(params.get("amount_eth", params.get("amount", "0.1")))
         for suffix in [" ETH", " eth", "ETH", "eth"]:
             amount_str = amount_str.replace(suffix, "")
