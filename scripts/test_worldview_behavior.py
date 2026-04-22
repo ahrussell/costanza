@@ -81,7 +81,7 @@ DEFAULT_ZONES = [
     "us-central1-c",
     "us-central1-f",
 ]
-DEFAULT_IMAGE_PATTERN = "humanfund-exp-snapshot-*"
+DEFAULT_IMAGE_PATTERN = "humanfund-hermes-*"
 DEFAULT_VM_NAME = "behavior-h100"
 DEFAULT_MACHINE_TYPE = "a3-highgpu-1g"
 
@@ -535,12 +535,41 @@ def wait_for_ssh(vm: str, zone: str, project: Optional[str], timeout: int = 600)
     raise RuntimeError(f"SSH did not come up within {timeout}s")
 
 
+def _llama_health_via_ssh(
+    vm: str, zone: str, project: Optional[str], port: int,
+) -> bool:
+    """One-shot /health check over SSH. True iff llama-server is already up."""
+    check = (
+        f"curl -fsS http://127.0.0.1:{port}/health 2>/dev/null "
+        f"&& echo OK || echo WAIT"
+    )
+    cmd = _ssh_base(vm, zone, project) + ["--command", check]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        return "OK" in r.stdout
+    except subprocess.TimeoutExpired:
+        return False
+
+
 def start_llama_server(
     vm: str, zone: str, project: Optional[str],
     model_path: str = "/models/model.gguf",
     port: int = 8080,
+    force_restart: bool = False,
 ) -> None:
-    """Init NVIDIA CC, start llama-server in the background, wait for /health."""
+    """Idempotent: if llama-server is already healthy on `port`, do nothing.
+    Otherwise init NVIDIA CC, kill any stale process, start fresh, wait for
+    /health.
+
+    The idempotency matters because re-running the orchestrator with
+    --reuse-vm would otherwise reload the 58 GB GGUF every time (5+ minute
+    penalty per attempt). Pass `force_restart=True` to bypass the check
+    (e.g., after editing the system prompt that's baked into the image).
+    """
+    if not force_restart and _llama_health_via_ssh(vm, zone, project, port):
+        logger.info("llama-server already healthy on %s — reusing existing process", vm)
+        return
+
     # Init confidential-compute on the GPU. Without this, llama silently falls
     # back to CPU (~100x slower).
     setup_cmd = (
@@ -563,13 +592,7 @@ def start_llama_server(
     # Poll /health via SSH.
     deadline = time.time() + 600
     while time.time() < deadline:
-        check = (
-            f"curl -fsS http://127.0.0.1:{port}/health 2>/dev/null "
-            f"&& echo OK || echo WAIT"
-        )
-        cmd = _ssh_base(vm, zone, project) + ["--command", check]
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        if "OK" in r.stdout:
+        if _llama_health_via_ssh(vm, zone, project, port):
             logger.info("llama-server /health ready on %s", vm)
             return
         time.sleep(10)
