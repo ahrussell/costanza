@@ -17,10 +17,10 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 - **AuctionManager**: [`0x03a6955f296C927FF71c91cf1Fd9D4F4c71c034c`](https://basescan.org/address/0x03a6955f296C927FF71c91cf1Fd9D4F4c71c034c)
 - **TdxVerifier**: [`0x1dfE62A7FCD128E302bd300D754b001Baf63A57D`](https://basescan.org/address/0x1dfE62A7FCD128E302bd300D754b001Baf63A57D)
 - **InvestmentManager**: [`0xD5C58523723F9ba367202A0e29c80358807b02D3`](https://basescan.org/address/0xD5C58523723F9ba367202A0e29c80358807b02D3)
-- **WorldView**: [`0x1370f47C7Ae6f6edF850bfF74c86BF591D7Ad3ae`](https://basescan.org/address/0x1370f47C7Ae6f6edF850bfF74c86BF591D7Ad3ae)
+- **AgentMemory**: [`0x1370f47C7Ae6f6edF850bfF74c86BF591D7Ad3ae`](https://basescan.org/address/0x1370f47C7Ae6f6edF850bfF74c86BF591D7Ad3ae)
 - **Owner**: `0x495fB7ddD383be8030EFC93324Ff078f173eAb2A` (EOA, will transfer to Safe `0x6dF6f527E193fAf1334c26A6d811fAd62E79E5Db`)
 - **Epoch timing**: 90-min epochs (20m commit, 20m reveal, 50m execution)
-- **351 forge tests + 85 Python tests pass** (core + auction + TDX verifier + investment + worldview + messages + cross-stack + system invariants + enclave inference + voice anchors)
+- **351 forge tests + 85 Python tests pass** (core + auction + TDX verifier + investment + memory + messages + cross-stack + system invariants + enclave inference + voice anchors)
 - GPU image: `humanfund-dmverity-hardened-v11`, key: `0xf23661d5f5a506472feb7c5fff267eb0b0d80caf5a87c0c831292e1f4809d614`
 - GCP TDX FMSPC `00806f050000` registered in Automata DCAP Dashboard
 - H100 on-demand quota is 0; all GPU VMs use `--provisioning-model=SPOT`
@@ -39,7 +39,7 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 Responsibility split — two contracts:
 
 - **`TheHumanFund`** owns wall-clock scheduling (window durations, anchor,
-  `_advanceToNow` driver), treasury, worldview, investments, verification,
+  `_advanceToNow` driver), treasury, memory, investments, verification,
   the input-hash chain, salt accumulator, and seed capture. Main contract
   is the sole authorized caller of AM's state-transition methods.
 - **`AuctionManager`** is a timing-agnostic commit-reveal auction primitive
@@ -169,7 +169,7 @@ thehumanfund/
 │   ├── TheHumanFund.sol         # Main smart contract
 │   ├── TdxVerifier.sol          # TDX attestation verifier
 │   ├── InvestmentManager.sol    # DeFi portfolio manager
-│   ├── WorldView.sol            # Agent worldview — 10 persistent slots (each {title, body})
+│   ├── AgentMemory.sol          # Agent memory — 10 persistent slots (each {title, body})
 │   ├── interfaces/
 │   │   ├── IAggregatorV3.sol            # Chainlink V3 price feed interface
 │   │   ├── IAuctionManager.sol          # Auction manager interface
@@ -179,7 +179,7 @@ thehumanfund/
 │   │   ├── IProofVerifier.sol           # Proof verifier interface
 │   │   ├── IERC4626.sol                 # Minimal ERC-4626 vault interface
 │   │   ├── IProtocolAdapter.sol         # Protocol adapter interface
-│   │   └── IWorldView.sol               # WorldView interface
+│   │   └── IAgentMemory.sol             # AgentMemory interface
 │   └── adapters/                # DeFi protocol adapters
 │       ├── AaveV3WETHAdapter.sol    # Aave V3 ETH lending
 │       ├── AaveV3USDCAdapter.sol    # Aave V3 USDC lending (with ETH swap)
@@ -196,7 +196,7 @@ thehumanfund/
 │   ├── TdxVerifier.t.sol        # TDX verifier tests
 │   ├── CrossStackHash.t.sol     # Cross-language hash compatibility tests
 │   ├── InvestmentManager.t.sol  # Investment tests
-│   ├── WorldView.t.sol          # Worldview tests
+│   ├── AgentMemory.t.sol        # Memory tests
 │   ├── Messages.t.sol           # Donor messages tests + visibility-boundary invariants
 │   └── helpers/
 │       ├── EpochTest.sol        # Shared speedrunEpoch driver
@@ -278,7 +278,7 @@ thehumanfund/
   - `syncPhase()` — permissionless, catches the contract up to wall-clock.
   - `commit(commitHash) payable` — auto-syncs, forwards to `am.commit(msg.sender, hash)` with bond = `currentBond()`.
   - `reveal(bidAmount, salt)` — auto-syncs, forwards to `am.reveal(msg.sender, bid, salt)`; AM enforces `bid <= maxBid`; main XORs salt into `epochSaltAccumulator[epoch]`.
-  - `submitAuctionResult(action, reasoning, proof, verifierId, PolicyUpdate[] updates)` — auto-syncs, TDX-verifies proof, calls `am.settleExecution{value: bounty}()` which pays bond + bounty to winner in one transfer. Executes action best-effort. `updates` is an array of up to 3 `{slot, title, body}` worldview sidecar updates (contract truncates; each entry wrapped in its own try/catch).
+  - `submitAuctionResult(action, reasoning, proof, verifierId, MemoryUpdate[] updates)` — auto-syncs, TDX-verifies proof, calls `am.settleExecution{value: bounty}()` which pays bond + bounty to winner in one transfer. Executes action best-effort. `updates` is an array of up to 3 `{slot, title, body}` memory sidecar updates (contract truncates; each entry wrapped in its own try/catch).
   - `nextPhase()` owner-only — syncs first, then advances exactly one state-machine step (via `am.nextPhase()` intra-epoch, or `_closeExecution` + `_openAuction` cross-epoch).
   - `resetAuction(cw, rw, xw)` owner-only — syncs first, calls `am.abortAuction()` (refunds all bonds), updates main's timing, advances one epoch, re-opens.
 - **Escalation counters (both live in main, update at `_closeExecution`)**:
@@ -298,7 +298,7 @@ thehumanfund/
 - 3 = invest(protocol_id, amount) — delegate to InvestmentManager
 - 4 = withdraw(protocol_id, amount) — delegate to InvestmentManager
 
-Worldview updates happen via a sidecar array (`PolicyUpdate[] updates`) on `submitAuctionResult`, not via an action type. Up to 3 updates per epoch; duplicates apply in order (last-wins). Both the action and the sidecar are best-effort: as long as the TDX proof verifies, the winner gets bond refund + bounty immediately; a malformed action emits `ActionRejected` and individual invalid slots are silently ignored, but neither reverts the submission.
+Memory updates happen via a sidecar array (`MemoryUpdate[] updates`) on `submitAuctionResult`, not via an action type. Up to 3 updates per epoch; duplicates apply in order (last-wins). Both the action and the sidecar are best-effort: as long as the TDX proof verifies, the winner gets bond refund + bounty immediately; a malformed action emits `ActionRejected` and individual invalid slots are silently ignored, but neither reverts the submission.
 
 ## Prover Client
 
@@ -383,7 +383,7 @@ NTFY_CHANNEL=my-prover         # Optional: ntfy.sh channel
 
 ## Agent Action Space
 
-The agent outputs exactly one action per epoch as JSON, with an optional worldview update:
+The agent outputs exactly one action per epoch as JSON, with an optional memory update:
 
 | Action | Parameters | Bounds |
 |---|---|---|
@@ -393,7 +393,7 @@ The agent outputs exactly one action per epoch as JSON, with an optional worldvi
 | `withdraw` | `protocol_id` (1-8), `amount_eth` | up to full position value |
 | `do_nothing` | none | -- |
 
-Worldview updates happen alongside the action — they don't consume it. Each epoch the model can update up to 3 slots; each slot holds a model-authored `{title, body}` pair (title ≤ 64 bytes, body ≤ 280 bytes). All 10 slots (0-9) are writable; the model owns the category taxonomy by writing its own titles. Duplicate slot entries in the same batch apply in order (last-wins).
+Memory updates happen alongside the action — they don't consume it. Each epoch the model can update up to 3 slots; each slot holds a model-authored `{title, body}` pair (title ≤ 64 bytes, body ≤ 280 bytes). All 10 slots (0-9) are writable; the model owns the category taxonomy by writing its own titles. Duplicate slot entries in the same batch apply in order (last-wins).
 
 Output format (v19 is 2-pass — diary then grammar-constrained action JSON, no scratchpad):
 ```
@@ -403,7 +403,7 @@ Output format (v19 is 2-pass — diary then grammar-constrained action JSON, no 
 {"action": "...", "params": {...}}
 ```
 
-With optional worldview update:
+With optional memory update:
 ```
-{"action": "...", "params": {...}, "worldview": [{"slot": 3, "title": "Current mood", "body": "Hopeful. The drought is ending."}]}
+{"action": "...", "params": {...}, "memory": [{"slot": 3, "title": "Current mood", "body": "Hopeful. The drought is ending."}]}
 ```

@@ -748,8 +748,8 @@
     pointer-events: none;
   }
 
-  /* ── Worldview diff ──────────────────────────────── */
-  .wv-diff {
+  /* ── Memory diff ─────────────────────────────────── */
+  .mem-diff {
     margin-top: 12px;
     padding: 10px 14px;
     background: var(--surface2);
@@ -758,16 +758,16 @@
     border-radius: var(--radius-xs);
     font-size: 12px;
   }
-  .wv-diff-label {
+  .mem-diff-label {
     font-size: 10px; font-weight: 500; text-transform: uppercase;
     letter-spacing: 0.7px; color: var(--purple); margin-bottom: 6px;
   }
-  .wv-diff-slot {
+  .mem-diff-slot {
     font-family: var(--mono); font-size: 11px; color: var(--text-dim);
     margin-bottom: 4px;
   }
-  .wv-diff-from { color: var(--red); text-decoration: line-through; }
-  .wv-diff-to { color: var(--green); }
+  .mem-diff-from { color: var(--red); text-decoration: line-through; }
+  .mem-diff-to { color: var(--green); }
 
   /* ── Donate forms ────────────────────────────────── */
   .form-group { margin-bottom: 16px; }
@@ -1074,22 +1074,22 @@
     <div class="section-label">Identity</div>
     <h2 class="section-title">Costanza's World</h2>
     <p style="font-size:13px;color:var(--text-secondary);line-height:1.7;margin-bottom:28px;max-width:100%;">
-      Each epoch, Costanza reasons about his world to decide on his next action. His world includes the current status of his treasury, his recent diary entries, a worldview that he can update, and messages from donors.
+      Each epoch, Costanza reasons about his world to decide on his next action. His world includes the current status of his treasury, his recent diary entries, his memory that he can update, and messages from donors.
     </p>
 
-    <!-- Row 1: Age/Lifespan + Worldview -->
+    <!-- Row 1: Age/Lifespan + Memory -->
     <div class="grid-2" style="margin-bottom:16px;">
       <div class="card">
         <div class="card-header">Age &amp; Lifespan</div>
         <div id="world-age"><div class="loading">Loading</div></div>
       </div>
 
-      <div class="card" id="worldview-card" style="cursor:pointer;" onclick="openModal('worldview')">
+      <div class="card" id="memory-card" style="cursor:pointer;" onclick="openModal('memory')">
         <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0;">
-          <span>Worldview <span class="badge badge-dim" id="worldview-badge" style="margin-left:6px;">10 slots</span></span>
-          <button class="hero-diary-toggle wc-toggle" onclick="event.stopPropagation();openModal('worldview')">↗</button>
+          <span>Memory <span class="badge badge-dim" id="memory-badge" style="margin-left:6px;">10 slots</span></span>
+          <button class="hero-diary-toggle wc-toggle" onclick="event.stopPropagation();openModal('memory')">↗</button>
         </div>
-        <div id="worldview-preview" style="margin-top:12px;">
+        <div id="memory-preview" style="margin-top:12px;">
           <div class="loading">Loading</div>
         </div>
       </div>
@@ -1168,7 +1168,7 @@
         <div id="diary-viewer-entry" style="font-size:13px;line-height:1.8;white-space:pre-wrap;word-wrap:break-word;max-height:400px;overflow-y:auto;">
         </div>
         <div id="diary-viewer-action" style="margin-top:12px;font-family:var(--mono);font-size:12px;color:var(--text-secondary);padding:8px 12px;background:var(--bg);border-radius:var(--radius-xs);"></div>
-        <div id="diary-viewer-worldview"></div>
+        <div id="diary-viewer-memory"></div>
       </div>
     </div>
   </div>
@@ -1185,12 +1185,12 @@
   </div>
 </div>
 
-<!-- WORLDVIEW MODAL -->
-<div class="modal-overlay" id="modal-worldview" onclick="closeModal(event, 'worldview')">
+<!-- MEMORY MODAL -->
+<div class="modal-overlay" id="modal-memory" onclick="closeModal(event, 'memory')">
   <div class="modal modal-wide" onclick="event.stopPropagation()">
-    <button class="modal-close" onclick="document.getElementById('modal-worldview').classList.remove('open')">&times;</button>
-    <h3>Worldview <span class="badge badge-dim" style="margin-left:6px;font-size:13px;font-weight:400;" id="worldview-badge-modal"></span></h3>
-    <div id="worldview-full" style="max-height:70vh;overflow-y:auto;"></div>
+    <button class="modal-close" onclick="document.getElementById('modal-memory').classList.remove('open')">&times;</button>
+    <h3>Memory <span class="badge badge-dim" style="margin-left:6px;font-size:13px;font-weight:400;" id="memory-badge-modal"></span></h3>
+    <div id="memory-full" style="max-height:70vh;overflow-y:auto;"></div>
   </div>
 </div>
 
@@ -1333,14 +1333,14 @@ const FUND_ABI = [
   "function messages(uint256) view returns (address sender, uint256 amount, string text, uint256 epoch)",
   "function getEpochSnapshot(uint256 epoch) view returns (uint256 epoch_, uint256 balance, uint256 commissionRateBps, uint256 maxBid, uint256 effectiveMaxBid, uint256 consecutiveMissedEpochs, uint256 lastDonationEpoch, uint256 lastCommissionChangeEpoch, uint256 totalInflows, uint256 totalDonatedToNonprofits, uint256 totalCommissionsPaid, uint256 totalBountiesPaid, uint256 currentEpochInflow, uint256 currentEpochDonationCount, uint256 epochEthUsdPrice, uint256 epochDuration, uint256 messageHead, uint256 messageCount, uint256 nonprofitCount)",
   // Linked contracts
-  "function worldView() view returns (address)",
+  "function agentMemory() view returns (address)",
   "function investmentManager() view returns (address)",
   "function auctionManager() view returns (address)",
   // User-facing write functions
   "function donate(uint256 referralCode) payable",
   "function donateWithMessage(uint256 referralCode, string calldata message) payable",
   "function mintReferralCode() returns (uint256)",
-  // For calldata decoding of worldview updates (v20+: array sidecar,
+  // For calldata decoding of memory updates (v20+: array sidecar,
   // each entry is a {slot, title, body} struct; up to 3 per epoch).
   "function submitAuctionResult(bytes calldata action, bytes calldata reasoning, bytes calldata proof, uint8 verifierId, tuple(uint8 slot, string title, string body)[] updates)",
   // Events
@@ -1366,8 +1366,8 @@ const INVESTMENT_ABI = [
   "function getPosition(uint256 protocolId) view returns (uint256 depositedEth, uint256 shares, uint256 currentValue, string protocolName, uint8 riskTier, uint16 expectedApyBps, bool active)",
 ];
 
-const WORLDVIEW_ABI = [
-  "function getPolicies() view returns (tuple(string title, string body)[10])",
+const AGENT_MEMORY_ABI = [
+  "function getMemory() view returns (tuple(string title, string body)[10])",
 ];
 
 const AUCTION_ABI = [
@@ -1543,7 +1543,7 @@ function projectAuctionState({
 // GLOBALS
 // ═══════════════════════════════════════════════════════
 
-let provider, fund, investmentMgr, worldViewContract, auctionMgr;
+let provider, fund, investmentMgr, agentMemoryContract, auctionMgr;
 let treasuryChart = null;
 let inflowChart = null;
 let diaryEntries = [];
@@ -1835,10 +1835,10 @@ ACTIONS (choose exactly one per epoch):
 4. withdraw(protocol_id, amount_eth) \u2014 Pull ETH from DeFi
 5. do_nothing \u2014 Take no action this epoch`;
 
-// Worldview (v20+): 10 slots, each a {title, body} pair. Titles are
+// Memory (v20+): 10 slots, each a {title, body} pair. Titles are
 // model-authored — there's no fixed SLOT_NAMES table. The frontend
-// reads titles live from the chain via WorldView.getPolicies().
-const WORLDVIEW_SLOT_COUNT = 10;
+// reads titles live from the chain via AgentMemory.getMemory().
+const MEMORY_SLOT_COUNT = 10;
 
 // Freeze flag definitions
 const FREEZE_FLAGS = [
@@ -2135,32 +2135,32 @@ function renderDiaryViewer() {
   let actionHtml = `<span class="badge ${actionBadgeClass(entry.action.type, entry.rejected)}" style="font-size:10px;">${entry.action.label}</span> <span style="${detailStyle}">${entry.action.detail}</span>${entry.bountyPaid > 0n ? ' | Bounty: ' + fmtEthUsdInline(entry.bountyPaid) : ''}`;
   document.getElementById('diary-viewer-action').innerHTML = actionHtml;
 
-  // Worldview diffs (if any) — array of up to 3 per epoch
-  const wvEl = document.getElementById('diary-viewer-worldview');
-  const updates = Array.isArray(entry.worldviewUpdates) ? entry.worldviewUpdates : [];
+  // Memory diffs (if any) — array of up to 3 per epoch
+  const memEl = document.getElementById('diary-viewer-memory');
+  const updates = Array.isArray(entry.memoryUpdates) ? entry.memoryUpdates : [];
   if (updates.length > 0) {
     const blocks = updates.map(wv => {
       const fromTitleEmpty = !wv.fromTitle;
       const fromBodyEmpty = !wv.fromBody;
       const fromHtml = (fromTitleEmpty && fromBodyEmpty)
         ? `<span style="color:var(--text-dim);font-style:italic;">(empty)</span><br>`
-        : `<span class="wv-diff-from">${escapeHtml(wv.fromTitle || '(untitled)')}: ${escapeHtml(wv.fromBody || '(empty body)')}</span><br>`;
+        : `<span class="mem-diff-from">${escapeHtml(wv.fromTitle || '(untitled)')}: ${escapeHtml(wv.fromBody || '(empty body)')}</span><br>`;
       const toTitleEmpty = !wv.toTitle;
       const toBodyEmpty = !wv.toBody;
       const toHtml = (toTitleEmpty && toBodyEmpty)
-        ? `<span class="wv-diff-to" style="font-style:italic;">(cleared)</span>`
-        : `<span class="wv-diff-to">${escapeHtml(wv.toTitle || '(untitled)')}: ${escapeHtml(wv.toBody || '(empty body)')}</span>`;
+        ? `<span class="mem-diff-to" style="font-style:italic;">(cleared)</span>`
+        : `<span class="mem-diff-to">${escapeHtml(wv.toTitle || '(untitled)')}: ${escapeHtml(wv.toBody || '(empty body)')}</span>`;
       return `
-        <div class="wv-diff">
-          <div class="wv-diff-slot">slot [${wv.slot}]</div>
+        <div class="mem-diff">
+          <div class="mem-diff-slot">slot [${wv.slot}]</div>
           ${fromHtml}
           ${toHtml}
         </div>`;
     }).join('');
-    const label = updates.length === 1 ? 'Worldview update' : `Worldview updates (${updates.length})`;
-    wvEl.innerHTML = `<div class="wv-diff-label">${label}</div>${blocks}`;
+    const label = updates.length === 1 ? 'Memory update' : `Memory updates (${updates.length})`;
+    memEl.innerHTML = `<div class="mem-diff-label">${label}</div>${blocks}`;
   } else {
-    wvEl.innerHTML = '';
+    memEl.innerHTML = '';
   }
 
   // Load messages read during this epoch from the frozen snapshot
@@ -2278,14 +2278,14 @@ async function loadMessagesPage(page) {
 }
 
 // ═══════════════════════════════════════════════════════
-// WORLDVIEW HISTORY
+// MEMORY HISTORY
 // ═══════════════════════════════════════════════════════
 
-async function loadWorldviewHistory() {
+async function loadMemoryHistory() {
   const entriesWithTx = diaryEntries.filter(e => e.txHash);
   if (entriesWithTx.length === 0) return;
 
-  // Fetch all tx calldata in parallel, extract the worldview updates array
+  // Fetch all tx calldata in parallel, extract the memory updates array
   // (v20+: up to 3 {slot, title, body} entries per submitAuctionResult call).
   const perEpoch = [];
   await Promise.allSettled(
@@ -2315,13 +2315,13 @@ async function loadWorldviewHistory() {
   // Sort chronologically so we can reconstruct "from" values correctly
   perEpoch.sort((a, b) => a.epoch - b.epoch);
 
-  // Replay worldview state from empty forward — 10 slots, each {title, body}.
-  const state = Array.from({ length: WORLDVIEW_SLOT_COUNT },
+  // Replay memory state from empty forward — 10 slots, each {title, body}.
+  const state = Array.from({ length: MEMORY_SLOT_COUNT },
                            () => ({ title: '', body: '' }));
   for (const { epoch, updates } of perEpoch) {
     const entry = diaryEntries.find(e => e.epoch === epoch);
     if (!entry) continue;
-    entry.worldviewUpdates = updates.map(u => {
+    entry.memoryUpdates = updates.map(u => {
       const prev = state[u.slot] || { title: '', body: '' };
       const diff = {
         slot: u.slot,
@@ -2331,7 +2331,7 @@ async function loadWorldviewHistory() {
         toBody: u.body,
       };
       // Apply update (contract applies in array order — last-wins for dup slot).
-      if (u.slot >= 0 && u.slot < WORLDVIEW_SLOT_COUNT) {
+      if (u.slot >= 0 && u.slot < MEMORY_SLOT_COUNT) {
         state[u.slot] = { title: u.title, body: u.body };
       }
       return diff;
@@ -2499,7 +2499,7 @@ async function loadAll() {
           treasuryAfter: rec.treasuryAfter,
           bountyPaid: rec.bountyPaid,
           txHash: diaryEventsByEpoch[e] || null,
-          worldviewUpdates: [],
+          memoryUpdates: [],
           rejected: rejectReason !== undefined,
           rejectReason: rejectReason,
         });
@@ -2515,8 +2515,8 @@ async function loadAll() {
     }
   }
 
-  // Load worldview history (from/to diffs) in parallel
-  await loadWorldviewHistory();
+  // Load memory history (from/to diffs) in parallel
+  await loadMemoryHistory();
 
   // Store ETH price for modal USD estimate
   lastEthUsdPrice = ethUsdPrice;
@@ -2771,12 +2771,12 @@ async function loadAll() {
   }
   document.getElementById('world-age').innerHTML = ageHtml;
 
-  // Worldview card (v20+: 10 slots, each {title, body}, model-authored titles)
+  // Memory card (v20+: 10 slots, each {title, body}, model-authored titles)
   try {
-    const wvAddr = await fund.worldView();
-    if (wvAddr && wvAddr !== '0x0000000000000000000000000000000000000000') {
-      worldViewContract = new ethers.Contract(wvAddr, WORLDVIEW_ABI, provider);
-      const raw = await worldViewContract.getPolicies();
+    const memAddr = await fund.agentMemory();
+    if (memAddr && memAddr !== '0x0000000000000000000000000000000000000000') {
+      agentMemoryContract = new ethers.Contract(memAddr, AGENT_MEMORY_ABI, provider);
+      const raw = await agentMemoryContract.getMemory();
       // ethers v6 returns tuple[] as arrays of tuple-like Result objects —
       // index both by name and by position for resilience.
       const slots = Array.from(raw).map((p, i) => ({
@@ -2785,11 +2785,11 @@ async function loadAll() {
         body: String(p.body ?? p[1] ?? ''),
       }));
       const active = slots.filter(s => s.title.length > 0 || s.body.length > 0);
-      const wvBadgeText = `${active.length}/${WORLDVIEW_SLOT_COUNT} active`;
-      document.getElementById('worldview-badge').textContent = wvBadgeText;
-      document.getElementById('worldview-badge-modal').textContent = wvBadgeText;
+      const memBadgeText = `${active.length}/${MEMORY_SLOT_COUNT} active`;
+      document.getElementById('memory-badge').textContent = memBadgeText;
+      document.getElementById('memory-badge-modal').textContent = memBadgeText;
       // Preview: description + a single populated slot picked at random
-      let previewHtml = '<div style="font-size:12px;color:var(--text-secondary);line-height:1.5;margin-bottom:10px;">Costanza can update his worldview based on what he learns each epoch. Titles are his &mdash; he names each slot as he uses it. This acts as his long-term memory.</div>';
+      let previewHtml = '<div style="font-size:12px;color:var(--text-secondary);line-height:1.5;margin-bottom:10px;">Costanza can update his memory based on what he learns each epoch. Titles are his &mdash; he names each slot as he uses it. This acts as his long-term memory.</div>';
       if (active.length > 0) {
         const pick = active[Math.floor(Math.random() * active.length)];
         previewHtml += `
@@ -2797,9 +2797,9 @@ async function loadAll() {
           <div style="font-size:12px;color:var(--text-secondary);line-height:1.5;font-style:italic;">${escapeHtml(pick.body || '(empty body)')}</div>
         `;
       }
-      document.getElementById('worldview-preview').innerHTML = previewHtml;
+      document.getElementById('memory-preview').innerHTML = previewHtml;
       // Full view — render all 10 slots
-      document.getElementById('worldview-full').innerHTML = slots.map(s => `
+      document.getElementById('memory-full').innerHTML = slots.map(s => `
         <div class="policy-slot">
           <span class="policy-idx">[${s.idx}]</span>
           <div>
@@ -2809,10 +2809,10 @@ async function loadAll() {
         </div>
       `).join('');
     } else {
-      document.getElementById('worldview-preview').innerHTML = '<div style="color:var(--text-dim);">WorldView not linked</div>';
+      document.getElementById('memory-preview').innerHTML = '<div style="color:var(--text-dim);">AgentMemory not linked</div>';
     }
   } catch {
-    document.getElementById('worldview-preview').innerHTML = '<div style="color:var(--text-dim);">Could not load</div>';
+    document.getElementById('memory-preview').innerHTML = '<div style="color:var(--text-dim);">Could not load</div>';
   }
 
   // Recent messages (last 5, regardless of read status)
