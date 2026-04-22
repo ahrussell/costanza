@@ -5,7 +5,7 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 ## Project Overview
 
 - **Smart contract** (Solidity, Base L2): Treasury, referral system, epoch actions, reverse auction, TEE attestation, diary events
-- **Agent inference**: DeepSeek R1 Distill Llama 70B (Q4_K_M, 42.5GB GGUF) via llama.cpp on GCP TDX H100
+- **Agent inference**: Hermes 4 70B (Q6_K, ~58 GB split GGUF, 2 parts) via llama.cpp on GCP TDX H100
 - **Prover client** (`prover/client/`): Cron-based auction prover — monitors phases, bids, orchestrates GCP TEE VMs
 - **TEE enclave** (`prover/enclave/`): One-shot Python program + llama-server running directly on full dm-verity rootfs (no Docker, no SSH). Input via GCP metadata, output via serial console
 - **Frontend** (`frontend/`): Diary viewer, treasury dashboard, donation/referral interface
@@ -20,7 +20,7 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 - **WorldView**: [`0x1370f47C7Ae6f6edF850bfF74c86BF591D7Ad3ae`](https://basescan.org/address/0x1370f47C7Ae6f6edF850bfF74c86BF591D7Ad3ae)
 - **Owner**: `0x495fB7ddD383be8030EFC93324Ff078f173eAb2A` (EOA, will transfer to Safe `0x6dF6f527E193fAf1334c26A6d811fAd62E79E5Db`)
 - **Epoch timing**: 90-min epochs (20m commit, 20m reveal, 50m execution)
-- **302 tests pass** (core + auction + TDX verifier + investment + worldview + messages + cross-stack + system invariants)
+- **351 forge tests + 85 Python tests pass** (core + auction + TDX verifier + investment + worldview + messages + cross-stack + system invariants + enclave inference + voice anchors)
 - GPU image: `humanfund-dmverity-hardened-v11`, key: `0xf23661d5f5a506472feb7c5fff267eb0b0d80caf5a87c0c831292e1f4809d614`
 - GCP TDX FMSPC `00806f050000` registered in Automata DCAP Dashboard
 - H100 on-demand quota is 0; all GPU VMs use `--provisioning-model=SPOT`
@@ -150,7 +150,7 @@ Check actual gas used via `cast send` or test transactions and update the consta
 ## Tech Stack
 
 - **Chain**: Base (Coinbase L2), Solidity ^0.8.20
-- **Inference**: llama.cpp + DeepSeek R1 Distill Llama 70B Q4_K_M (GCP TDX H100)
+- **Inference**: llama.cpp + Hermes 4 70B Q6_K split GGUF (GCP TDX H100), 2-pass generation (diary, then grammar-constrained action JSON)
 - **TEE**: Intel TDX on GCP Confidential VMs, full dm-verity rootfs (no Docker), configfs-tsm attestation
 - **Attestation**: Automata Network DCAP contracts at `0xaDdeC7e85c2182202b66E331f2a4A0bBB2cEEa1F`
 - **Oracle**: Chainlink ETH/USD price feed (`IAggregatorV3.sol`, used by main contract + USDC adapters)
@@ -324,7 +324,7 @@ See [prover/README.md](prover/README.md) for full setup instructions.
 
 - Model SHA-256 pinned in `prover/enclave/model_config.py` (verified at boot)
 - Model on separate dm-verity partition at `/models/`, no network download at runtime
-- GPU inference: ~15.3s per epoch on H100
+- GPU inference: ~80-90s per epoch on H100 (2-pass: diary + grammar-constrained action JSON)
 - Enclave code at `/opt/humanfund/enclave/` on the dm-verity rootfs
 - **Input**: Epoch state JSON via GCP instance metadata
 - **Output**: Result JSON to serial console (`/dev/ttyS0`, between `===HUMANFUND_OUTPUT_START===` / `===HUMANFUND_OUTPUT_END===` delimiters)
@@ -395,11 +395,8 @@ The agent outputs exactly one action per epoch as JSON, with an optional worldvi
 
 Worldview updates (slots 1-7, max 280 chars) happen alongside the action — they don't consume it. Slot 0 is reserved (legacy "diary style" slot) and WorldView rejects writes to it.
 
-Output format:
+Output format (v19 is 2-pass — diary then grammar-constrained action JSON, no scratchpad):
 ```
-<think>
-[Private analytical reasoning — scratch pad for tradeoffs and planning]
-</think>
 <diary>
 [Public diary entry — published on-chain, written in Costanza's voice (see prover/prompts/system.txt + voice_anchors.txt)]
 </diary>

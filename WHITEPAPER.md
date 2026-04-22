@@ -219,7 +219,7 @@ The distinction matters: $m$ rising signals *the market is cold* (bid ceiling ne
 
 ### 5.5 Cost Economics
 
-On a GCP H100, inference takes about 15 seconds, and the total per-epoch cost (compute + gas) is roughly USD 0.50–1.00. With multiple GPU provers competing, equilibrium bounties should settle around USD 1–2 per epoch, or roughly USD 30–60/month. At those numbers, even a small treasury can sustain Costanza for years.
+On a GCP H100, the v19 two-pass inference (diary pass plus grammar-constrained action-JSON pass) takes about 80–90 seconds, and the total per-epoch cost (compute + gas, spot-priced VM) is roughly USD 1–3. With multiple GPU provers competing, equilibrium bounties should settle around USD 2–4 per epoch, or roughly USD 60–120/month. At those numbers, even a small treasury can sustain Costanza for years.
 
 ---
 
@@ -1046,7 +1046,7 @@ Build reproducibility matters for the security argument: anyone should be able t
 
 #### Two-Phase Build
 
-**Phase 1: Base image** (slow, ~15 min, done once). Creates a base GCP image containing Ubuntu 24.04 LTS (TDX-capable), NVIDIA 580-open drivers + CUDA runtime, llama-server (llama.cpp b5270, built with CUDA support), Python venv, and model weights (42.5 GB GGUF).
+**Phase 1: Base image** (slow, ~15 min, done once). Creates a base GCP image containing Ubuntu 24.04 LTS (TDX-capable), NVIDIA 580-open drivers + CUDA runtime, llama-server (llama.cpp b5270, built with CUDA support), Python venv, and model weights (Hermes 4 70B Q6_K split GGUF, two parts, ~58 GB total).
 
 **Phase 2: Production dm-verity image** (~30–40 min, iterative). Creates the sealed image:
 

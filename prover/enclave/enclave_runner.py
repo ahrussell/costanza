@@ -34,7 +34,7 @@ import sys
 import time
 from pathlib import Path
 
-from .inference import run_three_pass_inference, truncate_reasoning
+from .inference import run_two_pass_inference, truncate_reasoning
 from .action_encoder import parse_action, encode_action_bytes, validate_and_clamp_action
 from .input_hash import compute_input_hash, _keccak256
 from .attestation import get_tdx_quote, compute_report_data
@@ -328,16 +328,19 @@ def main():
                 f"sha256={hashlib.sha256(full_anchors_text.encode()).hexdigest()[:16]}..."
             )
             # Deterministic seed-bound rotation: show the model VOICE_ANCHOR_K
-            # of the full entry set per epoch, selected by the same seed that
-            # is XOR'd into `epochInputHash`. The anchors file is measured in
-            # RTMR[2] via dm-verity and the seed is bound on-chain, so the
-            # selection is integrity-protected transitively (no extra hash).
-            anchors_header, anchor_entries = parse_anchors(full_anchors_text)
+            # samples from the full pool per epoch, selected by the same
+            # seed that is XOR'd into `epochInputHash`. The anchors file
+            # is measured in RTMR[2] via dm-verity and the seed is bound
+            # on-chain, so the selection is integrity-protected transitively
+            # (no extra hash needed). `select_anchors` returns a rendered
+            # string with per-sample fiction framing already wrapped around
+            # each chosen sample.
+            anchors_header, anchor_samples = parse_anchors(full_anchors_text)
             voice_anchors = select_anchors(
-                anchors_header, anchor_entries, seed=seed, k=VOICE_ANCHOR_K
+                anchors_header, anchor_samples, seed=seed, k=VOICE_ANCHOR_K
             )
             log(
-                f"  Voice anchors: {len(anchor_entries)} parsed, "
+                f"  Voice anchors: {len(anchor_samples)} parsed, "
                 f"{VOICE_ANCHOR_K} selected via seed={seed}"
             )
         else:
@@ -391,12 +394,14 @@ def main():
             llama_proc = start_llama_server()
             wait_for_llama_server()
 
-        # run_three_pass_inference internally retries just Pass 3 (the cheap
-        # action-JSON pass) with an incrementing seed if parse_action fails.
-        # If it still can't parse after its own retries, parsed_action will
-        # be None and we fall back to a no-action result with a system note
+        # run_two_pass_inference (v19): pass 1 emits the diary, pass 2
+        # emits the action JSON under GBNF grammar constraints. Pass 2
+        # retries with an incrementing seed on the rare chance the model
+        # produces output the parser can't read (grammar should make that
+        # basically impossible). If all retries fail, parsed_action is
+        # None and we fall back to a no-action result with a system note
         # so Costanza can see what happened next epoch.
-        inference = run_three_pass_inference(
+        inference = run_two_pass_inference(
             full_prompt, seed=llama_seed, llama_url=LLAMA_SERVER_URL,
         )
         action_json = inference.get("parsed_action")

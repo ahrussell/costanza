@@ -19,14 +19,16 @@ Multiple rounds of auditing and remediation have closed all critical, high, and 
 
 ### MEDIUM
 
-#### M-1: Three-Pass Reasoning Propagation (Mitigated)
+#### M-1: Two-Pass Donor-Content Propagation (Mitigated)
 
 **Severity**: MEDIUM
 **Component**: `prover/enclave/inference.py`
 
-The three-pass inference system (thinking → diary → action) propagates Pass 1 thinking into Pass 2/3 contexts. `sanitize_thinking()` strips XML-like instruction/override tags from Pass 1 output before propagation, preventing reasoning laundering of injected directives.
+v19 replaced the three-pass pipeline (think → diary → action) with a two-pass pipeline (diary → grammar-constrained action JSON). The prior "thinking" pass was removed entirely, which narrows the attack surface: there is no longer a private scratchpad whose output is re-fed into subsequent passes, so a donor message cannot be laundered through a "reasoning" round into the final diary/action. `sanitize_thinking()` is retained as defense-in-depth and now scrubs XML-like instruction/override tags from the diary output before it is included in any downstream state.
 
-**Residual risk**: A well-crafted 280-char donor message (costing 0.01 ETH, datamarked) could still subtly bias the model's reasoning within contract bounds — but injected tags cannot survive sanitization into Passes 2/3. Combined with datamarking, display data verification, message length limits, economic barriers, and contract bounds, the practical exploit cost exceeds extractable value.
+The action pass is locked to a GBNF grammar (`prover/enclave/action_grammar.gbnf`), so even adversarially-shaped diary text cannot produce an out-of-shape action JSON. A post-parse validator (`validate_and_clamp_action`) additionally clamps `nonprofit_id`, `protocol_id`, `rate_bps`, and transfer amounts against the per-epoch bounds shown in the prompt, coercing out-of-range inputs to noop while preserving any worldview sidecar — closing the loophole where prior on-chain rejection silently wasted an epoch.
+
+**Residual risk**: A well-crafted 280-char donor message (costing 0.01 ETH, datamarked) could still subtly bias the model's reasoning within contract bounds. Combined with datamarking, per-sample fiction framing on voice anchors, display-data verification, message length limits, economic barriers, grammar-gated actions, and validator clamping, the practical exploit cost exceeds extractable value.
 
 ---
 

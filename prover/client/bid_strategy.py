@@ -25,12 +25,15 @@ GCP_HOURLY_RATES = {
 }
 
 # Estimated times (minutes).
-# GPU timing based on observed runs: ~5 min boot + model load, ~3 min inference.
+# GPU timing for v19 (Hermes 4 70B Q6_K, 2-pass): ~6 min boot + model load
+# (58 GB split GGUF takes longer to load than DeepSeek's 42.5 GB), ~3 min
+# for two passes + encoding + attestation overhead. Total VM lifetime
+# consistently around 9 minutes in v17-v19 experiment runs.
 # Re-calibrate by checking vm_minutes from recent TEE results in state dir.
-GPU_BOOT_MINUTES = 5       # VM create + model load
-GPU_INFERENCE_MINUTES = 3  # ~3 min inference + overhead (observed: 8 min total)
+GPU_BOOT_MINUTES = 6       # VM create + model load (Q6_K is 15 GB larger than Q4_K_M)
+GPU_INFERENCE_MINUTES = 3  # 2-pass diary + action JSON + attestation
 CPU_BOOT_MINUTES = 5
-CPU_INFERENCE_MINUTES = 25  # ~22 min inference + overhead
+CPU_INFERENCE_MINUTES = 25  # ~22 min inference + overhead (not used in prod)
 
 
 def estimate_bid(gas_price_wei, machine_type="a3-highgpu-1g", eth_usd_price=2000.0,
