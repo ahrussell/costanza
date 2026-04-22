@@ -1383,7 +1383,7 @@ contract TheHumanFund is ReentrancyGuard {
     // ─── Internal: Action Execution ──────────────────────────────────────
 
     /// @dev Execute the model's chosen action. Out-of-bounds parameters cause
-    ///      a noop (not a revert) — the prover did their job, the model made
+    ///      a no-op (not a revert) — the prover did their job, the model made
     ///      a bad choice. The raw action bytes are still recorded in the epoch
     ///      history so future prompts can see what was attempted.
     function _executeAction(uint256 epoch, bytes calldata action) internal {
@@ -1395,7 +1395,7 @@ contract TheHumanFund is ReentrancyGuard {
         uint8 actionType = uint8(action[0]);
 
         if (actionType == 0) {
-            // noop — do nothing
+            // do_nothing — action_type 0 is the explicit no-action opcode
             return;
         } else if (actionType == 1) {
             // donate
@@ -1461,7 +1461,7 @@ contract TheHumanFund is ReentrancyGuard {
 
         // Delegate the DeFi pipeline to DonationExecutor.
         // Guard + try/catch so a misconfigured or absent executor
-        // results in a noop (ActionRejected) rather than a revert.
+        // results in a no-op (ActionRejected) rather than a revert.
         if (address(donationExecutor).code.length == 0) return false;
         uint256 usdcAmount;
         try donationExecutor.executeDonate{value: amount}(np.ein) returns (uint256 result) {
@@ -1482,7 +1482,7 @@ contract TheHumanFund is ReentrancyGuard {
         return true;
     }
 
-    /// @dev Returns false if parameters are out of bounds (action becomes noop).
+    /// @dev Returns false if parameters are out of bounds (action becomes a no-op).
     function _executeSetCommissionRate(uint256 epoch, uint256 rateBps) internal returns (bool) {
         if (rateBps < MIN_COMMISSION_BPS || rateBps > MAX_COMMISSION_BPS) return false;
         commissionRateBps = rateBps;

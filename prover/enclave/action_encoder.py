@@ -109,7 +109,7 @@ def _parse_function_call_format(text):
 
     # Known action patterns
     action_patterns = [
-        "noop", "donate", "set_commission_rate",
+        "do_nothing", "donate", "set_commission_rate",
         "invest", "withdraw",
     ]
 
@@ -120,9 +120,9 @@ def _parse_function_call_format(text):
             continue
 
         after = search_text[idx:]
-        # Check for noop (no params)
-        if action_name == "noop":
-            return {"action": "noop", "params": {}}
+        # do_nothing takes no params — short-circuit before the paren scan.
+        if action_name == "do_nothing":
+            return {"action": "do_nothing", "params": {}}
 
         # Try to extract params from parentheses
         paren_start = after.find("(")
@@ -368,9 +368,10 @@ def validate_and_clamp_action(action_json: dict, state: dict):
                 f"invest amount clamped from {_fmt_eth(requested_wei)} ETH to 0 "
                 f"— no investment headroom available this epoch"
             )
-            # Downgrade to a noop-equivalent so the encoder emits 0 amount;
-            # the contract will reject a 0-amount invest, so switch to noop.
-            action_json["action"] = "noop"
+            # Downgrade to do_nothing — a 0-amount invest would be rejected
+            # by the contract, so we switch to the explicit no-action shape
+            # instead of sending a guaranteed-rejected invest.
+            action_json["action"] = "do_nothing"
             action_json["params"] = {}
             return action_json, notes
 
@@ -406,7 +407,7 @@ def validate_and_clamp_action(action_json: dict, state: dict):
                 f"withdraw attempted on protocol #{protocol_id} with no position — "
                 f"no action taken this epoch"
             )
-            action_json["action"] = "noop"
+            action_json["action"] = "do_nothing"
             action_json["params"] = {}
             return action_json, notes
 
@@ -442,7 +443,7 @@ def encode_action_bytes(action_json):
     No bounds clamping — that happens in validate_and_clamp_action() before
     this function is called. encode_action_bytes faithfully encodes whatever
     is passed in. If the action is out of bounds at this stage, the contract
-    will noop and record it via ActionRejected.
+    will take no action and record it via ActionRejected.
     """
     action = action_json["action"]
     # Model sometimes puts params at top level or under "args" instead of "params"
@@ -455,7 +456,7 @@ def encode_action_bytes(action_json):
     # Normalize action name — smaller models sometimes include parameter signatures
     action = action.split("(")[0].strip().lower()
 
-    if action == "noop":
+    if action == "do_nothing":
         return bytes([0])
     elif action == "donate":
         # Handle various param key names the model might use
@@ -495,6 +496,6 @@ def encode_action_bytes(action_json):
             + amount_wei.to_bytes(32, "big")
         )
     else:
-        # Unknown action — fall back to noop
-        print(f"WARNING: Unknown action '{action}', falling back to noop")
+        # Unknown action — fall back to do_nothing (action_type 0)
+        print(f"WARNING: Unknown action '{action}', falling back to do_nothing")
         return bytes([0])

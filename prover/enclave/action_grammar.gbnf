@@ -13,13 +13,13 @@
 
 root ::= ws "\"action\":" ws action-body (ws "," ws worldview-kv)? ws "}"
 
-action-body ::= donate-body | invest-body | withdraw-body | commission-body | noop-body
+action-body ::= donate-body | invest-body | withdraw-body | commission-body | do-nothing-body
 
 donate-body     ::= "\"donate\""              ws "," ws "\"params\":" ws donate-params
 invest-body     ::= "\"invest\""              ws "," ws "\"params\":" ws invest-params
 withdraw-body   ::= "\"withdraw\""            ws "," ws "\"params\":" ws withdraw-params
 commission-body ::= "\"set_commission_rate\"" ws "," ws "\"params\":" ws commission-params
-noop-body       ::= "\"noop\""                ws "," ws "\"params\":" ws "{" ws "}"
+do-nothing-body ::= "\"do_nothing\""          ws "," ws "\"params\":" ws "{" ws "}"
 
 donate-params     ::= "{" ws "\"nonprofit_id\":" ws integer ws "," ws "\"amount_eth\":" ws number ws "}"
 invest-params     ::= "{" ws "\"protocol_id\":"  ws integer ws "," ws "\"amount_eth\":" ws number ws "}"

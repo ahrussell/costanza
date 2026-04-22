@@ -79,8 +79,8 @@ contract CrossStackHashTest is EpochTest {
     /// @notice Test after epoch execution — content hashes and epoch state change.
     function test_cross_stack_hash_after_epoch() public {
         // Execute epoch 1 via the real auction path (freezes + executes).
-        bytes memory noopAction = abi.encodePacked(uint8(0));
-        speedrunEpoch(fund, noopAction, "epoch 1");
+        bytes memory doNothingAction = abi.encodePacked(uint8(0));
+        speedrunEpoch(fund, doNothingAction, "epoch 1");
 
         // speedrunEpoch left us at epoch 2 with an open auction (snapshot
         // frozen for epoch 2, whose history-hash rolls in epoch 1's

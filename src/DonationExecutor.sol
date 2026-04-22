@@ -49,7 +49,7 @@ contract DonationExecutor {
     ///        deterministic Endaoment org address and deploy if needed.
     /// @return usdcAmount The actual USDC donated (swap output).
     ///         Returns 0 on any failure (oracle stale, swap reverted, etc.)
-    ///         so the caller can treat it as a noop without reverting.
+    ///         so the caller can treat it as a no-op without reverting.
     function executeDonate(bytes32 ein) external payable returns (uint256 usdcAmount) {
         uint256 amount = msg.value;
         if (amount == 0) return 0;

@@ -409,8 +409,8 @@ contract SystemInvariantsTest is EpochTest {
         uint256 epochBefore = fund.currentEpoch();
         uint8 phaseBefore = uint8(am.phase());
         fund.syncPhase();
-        assertEq(fund.currentEpoch(), epochBefore, "I4: syncPhase is noop (epoch)");
-        assertEq(uint8(am.phase()), phaseBefore, "I4: syncPhase is noop (phase)");
+        assertEq(fund.currentEpoch(), epochBefore, "I4: syncPhase is a no-op (epoch)");
+        assertEq(uint8(am.phase()), phaseBefore, "I4: syncPhase is a no-op (phase)");
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -1196,7 +1196,7 @@ contract SystemInvariantsTest is EpochTest {
         // deadline on the AM's internal clock.
         fund.syncPhase();
         assertEq(uint8(am.phase()), uint8(IAuctionManager.AuctionPhase.REVEAL),
-            "syncPhase noop: reveal deadline not reached");
+            "syncPhase no-op: reveal deadline not reached");
 
         vm.prank(runner1);
         fund.reveal(0.005 ether, bytes32("r1"));
@@ -1205,7 +1205,7 @@ contract SystemInvariantsTest is EpochTest {
         // syncPhase again should be a no-op
         fund.syncPhase();
         assertEq(uint8(am.phase()), uint8(IAuctionManager.AuctionPhase.EXECUTION),
-            "syncPhase noop: execution deadline not reached");
+            "syncPhase no-op: execution deadline not reached");
     }
 
     /// Commit + manual close of commit, then wall-clock warp past the
@@ -1620,7 +1620,7 @@ contract SystemInvariantsTest is EpochTest {
             // Submit to cleanly roll into the next epoch
             vm.prank(runner1);
             fund.submitAuctionResult(
-                abi.encodePacked(uint8(0)), bytes("noop"), bytes("mock"),
+                abi.encodePacked(uint8(0)), bytes("do_nothing"), bytes("mock"),
                 EPOCH_TEST_VERIFIER_ID, -1, ""
             );
             fund.nextPhase(); // cross boundary

@@ -2,7 +2,7 @@
 """Testnet E2E Testing — Phases 1-3 from E2E_TESTING_PLAN.md
 
 Usage:
-    python scripts/testnet_e2e.py --phase actions    # Phase 3: commission, donate, noop via direct mode
+    python scripts/testnet_e2e.py --phase actions    # Phase 3: commission, donate, do_nothing via direct mode
     python scripts/testnet_e2e.py --phase donors     # Phase 1: donations, messages, referrals
     python scripts/testnet_e2e.py --phase multiprover # Phase 2: multi-prover auction competition
     python scripts/testnet_e2e.py --phase all         # All phases
@@ -163,8 +163,8 @@ def test_actions(results):
     else:
         results.fail("commission_rate_above_max", "Tx reverted")
 
-    # Noop action
-    print("\nTest: Noop action")
+    # do_nothing action
+    print("\nTest: do_nothing action")
     epoch_before = fund.functions.currentEpoch().call()
     balance_before = w3.eth.get_balance(w3.to_checksum_address(CONTRACT_ADDRESS))
     action = b'\x00'
@@ -172,11 +172,11 @@ def test_actions(results):
     if receipt["status"] == 1:
         balance_after = w3.eth.get_balance(w3.to_checksum_address(CONTRACT_ADDRESS))
         if balance_after == balance_before:
-            results.ok("noop_action", "Balance unchanged")
+            results.ok("do_nothing_action", "Balance unchanged")
         else:
-            results.fail("noop_action", f"Balance changed: {balance_before} → {balance_after}")
+            results.fail("do_nothing_action", f"Balance changed: {balance_before} → {balance_after}")
     else:
-        results.fail("noop_action", "Tx reverted")
+        results.fail("do_nothing_action", "Tx reverted")
 
     # Donate action (10% of treasury)
     print("\nTest 3.9: Donate action via direct mode")

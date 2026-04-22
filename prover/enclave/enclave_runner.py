@@ -409,7 +409,7 @@ def main():
 
         if action_json is None:
             log(f"  Action parse FAILED after {inference.get('action_attempts', '?')} attempts — falling back to no action")
-            action_json = {"action": "noop", "params": {}}
+            action_json = {"action": "do_nothing", "params": {}}
             system_notes.append(
                 "model failed to output valid JSON after several attempts — "
                 "defaulting to no action this epoch"

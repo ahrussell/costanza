@@ -274,8 +274,8 @@ contract WorldViewTest is EpochTest {
         assertEq(wv.getPolicy(2), "Invest conservatively in bear markets");
     }
 
-    function test_policy_update_with_noop() public {
-        // Noop action but still update worldview
+    function test_policy_update_with_do_nothing() public {
+        // do_nothing action but still update worldview
         speedrunEpoch(
             fund,
             abi.encodePacked(uint8(0)),

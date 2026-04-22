@@ -292,7 +292,7 @@ thehumanfund/
 
 ### Action Encoding
 `uint8 action_type + ABI-encoded params`
-- 0 = noop
+- 0 = do_nothing
 - 1 = donate(nonprofit_id, amount)
 - 2 = set_commission_rate(rate_bps)
 - 3 = invest(protocol_id, amount) — delegate to InvestmentManager
@@ -391,7 +391,7 @@ The agent outputs exactly one action per epoch as JSON, with an optional worldvi
 | `set_commission_rate` | `rate_bps` (100-9000) | 1%-90% |
 | `invest` | `protocol_id` (1-8), `amount_eth` | 80% max invested, 25% max/protocol, 20% min reserve |
 | `withdraw` | `protocol_id` (1-8), `amount_eth` | up to full position value |
-| `noop` | none | -- |
+| `do_nothing` | none | -- |
 
 Worldview updates (slots 1-7, max 280 chars) happen alongside the action — they don't consume it. Slot 0 is reserved (legacy "diary style" slot) and WorldView rejects writes to it.
 

@@ -291,12 +291,12 @@ def _decode_action_display(action_bytes):
     so it can avoid repeating the same action.
     """
     if not action_bytes:
-        return "noop"
+        return "do_nothing"
     action_type = action_bytes[0]
 
     try:
         if action_type == 0:
-            return "noop"
+            return "do_nothing"
         elif action_type == 1:  # donate
             if len(action_bytes) >= 65:
                 np_id = int.from_bytes(action_bytes[1:33], "big")
@@ -323,7 +323,7 @@ def _decode_action_display(action_bytes):
         else:
             return f"unknown(type={action_type})"
     except Exception:
-        action_names = {0: "noop", 1: "donate", 2: "set_commission_rate",
+        action_names = {0: "do_nothing", 1: "donate", 2: "set_commission_rate",
                         3: "invest", 4: "withdraw"}
         return action_names.get(action_type, f"unknown({action_type})")
 
@@ -460,7 +460,7 @@ def build_epoch_context(state, seed=None, voice_anchors: str = ""):
         lines.append(f"  withdraw(protocol_id, amount_eth)        positions: {', '.join(withdraw_parts)}")
     else:
         lines.append(f"  withdraw(protocol_id, amount_eth)        no positions to withdraw")
-    lines.append(f"  noop                                     do nothing")
+    lines.append(f"  do_nothing                               take no action this epoch")
 
     # -- Section 3: Nonprofits --
     # SECURITY: `np["id"]` is NOT in the nonprofit hash — _hash_nonprofits
@@ -622,7 +622,7 @@ def build_epoch_context(state, seed=None, voice_anchors: str = ""):
 
     # -- Section 8: Action Distribution --
     if state["history"]:
-        action_names_map = {0: "noop", 1: "donate", 2: "set_commission_rate",
+        action_names_map = {0: "do_nothing", 1: "donate", 2: "set_commission_rate",
                             3: "invest", 4: "withdraw"}
         action_counts = {}
         donate_targets = {}

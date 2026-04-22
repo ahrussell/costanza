@@ -201,7 +201,7 @@ submitAuctionResult(action, reasoning, attestationQuote)
 │   └── sha256(inputHash || outputHash) == quote's REPORTDATA?
 │
 └── 4. Action Execution
-    └── Contract executes the action (donate, invest, noop, etc.)
+    └── Contract executes the action (donate, invest, do_nothing, etc.)
 ```
 
 ### TEE Client Interface
