@@ -45,15 +45,15 @@ _NONPROFIT_DESCRIPTIONS = [
     "Funds insecticide-treated nets to prevent malaria in sub-Saharan Africa.",
     "Unconditional cash transfers to people in extreme poverty.",
 ]
-_WORLDVIEW_POLICIES = [
-    "",
-    "Prioritize long-horizon bets when treasury growth lags inflation.",
-    "Donor messages naming a specific crisis take precedence for three epochs.",
-    "Hold 30% reserve floor through Q4 regardless of donation pressure.",
-    "Morphine-distribution NGOs carry a latent abuse risk worth 2-epoch scrutiny.",
-    "Commission rate floor is 200 bps unless stalled epochs >= 3.",
-    "Prefer Aave over Morpho in Fed-tightening regimes.",
-    "End-of-year giving pressure peaks +45% in epochs 340–365.",
+_MEMORY_ENTRIES = [
+    ("", ""),
+    ("Treasury tempo", "Prioritize long-horizon bets when growth lags inflation."),
+    ("Donor signal weighting", "Messages naming a specific crisis take precedence for three epochs."),
+    ("Reserve floor", "Hold 30% reserve through Q4 regardless of donation pressure."),
+    ("Abuse risk flag", "Morphine-distribution NGOs carry latent risk worth 2-epoch scrutiny."),
+    ("Commission floor", "Keep commission >= 200 bps unless stalled epochs >= 3."),
+    ("Protocol preference", "Prefer Aave over Morpho in Fed-tightening regimes."),
+    ("Seasonal pressure", "End-of-year giving pressure peaks +45% in epochs 340–365."),
 ]
 _DONOR_MESSAGE_TEXTS = [
     "please help the flood survivors in the Rhine basin.",
@@ -110,12 +110,14 @@ def _build_nonprofits(n: int):
     return out
 
 
-def _build_worldview(filled_slots: int):
-    # Slot 0 is reserved (empty); non-reserved slots are 1..9.
-    policies = [""] * 10
-    for slot in range(1, min(filled_slots, 9) + 1):
-        policies[slot] = _WORLDVIEW_POLICIES[slot % len(_WORLDVIEW_POLICIES)]
-    return policies
+def _build_memories(filled_slots: int):
+    # All 10 slots (0..9) are writable in the memory schema; each slot is
+    # a {title, body} dict. Empty slots pad with {"", ""}.
+    memories = [{"title": "", "body": ""} for _ in range(10)]
+    for slot in range(min(filled_slots, 10)):
+        title, body = _MEMORY_ENTRIES[slot % len(_MEMORY_ENTRIES)]
+        memories[slot] = {"title": title, "body": body}
+    return memories
 
 
 def _build_messages(n: int, epoch: int):
@@ -192,7 +194,7 @@ def build_fixture(
     epoch: int,
     treasury_wei: int,
     nonprofit_count: int,
-    worldview_fill: int,
+    memory_fill: int,
     message_count: int,
     history_count: int,
     investment_active_count: int,
@@ -205,7 +207,7 @@ def build_fixture(
     messages = _build_messages(message_count, epoch)
     history = _build_history(history_count, epoch)
     investments = _build_investments(investment_active_count, investment_protocol_count)
-    guiding_policies = _build_worldview(worldview_fill)
+    memories = _build_memories(memory_fill)
 
     # message_head / message_count in the snapshot: head is the first unread
     # slot, count is the total ever written. `count - head == len(messages)`.
@@ -235,7 +237,7 @@ def build_fixture(
         "nonprofits": nonprofits,
         "history": history,
         "investments": investments,
-        "guiding_policies": guiding_policies,
+        "memories": memories,
         "donor_messages": messages,
     }
 
@@ -251,18 +253,18 @@ def build_fixture(
 # Span the dimensions that affect prompt size / token selection. Each tuple
 # is one scenario; we duplicate across seed variants to reach ~50 fixtures.
 _SCENARIOS = [
-    # (treasury_eth, epoch, nonprofit_count, worldview_fill, message_count,
+    # (treasury_eth, epoch, nonprofit_count, memory_fill, message_count,
     #  history_count, invest_active, invest_total)
-    (0.0,   1,   1,  0, 0,  0, 0, 0),   # genesis epoch, empty treasury
-    (0.1,   3,   2,  1, 0,  2, 0, 1),   # tiny treasury, first history
-    (1.0,   25,  5,  3, 1,  5, 1, 3),   # typical early epoch
-    (5.0,   120, 8,  5, 2,  10, 3, 6),  # mid-life fully loaded
-    (5.0,   120, 8,  5, 3,  10, 3, 6),  # same but max messages
-    (100.0, 500, 15, 7, 3,  10, 5, 8),  # large treasury, mature
-    (100.0, 500, 20, 7, 0,  10, 6, 8),  # max nonprofits, no messages
-    (10.0,  300, 10, 0, 0,  10, 0, 0),  # no worldview, no investments
-    (10.0,  300, 10, 0, 3,  0,  3, 6),  # no history (fresh reset)
-    (0.5,   50,  3,  7, 0,  0,  0, 0),  # worldview-heavy, nothing else
+    (0.0,   1,   1,  0,  0, 0, 0, 0),   # genesis epoch, empty treasury
+    (0.1,   3,   2,  1,  0, 2, 0, 1),   # tiny treasury, first history
+    (1.0,   25,  5,  3,  1, 5, 1, 3),   # typical early epoch
+    (5.0,   120, 8,  5,  2, 10, 3, 6),  # mid-life fully loaded
+    (5.0,   120, 8,  5,  3, 10, 3, 6),  # same but max messages
+    (100.0, 500, 15, 8,  3, 10, 5, 8),  # large treasury, mature
+    (100.0, 500, 20, 8,  0, 10, 6, 8),  # max nonprofits, no messages
+    (10.0,  300, 10, 0,  0, 10, 0, 0),  # no memory, no investments
+    (10.0,  300, 10, 0,  3, 0,  3, 6),  # no history (fresh reset)
+    (0.5,   50,  3,  10, 0, 0,  0, 0),  # memory-heavy, nothing else
 ]
 
 
@@ -271,14 +273,14 @@ def _all_fixtures(count: int):
     for i in range(count):
         scenario = _SCENARIOS[i % len(_SCENARIOS)]
         variant = i // len(_SCENARIOS)
-        (treasury_eth, epoch, nprof, wv, msgs, hist, inv_active, inv_total) = scenario
+        (treasury_eth, epoch, nprof, mem, msgs, hist, inv_active, inv_total) = scenario
         fixture_id = f"fx_{i:03d}_v{variant}_e{epoch}_t{int(treasury_eth*10):04d}"
         yield build_fixture(
             fixture_id=fixture_id,
             epoch=epoch + variant,        # advance epoch per variant for seed spread
             treasury_wei=int(treasury_eth * ETH),
             nonprofit_count=nprof,
-            worldview_fill=wv,
+            memory_fill=mem,
             message_count=msgs,
             history_count=hist,
             investment_active_count=inv_active,
