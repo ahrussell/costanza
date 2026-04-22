@@ -259,7 +259,9 @@ class TestDiaryPrefill(unittest.TestCase):
 
     Without the prefill, Hermes 4 70B emits </diary> as its first generation
     token roughly 80% of the time on production prompts (verified greedy +
-    a 15-seed sweep). The prefill rescues the empty-diary case to 0%.
+    a 15-seed sweep). The prefill is appended to pass-1's prompt to anchor
+    generation, but stripped from the returned `reasoning` so the on-chain
+    text is 100% model voice.
     """
 
     @patch("prover.enclave.inference.call_llama")
@@ -276,35 +278,29 @@ class TestDiaryPrefill(unittest.TestCase):
         self.assertEqual(args1[0], prompt + DEFAULT_DIARY_PREFILL)
 
     @patch("prover.enclave.inference.call_llama")
-    def test_prefill_prepended_to_returned_diary(self, mock_call):
-        """`reasoning` includes the prefill so on-chain text reads naturally."""
+    def test_prefill_stripped_from_returned_reasoning(self, mock_call):
+        """`reasoning` is the model's continuation only — prefill is NOT in it."""
         mock_call.side_effect = [
-            make_llama_response("was a quiet epoch — no donors said anything."),
+            make_llama_response("Epoch three. Nobody wrote me anything today."),
             make_llama_response('"action":"do_nothing","params":{}}'),
         ]
         result = run_two_pass_inference("<diary>\n", seed=1)
 
-        self.assertTrue(
-            result["reasoning"].startswith(DEFAULT_DIARY_PREFILL),
-            f"reasoning should start with prefill; got {result['reasoning']!r}",
+        self.assertEqual(
+            result["reasoning"],
+            "Epoch three. Nobody wrote me anything today.",
         )
-        self.assertIn("was a quiet epoch", result["reasoning"])
+        self.assertNotIn("Dear Diary", result["reasoning"])
 
     @patch("prover.enclave.inference.call_llama")
-    def test_prefill_lstrips_model_continuation(self, mock_call):
-        """Avoid double-space when the model starts its continuation with whitespace."""
-        # Model's first emitted character is a space — common after a
-        # short prefill like "It " where the model is "completing" with
-        # what looks like a continuation phrase including its own spacing.
+    def test_model_leading_whitespace_stripped(self, mock_call):
+        """Leading whitespace from the model's continuation is lstripped."""
         mock_call.side_effect = [
-            make_llama_response("   was a quiet epoch."),
+            make_llama_response("   first sentence."),
             make_llama_response('"action":"do_nothing","params":{}}'),
         ]
         result = run_two_pass_inference("<diary>\n", seed=1)
-
-        # Should be "It was a quiet epoch." — single space between
-        # prefill and continuation, no leading whitespace from the model.
-        self.assertEqual(result["reasoning"], "It was a quiet epoch.")
+        self.assertEqual(result["reasoning"], "first sentence.")
 
     @patch("prover.enclave.inference.call_llama")
     def test_empty_prefill_is_supported(self, mock_call):
@@ -321,19 +317,125 @@ class TestDiaryPrefill(unittest.TestCase):
         self.assertEqual(result["reasoning"], "raw diary")
 
     @patch("prover.enclave.inference.call_llama")
-    def test_pass2_sees_full_diary_with_prefill(self, mock_call):
-        """Pass 2's prompt must include the prefilled diary so context is consistent."""
+    def test_pass2_context_byte_consistent_with_pass1(self, mock_call):
+        """Pass 2's prompt must include the prefill so the assembled context is
+        byte-consistent with what pass 1 actually generated."""
         mock_call.side_effect = [
-            make_llama_response("was a busy day."),
+            make_llama_response("Epoch three. A quiet day."),
             make_llama_response('"action":"do_nothing","params":{}}'),
         ]
         run_two_pass_inference("<diary>\n", seed=1)
 
         args2, _ = mock_call.call_args_list[1]
-        # Pass 2 prompt = original_prompt + diary + "\n</diary>\n{"
-        # The diary in there must include the prefix.
-        self.assertIn("It was a busy day.", args2[0])
+        # Pass 2 prompt = pass1_prompt + diary + "\n</diary>\n{"
+        #               = "<diary>\n" + "Dear Diary,\n\n" + "Epoch three. A quiet day." + "\n</diary>\n{"
+        self.assertIn(DEFAULT_DIARY_PREFILL, args2[0])
+        self.assertIn("Epoch three. A quiet day.", args2[0])
         self.assertIn("</diary>\n{", args2[0])
+
+
+class TestPass1RetryOnEmpty(unittest.TestCase):
+    """Tests for pass-1 retry-on-empty with PRNG-derived deterministic seeds.
+
+    If the model emits an empty diary (</diary> as first token), the retry
+    loop re-rolls with a deterministic seed drawn from random.Random(base_seed).
+    First attempt uses base_seed unchanged so the no-retry path is bit-for-bit
+    identical to the pre-retry implementation.
+    """
+
+    @patch("prover.enclave.inference.call_llama")
+    def test_no_retry_on_first_attempt_success(self, mock_call):
+        """If pass 1 succeeds first try, only one pass-1 call is made."""
+        mock_call.side_effect = [
+            make_llama_response("First diary content."),
+            make_llama_response('"action":"do_nothing","params":{}}'),
+        ]
+        result = run_two_pass_inference("<diary>\n", seed=42)
+
+        # 1 pass-1 + 1 pass-2 = 2 calls
+        self.assertEqual(mock_call.call_count, 2)
+        self.assertEqual(result["pass1_attempts"], 1)
+        # First pass-1 attempt MUST use the base seed unchanged so the
+        # no-retry path is bit-for-bit identical to pre-retry behavior.
+        _, kwargs1 = mock_call.call_args_list[0]
+        self.assertEqual(kwargs1["seed"], 42)
+
+    @patch("prover.enclave.inference.call_llama")
+    def test_retry_fires_on_empty_diary(self, mock_call):
+        """An empty pass-1 result triggers a retry with a different seed."""
+        mock_call.side_effect = [
+            make_llama_response(""),                         # empty -> retry
+            make_llama_response("Now real content."),        # success
+            make_llama_response('"action":"do_nothing","params":{}}'),
+        ]
+        result = run_two_pass_inference("<diary>\n", seed=42)
+
+        # 2 pass-1 attempts + 1 pass-2 = 3 calls
+        self.assertEqual(mock_call.call_count, 3)
+        self.assertEqual(result["pass1_attempts"], 2)
+        self.assertEqual(result["reasoning"], "Now real content.")
+
+        # Retry seed must be deterministic from base seed (PRNG-derived).
+        _, kwargs1a = mock_call.call_args_list[0]
+        _, kwargs1b = mock_call.call_args_list[1]
+        self.assertEqual(kwargs1a["seed"], 42)
+        # Second attempt: random.Random(42).randint(0, 2**31-1) — known value.
+        import random
+        expected_retry_seed = random.Random(42).randint(0, 2**31 - 1)
+        self.assertEqual(kwargs1b["seed"], expected_retry_seed)
+
+    @patch("prover.enclave.inference.call_llama")
+    def test_retry_seeds_are_deterministic(self, mock_call):
+        """Two runs with the same base seed produce the same retry sequence."""
+        # Force 3 empty diaries before success → 4 attempts.
+        empty = lambda: make_llama_response("")
+        side_effect_1 = [empty(), empty(), empty(),
+                          make_llama_response("good diary text here"),
+                          make_llama_response('"action":"do_nothing","params":{}}')]
+        side_effect_2 = [empty(), empty(), empty(),
+                          make_llama_response("good diary text here"),
+                          make_llama_response('"action":"do_nothing","params":{}}')]
+
+        mock_call.side_effect = side_effect_1
+        run_two_pass_inference("<diary>\n", seed=12345)
+        seeds_run1 = [kw["seed"] for _, kw in mock_call.call_args_list[:4]]
+
+        mock_call.reset_mock()
+        mock_call.side_effect = side_effect_2
+        run_two_pass_inference("<diary>\n", seed=12345)
+        seeds_run2 = [kw["seed"] for _, kw in mock_call.call_args_list[:4]]
+
+        self.assertEqual(seeds_run1, seeds_run2,
+                         "PRNG-derived retry seeds must be deterministic")
+
+    @patch("prover.enclave.inference.call_llama")
+    def test_random_seed_mode_uses_minus_one(self, mock_call):
+        """seed=-1 (random mode) keeps -1 across retries so llama-server
+        picks a fresh random seed each try."""
+        mock_call.side_effect = [
+            make_llama_response(""),
+            make_llama_response("real diary content here."),
+            make_llama_response('"action":"do_nothing","params":{}}'),
+        ]
+        run_two_pass_inference("<diary>\n", seed=-1)
+
+        _, kwargs1a = mock_call.call_args_list[0]
+        _, kwargs1b = mock_call.call_args_list[1]
+        self.assertEqual(kwargs1a["seed"], -1)
+        self.assertEqual(kwargs1b["seed"], -1)
+
+    @patch("prover.enclave.inference.call_llama")
+    def test_short_diary_treated_as_empty(self, mock_call):
+        """A pass-1 result with <5 chars of stripped content triggers retry —
+        prevents shipping degenerate diaries like 'It' or 'Dear'."""
+        mock_call.side_effect = [
+            make_llama_response("It"),                      # too short
+            make_llama_response("Now a real diary entry."),
+            make_llama_response('"action":"do_nothing","params":{}}'),
+        ]
+        result = run_two_pass_inference("<diary>\n", seed=42)
+        self.assertEqual(result["pass1_attempts"], 2)
+        self.assertEqual(result["reasoning"], "Now a real diary entry.")
 
 
 class TestBackwardCompatibility(unittest.TestCase):
