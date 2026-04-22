@@ -632,7 +632,7 @@ contract TheHumanFund is ReentrancyGuard {
         require(slots.length == titles.length, "length mismatch");
         require(slots.length == bodies.length, "length mismatch");
         for (uint256 i = 0; i < slots.length; i++) {
-            agentMemory.setPolicy(slots[i], titles[i], bodies[i]);
+            agentMemory.setEntry(slots[i], titles[i], bodies[i]);
         }
     }
 
@@ -1397,7 +1397,7 @@ contract TheHumanFund is ReentrancyGuard {
             n = MAX_MEMORY_UPDATES_PER_EPOCH;
         }
         for (uint256 i = 0; i < n; i++) {
-            try agentMemory.setPolicy(
+            try agentMemory.setEntry(
                 uint256(updates[i].slot),
                 updates[i].title,
                 updates[i].body

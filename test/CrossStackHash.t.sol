@@ -421,7 +421,7 @@ contract CrossStackHashTest is EpochTest {
         IAgentMemory am = fund.agentMemory();
         if (address(am) == address(0)) return "[]";
 
-        IAgentMemory.Policy[10] memory entries = am.getPolicies();
+        IAgentMemory.MemoryEntry[10] memory entries = am.getEntries();
         string memory result = "[";
         for (uint256 i = 0; i < 10; i++) {
             if (i > 0) result = string.concat(result, ",");

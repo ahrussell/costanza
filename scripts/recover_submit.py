@@ -114,7 +114,7 @@ def main():
             if slot < 0 or slot > 9:
                 continue
             title = str(entry.get("title", ""))[:64]
-            body = str(entry.get("body", entry.get("policy", "")))[:280]
+            body = str(entry.get("body", ""))[:280]
             memory_updates.append((slot, title, body))
         memory_updates = memory_updates[:3]
     print(f"Memory updates to apply: {len(memory_updates)}")

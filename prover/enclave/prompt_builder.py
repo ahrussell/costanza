@@ -10,7 +10,7 @@ The epoch context includes:
 - Action bounds (max donate, commission range, investment capacity)
 - Nonprofit registry
 - Investment portfolio
-- Memory (guiding policies / agent memory slots)
+- Memory (10 agent memory slots, each {title, body})
 - Donor messages (with datamarking spotlighting)
 - Decision history
 - Action distribution statistics
@@ -534,7 +534,7 @@ def build_epoch_context(state, seed=None, voice_anchors: str = ""):
                 )
 
     # -- Section 5: Memory --
-    policies = state.get("memories", [{"title": "", "body": ""}] * 10)
+    memories = state.get("memories", [{"title": "", "body": ""}] * 10)
     # Each slot is a {title, body} dict. All 10 slots are writable — the
     # model owns the category taxonomy by writing its own titles. Slots
     # with empty title + empty body render as `(empty)`.
@@ -546,7 +546,7 @@ def build_epoch_context(state, seed=None, voice_anchors: str = ""):
             return ("", entry)
         return ("", "")
 
-    has_policies = any(any(_slot_fields(p)) for p in policies)
+    has_memories = any(any(_slot_fields(p)) for p in memories)
     lines.append("")
     lines.append("--- Your Memory ---")
     lines.append(
@@ -554,7 +554,7 @@ def build_epoch_context(state, seed=None, voice_anchors: str = ""):
         "and body to free a slot.)"
     )
     for i in range(10):
-        entry = policies[i] if i < len(policies) else None
+        entry = memories[i] if i < len(memories) else None
         title, body = _slot_fields(entry)
         if not title and not body:
             lines.append(f"  [{i}] (empty)")
@@ -687,15 +687,15 @@ def build_epoch_context(state, seed=None, voice_anchors: str = ""):
     lines.append(f"Total donated lifetime: {format_eth(state.get('total_donated', 0))} ETH ({format_usd(total_donated_usd)} USD). Epochs since last donation: {epochs_since_donation}.")
 
     # Re-state memory — model-authored titles on all 10 slots.
-    if has_policies:
-        active_policies = []
-        for i, p in enumerate(policies):
+    if has_memories:
+        active_memories = []
+        for i, p in enumerate(memories):
             t, b = _slot_fields(p)
             if t or b:
-                active_policies.append((i, t, b))
-        if active_policies:
+                active_memories.append((i, t, b))
+        if active_memories:
             lines.append("Your memory:")
-            for i, t, b in active_policies:
+            for i, t, b in active_memories:
                 display_title = t if t else "(untitled)"
                 display_body = b if b else "(empty body)"
                 lines.append(f"  [{i}] {display_title}: {display_body}")

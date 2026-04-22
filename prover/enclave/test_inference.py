@@ -580,12 +580,6 @@ class TestMemorySidecarClamp(unittest.TestCase):
         aj, _ = self._clamp({"slot": 2, "title": "T", "body": "B"})
         self.assertEqual(aj["memory"], [{"slot": 2, "title": "T", "body": "B"}])
 
-    def test_legacy_policy_key_maps_to_body(self):
-        aj, _ = self._clamp([{"slot": 2, "policy": "legacy body"}])
-        self.assertEqual(aj["memory"], [
-            {"slot": 2, "title": "", "body": "legacy body"}
-        ])
-
     def test_over_cap_truncated(self):
         updates = [
             {"slot": i, "title": f"T{i}", "body": f"B{i}"} for i in range(5)

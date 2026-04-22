@@ -350,10 +350,9 @@ def _clamp_memory_sidecar(action_json: dict, notes: List[str]) -> None:
             dropped += 1
             continue
 
-        # Title + body. Accept legacy `policy` alias for body.
+        # Title + body.
         title = _truncate_utf8(entry.get("title", ""), MAX_TITLE_BYTES)
-        body_raw = entry.get("body", entry.get("policy", ""))
-        body = _truncate_utf8(body_raw, MAX_BODY_BYTES)
+        body = _truncate_utf8(entry.get("body", ""), MAX_BODY_BYTES)
 
         cleaned.append({"slot": slot, "title": title, "body": body})
 

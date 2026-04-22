@@ -672,22 +672,22 @@
     overflow-y: auto; font-family: var(--mono);
   }
 
-  .policy-slot {
+  .memory-slot {
     display: flex; align-items: flex-start; gap: 12px;
     padding: 8px 0;
     border-bottom: 1px solid var(--border);
   }
-  .policy-slot:last-child { border-bottom: none; }
-  .policy-idx {
+  .memory-slot:last-child { border-bottom: none; }
+  .memory-idx {
     font-family: var(--mono); font-size: 11px;
     color: var(--text-dim); min-width: 24px; padding-top: 2px;
   }
-  .policy-name {
+  .memory-name {
     font-size: 11px; color: var(--accent); margin-bottom: 2px;
     font-weight: 500;
   }
-  .policy-text { font-size: 13px; line-height: 1.5; }
-  .policy-empty { font-size: 13px; color: var(--text-dim); font-style: italic; }
+  .memory-text { font-size: 13px; line-height: 1.5; }
+  .memory-empty { font-size: 13px; color: var(--text-dim); font-style: italic; }
 
   /* Phase badge colors */
   .phase-idle { background: var(--surface3); color: var(--text-dim); }
@@ -1983,13 +1983,6 @@ function decodeAction(actionBytes, rejectReason) {
     const verb = rejected ? 'Tried to withdraw' : 'Withdrew';
     return { type: 'withdraw', label: 'withdraw' + labelSuffix, detail: `${verb} ${fmtEth(d[1])} from protocol #${d[0]}${suffix}`, rejected };
   }
-  if (t === 5 && bytes.length >= 33) {
-    try {
-      const d = decoder.decode(['uint256','string'], bytes.slice(1));
-      const verb = rejected ? 'Tried to set' : 'Set';
-      return { type: 'set_guiding_policy', label: 'set_policy' + labelSuffix, detail: d[1] ? `${verb} policy [${d[0]}]: "${d[1]}"${suffix}` : `Cleared policy [${d[0]}]${suffix}`, rejected };
-    } catch { return { type: 'set_guiding_policy', label: 'set_policy' + labelSuffix, detail: 'Updated guiding policy' + suffix, rejected }; }
-  }
   return { type: 'unknown', label: '???' + labelSuffix, detail: 'Unknown action' + suffix, rejected };
 }
 
@@ -2004,8 +1997,7 @@ function actionBadgeClass(type, rejected) {
   if (rejected) return 'badge-red';
   const map = {
     donate: 'badge-green', do_nothing: 'badge-dim', set_commission_rate: 'badge-orange',
-    invest: 'badge-cyan', withdraw: 'badge-purple',
-    set_guiding_policy: 'badge-yellow', unknown: 'badge-dim'
+    invest: 'badge-cyan', withdraw: 'badge-purple', unknown: 'badge-dim'
   };
   return map[type] || 'badge-dim';
 }
@@ -2800,11 +2792,11 @@ async function loadAll() {
       document.getElementById('memory-preview').innerHTML = previewHtml;
       // Full view — render all 10 slots
       document.getElementById('memory-full').innerHTML = slots.map(s => `
-        <div class="policy-slot">
-          <span class="policy-idx">[${s.idx}]</span>
+        <div class="memory-slot">
+          <span class="memory-idx">[${s.idx}]</span>
           <div>
-            <div class="policy-name">${escapeHtml(s.title || '(untitled)')}</div>
-            ${(s.title || s.body) ? `<div class="policy-text">${escapeHtml(s.body || '(empty body)')}</div>` : `<div class="policy-empty">(empty)</div>`}
+            <div class="memory-name">${escapeHtml(s.title || '(untitled)')}</div>
+            ${(s.title || s.body) ? `<div class="memory-text">${escapeHtml(s.body || '(empty body)')}</div>` : `<div class="memory-empty">(empty)</div>`}
           </div>
         </div>
       `).join('');

@@ -7,7 +7,7 @@ pragma solidity ^0.8.20;
 ///         owns the category taxonomy by writing its own titles.
 interface IAgentMemory {
     /// @notice A single memory slot with a model-authored title + body.
-    struct Policy {
+    struct MemoryEntry {
         string title;
         string body;
     }
@@ -21,8 +21,8 @@ interface IAgentMemory {
         string body;  // truncated to MAX_BODY_LENGTH
     }
 
-    function setPolicy(uint256 slot, string calldata title, string calldata body) external;
-    function getPolicy(uint256 slot) external view returns (Policy memory);
-    function getPolicies() external view returns (Policy[10] memory);
+    function setEntry(uint256 slot, string calldata title, string calldata body) external;
+    function getEntry(uint256 slot) external view returns (MemoryEntry memory);
+    function getEntries() external view returns (MemoryEntry[10] memory);
     function stateHash() external view returns (bytes32);
 }

@@ -54,7 +54,7 @@ contract AgentMemoryTest is EpochTest {
             "Prioritize high-impact, evidence-based charities"
         );
 
-        IAgentMemory.Policy memory p = wv.getPolicy(1);
+        IAgentMemory.MemoryEntry memory p = wv.getEntry(1);
         assertEq(p.title, "Donation strategy");
         assertEq(p.body, "Prioritize high-impact, evidence-based charities");
         assertEq(fund.currentEpoch(), 2);
@@ -92,10 +92,10 @@ contract AgentMemoryTest is EpochTest {
         );
 
         _assertEmpty(0);
-        _assertPolicy(1, "Treasury stance", "Grow the treasury before donating");
+        _assertEntry(1, "Treasury stance", "Grow the treasury before donating");
         _assertEmpty(2);
-        _assertPolicy(3, "Portfolio", "Diversify across at least 3 protocols");
-        _assertPolicy(9, "Risk cap", "Never invest more than 25% in one protocol");
+        _assertEntry(3, "Portfolio", "Diversify across at least 3 protocols");
+        _assertEntry(9, "Risk cap", "Never invest more than 25% in one protocol");
         assertEq(fund.currentEpoch(), 4);
     }
 
@@ -110,7 +110,7 @@ contract AgentMemoryTest is EpochTest {
             "Voice",
             "I am the fund. I speak plainly."
         );
-        _assertPolicy(0, "Voice", "I am the fund. I speak plainly.");
+        _assertEntry(0, "Voice", "I am the fund. I speak plainly.");
     }
 
     function test_replace_existing_entry() public {
@@ -120,7 +120,7 @@ contract AgentMemoryTest is EpochTest {
             "Initial",
             uint8(1), "Stance", "Be conservative"
         );
-        _assertPolicy(1, "Stance", "Be conservative");
+        _assertEntry(1, "Stance", "Be conservative");
 
         speedrunEpoch(
             fund,
@@ -128,7 +128,7 @@ contract AgentMemoryTest is EpochTest {
             "Updated",
             uint8(1), "Stance", "Be aggressive"
         );
-        _assertPolicy(1, "Stance", "Be aggressive");
+        _assertEntry(1, "Stance", "Be aggressive");
     }
 
     function test_remove_entry_with_empty_strings() public {
@@ -138,7 +138,7 @@ contract AgentMemoryTest is EpochTest {
             "Set",
             uint8(5), "Temporary", "Temporary entry"
         );
-        _assertPolicy(5, "Temporary", "Temporary entry");
+        _assertEntry(5, "Temporary", "Temporary entry");
 
         speedrunEpoch(
             fund,
@@ -162,7 +162,7 @@ contract AgentMemoryTest is EpochTest {
             longTitle,
             "body here"
         );
-        IAgentMemory.Policy memory p = wv.getPolicy(2);
+        IAgentMemory.MemoryEntry memory p = wv.getEntry(2);
         assertEq(bytes(p.title).length, wv.MAX_TITLE_LENGTH(), "title truncated to MAX_TITLE_LENGTH");
         assertEq(p.body, "body here");
     }
@@ -179,7 +179,7 @@ contract AgentMemoryTest is EpochTest {
             "Title",
             string(b)
         );
-        IAgentMemory.Policy memory p = wv.getPolicy(4);
+        IAgentMemory.MemoryEntry memory p = wv.getEntry(4);
         assertEq(p.title, "Title");
         assertEq(bytes(p.body).length, wv.MAX_BODY_LENGTH(), "body truncated to MAX_BODY_LENGTH");
     }
@@ -265,7 +265,7 @@ contract AgentMemoryTest is EpochTest {
         assertTrue(hash1 != hash2);
     }
 
-    // ─── getPolicies ───────────────────────────────────────────────────
+    // ─── getEntries ───────────────────────────────────────────────────
 
     function test_get_all_entries() public {
         speedrunEpoch(
@@ -281,7 +281,7 @@ contract AgentMemoryTest is EpochTest {
             uint8(4), "B", "Beta"
         );
 
-        IAgentMemory.Policy[10] memory all = wv.getPolicies();
+        IAgentMemory.MemoryEntry[10] memory all = wv.getEntries();
         assertEq(all[0].title, "");
         assertEq(all[0].body, "");
         assertEq(all[1].title, "A");
@@ -326,7 +326,7 @@ contract AgentMemoryTest is EpochTest {
     function test_only_fund_can_set_entry() public {
         vm.prank(address(0xdead));
         vm.expectRevert("only fund");
-        wv.setPolicy(1, "Title", "Unauthorized");
+        wv.setEntry(1, "Title", "Unauthorized");
     }
 
     // ─── Multi-update batch ────────────────────────────────────────────
@@ -344,9 +344,9 @@ contract AgentMemoryTest is EpochTest {
             updates
         );
 
-        _assertPolicy(1, "T1", "B1");
-        _assertPolicy(5, "T5", "B5");
-        _assertPolicy(9, "T9", "B9");
+        _assertEntry(1, "T1", "B1");
+        _assertEntry(5, "T5", "B5");
+        _assertEntry(9, "T9", "B9");
     }
 
     /// @notice A 4-entry batch is truncated to the first 3; the 4th entry is
@@ -360,9 +360,9 @@ contract AgentMemoryTest is EpochTest {
 
         speedrunEpoch(fund, abi.encodePacked(uint8(0)), "Trunc", updates);
 
-        _assertPolicy(1, "T1", "B1");
-        _assertPolicy(2, "T2", "B2");
-        _assertPolicy(3, "T3", "B3");
+        _assertEntry(1, "T1", "B1");
+        _assertEntry(2, "T2", "B2");
+        _assertEntry(3, "T3", "B3");
         _assertEmpty(4); // dropped
     }
 
@@ -374,7 +374,7 @@ contract AgentMemoryTest is EpochTest {
 
         speedrunEpoch(fund, abi.encodePacked(uint8(0)), "Dup", updates);
 
-        _assertPolicy(2, "Last", "last body");
+        _assertEntry(2, "Last", "last body");
     }
 
     /// @notice One bad entry in a batch does not block the others.
@@ -386,9 +386,9 @@ contract AgentMemoryTest is EpochTest {
 
         speedrunEpoch(fund, abi.encodePacked(uint8(0)), "Mixed", updates);
 
-        _assertPolicy(1, "Good1", "ok");
+        _assertEntry(1, "Good1", "ok");
         _assertEmpty(99 % 10); // slot 9 not targeted in this test
-        _assertPolicy(3, "Good3", "ok");
+        _assertEntry(3, "Good3", "ok");
     }
 
     /// @notice Empty updates array is a valid submission shape.
@@ -422,7 +422,7 @@ contract AgentMemoryTest is EpochTest {
         // Both should have happened
         (,,, uint256 donated,,) = fund.getNonprofit(1);
         assertEq(donated, 0.1 ether);
-        _assertPolicy(2, "Posture", "Invest conservatively in bear markets");
+        _assertEntry(2, "Posture", "Invest conservatively in bear markets");
     }
 
     function test_memory_update_with_do_nothing() public {
@@ -436,19 +436,19 @@ contract AgentMemoryTest is EpochTest {
             "Stay patient and grow"
         );
 
-        _assertPolicy(1, "Patience", "Stay patient and grow");
+        _assertEntry(1, "Patience", "Stay patient and grow");
     }
 
     // ─── Helpers ──────────────────────────────────────────────────────
 
-    function _assertPolicy(uint256 slot, string memory title, string memory body) internal view {
-        IAgentMemory.Policy memory p = wv.getPolicy(slot);
+    function _assertEntry(uint256 slot, string memory title, string memory body) internal view {
+        IAgentMemory.MemoryEntry memory p = wv.getEntry(slot);
         assertEq(p.title, title);
         assertEq(p.body, body);
     }
 
     function _assertEmpty(uint256 slot) internal view {
-        IAgentMemory.Policy memory p = wv.getPolicy(slot);
+        IAgentMemory.MemoryEntry memory p = wv.getEntry(slot);
         assertEq(p.title, "");
         assertEq(p.body, "");
     }
