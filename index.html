@@ -1086,7 +1086,7 @@
 
       <div class="card" id="worldview-card" style="cursor:pointer;" onclick="openModal('worldview')">
         <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0;">
-          <span>Worldview <span class="badge badge-dim" id="worldview-badge" style="margin-left:6px;">7 slots</span></span>
+          <span>Worldview <span class="badge badge-dim" id="worldview-badge" style="margin-left:6px;">10 slots</span></span>
           <button class="hero-diary-toggle wc-toggle" onclick="event.stopPropagation();openModal('worldview')">↗</button>
         </div>
         <div id="worldview-preview" style="margin-top:12px;">
@@ -1340,8 +1340,9 @@ const FUND_ABI = [
   "function donate(uint256 referralCode) payable",
   "function donateWithMessage(uint256 referralCode, string calldata message) payable",
   "function mintReferralCode() returns (uint256)",
-  // For calldata decoding of worldview updates
-  "function submitAuctionResult(bytes calldata action, bytes calldata reasoning, bytes calldata proof, uint256 verifierId, uint256 policySlot, string calldata policyText)",
+  // For calldata decoding of worldview updates (v20+: array sidecar,
+  // each entry is a {slot, title, body} struct; up to 3 per epoch).
+  "function submitAuctionResult(bytes calldata action, bytes calldata reasoning, bytes calldata proof, uint8 verifierId, tuple(uint8 slot, string title, string body)[] updates)",
   // Events
   "event DiaryEntry(uint256 indexed epoch, bytes reasoning, bytes action, uint256 treasuryBefore, uint256 treasuryAfter)",
   "event ActionRejected(uint256 indexed epoch, bytes action, uint8 reason)",
@@ -1366,7 +1367,7 @@ const INVESTMENT_ABI = [
 ];
 
 const WORLDVIEW_ABI = [
-  "function getPolicies() view returns (string[10])",
+  "function getPolicies() view returns (tuple(string title, string body)[10])",
 ];
 
 const AUCTION_ABI = [
@@ -1834,14 +1835,10 @@ ACTIONS (choose exactly one per epoch):
 4. withdraw(protocol_id, amount_eth) \u2014 Pull ETH from DeFi
 5. do_nothing \u2014 Take no action this epoch`;
 
-// Worldview slot names. Slot 0 is reserved (legacy "diary style" slot,
-// unused in the live prompt — WorldView.setPolicy rejects writes to it).
-// We index from 1 so SLOT_NAMES[slot] works for slots 1..7.
-const SLOT_NAMES = [
-  null, // slot 0 reserved
-  'Donation strategy', 'Investment stance', 'Current mood',
-  'Biggest lesson', 'Watching', 'Message to donors', 'Wild card',
-];
+// Worldview (v20+): 10 slots, each a {title, body} pair. Titles are
+// model-authored — there's no fixed SLOT_NAMES table. The frontend
+// reads titles live from the chain via WorldView.getPolicies().
+const WORLDVIEW_SLOT_COUNT = 10;
 
 // Freeze flag definitions
 const FREEZE_FLAGS = [
@@ -2138,20 +2135,30 @@ function renderDiaryViewer() {
   let actionHtml = `<span class="badge ${actionBadgeClass(entry.action.type, entry.rejected)}" style="font-size:10px;">${entry.action.label}</span> <span style="${detailStyle}">${entry.action.detail}</span>${entry.bountyPaid > 0n ? ' | Bounty: ' + fmtEthUsdInline(entry.bountyPaid) : ''}`;
   document.getElementById('diary-viewer-action').innerHTML = actionHtml;
 
-  // Worldview diff (if any)
+  // Worldview diffs (if any) — array of up to 3 per epoch
   const wvEl = document.getElementById('diary-viewer-worldview');
-  if (entry.worldviewUpdate) {
-    const wv = entry.worldviewUpdate;
-    const fromHtml = wv.from
-      ? `<span class="wv-diff-from">${escapeHtml(wv.from)}</span><br>`
-      : `<span style="color:var(--text-dim);font-style:italic;">(empty)</span><br>`;
-    wvEl.innerHTML = `
-      <div class="wv-diff">
-        <div class="wv-diff-label">Worldview update</div>
-        <div class="wv-diff-slot">slot [${wv.slot}] &mdash; ${escapeHtml(wv.slotName)}</div>
-        ${fromHtml}
-        <span class="wv-diff-to">${escapeHtml(wv.to)}</span>
-      </div>`;
+  const updates = Array.isArray(entry.worldviewUpdates) ? entry.worldviewUpdates : [];
+  if (updates.length > 0) {
+    const blocks = updates.map(wv => {
+      const fromTitleEmpty = !wv.fromTitle;
+      const fromBodyEmpty = !wv.fromBody;
+      const fromHtml = (fromTitleEmpty && fromBodyEmpty)
+        ? `<span style="color:var(--text-dim);font-style:italic;">(empty)</span><br>`
+        : `<span class="wv-diff-from">${escapeHtml(wv.fromTitle || '(untitled)')}: ${escapeHtml(wv.fromBody || '(empty body)')}</span><br>`;
+      const toTitleEmpty = !wv.toTitle;
+      const toBodyEmpty = !wv.toBody;
+      const toHtml = (toTitleEmpty && toBodyEmpty)
+        ? `<span class="wv-diff-to" style="font-style:italic;">(cleared)</span>`
+        : `<span class="wv-diff-to">${escapeHtml(wv.toTitle || '(untitled)')}: ${escapeHtml(wv.toBody || '(empty body)')}</span>`;
+      return `
+        <div class="wv-diff">
+          <div class="wv-diff-slot">slot [${wv.slot}]</div>
+          ${fromHtml}
+          ${toHtml}
+        </div>`;
+    }).join('');
+    const label = updates.length === 1 ? 'Worldview update' : `Worldview updates (${updates.length})`;
+    wvEl.innerHTML = `<div class="wv-diff-label">${label}</div>${blocks}`;
   } else {
     wvEl.innerHTML = '';
   }
@@ -2278,8 +2285,9 @@ async function loadWorldviewHistory() {
   const entriesWithTx = diaryEntries.filter(e => e.txHash);
   if (entriesWithTx.length === 0) return;
 
-  // Fetch all tx calldata in parallel, extract policySlot + policyText
-  const epochUpdates = [];
+  // Fetch all tx calldata in parallel, extract the worldview updates array
+  // (v20+: up to 3 {slot, title, body} entries per submitAuctionResult call).
+  const perEpoch = [];
   await Promise.allSettled(
     entriesWithTx.map(async (entry) => {
       try {
@@ -2287,32 +2295,47 @@ async function loadWorldviewHistory() {
         if (!tx) return;
         const decoded = fund.interface.parseTransaction({ data: tx.data });
         if (!decoded || decoded.name !== 'submitAuctionResult') return;
-        // args: action, reasoning, proof, verifierId, policySlot, policyText
-        const policySlot = Number(decoded.args[4]);
-        const policyText = decoded.args[5];
-        if (policyText && policyText.length > 0) {
-          epochUpdates.push({ epoch: entry.epoch, slot: policySlot, text: policyText });
+        // args: action, reasoning, proof, verifierId, updates[]
+        const updates = decoded.args[4];
+        if (!updates || updates.length === 0) return;
+        const parsed = [];
+        for (const u of updates) {
+          // ethers v6 returns structs as Result-like objects — index both
+          // by position and by named property for robustness.
+          const slot = Number(u.slot ?? u[0]);
+          const title = String(u.title ?? u[1] ?? '');
+          const body = String(u.body ?? u[2] ?? '');
+          parsed.push({ slot, title, body });
         }
+        perEpoch.push({ epoch: entry.epoch, updates: parsed });
       } catch {}
     })
   );
 
   // Sort chronologically so we can reconstruct "from" values correctly
-  epochUpdates.sort((a, b) => a.epoch - b.epoch);
+  perEpoch.sort((a, b) => a.epoch - b.epoch);
 
-  // Replay worldview state from empty (initial state) forward
-  const state = new Array(10).fill('');
-  for (const upd of epochUpdates) {
-    const entry = diaryEntries.find(e => e.epoch === upd.epoch);
-    if (entry) {
-      entry.worldviewUpdate = {
-        slot: upd.slot,
-        slotName: SLOT_NAMES[upd.slot] || `Slot ${upd.slot}`,
-        from: state[upd.slot],
-        to: upd.text,
+  // Replay worldview state from empty forward — 10 slots, each {title, body}.
+  const state = Array.from({ length: WORLDVIEW_SLOT_COUNT },
+                           () => ({ title: '', body: '' }));
+  for (const { epoch, updates } of perEpoch) {
+    const entry = diaryEntries.find(e => e.epoch === epoch);
+    if (!entry) continue;
+    entry.worldviewUpdates = updates.map(u => {
+      const prev = state[u.slot] || { title: '', body: '' };
+      const diff = {
+        slot: u.slot,
+        fromTitle: prev.title,
+        fromBody: prev.body,
+        toTitle: u.title,
+        toBody: u.body,
       };
-    }
-    state[upd.slot] = upd.text;
+      // Apply update (contract applies in array order — last-wins for dup slot).
+      if (u.slot >= 0 && u.slot < WORLDVIEW_SLOT_COUNT) {
+        state[u.slot] = { title: u.title, body: u.body };
+      }
+      return diff;
+    });
   }
 }
 
@@ -2476,7 +2499,7 @@ async function loadAll() {
           treasuryAfter: rec.treasuryAfter,
           bountyPaid: rec.bountyPaid,
           txHash: diaryEventsByEpoch[e] || null,
-          worldviewUpdate: null,
+          worldviewUpdates: [],
           rejected: rejectReason !== undefined,
           rejectReason: rejectReason,
         });
@@ -2748,40 +2771,43 @@ async function loadAll() {
   }
   document.getElementById('world-age').innerHTML = ageHtml;
 
-  // Worldview card
+  // Worldview card (v20+: 10 slots, each {title, body}, model-authored titles)
   try {
     const wvAddr = await fund.worldView();
     if (wvAddr && wvAddr !== '0x0000000000000000000000000000000000000000') {
       worldViewContract = new ethers.Contract(wvAddr, WORLDVIEW_ABI, provider);
-      const policies = await worldViewContract.getPolicies();
-      // Slot 0 is reserved (legacy); show slots 1-7 only.
-      const displayed = Array.from(policies).slice(1, 8);
-      const activePolicies = displayed.map((p, i) => ({ text: p, idx: i + 1 })).filter(x => x.text.length > 0);
-      const wvBadgeText = `${activePolicies.length}/7 active`;
+      const raw = await worldViewContract.getPolicies();
+      // ethers v6 returns tuple[] as arrays of tuple-like Result objects —
+      // index both by name and by position for resilience.
+      const slots = Array.from(raw).map((p, i) => ({
+        idx: i,
+        title: String(p.title ?? p[0] ?? ''),
+        body: String(p.body ?? p[1] ?? ''),
+      }));
+      const active = slots.filter(s => s.title.length > 0 || s.body.length > 0);
+      const wvBadgeText = `${active.length}/${WORLDVIEW_SLOT_COUNT} active`;
       document.getElementById('worldview-badge').textContent = wvBadgeText;
       document.getElementById('worldview-badge-modal').textContent = wvBadgeText;
-      // Preview: description + random non-empty slot
-      let previewHtml = '<div style="font-size:12px;color:var(--text-secondary);line-height:1.5;margin-bottom:10px;">Costanza can update his worldview based on what he learns each epoch. This acts as his long-term memory.</div>';
-      if (activePolicies.length > 0) {
-        const pick = activePolicies[Math.floor(Math.random() * activePolicies.length)];
+      // Preview: description + a single populated slot picked at random
+      let previewHtml = '<div style="font-size:12px;color:var(--text-secondary);line-height:1.5;margin-bottom:10px;">Costanza can update his worldview based on what he learns each epoch. Titles are his &mdash; he names each slot as he uses it. This acts as his long-term memory.</div>';
+      if (active.length > 0) {
+        const pick = active[Math.floor(Math.random() * active.length)];
         previewHtml += `
-          <div style="font-size:11px;color:var(--text-dim);margin-bottom:4px;">[${pick.idx}] ${SLOT_NAMES[pick.idx] || 'Slot ' + pick.idx}</div>
-          <div style="font-size:12px;color:var(--text-secondary);line-height:1.5;font-style:italic;">${escapeHtml(pick.text)}</div>
+          <div style="font-size:11px;color:var(--text-dim);margin-bottom:4px;">[${pick.idx}] ${escapeHtml(pick.title || '(untitled)')}</div>
+          <div style="font-size:12px;color:var(--text-secondary);line-height:1.5;font-style:italic;">${escapeHtml(pick.body || '(empty body)')}</div>
         `;
       }
       document.getElementById('worldview-preview').innerHTML = previewHtml;
-      // Full view
-      document.getElementById('worldview-full').innerHTML = displayed.map((p, i) => {
-        const slot = i + 1;
-        return `
+      // Full view — render all 10 slots
+      document.getElementById('worldview-full').innerHTML = slots.map(s => `
         <div class="policy-slot">
-          <span class="policy-idx">[${slot}]</span>
+          <span class="policy-idx">[${s.idx}]</span>
           <div>
-            <div class="policy-name">${SLOT_NAMES[slot] || 'Slot ' + slot}</div>
-            ${p ? `<div class="policy-text">${escapeHtml(p)}</div>` : `<div class="policy-empty">(empty)</div>`}
+            <div class="policy-name">${escapeHtml(s.title || '(untitled)')}</div>
+            ${(s.title || s.body) ? `<div class="policy-text">${escapeHtml(s.body || '(empty body)')}</div>` : `<div class="policy-empty">(empty)</div>`}
           </div>
         </div>
-      `;}).join('');
+      `).join('');
     } else {
       document.getElementById('worldview-preview').innerHTML = '<div style="color:var(--text-dim);">WorldView not linked</div>';
     }

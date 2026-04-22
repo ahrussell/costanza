@@ -1,15 +1,17 @@
-# GBNF grammar for v14 action JSON (pass 2 output).
+# GBNF grammar for v20 action JSON (pass 2 output).
 #
 # Applied by llama-server on the /v1/completions call. The prompt ends with
 # "\n</diary>\n{", so the model is continuing inside an already-open object.
 # This grammar matches the continuation from AFTER that opening brace.
 #
-# Structure: exactly one action + params, optional worldview sidecar, then
-# close and stop. No trailing content — no ```json fences, no </output>,
-# no second action JSON, no EOS-literal echoing.
+# Structure: exactly one action + params, optional worldview sidecar (an
+# array of 0-3 {slot, title, body} updates), then close and stop. No
+# trailing content — no ```json fences, no </output>, no second action
+# JSON, no EOS-literal echoing.
 #
-# NB: this does not constrain nonprofit_id / protocol_id ranges; the contract
-# enforces bounds. This only constrains STRUCTURAL validity.
+# NB: this does not constrain nonprofit_id / protocol_id / slot ranges or
+# title/body lengths; the validator clamps and the contract enforces
+# bounds. This only constrains STRUCTURAL validity.
 
 root ::= ws "\"action\":" ws action-body (ws "," ws worldview-kv)? ws "}"
 
@@ -26,7 +28,9 @@ invest-params     ::= "{" ws "\"protocol_id\":"  ws integer ws "," ws "\"amount_
 withdraw-params   ::= "{" ws "\"protocol_id\":"  ws integer ws "," ws "\"amount_eth\":" ws number ws "}"
 commission-params ::= "{" ws "\"rate_bps\":"     ws integer ws "}"
 
-worldview-kv ::= "\"worldview\":" ws "{" ws "\"slot\":" ws integer ws "," ws "\"policy\":" ws string ws "}"
+worldview-kv ::= "\"worldview\":" ws "[" ws worldview-body "]"
+worldview-body ::= (worldview-update (ws "," ws worldview-update)*)? ws
+worldview-update ::= "{" ws "\"slot\":" ws integer ws "," ws "\"title\":" ws string ws "," ws "\"body\":" ws string ws "}"
 
 integer ::= [0-9]+
 number  ::= "-"? ("0" | [1-9] [0-9]*) ("." [0-9]+)?

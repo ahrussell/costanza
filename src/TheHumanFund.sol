@@ -191,6 +191,7 @@ contract TheHumanFund is ReentrancyGuard {
     uint256 public constant MIN_MESSAGE_DONATION = 0.001 ether; // Minimum ETH to include a message
     uint256 public constant MAX_MESSAGE_LENGTH = 280;
     uint256 public constant MAX_MESSAGES_PER_EPOCH = 3;     // Max messages shown to the model per epoch
+    uint256 public constant MAX_POLICY_UPDATES_PER_EPOCH = 3; // Max worldview sidecar updates per epoch
     uint256 public constant PRICE_STALENESS_THRESHOLD = 3600; // 1 hour
     uint256 public constant MAX_MISSED_EPOCHS = 50;           // Cap loop iterations in effectiveMaxBid/currentBond
 
@@ -621,12 +622,17 @@ contract TheHumanFund is ReentrancyGuard {
 
     /// @notice Seed multiple worldview policies at once. Only callable by owner.
     /// @dev Intended for initial setup before the fund goes live.
-    function seedWorldView(uint256[] calldata slots, string[] calldata policies) external onlyOwner {
+    function seedWorldView(
+        uint256[] calldata slots,
+        string[] calldata titles,
+        string[] calldata bodies
+    ) external onlyOwner {
         if (frozenFlags & FREEZE_WORLDVIEW_WIRING != 0) revert Frozen();
         require(address(worldView) != address(0), "no worldview");
-        require(slots.length == policies.length, "length mismatch");
+        require(slots.length == titles.length, "length mismatch");
+        require(slots.length == bodies.length, "length mismatch");
         for (uint256 i = 0; i < slots.length; i++) {
-            worldView.setPolicy(slots[i], policies[i]);
+            worldView.setPolicy(slots[i], titles[i], bodies[i]);
         }
     }
 
@@ -1249,13 +1255,15 @@ contract TheHumanFund is ReentrancyGuard {
 
     /// @notice Submit the auction result (winner only).
     ///         Auto-syncs phase first (closes reveal window, captures seed, binds input hash).
+    /// @param updates Optional worldview policy updates (array form, best-effort,
+    ///                truncated to MAX_POLICY_UPDATES_PER_EPOCH). Duplicate slots
+    ///                are applied in order so the last write wins.
     function submitAuctionResult(
         bytes calldata action,
         bytes calldata reasoning,
         bytes calldata proof,
         uint8 verifierId,
-        int8 policySlot,
-        string calldata policyText
+        IWorldView.PolicyUpdate[] calldata updates
     ) external payable nonReentrant {
         _advanceToNow();
 
@@ -1273,9 +1281,14 @@ contract TheHumanFund is ReentrancyGuard {
         {
             IProofVerifier v = verifiers[verifierId];
             if (address(v) == address(0)) revert InvalidParams();
-            bytes32 outputHash = keccak256(abi.encodePacked(
-                sha256(action), sha256(reasoning)
-            ));
+            // outputHash binds the action bytes, reasoning text, AND the
+            // worldview update batch. Without the updatesHash term, a
+            // malicious prover client could substitute its own worldview
+            // updates between the enclave's output and this submission and
+            // the DCAP verification would still pass — see
+            // prover/enclave/test_output_coverage.py for the analyzer that
+            // enforces every enclave output the client trusts is bound here.
+            bytes32 outputHash = _computeOutputHash(action, reasoning, updates);
             if (!v.verify{value: msg.value}(epochInputHashes[epoch], outputHash, proof))
                 revert ProofFailed();
             epochProofs[epoch] = proof;
@@ -1291,7 +1304,7 @@ contract TheHumanFund is ReentrancyGuard {
 
         emit EpochExecuted(epoch, msg.sender, bountyAmount);
 
-        _applyPolicyUpdate(policySlot, policyText);
+        _applyPolicyUpdates(updates);
         _recordAndExecute(epoch, action, reasoning, bountyAmount);
     }
 
@@ -1317,13 +1330,78 @@ contract TheHumanFund is ReentrancyGuard {
         }
     }
 
+    // ─── Internal: Output Hash (must mirror prover/enclave/attestation.py) ─
+
+    /// @notice Compute the outputHash bound by REPORTDATA. Public so the
+    ///         cross-stack FFI test in test/CrossStackHash.t.sol can compare
+    ///         this to the Python `compute_report_data` output for the same
+    ///         inputs.
+    /// @dev    MUST match `compute_report_data` in
+    ///         `prover/enclave/attestation.py` byte-for-byte. Any change
+    ///         here requires a symmetric Python change AND a CrossStackHash
+    ///         test update — otherwise live submissions revert.
+    function computeOutputHash(
+        bytes calldata action,
+        bytes calldata reasoning,
+        IWorldView.PolicyUpdate[] calldata updates
+    ) external pure returns (bytes32) {
+        return _computeOutputHash(action, reasoning, updates);
+    }
+
+    function _computeOutputHash(
+        bytes calldata action,
+        bytes calldata reasoning,
+        IWorldView.PolicyUpdate[] calldata updates
+    ) internal pure returns (bytes32) {
+        return keccak256(abi.encodePacked(
+            sha256(action),
+            sha256(reasoning),
+            _hashSubmittedUpdates(updates)
+        ));
+    }
+
+    /// @dev Rolling hash over the submitted worldview updates. Empty list
+    ///      → bytes32(0). Each entry is hashed as
+    ///      `keccak256(abi.encode(slot, title, body))`, then folded into
+    ///      `rolling = keccak256(abi.encode(rolling, item))`. Same pattern
+    ///      as _hashNonprofits / _hashUnreadMessages elsewhere in the
+    ///      contract; mirrored byte-for-byte by
+    ///      `_hash_submitted_updates` in attestation.py.
+    function _hashSubmittedUpdates(IWorldView.PolicyUpdate[] calldata updates)
+        internal pure returns (bytes32)
+    {
+        if (updates.length == 0) return bytes32(0);
+        bytes32 rolling = bytes32(0);
+        for (uint256 i = 0; i < updates.length; i++) {
+            bytes32 itemHash = keccak256(abi.encode(
+                updates[i].slot,
+                updates[i].title,
+                updates[i].body
+            ));
+            rolling = keccak256(abi.encode(rolling, itemHash));
+        }
+        return rolling;
+    }
+
     // ─── Internal: Epoch Recording ─────────────────────────────────────
 
-    /// @dev Apply optional worldview policy update. Best-effort — failures
-    ///      are silently ignored so they can't block prover payment or epoch recording.
-    function _applyPolicyUpdate(int8 policySlot, string memory policyText) internal {
-        if (policySlot >= 0 && address(worldView) != address(0)) {
-            try worldView.setPolicy(uint256(uint8(policySlot)), policyText) {
+    /// @dev Apply worldview policy updates. Best-effort — individual failures
+    ///      are silently ignored so one bad entry can't block payment or block
+    ///      the rest of the batch. Batch is capped at MAX_POLICY_UPDATES_PER_EPOCH
+    ///      (extra entries are silently dropped). Duplicate slots are applied
+    ///      in order — last write wins.
+    function _applyPolicyUpdates(IWorldView.PolicyUpdate[] calldata updates) internal {
+        if (address(worldView) == address(0)) return;
+        uint256 n = updates.length;
+        if (n > MAX_POLICY_UPDATES_PER_EPOCH) {
+            n = MAX_POLICY_UPDATES_PER_EPOCH;
+        }
+        for (uint256 i = 0; i < n; i++) {
+            try worldView.setPolicy(
+                uint256(updates[i].slot),
+                updates[i].title,
+                updates[i].body
+            ) {
                 // success
             } catch {
                 // Silently ignore — invalid slot, too-long text, etc.

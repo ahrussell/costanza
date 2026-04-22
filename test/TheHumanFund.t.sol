@@ -434,10 +434,12 @@ contract TheHumanFundTest is EpochTest {
 
         vm.expectRevert(TheHumanFund.Frozen.selector);
         uint256[] memory slots = new uint256[](1);
-        string[] memory policies = new string[](1);
-        slots[0] = 1; // slot 0 is reserved; use slot 1
-        policies[0] = "test";
-        fund.seedWorldView(slots, policies);
+        string[] memory titles = new string[](1);
+        string[] memory bodies = new string[](1);
+        slots[0] = 1;
+        titles[0] = "title";
+        bodies[0] = "test";
+        fund.seedWorldView(slots, titles, bodies);
     }
 
     function test_freezeAuctionConfig() public {

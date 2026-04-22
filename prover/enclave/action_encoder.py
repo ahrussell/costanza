@@ -272,8 +272,112 @@ def _parse_eth_amount(raw) -> Optional[float]:
         return None
 
 
+# Worldview sidecar bounds — must match src/WorldView.sol constants.
+MAX_POLICY_UPDATES_PER_EPOCH = 3
+MAX_TITLE_BYTES = 64
+MAX_BODY_BYTES = 280
+WORLDVIEW_SLOTS = 10
+
+
+def _truncate_utf8(raw, cap: int) -> str:
+    """Truncate a string to `cap` bytes (UTF-8). Matches the contract's
+    byte-level truncation — if a multi-byte codepoint straddles the cap,
+    it's dropped entirely rather than emitting invalid UTF-8."""
+    if raw is None:
+        return ""
+    s = str(raw)
+    encoded = s.encode("utf-8")
+    if len(encoded) <= cap:
+        return s
+    # Walk backward from `cap` to the last valid UTF-8 boundary.
+    # (A UTF-8 continuation byte has top bits 10xxxxxx, i.e. 0x80..0xBF.)
+    truncated = encoded[:cap]
+    while truncated and (truncated[-1] & 0xC0) == 0x80:
+        truncated = truncated[:-1]
+    return truncated.decode("utf-8", errors="ignore")
+
+
+def _clamp_worldview_sidecar(action_json: dict, notes: List[str]) -> None:
+    """Normalize `action_json["worldview"]` to a sanitized list of 0..3
+    `{slot, title, body}` dicts.
+
+    - Single-dict shape (legacy `{slot, policy}` or `{slot, title, body}`)
+      gets wrapped into a one-element list.
+    - Anything non-list/non-dict is dropped.
+    - Each entry must have an integer `slot` in 0..9. Entries outside that
+      range are dropped.
+    - `title` and `body` are truncated to MAX_TITLE_BYTES / MAX_BODY_BYTES.
+    - If the model emitted `policy` (old shape), that value is adopted as
+      the body.
+    - List is truncated to MAX_POLICY_UPDATES_PER_EPOCH entries.
+    - Order is preserved — the contract applies updates in order, so
+      duplicate slots produce last-wins semantics.
+
+    Mutates `action_json` in place so the downstream submission path sees
+    only clean data.
+    """
+    raw = action_json.get("worldview")
+    if raw is None:
+        return
+
+    # Single-object shape → wrap.
+    if isinstance(raw, dict):
+        raw = [raw]
+    if not isinstance(raw, list):
+        # Unsupported shape (string, number, etc.) — drop silently.
+        action_json["worldview"] = []
+        notes.append(
+            "worldview sidecar dropped — expected a list of up to 3 "
+            "{slot, title, body} entries"
+        )
+        return
+
+    cleaned: List[dict] = []
+    dropped = 0
+    for entry in raw:
+        if not isinstance(entry, dict):
+            dropped += 1
+            continue
+
+        # Slot must be a plain integer 0..9. Coerce strings like "3".
+        slot_raw = entry.get("slot")
+        try:
+            slot = int(slot_raw)
+        except (TypeError, ValueError):
+            dropped += 1
+            continue
+        if slot < 0 or slot >= WORLDVIEW_SLOTS:
+            dropped += 1
+            continue
+
+        # Title + body. Accept legacy `policy` alias for body.
+        title = _truncate_utf8(entry.get("title", ""), MAX_TITLE_BYTES)
+        body_raw = entry.get("body", entry.get("policy", ""))
+        body = _truncate_utf8(body_raw, MAX_BODY_BYTES)
+
+        cleaned.append({"slot": slot, "title": title, "body": body})
+
+    over_cap = max(0, len(cleaned) - MAX_POLICY_UPDATES_PER_EPOCH)
+    cleaned = cleaned[:MAX_POLICY_UPDATES_PER_EPOCH]
+
+    action_json["worldview"] = cleaned
+
+    if dropped > 0:
+        notes.append(
+            f"worldview sidecar dropped {dropped} malformed entr"
+            f"{'ies' if dropped > 1 else 'y'} (bad slot or shape)"
+        )
+    if over_cap > 0:
+        notes.append(
+            f"worldview sidecar truncated to {MAX_POLICY_UPDATES_PER_EPOCH} "
+            f"entries (extra {over_cap} dropped)"
+        )
+
+
 def validate_and_clamp_action(action_json: dict, state: dict):
     """Clamp donate/invest/withdraw amounts to the bounds shown in the prompt.
+    Also clamp the optional worldview sidecar (slot range, title/body length,
+    max 3 entries) before it's handed to the contract.
 
     Args:
         action_json: parsed action from parse_action()
@@ -291,6 +395,10 @@ def validate_and_clamp_action(action_json: dict, state: dict):
     notes: List[str] = []
     if not isinstance(action_json, dict):
         return action_json, notes
+
+    # Always normalize/clamp the worldview sidecar — runs regardless of action
+    # shape so fallback + garbage-action paths still strip malformed sidecars.
+    _clamp_worldview_sidecar(action_json, notes)
 
     action = str(action_json.get("action", "")).split("(")[0].strip().lower()
 

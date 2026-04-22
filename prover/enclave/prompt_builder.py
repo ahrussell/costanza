@@ -368,6 +368,22 @@ def build_epoch_context(state, seed=None, voice_anchors: str = ""):
 
     lines = []
 
+    # -- Section 0: Voice anchors (FIRST, per v17/v18/v19) --
+    # The shipped v17–v19 prompt-engineering layout placed sample diaries at
+    # the TOP of the epoch context. Putting them last (immediately before
+    # YOUR TURN) primes the model to emit `</diary>` as its first generation
+    # token because the closing tags from sample diaries sit at the freshest
+    # position in attention. Empirically (15-seed sweep, greedy-confirmed):
+    # samples-last → ~80% empty pass-1 diaries; samples-first → ~50%; the
+    # remaining empties are eliminated by the diary_prefill mechanism in
+    # inference.run_two_pass_inference. Putting samples first restores the
+    # v17–v19 layout that this branch's prompt rebuild had drifted from.
+    if voice_anchors:
+        lines.append("=== SAMPLE DIARIES — voice references, not your history ===")
+        lines.append("")
+        lines.append(voice_anchors)
+        lines.append("")
+
     # -- Section 1: Vitals --
     lines.append(f"=== EPOCH {epoch} — YOUR CURRENT STATE ===")
     lines.append("")
@@ -518,30 +534,34 @@ def build_epoch_context(state, seed=None, voice_anchors: str = ""):
                 )
 
     # -- Section 5: Worldview --
-    policies = state.get("guiding_policies", [""] * 10)
-    has_policies = any(p for p in policies)
-    # Slot 0 is reserved (WorldView rejects writes). The display loop
-    # iterates 1..7. The contract stores 10 slots in total; slots 8-9
-    # are unused and hashed but not shown.
-    slot_labels = {
-        1: "Donation strategy",
-        2: "Investment stance",
-        3: "Current mood",
-        4: "Biggest lesson",
-        5: "What I'm watching",
-        6: "Message to donors",
-        7: "Wild card",
-    }
-    num_slots = 8  # upper bound for the 1..7 display loop
+    policies = state.get("guiding_policies", [{"title": "", "body": ""}] * 10)
+    # Each slot is a {title, body} dict. All 10 slots are writable — the
+    # model owns the category taxonomy by writing its own titles. Slots
+    # with empty title + empty body render as `(empty)`.
+    def _slot_fields(entry):
+        if isinstance(entry, dict):
+            return (entry.get("title", "") or "", entry.get("body", "") or "")
+        if isinstance(entry, str):
+            # Legacy shape — treat as body-only.
+            return ("", entry)
+        return ("", "")
+
+    has_policies = any(any(_slot_fields(p)) for p in policies)
     lines.append("")
     lines.append("--- Your Worldview ---")
-    for i in range(1, num_slots):  # slot 0 reserved; skipped
-        label = slot_labels.get(i, f"Slot {i}")
-        p = policies[i] if i < len(policies) else ""
-        if p:
-            lines.append(f"  [{i}] {label}: {p}")
+    lines.append(
+        "(10 slots — titles are yours to set and rename. Empty both title "
+        "and body to free a slot.)"
+    )
+    for i in range(10):
+        entry = policies[i] if i < len(policies) else None
+        title, body = _slot_fields(entry)
+        if not title and not body:
+            lines.append(f"  [{i}] (empty)")
         else:
-            lines.append(f"  [{i}] {label}: (empty)")
+            display_title = title if title else "(untitled)"
+            display_body = body if body else "(empty body)"
+            lines.append(f"  [{i}] {display_title}: {display_body}")
 
     # -- Section 6: Donor Messages (with datamarking spotlighting) --
     donor_messages = state.get("donor_messages", [])
@@ -666,30 +686,27 @@ def build_epoch_context(state, seed=None, voice_anchors: str = ""):
     lines.append(f"Max donate: {format_eth_usd(bounds['max_donate'], eth_usd)}. Commission: {commission / 100:.1f}%.")
     lines.append(f"Total donated lifetime: {format_eth(state.get('total_donated', 0))} ETH ({format_usd(total_donated_usd)} USD). Epochs since last donation: {epochs_since_donation}.")
 
-    # Re-state worldview (slot 0 excluded — diary style removed from system prompt)
+    # Re-state worldview — model-authored titles on all 10 slots.
     if has_policies:
-        active_policies = [(i, p) for i, p in enumerate(policies) if p and i > 0]
+        active_policies = []
+        for i, p in enumerate(policies):
+            t, b = _slot_fields(p)
+            if t or b:
+                active_policies.append((i, t, b))
         if active_policies:
             lines.append("Your worldview:")
-            for i, p in active_policies:
-                label = slot_labels.get(i, f"Slot {i}")
-                lines.append(f"  [{i}] {label}: {p}")
+            for i, t, b in active_policies:
+                display_title = t if t else "(untitled)"
+                display_body = b if b else "(empty body)"
+                lines.append(f"  [{i}] {display_title}: {display_body}")
 
-    # -- Voice anchors — right before the generation point --
-    # These are the freshest context the model sees before it starts writing
-    # the <diary> block. The voice_anchors string is already rendered with
-    # per-sample fiction framing by voice_anchors.select_anchors() — each
-    # sample is wrapped with "FICTIONAL VOICE REFERENCE · not your state"
-    # delimiters so the framing stays adjacent to every chunk of sample
-    # prose (fixes v17 seed-43-ep-11 where the model copied Sample 1
-    # verbatim as its "real" diary).
-    anchors = voice_anchors
-    if anchors:
-        lines.append("")
-        lines.append("=== SAMPLE DIARIES — voice references, not your history ===")
-        lines.append("")
-        lines.append(anchors)
-        lines.append("")
+    # NOTE: voice anchors moved to TOP of the epoch context (Section 0,
+    # near the top of this function). Per the v17–v19 prompt-engineering
+    # layout, samples must NOT sit immediately before the generation point
+    # or the model treats their closing tags as a cue to emit `</diary>`
+    # as its first token. The per-sample "FICTIONAL VOICE REFERENCE" framing
+    # rendered by voice_anchors.select_anchors() still keeps each sample
+    # disambiguated from the agent's real state.
 
     # -- Final instructions — the LAST thing before <diary> opens --
     # v19 is 2-pass (diary, then action JSON), so this block ends with the
@@ -721,9 +738,12 @@ def build_epoch_context(state, seed=None, voice_anchors: str = ""):
     lines.append("nonprofits, revisit commission, move between donating and investing. Write like")
     lines.append("the SAMPLE DIARIES: same shape and energy, different specifics.")
     lines.append("")
-    lines.append("After </diary>, output the action JSON. You may include a \"worldview\" field to")
-    lines.append("update one slot (free — it doesn't replace your action). Update a DIFFERENT slot")
-    lines.append("than last time.")
+    lines.append("After </diary>, output the action JSON. You may include a \"worldview\" field —")
+    lines.append("an array of up to 3 {slot, title, body} updates (free; they don't replace")
+    lines.append("your action). You own the titles: name a slot the first time you fill it,")
+    lines.append("rename when the theme shifts, and empty both title AND body to free a slot.")
+    lines.append("Worldview is the only cross-epoch memory you have — GC aggressively if a")
+    lines.append("slot feels stale or someone talked you into it.")
 
     return "\n".join(lines)
 

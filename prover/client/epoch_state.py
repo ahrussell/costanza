@@ -65,7 +65,12 @@ _IM_ABI = [
 
 _WV_ABI = [
     {"name": "getPolicies", "type": "function", "inputs": [],
-     "outputs": [{"type": "string[10]"}], "stateMutability": "view"},
+     "outputs": [
+         {"type": "tuple[10]", "components": [
+             {"name": "title", "type": "string"},
+             {"name": "body", "type": "string"},
+         ]},
+     ], "stateMutability": "view"},
 ]
 
 _MSG_ABI = [
@@ -245,12 +250,30 @@ def read_contract_state(contract, w3, epoch=None):
         pass
 
     # ── Worldview (live read — stable between freeze and verify) ─────────
-    state["guiding_policies"] = [""] * 10
+    # Each slot is a {title, body} pair. All 10 slots are writable.
+    state["guiding_policies"] = [{"title": "", "body": ""} for _ in range(10)]
     try:
         wv_addr = contract.functions.worldView().call()
         if wv_addr and wv_addr != "0x0000000000000000000000000000000000000000":
             wv = w3.eth.contract(address=Web3.to_checksum_address(wv_addr), abi=_WV_ABI)
-            state["guiding_policies"] = list(wv.functions.getPolicies().call())
+            # web3.py decodes the tuple[10] return as a list of (title, body)
+            # tuples. Normalize to dicts so the prompt/hasher see a stable shape.
+            raw = wv.functions.getPolicies().call()
+            normalized = []
+            for entry in raw:
+                if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                    normalized.append({"title": entry[0] or "", "body": entry[1] or ""})
+                elif isinstance(entry, dict):
+                    normalized.append({
+                        "title": entry.get("title", "") or "",
+                        "body": entry.get("body", "") or "",
+                    })
+                else:
+                    normalized.append({"title": "", "body": ""})
+            # Pad / truncate to exactly 10 slots.
+            while len(normalized) < 10:
+                normalized.append({"title": "", "body": ""})
+            state["guiding_policies"] = normalized[:10]
     except Exception:
         pass
 

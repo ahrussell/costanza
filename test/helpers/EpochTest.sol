@@ -4,6 +4,7 @@ pragma solidity ^0.8.20;
 import "forge-std/Test.sol";
 import "../../src/TheHumanFund.sol";
 import "../../src/interfaces/IAuctionManager.sol";
+import "../../src/interfaces/IWorldView.sol";
 import "./MockProofVerifier.sol";
 
 /// @dev Shared base for tests that drive the contract through full epochs.
@@ -60,26 +61,42 @@ abstract contract EpochTest is Test {
         bytes memory action,
         bytes memory reasoning
     ) internal {
-        _speedrunEpochInternal(fund, action, reasoning, -1, "");
+        _speedrunEpochInternal(fund, action, reasoning, _emptyUpdates());
     }
 
-    /// @dev Execute one epoch's action with a worldview sidecar update.
+    /// @dev Execute one epoch's action with a single worldview sidecar update.
     function speedrunEpoch(
         TheHumanFund fund,
         bytes memory action,
         bytes memory reasoning,
-        int8 policySlot,
-        string memory policyText
+        uint8 slot,
+        string memory title,
+        string memory body
     ) internal {
-        _speedrunEpochInternal(fund, action, reasoning, policySlot, policyText);
+        IWorldView.PolicyUpdate[] memory updates = new IWorldView.PolicyUpdate[](1);
+        updates[0] = IWorldView.PolicyUpdate({slot: slot, title: title, body: body});
+        _speedrunEpochInternal(fund, action, reasoning, updates);
+    }
+
+    /// @dev Execute one epoch's action with a batch of worldview sidecar updates.
+    function speedrunEpoch(
+        TheHumanFund fund,
+        bytes memory action,
+        bytes memory reasoning,
+        IWorldView.PolicyUpdate[] memory updates
+    ) internal {
+        _speedrunEpochInternal(fund, action, reasoning, updates);
+    }
+
+    function _emptyUpdates() internal pure returns (IWorldView.PolicyUpdate[] memory) {
+        return new IWorldView.PolicyUpdate[](0);
     }
 
     function _speedrunEpochInternal(
         TheHumanFund fund,
         bytes memory action,
         bytes memory reasoning,
-        int8 policySlot,
-        string memory policyText
+        IWorldView.PolicyUpdate[] memory updates
     ) private {
         IAuctionManager am = fund.auctionManager();
         require(
@@ -108,8 +125,7 @@ abstract contract EpochTest is Test {
         // 5. Submit result (runner executes the action; sets epochs[e].executed)
         vm.prank(EPOCH_TEST_RUNNER);
         fund.submitAuctionResult(
-            action, reasoning, bytes("mock"), EPOCH_TEST_VERIFIER_ID,
-            policySlot, policyText
+            action, reasoning, bytes("mock"), EPOCH_TEST_VERIFIER_ID, updates
         );
 
         // 6. nextPhase — EXECUTION → COMMIT of next epoch (opens new auction)

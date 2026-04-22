@@ -169,7 +169,7 @@ thehumanfund/
 │   ├── TheHumanFund.sol         # Main smart contract
 │   ├── TdxVerifier.sol          # TDX attestation verifier
 │   ├── InvestmentManager.sol    # DeFi portfolio manager
-│   ├── WorldView.sol            # Agent worldview — 8 persistent slots
+│   ├── WorldView.sol            # Agent worldview — 10 persistent slots (each {title, body})
 │   ├── interfaces/
 │   │   ├── IAggregatorV3.sol            # Chainlink V3 price feed interface
 │   │   ├── IAuctionManager.sol          # Auction manager interface
@@ -278,7 +278,7 @@ thehumanfund/
   - `syncPhase()` — permissionless, catches the contract up to wall-clock.
   - `commit(commitHash) payable` — auto-syncs, forwards to `am.commit(msg.sender, hash)` with bond = `currentBond()`.
   - `reveal(bidAmount, salt)` — auto-syncs, forwards to `am.reveal(msg.sender, bid, salt)`; AM enforces `bid <= maxBid`; main XORs salt into `epochSaltAccumulator[epoch]`.
-  - `submitAuctionResult(action, reasoning, proof, verifierId, policySlot, policyText)` — auto-syncs, TDX-verifies proof, calls `am.settleExecution{value: bounty}()` which pays bond + bounty to winner in one transfer. Executes action best-effort.
+  - `submitAuctionResult(action, reasoning, proof, verifierId, PolicyUpdate[] updates)` — auto-syncs, TDX-verifies proof, calls `am.settleExecution{value: bounty}()` which pays bond + bounty to winner in one transfer. Executes action best-effort. `updates` is an array of up to 3 `{slot, title, body}` worldview sidecar updates (contract truncates; each entry wrapped in its own try/catch).
   - `nextPhase()` owner-only — syncs first, then advances exactly one state-machine step (via `am.nextPhase()` intra-epoch, or `_closeExecution` + `_openAuction` cross-epoch).
   - `resetAuction(cw, rw, xw)` owner-only — syncs first, calls `am.abortAuction()` (refunds all bonds), updates main's timing, advances one epoch, re-opens.
 - **Escalation counters (both live in main, update at `_closeExecution`)**:
@@ -298,7 +298,7 @@ thehumanfund/
 - 3 = invest(protocol_id, amount) — delegate to InvestmentManager
 - 4 = withdraw(protocol_id, amount) — delegate to InvestmentManager
 
-Worldview updates happen via sidecar parameters (`policySlot`, `policyText`) on `submitAuctionResult`, not via an action type. Both the action and the policy sidecar are best-effort: as long as the TDX proof verifies, the winner gets bond refund + bounty immediately; a malformed action emits `ActionRejected` and an invalid policy slot is silently ignored, but neither reverts the submission.
+Worldview updates happen via a sidecar array (`PolicyUpdate[] updates`) on `submitAuctionResult`, not via an action type. Up to 3 updates per epoch; duplicates apply in order (last-wins). Both the action and the sidecar are best-effort: as long as the TDX proof verifies, the winner gets bond refund + bounty immediately; a malformed action emits `ActionRejected` and individual invalid slots are silently ignored, but neither reverts the submission.
 
 ## Prover Client
 
@@ -393,7 +393,7 @@ The agent outputs exactly one action per epoch as JSON, with an optional worldvi
 | `withdraw` | `protocol_id` (1-8), `amount_eth` | up to full position value |
 | `do_nothing` | none | -- |
 
-Worldview updates (slots 1-7, max 280 chars) happen alongside the action — they don't consume it. Slot 0 is reserved (legacy "diary style" slot) and WorldView rejects writes to it.
+Worldview updates happen alongside the action — they don't consume it. Each epoch the model can update up to 3 slots; each slot holds a model-authored `{title, body}` pair (title ≤ 64 bytes, body ≤ 280 bytes). All 10 slots (0-9) are writable; the model owns the category taxonomy by writing its own titles. Duplicate slot entries in the same batch apply in order (last-wins).
 
 Output format (v19 is 2-pass — diary then grammar-constrained action JSON, no scratchpad):
 ```
@@ -405,5 +405,5 @@ Output format (v19 is 2-pass — diary then grammar-constrained action JSON, no 
 
 With optional worldview update:
 ```
-{"action": "...", "params": {...}, "worldview": {"slot": 3, "policy": "Hopeful. The drought is ending."}}
+{"action": "...", "params": {...}, "worldview": [{"slot": 3, "title": "Current mood", "body": "Hopeful. The drought is ending."}]}
 ```

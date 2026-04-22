@@ -70,6 +70,8 @@ The action pass is locked to a GBNF grammar (`prover/enclave/action_grammar.gbnf
 
 **Residual risk**: A well-crafted 280-char donor message (costing 0.01 ETH, datamarked with seed-derived markers from unpredictable `block.prevrandao`) could still subtly bias the model's reasoning within contract bounds. Combined with datamarking spotlighting, per-sample fiction framing on voice anchors, display-data verification, message length limits, economic barriers, contract bounds (max 10% donation per epoch), grammar-gated actions, and validator clamping, the practical exploit cost exceeds extractable value.
 
+**Note (v20 worldview schema)**: The persistent-state surface has grown. Each worldview slot is now a model-authored `{title, body}` pair (title ≤ 64 bytes, body ≤ 280 bytes, up to 344 bytes per slot), all 10 slots are writable, and the model can update up to 3 slots per epoch. Worst-case adversarial-persistence footprint is therefore ~10 × 344 ≈ 3.4 KB of model-controllable persistent state (up from ~1.9 KB in the pre-v20 `string[10]` layout). Mitigations: (i) an explicit "GC stale or coerced slots aggressively" prompt nudge in `prompt_builder.py`'s final-turn block, (ii) the 3-updates-per-epoch cap — full adversarial capture of all 10 slots still takes 4+ epochs, visible in the diary and in `DiaryEntry` decoding, (iii) the enclave validator drops malformed entries and truncates the batch before submission, (iv) datamarking continues to visually distinguish donor content from system text. Residual exploit cost still exceeds extractable value at treasury scale.
+
 ---
 
 #### M-2: Last-Revealer Influence on Randomness Seed (Accepted)
@@ -90,7 +92,7 @@ The randomness seed mixes `block.prevrandao` with the XOR of all revealed salts.
 
 Previously, all cross-stack tests used empty investments and worldview. Three new tests now exercise populated data:
 - `test_cross_stack_hash_with_investments`: Two protocols (Aave WETH + Lido wstETH) with deposits, verifying `bool active`, `uint8 risk_tier`, `uint16 expected_apy_bps` encoding.
-- `test_cross_stack_hash_with_worldview`: Three non-empty policy slots, verifying string ABI-encoding across 10 slots.
+- `test_cross_stack_hash_with_worldview`: Three non-empty policy slots, verifying string ABI-encoding across 10 slots. Updated for v20 `{title, body}` layout (now 20 strings in `abi.encode`) and re-verified by `test_cross_stack_hash_with_titles` which exercises mixed empty / title-only / full slot shapes via the multi-update sidecar.
 - `test_cross_stack_hash_with_investments_and_worldview`: Combined test with both populated.
 
 All 7 cross-stack tests pass. Edge cases with maximum collection sizes remain untested but are lower priority.

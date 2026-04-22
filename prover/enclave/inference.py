@@ -39,6 +39,7 @@ quote.
 """
 
 import json
+import random
 import re
 import time
 from pathlib import Path
@@ -58,6 +59,15 @@ DEFAULT_LLAMA_URL = "http://127.0.0.1:8080"
 # never fire — the grammar enforces structural validity at the decoder —
 # but kept for defense if the grammar file ever goes missing on the rootfs.
 MAX_ACTION_RETRIES = 4
+
+# How many times to re-roll pass 1 (diary) with a PRNG-derived deterministic
+# seed if the model emits `</diary>` as its first token (empty diary). Empty
+# rate on a single roll is ~1-7% depending on the base seed region; retries
+# collapse that to effectively zero because each retry uses a seed drawn
+# from random.Random(base_seed) and independence across the full 2^31 seed
+# space is high. 100 is an extreme ceiling — probes across 150 diverse base
+# seeds found max attempts in single digits, and zero no-recover cases.
+MAX_PASS1_RETRIES = 100
 
 # Grammar file path on the dm-verity rootfs. GBNF definition that constrains
 # pass 2 output to exactly-shaped action JSON. Resolved relative to this
@@ -80,6 +90,28 @@ DEFAULT_PASS1_MAX_TOKENS = 1024
 # Pass 2 max_tokens. Action JSON is ~100-200 tokens tops even with the
 # worldview sidecar; 256 gives headroom for verbose worldview policy text.
 DEFAULT_PASS2_MAX_TOKENS = 256
+
+# Diary pre-fill. Without it, Hermes 4 70B emits `</diary>` as its first
+# generation token roughly 80% of the time on the production prompt — even
+# under greedy decoding. Probing with a 15-seed sweep + temp=0 confirms the
+# model genuinely scores the empty-diary continuation highest; it's not a
+# sampling artifact.
+#
+# Choice of prefill: probed seven candidates against the same failing prompt.
+# Short prepended openers like "It " or "Today, " hit 0% empty but contaminate
+# every on-chain diary with a forced opening word. A strip-able header like
+# "Dear Diary,\n\n" hits 0–7% empty AND produces clean Costanza-voice openings
+# ("Epoch three. Nobody wrote me anything." / "I started yesterday. Two
+# donations so far."). Other neutral candidates ("Begin diary entry:\n\n",
+# "Entry:\n\n", "\n\n", "> ", "———\n\n") all gave 20–100% empty, so the
+# header form is what the model actually responds to.
+#
+# The prefill is appended to pass 1 to anchor generation, then STRIPPED from
+# the returned `reasoning` so the on-chain text is 100% model voice. Pass 2's
+# prompt re-includes the prefill to keep the assembled context byte-consistent
+# with what pass 1 saw. Hashing is unaffected: REPORTDATA = sha256(reasoning)
+# operates on the stripped text end-to-end.
+DEFAULT_DIARY_PREFILL = "Dear Diary,\n\n"
 
 
 def call_llama(
@@ -207,6 +239,25 @@ def sanitize_thinking(text):
     )
 
 
+def _pass1_retry_seeds(base_seed: int, n_attempts: int):
+    """Deterministic seed sequence for pass-1 retries.
+
+    The first attempt uses `base_seed` as-is so the no-retry path is
+    bit-for-bit identical to pre-retry behavior. Subsequent attempts draw
+    from `random.Random(base_seed)` so they're spread across the full
+    seed space (avoiding the linear-correlation pitfall of `base + n`,
+    where two adjacent seeds can both land on the empty-diary basin).
+
+    Returns: list of seeds, length n_attempts. If base_seed < 0 (random
+    seed mode), returns [-1] * n_attempts so llama-server picks a fresh
+    random seed each retry.
+    """
+    if base_seed < 0:
+        return [-1] * n_attempts
+    rng = random.Random(base_seed)
+    return [base_seed] + [rng.randint(0, 2**31 - 1) for _ in range(n_attempts - 1)]
+
+
 def _load_grammar() -> str:
     """Read the GBNF grammar from disk. Empty string if missing.
 
@@ -234,6 +285,7 @@ def run_two_pass_inference(
     min_p=DEFAULT_MIN_P,
     pass1_max_tokens=DEFAULT_PASS1_MAX_TOKENS,
     pass2_max_tokens=DEFAULT_PASS2_MAX_TOKENS,
+    diary_prefill=DEFAULT_DIARY_PREFILL,
 ):
     """Two-pass inference: diary, then grammar-constrained action JSON.
 
@@ -247,6 +299,10 @@ def run_two_pass_inference(
         top_p / top_k / min_p: sampler. v19 defaults disable top_p/top_k
             and rely on min_p for tail-cutting.
         pass1_max_tokens / pass2_max_tokens: per-pass generation cap.
+        diary_prefill: short string appended to the pass-1 prompt and
+            prepended back to the returned diary text. See
+            DEFAULT_DIARY_PREFILL docstring above for rationale. Pass "" to
+            disable (used in tests that need exact prompt/diary assertions).
 
     Returns dict with keys: text, thinking, reasoning (=diary), action_text,
     parsed_action, action_attempts, elapsed_seconds, tokens.
@@ -254,41 +310,82 @@ def run_two_pass_inference(
     `thinking` is always "" in v19 — retained in the return shape for
     backward compatibility with downstream consumers.
     """
-    # Pass 1: Diary. Prompt already ends with '<diary>\n', so the model
-    # continues inside the diary block and stops at '</diary>'.
-    print(
-        f"  Pass 1: diary temp={pass1_temp} fp={pass1_frequency_penalty} "
-        f"top_p={top_p} min_p={min_p} max_tok={pass1_max_tokens}..."
-    )
-    r1 = call_llama(
-        prompt,
-        max_tokens=pass1_max_tokens,
-        temperature=pass1_temp,
-        stop=["</diary>"],
-        seed=seed,
-        frequency_penalty=pass1_frequency_penalty,
-        top_p=top_p,
-        top_k=top_k,
-        min_p=min_p,
-        llama_url=llama_url,
-    )
-    raw_diary = r1["text"]
-    # Belt-and-suspenders: clip at </diary> in case the stop token was
-    # missed (rare with llama-server's decoded-text stop matching, but
-    # not impossible with unusual tokenizers).
-    if "</diary>" in raw_diary:
-        raw_diary = raw_diary.split("</diary>", 1)[0]
-    diary = strip_diary_meta_lines(raw_diary.strip())
-    diary = strip_diary_stray_tags(diary)
-    print(f"  Diary: {len(diary)} chars, {r1['elapsed_seconds']}s")
+    # Pass 1: Diary. Prompt ends with '<diary>\n' (and an optional
+    # diary_prefill); model continues, stops at '</diary>'.
+    #
+    # Retry-on-empty: if the model emits </diary> as its first token
+    # (empty diary), we re-roll with a deterministic PRNG-derived seed
+    # drawn from random.Random(base_seed). This handles the rare case
+    # where a specific seed sits in the empty-diary basin even with the
+    # prefill in place.
+    pass1_prompt = prompt + diary_prefill
+    pass1_seeds = _pass1_retry_seeds(seed, MAX_PASS1_RETRIES)
+    p1_elapsed_total = 0.0
+    p1_prompt_tok = 0
+    p1_comp_tok = 0
+    pass1_attempts = 0
+    diary = ""
+    r1 = None
+    for attempt, attempt_seed in enumerate(pass1_seeds):
+        pass1_attempts = attempt + 1
+        print(
+            f"  Pass 1: diary attempt {pass1_attempts}/{MAX_PASS1_RETRIES} "
+            f"seed={attempt_seed} temp={pass1_temp} fp={pass1_frequency_penalty} "
+            f"top_p={top_p} min_p={min_p} max_tok={pass1_max_tokens} "
+            f"prefill={diary_prefill!r}..."
+        )
+        r1 = call_llama(
+            pass1_prompt,
+            max_tokens=pass1_max_tokens,
+            temperature=pass1_temp,
+            stop=["</diary>"],
+            seed=attempt_seed,
+            frequency_penalty=pass1_frequency_penalty,
+            top_p=top_p,
+            top_k=top_k,
+            min_p=min_p,
+            llama_url=llama_url,
+        )
+        p1_elapsed_total += r1["elapsed_seconds"]
+        p1_prompt_tok += r1["tokens"]["prompt_tokens"]
+        p1_comp_tok += r1["tokens"]["completion_tokens"]
+        # The prefill is STRIPPED from the on-chain diary so `reasoning`
+        # is 100% model voice. r1["text"] is what the model generated
+        # AFTER the prefill, so we take it as-is. lstrip() handles model
+        # leading whitespace.
+        raw_diary = r1["text"].lstrip()
+        if "</diary>" in raw_diary:
+            raw_diary = raw_diary.split("</diary>", 1)[0]
+        candidate = strip_diary_meta_lines(raw_diary.strip())
+        candidate = strip_diary_stray_tags(candidate)
+        if len(candidate.strip()) >= 5:
+            diary = candidate
+            print(
+                f"  Diary: {len(diary)} chars, {r1['elapsed_seconds']}s "
+                f"(attempt {pass1_attempts})"
+            )
+            break
+        print(
+            f"  Pass 1 attempt {pass1_attempts}: empty diary "
+            f"(<5 chars) — re-rolling"
+        )
+    else:
+        # All retries exhausted — accept whatever we got, even if empty.
+        # Caller will fall back; the action JSON pass still runs.
+        print(
+            f"  Pass 1: ALL {MAX_PASS1_RETRIES} retries produced empty "
+            f"diary — proceeding with empty reasoning"
+        )
 
     # Pass 2: Action JSON. Grammar-constrained output guaranteed valid.
-    # Prompt extension: original prompt + diary + </diary>\n{ so the model
-    # picks up generation of a JSON object continuing from the '{'.
+    # Prompt extension: pass1_prompt + diary + </diary>\n{ — using
+    # pass1_prompt (which includes the prefill) keeps the assembled
+    # context byte-consistent with what pass 1 actually generated, even
+    # though `diary` itself has the prefill stripped.
     grammar = _load_grammar()
     if not grammar:
         print("  WARNING: action grammar not found; pass 2 will run unconstrained")
-    prompt2 = prompt + diary + "\n</diary>\n{"
+    prompt2 = pass1_prompt + diary + "\n</diary>\n{"
 
     action_text = None
     parsed_action = None
@@ -338,9 +435,9 @@ def run_two_pass_inference(
             f"caller should fall back to no-action"
         )
 
-    total_elapsed = r1["elapsed_seconds"] + p2_elapsed
-    total_prompt_tok = r1["tokens"]["prompt_tokens"] + p2_prompt_tok
-    total_comp_tok = r1["tokens"]["completion_tokens"] + p2_comp_tok
+    total_elapsed = p1_elapsed_total + p2_elapsed
+    total_prompt_tok = p1_prompt_tok + p2_prompt_tok
+    total_comp_tok = p1_comp_tok + p2_comp_tok
 
     return {
         "text": diary + "\n</diary>\n" + action_text,
@@ -349,6 +446,7 @@ def run_two_pass_inference(
         "action_text": action_text.strip(),
         "parsed_action": parsed_action,  # None if all retries failed
         "action_attempts": attempts,
+        "pass1_attempts": pass1_attempts,  # how many diary re-rolls were needed
         "elapsed_seconds": total_elapsed,
         "tokens": {
             "prompt_tokens": total_prompt_tok,

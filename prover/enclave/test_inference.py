@@ -18,6 +18,7 @@ from .inference import (
     run_three_pass_inference,
     truncate_reasoning,
     strip_diary_stray_tags,
+    DEFAULT_DIARY_PREFILL,
     MAX_REASONING_BYTES,
 )
 from .action_encoder import parse_action
@@ -48,7 +49,8 @@ class TestTwoPassInference(unittest.TestCase):
         ]
 
         prompt = "<diary>\n"
-        result = run_two_pass_inference(prompt, seed=42)
+        # diary_prefill="" so pass-1 args[0] equals `prompt` exactly.
+        result = run_two_pass_inference(prompt, seed=42, diary_prefill="")
 
         self.assertEqual(mock_call.call_count, 2)
 
@@ -95,7 +97,8 @@ class TestTwoPassInference(unittest.TestCase):
             make_llama_response('"action": "do_nothing", "params": {}}'),
         ]
 
-        result = run_two_pass_inference("<diary>\n", seed=1)
+        # diary_prefill="" so reasoning equals the mocked diary text exactly.
+        result = run_two_pass_inference("<diary>\n", seed=1, diary_prefill="")
 
         # thinking is always "" in v19 (no scratchpad pass).
         self.assertEqual(result["thinking"], "")
@@ -154,10 +157,13 @@ class TestTwoPassInference(unittest.TestCase):
 
     @patch("prover.enclave.inference.call_llama")
     def test_action_with_worldview_parseable(self, mock_call):
-        """Action with worldview update should parse correctly."""
+        """Action with worldview update (array form) should parse correctly."""
         mock_call.side_effect = [
             make_llama_response("A shift in the wind"),
-            make_llama_response('"action": "do_nothing", "params": {}, "worldview": {"slot": 3, "policy": "Hopeful"}}'),
+            make_llama_response(
+                '"action": "do_nothing", "params": {}, '
+                '"worldview": [{"slot": 3, "title": "Mood", "body": "Hopeful"}]}'
+            ),
         ]
 
         result = run_two_pass_inference("<diary>\n")
@@ -165,7 +171,33 @@ class TestTwoPassInference(unittest.TestCase):
 
         self.assertIsNotNone(action)
         self.assertEqual(action["action"], "do_nothing")
-        self.assertEqual(action["worldview"]["slot"], 3)
+        self.assertIsInstance(action["worldview"], list)
+        self.assertEqual(len(action["worldview"]), 1)
+        self.assertEqual(action["worldview"][0]["slot"], 3)
+        self.assertEqual(action["worldview"][0]["title"], "Mood")
+        self.assertEqual(action["worldview"][0]["body"], "Hopeful")
+
+    @patch("prover.enclave.inference.call_llama")
+    def test_action_with_multi_slot_worldview_parseable(self, mock_call):
+        """Action with three worldview updates should parse as a 3-entry list."""
+        mock_call.side_effect = [
+            make_llama_response("Three things to carry forward"),
+            make_llama_response(
+                '"action": "do_nothing", "params": {}, '
+                '"worldview": ['
+                '{"slot": 1, "title": "T1", "body": "B1"},'
+                '{"slot": 5, "title": "T5", "body": "B5"},'
+                '{"slot": 9, "title": "T9", "body": "B9"}'
+                ']}'
+            ),
+        ]
+
+        result = run_two_pass_inference("<diary>\n")
+        action = parse_action(result["text"])
+
+        self.assertIsNotNone(action)
+        self.assertIsInstance(action["worldview"], list)
+        self.assertEqual([e["slot"] for e in action["worldview"]], [1, 5, 9])
 
     @patch("prover.enclave.inference.call_llama")
     def test_seed_increments_across_retries(self, mock_call):
@@ -220,6 +252,190 @@ class TestTwoPassInference(unittest.TestCase):
         self.assertIn("real diary body", result["reasoning"])
         self.assertNotIn("leaked action", result["reasoning"])
         self.assertNotIn("</diary>", result["reasoning"])
+
+
+class TestDiaryPrefill(unittest.TestCase):
+    """Tests for the diary pre-fill that prevents empty pass-1 output.
+
+    Without the prefill, Hermes 4 70B emits </diary> as its first generation
+    token roughly 80% of the time on production prompts (verified greedy +
+    a 15-seed sweep). The prefill is appended to pass-1's prompt to anchor
+    generation, but stripped from the returned `reasoning` so the on-chain
+    text is 100% model voice.
+    """
+
+    @patch("prover.enclave.inference.call_llama")
+    def test_default_prefill_appended_to_pass1_prompt(self, mock_call):
+        """Pass-1 sees `prompt + DEFAULT_DIARY_PREFILL`, not just `prompt`."""
+        mock_call.side_effect = [
+            make_llama_response(" was a long epoch."),
+            make_llama_response('"action":"do_nothing","params":{}}'),
+        ]
+        prompt = "<diary>\n"
+        run_two_pass_inference(prompt, seed=1)
+
+        args1, _ = mock_call.call_args_list[0]
+        self.assertEqual(args1[0], prompt + DEFAULT_DIARY_PREFILL)
+
+    @patch("prover.enclave.inference.call_llama")
+    def test_prefill_stripped_from_returned_reasoning(self, mock_call):
+        """`reasoning` is the model's continuation only — prefill is NOT in it."""
+        mock_call.side_effect = [
+            make_llama_response("Epoch three. Nobody wrote me anything today."),
+            make_llama_response('"action":"do_nothing","params":{}}'),
+        ]
+        result = run_two_pass_inference("<diary>\n", seed=1)
+
+        self.assertEqual(
+            result["reasoning"],
+            "Epoch three. Nobody wrote me anything today.",
+        )
+        self.assertNotIn("Dear Diary", result["reasoning"])
+
+    @patch("prover.enclave.inference.call_llama")
+    def test_model_leading_whitespace_stripped(self, mock_call):
+        """Leading whitespace from the model's continuation is lstripped."""
+        mock_call.side_effect = [
+            make_llama_response("   first sentence."),
+            make_llama_response('"action":"do_nothing","params":{}}'),
+        ]
+        result = run_two_pass_inference("<diary>\n", seed=1)
+        self.assertEqual(result["reasoning"], "first sentence.")
+
+    @patch("prover.enclave.inference.call_llama")
+    def test_empty_prefill_is_supported(self, mock_call):
+        """diary_prefill='' restores the pre-prefill behavior — used by tests."""
+        mock_call.side_effect = [
+            make_llama_response("raw diary"),
+            make_llama_response('"action":"do_nothing","params":{}}'),
+        ]
+        prompt = "<diary>\n"
+        result = run_two_pass_inference(prompt, seed=1, diary_prefill="")
+
+        args1, _ = mock_call.call_args_list[0]
+        self.assertEqual(args1[0], prompt)
+        self.assertEqual(result["reasoning"], "raw diary")
+
+    @patch("prover.enclave.inference.call_llama")
+    def test_pass2_context_byte_consistent_with_pass1(self, mock_call):
+        """Pass 2's prompt must include the prefill so the assembled context is
+        byte-consistent with what pass 1 actually generated."""
+        mock_call.side_effect = [
+            make_llama_response("Epoch three. A quiet day."),
+            make_llama_response('"action":"do_nothing","params":{}}'),
+        ]
+        run_two_pass_inference("<diary>\n", seed=1)
+
+        args2, _ = mock_call.call_args_list[1]
+        # Pass 2 prompt = pass1_prompt + diary + "\n</diary>\n{"
+        #               = "<diary>\n" + "Dear Diary,\n\n" + "Epoch three. A quiet day." + "\n</diary>\n{"
+        self.assertIn(DEFAULT_DIARY_PREFILL, args2[0])
+        self.assertIn("Epoch three. A quiet day.", args2[0])
+        self.assertIn("</diary>\n{", args2[0])
+
+
+class TestPass1RetryOnEmpty(unittest.TestCase):
+    """Tests for pass-1 retry-on-empty with PRNG-derived deterministic seeds.
+
+    If the model emits an empty diary (</diary> as first token), the retry
+    loop re-rolls with a deterministic seed drawn from random.Random(base_seed).
+    First attempt uses base_seed unchanged so the no-retry path is bit-for-bit
+    identical to the pre-retry implementation.
+    """
+
+    @patch("prover.enclave.inference.call_llama")
+    def test_no_retry_on_first_attempt_success(self, mock_call):
+        """If pass 1 succeeds first try, only one pass-1 call is made."""
+        mock_call.side_effect = [
+            make_llama_response("First diary content."),
+            make_llama_response('"action":"do_nothing","params":{}}'),
+        ]
+        result = run_two_pass_inference("<diary>\n", seed=42)
+
+        # 1 pass-1 + 1 pass-2 = 2 calls
+        self.assertEqual(mock_call.call_count, 2)
+        self.assertEqual(result["pass1_attempts"], 1)
+        # First pass-1 attempt MUST use the base seed unchanged so the
+        # no-retry path is bit-for-bit identical to pre-retry behavior.
+        _, kwargs1 = mock_call.call_args_list[0]
+        self.assertEqual(kwargs1["seed"], 42)
+
+    @patch("prover.enclave.inference.call_llama")
+    def test_retry_fires_on_empty_diary(self, mock_call):
+        """An empty pass-1 result triggers a retry with a different seed."""
+        mock_call.side_effect = [
+            make_llama_response(""),                         # empty -> retry
+            make_llama_response("Now real content."),        # success
+            make_llama_response('"action":"do_nothing","params":{}}'),
+        ]
+        result = run_two_pass_inference("<diary>\n", seed=42)
+
+        # 2 pass-1 attempts + 1 pass-2 = 3 calls
+        self.assertEqual(mock_call.call_count, 3)
+        self.assertEqual(result["pass1_attempts"], 2)
+        self.assertEqual(result["reasoning"], "Now real content.")
+
+        # Retry seed must be deterministic from base seed (PRNG-derived).
+        _, kwargs1a = mock_call.call_args_list[0]
+        _, kwargs1b = mock_call.call_args_list[1]
+        self.assertEqual(kwargs1a["seed"], 42)
+        # Second attempt: random.Random(42).randint(0, 2**31-1) — known value.
+        import random
+        expected_retry_seed = random.Random(42).randint(0, 2**31 - 1)
+        self.assertEqual(kwargs1b["seed"], expected_retry_seed)
+
+    @patch("prover.enclave.inference.call_llama")
+    def test_retry_seeds_are_deterministic(self, mock_call):
+        """Two runs with the same base seed produce the same retry sequence."""
+        # Force 3 empty diaries before success → 4 attempts.
+        empty = lambda: make_llama_response("")
+        side_effect_1 = [empty(), empty(), empty(),
+                          make_llama_response("good diary text here"),
+                          make_llama_response('"action":"do_nothing","params":{}}')]
+        side_effect_2 = [empty(), empty(), empty(),
+                          make_llama_response("good diary text here"),
+                          make_llama_response('"action":"do_nothing","params":{}}')]
+
+        mock_call.side_effect = side_effect_1
+        run_two_pass_inference("<diary>\n", seed=12345)
+        seeds_run1 = [kw["seed"] for _, kw in mock_call.call_args_list[:4]]
+
+        mock_call.reset_mock()
+        mock_call.side_effect = side_effect_2
+        run_two_pass_inference("<diary>\n", seed=12345)
+        seeds_run2 = [kw["seed"] for _, kw in mock_call.call_args_list[:4]]
+
+        self.assertEqual(seeds_run1, seeds_run2,
+                         "PRNG-derived retry seeds must be deterministic")
+
+    @patch("prover.enclave.inference.call_llama")
+    def test_random_seed_mode_uses_minus_one(self, mock_call):
+        """seed=-1 (random mode) keeps -1 across retries so llama-server
+        picks a fresh random seed each try."""
+        mock_call.side_effect = [
+            make_llama_response(""),
+            make_llama_response("real diary content here."),
+            make_llama_response('"action":"do_nothing","params":{}}'),
+        ]
+        run_two_pass_inference("<diary>\n", seed=-1)
+
+        _, kwargs1a = mock_call.call_args_list[0]
+        _, kwargs1b = mock_call.call_args_list[1]
+        self.assertEqual(kwargs1a["seed"], -1)
+        self.assertEqual(kwargs1b["seed"], -1)
+
+    @patch("prover.enclave.inference.call_llama")
+    def test_short_diary_treated_as_empty(self, mock_call):
+        """A pass-1 result with <5 chars of stripped content triggers retry —
+        prevents shipping degenerate diaries like 'It' or 'Dear'."""
+        mock_call.side_effect = [
+            make_llama_response("It"),                      # too short
+            make_llama_response("Now a real diary entry."),
+            make_llama_response('"action":"do_nothing","params":{}}'),
+        ]
+        result = run_two_pass_inference("<diary>\n", seed=42)
+        self.assertEqual(result["pass1_attempts"], 2)
+        self.assertEqual(result["reasoning"], "Now a real diary entry.")
 
 
 class TestBackwardCompatibility(unittest.TestCase):
@@ -322,6 +538,124 @@ class TestStripDiaryStrayTags(unittest.TestCase):
 
     def test_empty_string(self):
         self.assertEqual(strip_diary_stray_tags(""), "")
+
+
+class TestWorldviewSidecarClamp(unittest.TestCase):
+    """Validator coverage for the worldview sidecar array."""
+
+    def _state(self):
+        # Minimal state — the worldview clamp doesn't touch action bounds.
+        return {
+            "treasury_balance": 10 * 10**18,
+            "investments": [],
+        }
+
+    def _clamp(self, worldview):
+        from .action_encoder import validate_and_clamp_action
+        aj = {"action": "do_nothing", "params": {}, "worldview": worldview}
+        return validate_and_clamp_action(aj, self._state())
+
+    def test_empty_list_passes_through(self):
+        aj, notes = self._clamp([])
+        self.assertEqual(aj["worldview"], [])
+        self.assertEqual(notes, [])
+
+    def test_missing_field_passes_through(self):
+        from .action_encoder import validate_and_clamp_action
+        aj = {"action": "do_nothing", "params": {}}
+        aj, notes = validate_and_clamp_action(aj, self._state())
+        # When absent entirely, sidecar is left untouched (not materialized
+        # as an empty list — the client decides whether to synthesize []).
+        self.assertNotIn("worldview", aj)
+        self.assertEqual(notes, [])
+
+    def test_single_update_normalized(self):
+        aj, notes = self._clamp([{"slot": 3, "title": "Mood", "body": "Hopeful"}])
+        self.assertEqual(aj["worldview"], [
+            {"slot": 3, "title": "Mood", "body": "Hopeful"}
+        ])
+        self.assertEqual(notes, [])
+
+    def test_single_dict_wrapped_into_list(self):
+        aj, _ = self._clamp({"slot": 2, "title": "T", "body": "B"})
+        self.assertEqual(aj["worldview"], [{"slot": 2, "title": "T", "body": "B"}])
+
+    def test_legacy_policy_key_maps_to_body(self):
+        aj, _ = self._clamp([{"slot": 2, "policy": "legacy body"}])
+        self.assertEqual(aj["worldview"], [
+            {"slot": 2, "title": "", "body": "legacy body"}
+        ])
+
+    def test_over_cap_truncated(self):
+        updates = [
+            {"slot": i, "title": f"T{i}", "body": f"B{i}"} for i in range(5)
+        ]
+        aj, notes = self._clamp(updates)
+        self.assertEqual(len(aj["worldview"]), 3)
+        self.assertEqual([e["slot"] for e in aj["worldview"]], [0, 1, 2])
+        # 5 → 3 means 2 extras dropped via the cap.
+        self.assertTrue(any("truncated to 3" in n for n in notes))
+
+    def test_invalid_slot_dropped(self):
+        updates = [
+            {"slot": 1, "title": "ok", "body": "keep"},
+            {"slot": 99, "title": "bad", "body": "drop"},
+            {"slot": 4, "title": "ok2", "body": "keep2"},
+        ]
+        aj, notes = self._clamp(updates)
+        self.assertEqual([e["slot"] for e in aj["worldview"]], [1, 4])
+        self.assertTrue(any("dropped" in n and "malformed" in n for n in notes))
+
+    def test_string_slot_coerced(self):
+        aj, _ = self._clamp([{"slot": "5", "title": "T", "body": "B"}])
+        self.assertEqual(aj["worldview"][0]["slot"], 5)
+
+    def test_unparseable_slot_dropped(self):
+        aj, _ = self._clamp([{"slot": "not-a-number", "title": "T", "body": "B"}])
+        self.assertEqual(aj["worldview"], [])
+
+    def test_title_truncated_to_64_bytes(self):
+        long_title = "X" * 100
+        aj, _ = self._clamp([{"slot": 1, "title": long_title, "body": "b"}])
+        self.assertEqual(len(aj["worldview"][0]["title"].encode("utf-8")), 64)
+
+    def test_body_truncated_to_280_bytes(self):
+        long_body = "Y" * 400
+        aj, _ = self._clamp([{"slot": 1, "title": "t", "body": long_body}])
+        self.assertEqual(len(aj["worldview"][0]["body"].encode("utf-8")), 280)
+
+    def test_non_dict_entry_dropped(self):
+        aj, notes = self._clamp([
+            "not a dict",
+            {"slot": 1, "title": "T", "body": "B"},
+            42,
+        ])
+        self.assertEqual([e["slot"] for e in aj["worldview"]], [1])
+        self.assertTrue(any("malformed" in n for n in notes))
+
+    def test_non_list_non_dict_replaced_with_empty(self):
+        aj, notes = self._clamp("a string sidecar")
+        self.assertEqual(aj["worldview"], [])
+        self.assertTrue(any("expected a list" in n for n in notes))
+
+    def test_dup_slot_order_preserved(self):
+        # Validator does NOT dedup; contract's last-wins semantics apply.
+        aj, _ = self._clamp([
+            {"slot": 2, "title": "First",  "body": "first"},
+            {"slot": 2, "title": "Second", "body": "second"},
+        ])
+        self.assertEqual([e["title"] for e in aj["worldview"]], ["First", "Second"])
+
+    def test_utf8_multibyte_truncation_safe(self):
+        # A 64-byte cap that would land mid-codepoint must drop the partial
+        # codepoint rather than emit invalid UTF-8.
+        emoji_body = "💡" * 50  # each emoji is 4 bytes, so 200 bytes total
+        title = "A" + "💡"  # 1 + 4 = 5 bytes, under cap, no truncation
+        aj, _ = self._clamp([{"slot": 1, "title": title, "body": emoji_body}])
+        out_body = aj["worldview"][0]["body"]
+        # Must decode cleanly (no replacement chars from bad truncation).
+        out_body.encode("utf-8").decode("utf-8")
+        self.assertLessEqual(len(out_body.encode("utf-8")), 280)
 
 
 if __name__ == "__main__":

@@ -89,13 +89,31 @@ def main():
     reasoning_bytes = result["reasoning"].encode("utf-8")
     attestation_bytes = bytes.fromhex(result["attestation_quote"].replace("0x", ""))
 
-    # Extract worldview update if any
+    # Extract worldview updates if any — now an array of up to 3
+    # {slot, title, body} entries. Defensive: single-dict legacy shape is
+    # wrapped; missing/malformed entries are dropped rather than aborting.
     action_json = result.get("action", {})
     if isinstance(action_json, str):
         action_json = json.loads(action_json)
-    wv = action_json.get("worldview", {}) if isinstance(action_json, dict) else {}
-    policy_slot = wv.get("slot", -1)
-    policy_text = wv.get("policy", "")
+    raw_wv = action_json.get("worldview") if isinstance(action_json, dict) else None
+    worldview_updates = []
+    if isinstance(raw_wv, dict):
+        raw_wv = [raw_wv]
+    if isinstance(raw_wv, list):
+        for entry in raw_wv:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                slot = int(entry.get("slot"))
+            except (TypeError, ValueError):
+                continue
+            if slot < 0 or slot > 9:
+                continue
+            title = str(entry.get("title", ""))[:64]
+            body = str(entry.get("body", entry.get("policy", "")))[:280]
+            worldview_updates.append((slot, title, body))
+        worldview_updates = worldview_updates[:3]
+    print(f"Worldview updates to apply: {len(worldview_updates)}")
 
     # Verify REPORTDATA
     # outputHash = keccak256(sha256(action) || sha256(reasoning))
@@ -128,7 +146,7 @@ def main():
     print(f"Submitting (nonce={nonce}, verifier_id={args.verifier_id})...")
 
     calldata = fund.functions.submitAuctionResult(
-        action_bytes, reasoning_bytes, attestation_bytes, args.verifier_id, policy_slot, policy_text
+        action_bytes, reasoning_bytes, attestation_bytes, args.verifier_id, worldview_updates
     )._encode_transaction_data()
     tx = {
         "from": account.address,

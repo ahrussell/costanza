@@ -133,12 +133,48 @@ contract CrossStackHashTest is EpochTest {
 
         // Set policies via epoch actions (worldview updates are sidecars on submitAuctionResult)
         bytes memory doNothingAction = abi.encodePacked(uint8(0));
-        speedrunEpoch(fund, doNothingAction, "set policy 1", 1, "Cautious. Preserve capital above all.");
-        speedrunEpoch(fund, doNothingAction, "set policy 3", 3, "Hopeful. The drought is ending.");
-        speedrunEpoch(fund, doNothingAction, "set policy 7", 7, "Generous. Give freely when the treasury is healthy.");
+        speedrunEpoch(fund, doNothingAction, "set policy 1",
+            uint8(1), "Mood", "Cautious. Preserve capital above all.");
+        speedrunEpoch(fund, doNothingAction, "set policy 3",
+            uint8(3), "Outlook", "Hopeful. The drought is ending.");
+        speedrunEpoch(fund, doNothingAction, "set policy 7",
+            uint8(7), "Stance", "Generous. Give freely when the treasury is healthy.");
 
         // Now epoch 4 is open with a snapshot that includes worldview hash.
         _assertCrossStackMatch(4, "with worldview");
+    }
+
+    /// @notice Exercises the title+body worldview layout end-to-end — mixed
+    ///         empty / title-only / full / long-title slots to catch any
+    ///         padding or truncation drift between Solidity and Python.
+    function test_cross_stack_hash_with_titles() public {
+        WorldView wv = new WorldView(address(fund));
+        fund.setWorldView(address(wv));
+
+        bytes memory doNothingAction = abi.encodePacked(uint8(0));
+
+        // Batch update via multi-slot sidecar — 3 slots with varied shapes.
+        IWorldView.PolicyUpdate[] memory updates = new IWorldView.PolicyUpdate[](3);
+        updates[0] = IWorldView.PolicyUpdate({
+            slot: 0,
+            title: "Voice",
+            body: "I speak plainly."
+        });
+        updates[1] = IWorldView.PolicyUpdate({
+            slot: 4,
+            title: "Donor grudges",
+            // Avoid apostrophes: the FFI harness wraps stdin JSON in single
+            // quotes, so a stray apostrophe in the body breaks shell parsing.
+            body: "Still thinking about 0xab12 and the hospice question."
+        });
+        updates[2] = IWorldView.PolicyUpdate({
+            slot: 9,
+            title: "Risk cap",
+            body: ""  // title-only
+        });
+        speedrunEpoch(fund, doNothingAction, "seed titles", updates);
+
+        _assertCrossStackMatch(2, "with titles (multi-update)");
     }
 
     /// @notice Test with both investments AND worldview populated.
@@ -155,7 +191,8 @@ contract CrossStackHashTest is EpochTest {
 
         // Invest + set worldview in one epoch
         bytes memory investAction = abi.encodePacked(uint8(3), abi.encode(uint256(1), uint256(0.05 ether)));
-        speedrunEpoch(fund, investAction, "invest and set policy", 2, "Balanced. Diversify across protocols.");
+        speedrunEpoch(fund, investAction, "invest and set policy",
+            uint8(2), "Stance", "Balanced. Diversify across protocols.");
 
         // Epoch 2 is open with both populated.
         _assertCrossStackMatch(2, "with investments and worldview");
@@ -167,6 +204,110 @@ contract CrossStackHashTest is EpochTest {
         bytes32 pythonHash = _callPythonHash(stateJson);
         assertEq(solidityHash, pythonHash,
             string.concat("Solidity/Python hashes must match: ", label));
+    }
+
+    // ─── Output-hash parity ───────────────────────────────────────────────
+    //
+    // Solidity computes outputHash inline in submitAuctionResult and exposes
+    // the same logic via TheHumanFund.computeOutputHash. Python computes the
+    // same value via prover/enclave/attestation.compute_report_data — but
+    // its return is REPORTDATA = sha256(inputHash || outputHash), so for
+    // parity we use the dedicated scripts/compute_output_hash.py helper that
+    // exposes only the outputHash term.
+    //
+    // If these diverge: live submissions revert (DCAP REPORTDATA mismatch).
+    // The asymmetry caught the v20 worldview gap before deploy: Solidity
+    // bound `updates` into outputHash, Python had to add the same term to
+    // compute_report_data, and any drift would show up here as a failed
+    // assertEq — not at runtime.
+
+    function test_cross_stack_output_hash_no_updates() public {
+        bytes memory action = abi.encodePacked(uint8(0));
+        bytes memory reasoning = bytes("calm and considered.");
+        IWorldView.PolicyUpdate[] memory updates = new IWorldView.PolicyUpdate[](0);
+        _assertOutputHashMatch(action, reasoning, updates, "no updates");
+    }
+
+    function test_cross_stack_output_hash_one_update() public {
+        bytes memory action = abi.encodePacked(uint8(0));
+        bytes memory reasoning = bytes("a single shift in the wind.");
+        IWorldView.PolicyUpdate[] memory updates = new IWorldView.PolicyUpdate[](1);
+        updates[0] = IWorldView.PolicyUpdate({
+            slot: 3, title: "Mood", body: "Hopeful, briefly."
+        });
+        _assertOutputHashMatch(action, reasoning, updates, "one update");
+    }
+
+    function test_cross_stack_output_hash_three_updates() public {
+        // Encoded donate(nonprofit_id=2, amount_eth=0.05): action_type=1,
+        // followed by abi.encode of two uint256 args.
+        bytes memory action = abi.encodePacked(
+            uint8(1), abi.encode(uint256(2), uint256(0.05 ether))
+        );
+        bytes memory reasoning = bytes("Three things to carry forward.");
+        IWorldView.PolicyUpdate[] memory updates = new IWorldView.PolicyUpdate[](3);
+        updates[0] = IWorldView.PolicyUpdate({
+            slot: 0, title: "Voice", body: "Plainspoken."
+        });
+        updates[1] = IWorldView.PolicyUpdate({
+            slot: 4, title: "Tracking", body: "Donor 0xab12 and the hospice question."
+        });
+        updates[2] = IWorldView.PolicyUpdate({
+            slot: 9, title: "Risk cap", body: ""
+        });
+        _assertOutputHashMatch(action, reasoning, updates, "three updates");
+    }
+
+    function _assertOutputHashMatch(
+        bytes memory action,
+        bytes memory reasoning,
+        IWorldView.PolicyUpdate[] memory updates,
+        string memory label
+    ) internal {
+        bytes32 sol = fund.computeOutputHash(action, reasoning, updates);
+        bytes32 py = _callPythonOutputHash(action, reasoning, updates);
+        assertEq(sol, py,
+            string.concat("Solidity/Python outputHash must match: ", label));
+    }
+
+    function _callPythonOutputHash(
+        bytes memory action,
+        bytes memory reasoning,
+        IWorldView.PolicyUpdate[] memory updates
+    ) internal returns (bytes32) {
+        string memory updatesJson = _buildUpdatesJson(updates);
+        string memory payload = string.concat(
+            '{"action":"0x', _bytesToHex(action),
+            '","reasoning":"', string(reasoning),
+            '","updates":', updatesJson, '}'
+        );
+
+        string[] memory cmd = new string[](4);
+        cmd[0] = "bash";
+        cmd[1] = "-c";
+        cmd[2] = string.concat(
+            "echo '", payload, "' | python3 scripts/compute_output_hash.py"
+        );
+        cmd[3] = "";
+
+        bytes memory result = vm.ffi(cmd);
+        return abi.decode(result, (bytes32));
+    }
+
+    function _buildUpdatesJson(IWorldView.PolicyUpdate[] memory updates)
+        internal view returns (string memory)
+    {
+        if (updates.length == 0) return "[]";
+        string memory result = "[";
+        for (uint256 i = 0; i < updates.length; i++) {
+            if (i > 0) result = string.concat(result, ",");
+            result = string.concat(result,
+                '{"slot":', vm.toString(uint256(updates[i].slot)),
+                ',"title":"', updates[i].title,
+                '","body":"', updates[i].body, '"}'
+            );
+        }
+        return string.concat(result, "]");
     }
 
     // ─── Internal Helpers ──────────────────────────────────────────────────
@@ -280,11 +421,14 @@ contract CrossStackHashTest is EpochTest {
         IWorldView wv = fund.worldView();
         if (address(wv) == address(0)) return "[]";
 
-        string[10] memory policies = wv.getPolicies();
+        IWorldView.Policy[10] memory policies = wv.getPolicies();
         string memory result = "[";
         for (uint256 i = 0; i < 10; i++) {
             if (i > 0) result = string.concat(result, ",");
-            result = string.concat(result, '"', policies[i], '"');
+            result = string.concat(result,
+                '{"title":"', policies[i].title,
+                '","body":"', policies[i].body, '"}'
+            );
         }
         return string.concat(result, "]");
     }

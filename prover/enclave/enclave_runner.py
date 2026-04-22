@@ -409,7 +409,7 @@ def main():
 
         if action_json is None:
             log(f"  Action parse FAILED after {inference.get('action_attempts', '?')} attempts — falling back to no action")
-            action_json = {"action": "do_nothing", "params": {}}
+            action_json = {"action": "do_nothing", "params": {}, "worldview": []}
             system_notes.append(
                 "model failed to output valid JSON after several attempts — "
                 "defaulting to no action this epoch"
@@ -449,13 +449,25 @@ def main():
                 reasoning = reasoning.rstrip() + notes_block
         reasoning = truncate_reasoning(reasoning)
         action_bytes = encode_action_bytes(action_json)
+        # The validator (validate_and_clamp_action) has already canonicalized
+        # the worldview sidecar: 0..3 entries, each {slot, title, body} with
+        # bounded sizes. This is the EXACT list the client will submit and
+        # the contract will hash for outputHash. Capturing the local var
+        # here both (a) lets us hash it into REPORTDATA and (b) gives the
+        # client a single canonical source it can pass through unchanged.
+        submitted_worldview = action_json.get("worldview", []) if isinstance(action_json, dict) else []
+        if not isinstance(submitted_worldview, list):
+            submitted_worldview = []
         log(f"  Action bytes: {len(action_bytes)} bytes")
         log(f"  Reasoning: {len(reasoning)} chars ({len(system_notes)} system notes appended)")
+        log(f"  Worldview updates: {len(submitted_worldview)}")
 
         # Step 7: Get TDX attestation quote
         log("")
         log("Step 7: Generating TDX attestation quote...")
-        report_data = compute_report_data(input_hash, action_bytes, reasoning)
+        report_data = compute_report_data(
+            input_hash, action_bytes, reasoning, submitted_worldview
+        )
         quote = get_tdx_quote(report_data, allow_mock=args.mock)
         log(f"  Quote: {len(quote)} bytes")
         log(f"  Report data: 0x{report_data.hex()[:32]}...")
@@ -468,6 +480,7 @@ def main():
             "reasoning": reasoning,
             "action": action_json,
             "action_bytes": "0x" + action_bytes.hex(),
+            "submitted_worldview": submitted_worldview,
             "attestation_quote": "0x" + quote.hex(),
             "report_data": "0x" + report_data.hex(),
             "input_hash": "0x" + input_hash.hex(),

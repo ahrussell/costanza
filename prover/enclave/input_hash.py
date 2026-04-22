@@ -241,13 +241,18 @@ def _hash_worldview(policies: list) -> bytes:
 
     Solidity:
         return keccak256(abi.encode(
-            policies[0], policies[1], ..., policies[9]
+            policies[0].title, policies[0].body,
+            policies[1].title, policies[1].body,
+            ...,
+            policies[9].title, policies[9].body
         ));
 
-    All 10 slots are included for byte-exact hash equivalence with the
-    contract. Slot 0 is reserved (the contract rejects writes to it),
-    so in practice it always hashes as the empty string — but it must
-    still appear in the hash input.
+    Each slot is a `{title, body}` pair; all 10 slots (0..9) are writable
+    and included in the hash. The model owns the category taxonomy by
+    writing its own titles.
+
+    Accepts each slot as a dict `{"title": ..., "body": ...}`. Missing
+    fields default to "". Missing slots pad with `{"", ""}`.
 
     Zero-length worldview → b'\\x00' * 32 (matches bytes32(0) sentinel).
     """
@@ -256,8 +261,19 @@ def _hash_worldview(policies: list) -> bytes:
     # Pad / truncate to exactly WORLDVIEW_SLOTS entries.
     padded = list(policies[:WORLDVIEW_SLOTS])
     while len(padded) < WORLDVIEW_SLOTS:
-        padded.append("")
-    return _keccak256(_abi_encode(*[("string", p) for p in padded]))
+        padded.append({"title": "", "body": ""})
+    items = []
+    for p in padded:
+        if isinstance(p, dict):
+            title = p.get("title", "") or ""
+            body = p.get("body", "") or ""
+        else:
+            # Defensive fallback: legacy flat-string input treated as body.
+            title = ""
+            body = p if isinstance(p, str) else ""
+        items.append(("string", title))
+        items.append(("string", body))
+    return _keccak256(_abi_encode(*items))
 
 
 def _hash_messages(donor_messages: list) -> bytes:
