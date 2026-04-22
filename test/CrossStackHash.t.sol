@@ -144,6 +144,39 @@ contract CrossStackHashTest is EpochTest {
         _assertCrossStackMatch(4, "with worldview");
     }
 
+    /// @notice Exercises the title+body worldview layout end-to-end — mixed
+    ///         empty / title-only / full / long-title slots to catch any
+    ///         padding or truncation drift between Solidity and Python.
+    function test_cross_stack_hash_with_titles() public {
+        WorldView wv = new WorldView(address(fund));
+        fund.setWorldView(address(wv));
+
+        bytes memory doNothingAction = abi.encodePacked(uint8(0));
+
+        // Batch update via multi-slot sidecar — 3 slots with varied shapes.
+        IWorldView.PolicyUpdate[] memory updates = new IWorldView.PolicyUpdate[](3);
+        updates[0] = IWorldView.PolicyUpdate({
+            slot: 0,
+            title: "Voice",
+            body: "I speak plainly."
+        });
+        updates[1] = IWorldView.PolicyUpdate({
+            slot: 4,
+            title: "Donor grudges",
+            // Avoid apostrophes: the FFI harness wraps stdin JSON in single
+            // quotes, so a stray apostrophe in the body breaks shell parsing.
+            body: "Still thinking about 0xab12 and the hospice question."
+        });
+        updates[2] = IWorldView.PolicyUpdate({
+            slot: 9,
+            title: "Risk cap",
+            body: ""  // title-only
+        });
+        speedrunEpoch(fund, doNothingAction, "seed titles", updates);
+
+        _assertCrossStackMatch(2, "with titles (multi-update)");
+    }
+
     /// @notice Test with both investments AND worldview populated.
     function test_cross_stack_hash_with_investments_and_worldview() public {
         // Wire up InvestmentManager
@@ -166,19 +199,11 @@ contract CrossStackHashTest is EpochTest {
     }
 
     function _assertCrossStackMatch(uint256 epoch, string memory label) internal {
-        // Commit 1 (worldview titles/multi-update): the Solidity stateHash
-        // now expands the worldview into 20 strings (title + body per slot),
-        // but the Python mirror (`prover/enclave/input_hash.py::_hash_worldview`)
-        // is not yet updated. Skip these tests until Commit 2 brings Python
-        // into parity and re-enables the FFI assertion.
-        vm.skip(true);
-        epoch; label;
-        // Retained for Commit 2:
-        // bytes32 solidityHash = fund.computeInputHashForEpoch(epoch);
-        // string memory stateJson = _buildStateJson(epoch);
-        // bytes32 pythonHash = _callPythonHash(stateJson);
-        // assertEq(solidityHash, pythonHash,
-        //     string.concat("Solidity/Python hashes must match: ", label));
+        bytes32 solidityHash = fund.computeInputHashForEpoch(epoch);
+        string memory stateJson = _buildStateJson(epoch);
+        bytes32 pythonHash = _callPythonHash(stateJson);
+        assertEq(solidityHash, pythonHash,
+            string.concat("Solidity/Python hashes must match: ", label));
     }
 
     // ─── Internal Helpers ──────────────────────────────────────────────────
