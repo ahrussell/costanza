@@ -154,10 +154,13 @@ class TestTwoPassInference(unittest.TestCase):
 
     @patch("prover.enclave.inference.call_llama")
     def test_action_with_worldview_parseable(self, mock_call):
-        """Action with worldview update should parse correctly."""
+        """Action with worldview update (array form) should parse correctly."""
         mock_call.side_effect = [
             make_llama_response("A shift in the wind"),
-            make_llama_response('"action": "do_nothing", "params": {}, "worldview": {"slot": 3, "policy": "Hopeful"}}'),
+            make_llama_response(
+                '"action": "do_nothing", "params": {}, '
+                '"worldview": [{"slot": 3, "title": "Mood", "body": "Hopeful"}]}'
+            ),
         ]
 
         result = run_two_pass_inference("<diary>\n")
@@ -165,7 +168,33 @@ class TestTwoPassInference(unittest.TestCase):
 
         self.assertIsNotNone(action)
         self.assertEqual(action["action"], "do_nothing")
-        self.assertEqual(action["worldview"]["slot"], 3)
+        self.assertIsInstance(action["worldview"], list)
+        self.assertEqual(len(action["worldview"]), 1)
+        self.assertEqual(action["worldview"][0]["slot"], 3)
+        self.assertEqual(action["worldview"][0]["title"], "Mood")
+        self.assertEqual(action["worldview"][0]["body"], "Hopeful")
+
+    @patch("prover.enclave.inference.call_llama")
+    def test_action_with_multi_slot_worldview_parseable(self, mock_call):
+        """Action with three worldview updates should parse as a 3-entry list."""
+        mock_call.side_effect = [
+            make_llama_response("Three things to carry forward"),
+            make_llama_response(
+                '"action": "do_nothing", "params": {}, '
+                '"worldview": ['
+                '{"slot": 1, "title": "T1", "body": "B1"},'
+                '{"slot": 5, "title": "T5", "body": "B5"},'
+                '{"slot": 9, "title": "T9", "body": "B9"}'
+                ']}'
+            ),
+        ]
+
+        result = run_two_pass_inference("<diary>\n")
+        action = parse_action(result["text"])
+
+        self.assertIsNotNone(action)
+        self.assertIsInstance(action["worldview"], list)
+        self.assertEqual([e["slot"] for e in action["worldview"]], [1, 5, 9])
 
     @patch("prover.enclave.inference.call_llama")
     def test_seed_increments_across_retries(self, mock_call):
@@ -322,6 +351,124 @@ class TestStripDiaryStrayTags(unittest.TestCase):
 
     def test_empty_string(self):
         self.assertEqual(strip_diary_stray_tags(""), "")
+
+
+class TestWorldviewSidecarClamp(unittest.TestCase):
+    """Validator coverage for the worldview sidecar array."""
+
+    def _state(self):
+        # Minimal state — the worldview clamp doesn't touch action bounds.
+        return {
+            "treasury_balance": 10 * 10**18,
+            "investments": [],
+        }
+
+    def _clamp(self, worldview):
+        from .action_encoder import validate_and_clamp_action
+        aj = {"action": "do_nothing", "params": {}, "worldview": worldview}
+        return validate_and_clamp_action(aj, self._state())
+
+    def test_empty_list_passes_through(self):
+        aj, notes = self._clamp([])
+        self.assertEqual(aj["worldview"], [])
+        self.assertEqual(notes, [])
+
+    def test_missing_field_passes_through(self):
+        from .action_encoder import validate_and_clamp_action
+        aj = {"action": "do_nothing", "params": {}}
+        aj, notes = validate_and_clamp_action(aj, self._state())
+        # When absent entirely, sidecar is left untouched (not materialized
+        # as an empty list — the client decides whether to synthesize []).
+        self.assertNotIn("worldview", aj)
+        self.assertEqual(notes, [])
+
+    def test_single_update_normalized(self):
+        aj, notes = self._clamp([{"slot": 3, "title": "Mood", "body": "Hopeful"}])
+        self.assertEqual(aj["worldview"], [
+            {"slot": 3, "title": "Mood", "body": "Hopeful"}
+        ])
+        self.assertEqual(notes, [])
+
+    def test_single_dict_wrapped_into_list(self):
+        aj, _ = self._clamp({"slot": 2, "title": "T", "body": "B"})
+        self.assertEqual(aj["worldview"], [{"slot": 2, "title": "T", "body": "B"}])
+
+    def test_legacy_policy_key_maps_to_body(self):
+        aj, _ = self._clamp([{"slot": 2, "policy": "legacy body"}])
+        self.assertEqual(aj["worldview"], [
+            {"slot": 2, "title": "", "body": "legacy body"}
+        ])
+
+    def test_over_cap_truncated(self):
+        updates = [
+            {"slot": i, "title": f"T{i}", "body": f"B{i}"} for i in range(5)
+        ]
+        aj, notes = self._clamp(updates)
+        self.assertEqual(len(aj["worldview"]), 3)
+        self.assertEqual([e["slot"] for e in aj["worldview"]], [0, 1, 2])
+        # 5 → 3 means 2 extras dropped via the cap.
+        self.assertTrue(any("truncated to 3" in n for n in notes))
+
+    def test_invalid_slot_dropped(self):
+        updates = [
+            {"slot": 1, "title": "ok", "body": "keep"},
+            {"slot": 99, "title": "bad", "body": "drop"},
+            {"slot": 4, "title": "ok2", "body": "keep2"},
+        ]
+        aj, notes = self._clamp(updates)
+        self.assertEqual([e["slot"] for e in aj["worldview"]], [1, 4])
+        self.assertTrue(any("dropped" in n and "malformed" in n for n in notes))
+
+    def test_string_slot_coerced(self):
+        aj, _ = self._clamp([{"slot": "5", "title": "T", "body": "B"}])
+        self.assertEqual(aj["worldview"][0]["slot"], 5)
+
+    def test_unparseable_slot_dropped(self):
+        aj, _ = self._clamp([{"slot": "not-a-number", "title": "T", "body": "B"}])
+        self.assertEqual(aj["worldview"], [])
+
+    def test_title_truncated_to_64_bytes(self):
+        long_title = "X" * 100
+        aj, _ = self._clamp([{"slot": 1, "title": long_title, "body": "b"}])
+        self.assertEqual(len(aj["worldview"][0]["title"].encode("utf-8")), 64)
+
+    def test_body_truncated_to_280_bytes(self):
+        long_body = "Y" * 400
+        aj, _ = self._clamp([{"slot": 1, "title": "t", "body": long_body}])
+        self.assertEqual(len(aj["worldview"][0]["body"].encode("utf-8")), 280)
+
+    def test_non_dict_entry_dropped(self):
+        aj, notes = self._clamp([
+            "not a dict",
+            {"slot": 1, "title": "T", "body": "B"},
+            42,
+        ])
+        self.assertEqual([e["slot"] for e in aj["worldview"]], [1])
+        self.assertTrue(any("malformed" in n for n in notes))
+
+    def test_non_list_non_dict_replaced_with_empty(self):
+        aj, notes = self._clamp("a string sidecar")
+        self.assertEqual(aj["worldview"], [])
+        self.assertTrue(any("expected a list" in n for n in notes))
+
+    def test_dup_slot_order_preserved(self):
+        # Validator does NOT dedup; contract's last-wins semantics apply.
+        aj, _ = self._clamp([
+            {"slot": 2, "title": "First",  "body": "first"},
+            {"slot": 2, "title": "Second", "body": "second"},
+        ])
+        self.assertEqual([e["title"] for e in aj["worldview"]], ["First", "Second"])
+
+    def test_utf8_multibyte_truncation_safe(self):
+        # A 64-byte cap that would land mid-codepoint must drop the partial
+        # codepoint rather than emit invalid UTF-8.
+        emoji_body = "💡" * 50  # each emoji is 4 bytes, so 200 bytes total
+        title = "A" + "💡"  # 1 + 4 = 5 bytes, under cap, no truncation
+        aj, _ = self._clamp([{"slot": 1, "title": title, "body": emoji_body}])
+        out_body = aj["worldview"][0]["body"]
+        # Must decode cleanly (no replacement chars from bad truncation).
+        out_body.encode("utf-8").decode("utf-8")
+        self.assertLessEqual(len(out_body.encode("utf-8")), 280)
 
 
 if __name__ == "__main__":
