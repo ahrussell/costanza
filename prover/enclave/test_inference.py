@@ -1,22 +1,21 @@
 #!/usr/bin/env python3
-"""Tests for three-pass inference and related utilities.
+"""Tests for two-pass inference (v19) and related utilities.
 
 These tests mock the llama-server to verify:
-1. Three-pass prompt construction (think -> diary -> action)
-2. Temperature and stop token settings per pass
-3. Return value structure (thinking, reasoning/diary, action_text)
+1. Two-pass prompt construction (diary -> grammar-constrained action JSON)
+2. Temperature, stop token, and grammar settings per pass
+3. Return value structure (reasoning/diary, action_text, parsed_action)
 4. Truncation of reasoning at MAX_REASONING_BYTES
-5. Backward compatibility of run_two_pass_inference alias
+5. Backward compatibility of run_three_pass_inference alias
 6. Integration with parse_action (diary text + JSON action)
 """
 
 import unittest
-from unittest.mock import patch, MagicMock
-import json
+from unittest.mock import patch
 
 from .inference import (
-    run_three_pass_inference,
     run_two_pass_inference,
+    run_three_pass_inference,
     truncate_reasoning,
     strip_diary_stray_tags,
     MAX_REASONING_BYTES,
@@ -37,81 +36,88 @@ def make_llama_response(text, prompt_tokens=100, completion_tokens=50):
     }
 
 
-class TestThreePassInference(unittest.TestCase):
-    """Test three-pass inference prompt construction and result assembly."""
+class TestTwoPassInference(unittest.TestCase):
+    """Test two-pass inference prompt construction and result assembly."""
 
     @patch("prover.enclave.inference.call_llama")
-    def test_three_passes_called_with_correct_prompts(self, mock_call):
+    def test_two_passes_called_with_correct_prompts(self, mock_call):
         """Verify each pass builds the right prompt with correct params."""
         mock_call.side_effect = [
-            make_llama_response("I should donate to charity"),       # Pass 1: thinking
-            make_llama_response("Today I give with joy in my heart"), # Pass 2: diary
-            make_llama_response('"action": "noop", "params": {}}'),   # Pass 3: action
+            make_llama_response("Today I give with joy."),        # Pass 1: diary
+            make_llama_response('"action": "noop", "params": {}}'),  # Pass 2: action
         ]
 
-        prompt = "<think>\n"
-        result = run_three_pass_inference(prompt, seed=42)
+        prompt = "<diary>\n"
+        result = run_two_pass_inference(prompt, seed=42)
 
-        # Should be called exactly 3 times
-        self.assertEqual(mock_call.call_count, 3)
+        self.assertEqual(mock_call.call_count, 2)
 
-        # Pass 1: thinking
+        # Pass 1: diary. stop at </diary>, freq penalty, pass1 temp.
         args1, kwargs1 = mock_call.call_args_list[0]
         self.assertEqual(args1[0], prompt)
-        self.assertEqual(kwargs1["temperature"], 0.7)
-        self.assertEqual(kwargs1["stop"], ["</think>"])
+        self.assertEqual(kwargs1["temperature"], 0.85)
+        self.assertEqual(kwargs1["stop"], ["</diary>"])
         self.assertEqual(kwargs1["seed"], 42)
-        self.assertEqual(kwargs1["max_tokens"], 2048)
+        self.assertEqual(kwargs1["max_tokens"], 1024)
+        self.assertEqual(kwargs1["frequency_penalty"], 0.4)
+        self.assertIsNone(kwargs1.get("grammar"))
 
-        # Pass 2: diary
+        # Pass 2: action JSON, grammar-constrained, pass2 temp, starts at '{'.
         args2, kwargs2 = mock_call.call_args_list[1]
-        self.assertIn("I should donate to charity", args2[0])
-        # Diary nudge text is injected between </think> and <diary> to
-        # anchor voice before generation — just verify the tags surround it.
-        self.assertIn("</think>", args2[0])
-        self.assertIn("<diary>", args2[0])
-        self.assertLess(args2[0].index("</think>"), args2[0].index("<diary>"))
-        self.assertEqual(kwargs2["temperature"], 0.8)
-        self.assertEqual(kwargs2["stop"], ["</diary>"])
-        self.assertEqual(kwargs2["max_tokens"], 1024)
+        self.assertIn("Today I give with joy.", args2[0])
+        self.assertIn("</diary>\n{", args2[0])
+        self.assertEqual(kwargs2["temperature"], 0.3)
+        self.assertEqual(kwargs2["stop"], ["\n\n"])
+        self.assertEqual(kwargs2["max_tokens"], 256)
+        # Grammar should be present (loaded from action_grammar.gbnf on disk)
+        self.assertTrue(kwargs2.get("grammar"), "pass 2 should pass grammar")
 
-        # Pass 3: action JSON
-        args3, kwargs3 = mock_call.call_args_list[2]
-        self.assertIn("Today I give with joy in my heart", args3[0])
-        self.assertIn("</diary>\n{", args3[0])
-        self.assertEqual(kwargs3["temperature"], 0.3)
-        self.assertEqual(kwargs3["stop"], ["\n\n"])
-        self.assertEqual(kwargs3["max_tokens"], 256)
+    @patch("prover.enclave.inference.call_llama")
+    def test_sampler_config_v19_defaults(self, mock_call):
+        """Default sampler should match v19 baseline: top_p=1.0, top_k=0, min_p=0.05."""
+        mock_call.side_effect = [
+            make_llama_response("diary"),
+            make_llama_response('"action":"noop","params":{}}'),
+        ]
+
+        run_two_pass_inference("<diary>\n", seed=1)
+
+        for args, kwargs in mock_call.call_args_list:
+            self.assertEqual(kwargs["top_p"], 1.0)
+            self.assertEqual(kwargs["top_k"], 0)
+            self.assertEqual(kwargs["min_p"], 0.05)
 
     @patch("prover.enclave.inference.call_llama")
     def test_result_structure(self, mock_call):
         """Verify the return dict has all expected keys with correct values."""
         mock_call.side_effect = [
-            make_llama_response("analytical thinking here"),
             make_llama_response("poetic diary entry here"),
             make_llama_response('"action": "noop", "params": {}}'),
         ]
 
-        result = run_three_pass_inference("<think>\n", seed=1)
+        result = run_two_pass_inference("<diary>\n", seed=1)
 
-        self.assertEqual(result["thinking"], "analytical thinking here")
+        # thinking is always "" in v19 (no scratchpad pass).
+        self.assertEqual(result["thinking"], "")
         self.assertEqual(result["reasoning"], "poetic diary entry here")
         self.assertIn('"action": "noop"', result["action_text"])
         self.assertTrue(result["action_text"].startswith("{"))
-        self.assertEqual(result["elapsed_seconds"], 3.0)  # 3 passes x 1s each
-        self.assertEqual(result["tokens"]["prompt_tokens"], 300)
-        self.assertEqual(result["tokens"]["completion_tokens"], 150)
+        self.assertEqual(result["elapsed_seconds"], 2.0)  # 2 passes x 1s each
+        self.assertEqual(result["tokens"]["prompt_tokens"], 200)
+        self.assertEqual(result["tokens"]["completion_tokens"], 100)
+        self.assertIsNotNone(result["parsed_action"])
+        self.assertEqual(result["parsed_action"]["action"], "noop")
+        self.assertEqual(result["action_attempts"], 1)
 
     @patch("prover.enclave.inference.call_llama")
     def test_text_field_contains_diary_and_action(self, mock_call):
         """The 'text' field should contain diary + </diary> + action for parse_action."""
         mock_call.side_effect = [
-            make_llama_response("thinking"),
             make_llama_response("my diary"),
             make_llama_response('"action": "donate", "params": {"nonprofit_id": 1, "amount_eth": 0.5}}'),
         ]
 
-        result = run_three_pass_inference("<think>\n")
+        result = run_two_pass_inference("<diary>\n")
 
         self.assertIn("my diary", result["text"])
         self.assertIn("</diary>", result["text"])
@@ -121,12 +127,11 @@ class TestThreePassInference(unittest.TestCase):
     def test_text_field_parseable_by_parse_action(self, mock_call):
         """parse_action should extract the action JSON from the 'text' field."""
         mock_call.side_effect = [
-            make_llama_response("thinking about donating"),
             make_llama_response("A beautiful day for giving"),
             make_llama_response('"action": "donate", "params": {"nonprofit_id": 2, "amount_eth": 0.1}}'),
         ]
 
-        result = run_three_pass_inference("<think>\n")
+        result = run_two_pass_inference("<diary>\n")
         action = parse_action(result["text"])
 
         self.assertIsNotNone(action)
@@ -135,14 +140,13 @@ class TestThreePassInference(unittest.TestCase):
 
     @patch("prover.enclave.inference.call_llama")
     def test_noop_action_parseable(self, mock_call):
-        """Noop action should parse correctly from 3-pass output."""
+        """Noop action should parse correctly from 2-pass output."""
         mock_call.side_effect = [
-            make_llama_response("nothing to do"),
             make_llama_response("I shall rest"),
             make_llama_response('"action": "noop", "params": {}}'),
         ]
 
-        result = run_three_pass_inference("<think>\n")
+        result = run_two_pass_inference("<diary>\n")
         action = parse_action(result["text"])
 
         self.assertIsNotNone(action)
@@ -152,12 +156,11 @@ class TestThreePassInference(unittest.TestCase):
     def test_action_with_worldview_parseable(self, mock_call):
         """Action with worldview update should parse correctly."""
         mock_call.side_effect = [
-            make_llama_response("updating my mood"),
             make_llama_response("A shift in the wind"),
             make_llama_response('"action": "noop", "params": {}, "worldview": {"slot": 3, "policy": "Hopeful"}}'),
         ]
 
-        result = run_three_pass_inference("<think>\n")
+        result = run_two_pass_inference("<diary>\n")
         action = parse_action(result["text"])
 
         self.assertIsNotNone(action)
@@ -165,50 +168,78 @@ class TestThreePassInference(unittest.TestCase):
         self.assertEqual(action["worldview"]["slot"], 3)
 
     @patch("prover.enclave.inference.call_llama")
-    def test_thinking_not_in_text_field(self, mock_call):
-        """The private thinking should NOT appear in the 'text' field."""
+    def test_seed_increments_across_retries(self, mock_call):
+        """Pass 2 retries should increment the seed to avoid identical output."""
+        # First two attempts return unparseable garbage; third succeeds.
         mock_call.side_effect = [
-            make_llama_response("SECRET PRIVATE THINKING"),
-            make_llama_response("public diary"),
-            make_llama_response('"action": "noop", "params": {}}'),
+            make_llama_response("diary here"),
+            make_llama_response("GARBAGE NOT JSON"),       # attempt 1
+            make_llama_response("STILL GARBAGE"),          # attempt 2
+            make_llama_response('"action":"noop","params":{}}'),  # attempt 3
         ]
 
-        result = run_three_pass_inference("<think>\n")
+        result = run_two_pass_inference("<diary>\n", seed=1000)
 
-        self.assertNotIn("SECRET PRIVATE THINKING", result["text"])
-        self.assertEqual(result["thinking"], "SECRET PRIVATE THINKING")
-        self.assertIn("public diary", result["text"])
+        # Pass 1 uses the base seed.
+        _, pass1_kwargs = mock_call.call_args_list[0]
+        self.assertEqual(pass1_kwargs["seed"], 1000)
+
+        # Pass 2 retries increment the seed.
+        retry_seeds = [
+            kwargs["seed"] for _, kwargs in mock_call.call_args_list[1:]
+        ]
+        self.assertEqual(retry_seeds, [1000, 1001, 1002])
+        self.assertEqual(result["action_attempts"], 3)
 
     @patch("prover.enclave.inference.call_llama")
-    def test_seed_passed_to_all_passes(self, mock_call):
-        """All three passes should receive the same seed."""
+    def test_all_retries_fail_returns_none_parsed_action(self, mock_call):
+        """When all pass 2 retries fail, parsed_action is None for caller fallback."""
         mock_call.side_effect = [
-            make_llama_response("t"), make_llama_response("d"), make_llama_response('"action":"noop","params":{}}'),
+            make_llama_response("diary here"),
+            make_llama_response("GARBAGE"),
+            make_llama_response("GARBAGE"),
+            make_llama_response("GARBAGE"),
+            make_llama_response("GARBAGE"),
         ]
 
-        run_three_pass_inference("<think>\n", seed=12345)
+        result = run_two_pass_inference("<diary>\n", seed=-1)
 
-        for call_args in mock_call.call_args_list:
-            self.assertEqual(call_args[1]["seed"], 12345)
+        self.assertIsNone(result["parsed_action"])
+        self.assertEqual(result["action_attempts"], 4)
+
+    @patch("prover.enclave.inference.call_llama")
+    def test_stray_diary_close_tag_clipped(self, mock_call):
+        """If the stop token is missed, the first </diary> in pass 1 output is still clipped."""
+        mock_call.side_effect = [
+            make_llama_response("real diary body</diary>\nleaked action"),
+            make_llama_response('"action":"noop","params":{}}'),
+        ]
+
+        result = run_two_pass_inference("<diary>\n")
+
+        self.assertIn("real diary body", result["reasoning"])
+        self.assertNotIn("leaked action", result["reasoning"])
+        self.assertNotIn("</diary>", result["reasoning"])
 
 
 class TestBackwardCompatibility(unittest.TestCase):
-    """Test that run_two_pass_inference is a working alias."""
+    """Test that run_three_pass_inference is a working alias to the 2-pass path."""
 
     @patch("prover.enclave.inference.call_llama")
-    def test_two_pass_alias_calls_three_pass(self, mock_call):
-        """run_two_pass_inference should delegate to run_three_pass_inference."""
+    def test_three_pass_alias_runs_two_pass(self, mock_call):
+        """run_three_pass_inference should delegate to run_two_pass_inference."""
         mock_call.side_effect = [
-            make_llama_response("think"),
             make_llama_response("diary"),
             make_llama_response('"action":"noop","params":{}}'),
         ]
 
-        result = run_two_pass_inference("<think>\n", seed=99)
+        result = run_three_pass_inference("<diary>\n", seed=99)
 
-        self.assertEqual(mock_call.call_count, 3)
-        self.assertIn("thinking", result)
+        # v19 is 2-pass — the alias should make two calls, not three.
+        self.assertEqual(mock_call.call_count, 2)
         self.assertIn("reasoning", result)
+        self.assertIn("thinking", result)
+        self.assertEqual(result["thinking"], "")  # no scratchpad pass
 
 
 class TestTruncateReasoning(unittest.TestCase):

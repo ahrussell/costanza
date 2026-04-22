@@ -1,0 +1,35 @@
+# GBNF grammar for v14 action JSON (pass 2 output).
+#
+# Applied by llama-server on the /v1/completions call. The prompt ends with
+# "\n</diary>\n{", so the model is continuing inside an already-open object.
+# This grammar matches the continuation from AFTER that opening brace.
+#
+# Structure: exactly one action + params, optional worldview sidecar, then
+# close and stop. No trailing content — no ```json fences, no </output>,
+# no second action JSON, no EOS-literal echoing.
+#
+# NB: this does not constrain nonprofit_id / protocol_id ranges; the contract
+# enforces bounds. This only constrains STRUCTURAL validity.
+
+root ::= ws "\"action\":" ws action-body (ws "," ws worldview-kv)? ws "}"
+
+action-body ::= donate-body | invest-body | withdraw-body | commission-body | noop-body
+
+donate-body     ::= "\"donate\""              ws "," ws "\"params\":" ws donate-params
+invest-body     ::= "\"invest\""              ws "," ws "\"params\":" ws invest-params
+withdraw-body   ::= "\"withdraw\""            ws "," ws "\"params\":" ws withdraw-params
+commission-body ::= "\"set_commission_rate\"" ws "," ws "\"params\":" ws commission-params
+noop-body       ::= "\"noop\""                ws "," ws "\"params\":" ws "{" ws "}"
+
+donate-params     ::= "{" ws "\"nonprofit_id\":" ws integer ws "," ws "\"amount_eth\":" ws number ws "}"
+invest-params     ::= "{" ws "\"protocol_id\":"  ws integer ws "," ws "\"amount_eth\":" ws number ws "}"
+withdraw-params   ::= "{" ws "\"protocol_id\":"  ws integer ws "," ws "\"amount_eth\":" ws number ws "}"
+commission-params ::= "{" ws "\"rate_bps\":"     ws integer ws "}"
+
+worldview-kv ::= "\"worldview\":" ws "{" ws "\"slot\":" ws integer ws "," ws "\"policy\":" ws string ws "}"
+
+integer ::= [0-9]+
+number  ::= "-"? ("0" | [1-9] [0-9]*) ("." [0-9]+)?
+string  ::= "\"" char* "\""
+char    ::= [^"\\] | "\\" (["\\/bfnrt] | "u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F])
+ws      ::= [ \t\n]*

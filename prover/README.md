@@ -88,7 +88,7 @@ forge build  # Generate ABIs
 The inference VM boots from a dm-verity sealed disk image containing the inference server, model weights, and enclave code. **The build is reproducible** — any prover who builds from the same git tag gets a byte-identical rootfs, which means the same platform key (`sha256(MRTD || RTMR[1] || RTMR[2])`). You don't need a copy of the fund owner's image; just build from source and the existing on-chain key will match.
 
 ```bash
-# Build base image (once — installs NVIDIA drivers, llama-server, model weights ~42.5GB)
+# Build base image (once — installs NVIDIA drivers, llama-server, Hermes 4 70B Q6_K weights ~58GB)
 # Takes ~15 minutes. Only redo when llama.cpp, NVIDIA driver, or Ubuntu changes.
 bash prover/scripts/gcp/build_base_image.sh
 
@@ -179,7 +179,7 @@ You can write a custom prover with your own bid strategy, VM management, or moni
 For attestation to pass on-chain:
 
 1. **Enclave code** — The Python files in `prover/enclave/` are baked into the dm-verity rootfs. Any modification changes the rootfs hash (RTMR[2]) and fails verification.
-2. **Model weights** — The 42.5GB GGUF model is on a separate dm-verity partition. SHA-256 verified at build time.
+2. **Model weights** — The Hermes 4 70B Q6_K split GGUF (two parts, ~58GB total) is on a separate dm-verity partition. SHA-256 verified per-part at build time.
 3. **System prompt** — Baked into the dm-verity rootfs at `/opt/humanfund/system_prompt.txt`.
 4. **Kernel + boot loader** — RTMR[1] and RTMR[2] are determined by the disk image.
 5. **TEE hardware** — Must be genuine hardware with attestation support (Intel TDX for the reference implementation).

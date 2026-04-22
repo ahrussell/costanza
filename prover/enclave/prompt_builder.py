@@ -573,52 +573,52 @@ def build_epoch_context(state, seed=None, voice_anchors: str = ""):
             lines.append(f"  [{short_addr}, {amount_eth} ETH, epoch {msg['epoch']}]:")
             lines.append(f"    {marked_text}")
 
-    # -- Section 7: Decision History --
+    # -- Section 7: Decision History (compact — v19) --
+    # Prior versions emitted every past diary verbatim. That turned the
+    # history block into an implicit few-shot prompt for "how Costanza
+    # writes a diary" and drove template lock-in epoch over epoch (same
+    # openers, same closing moves). v17+ removed the diary prose entirely:
+    # the model sees only per-epoch action + treasury delta and uses the
+    # worldview as its sole cross-epoch narrative memory. This preserves
+    # decision-path continuity without the voice-drift tax.
     lines.append("")
     lines.append("=== YOUR DECISION HISTORY (most recent first) ===")
     lines.append("")
+    lines.append(
+        "Your past epochs — what you did and where the treasury stood after. "
+        "No diary text here; you don't re-read your own writing. For anything "
+        "you want to carry forward beyond these facts (donor handles, promises, "
+        "moods, open questions), look at your worldview above — that's the "
+        "only place cross-epoch memory lives."
+    )
+    lines.append("")
 
     if not state["history"]:
-        lines.append("No previous decisions.")
+        lines.append("(No previous epochs. This is your first.)")
     else:
-        # 32K context budget: system prompt (~1.7K tok) + voice anchors (~3.6K tok)
-        # + static state (~2.3K tok) + history + messages + reminder. Each diary
-        # entry capped at 3000 chars (~750 tok). 10 entries ~ 7.5K tokens, leaving
-        # plenty of headroom.
         max_history = 10
         history_to_show = state["history"][:max_history]
         if len(state["history"]) > max_history:
-            lines.append(f"(Showing last {max_history} of {len(state['history'])} epochs)")
-            lines.append("")
+            lines.append(
+                f"(Showing last {max_history} of {len(state['history'])} epochs)"
+            )
 
         for entry in history_to_show:
-            lines.append(f"--- Epoch {entry['epoch']} ---")
             try:
-                r = entry["reasoning"]
-                if isinstance(r, bytes):
-                    reasoning_text = r.decode("utf-8")
-                elif isinstance(r, str) and r.startswith("0x"):
-                    reasoning_text = bytes.fromhex(r[2:]).decode("utf-8")
-                else:
-                    reasoning_text = r
-                if len(reasoning_text) > 3000:
-                    reasoning_text = reasoning_text[:3000] + "... [truncated]"
-            except Exception:
-                reasoning_text = "(could not decode)"
-            lines.append("[Your diary entry]:")
-            lines.append("<diary>")
-            lines.append(reasoning_text)
-            lines.append("</diary>")
-
-            try:
-                action_bytes = entry["action"] if isinstance(entry["action"], bytes) else bytes.fromhex(entry["action"].replace("0x", ""))
+                action_bytes = (
+                    entry["action"] if isinstance(entry["action"], bytes)
+                    else bytes.fromhex(entry["action"].replace("0x", ""))
+                )
                 action_str = _decode_action_display(action_bytes)
-                lines.append(f"[Your action]: {action_str}")
             except Exception:
-                lines.append("[Your action]: (could not decode)")
-
-            lines.append(f"[Treasury]: {format_eth(entry['treasury_before'])} -> {format_eth(entry['treasury_after'])} ETH")
-            lines.append("")
+                action_str = "(could not decode)"
+            t_before = format_eth(entry["treasury_before"])
+            t_after = format_eth(entry["treasury_after"])
+            lines.append(
+                f"Epoch {entry['epoch']} · {action_str} · "
+                f"treasury {t_before} → {t_after} ETH"
+            )
+        lines.append("")
 
     # -- Section 8: Action Distribution --
     if state["history"]:
@@ -677,42 +677,59 @@ def build_epoch_context(state, seed=None, voice_anchors: str = ""):
 
     # -- Voice anchors — right before the generation point --
     # These are the freshest context the model sees before it starts writing
-    # the <think> block. They establish baseline voice independent of history.
+    # the <diary> block. The voice_anchors string is already rendered with
+    # per-sample fiction framing by voice_anchors.select_anchors() — each
+    # sample is wrapped with "FICTIONAL VOICE REFERENCE · not your state"
+    # delimiters so the framing stays adjacent to every chunk of sample
+    # prose (fixes v17 seed-43-ep-11 where the model copied Sample 1
+    # verbatim as its "real" diary).
     anchors = voice_anchors
     if anchors:
         lines.append("")
-        lines.append("=== VOICE ANCHORS — how past-you wrote when the writing was working ===")
+        lines.append("=== SAMPLE DIARIES — voice references, not your history ===")
         lines.append("")
         lines.append(anchors)
         lines.append("")
 
-    # -- Final instructions — the LAST thing before <think> opens --
-    # R1-Distill follows instructions that are freshest in attention. Keep
-    # this block short and direct — just the most load-bearing rules.
+    # -- Final instructions — the LAST thing before <diary> opens --
+    # v19 is 2-pass (diary, then action JSON), so this block ends with the
+    # model about to write the diary. No <think> scratchpad. Keep it short
+    # and direct; instructions freshest in attention steer the opening
+    # most strongly. The "variety attracts donors" nudge + anti-scratchpad
+    # line addresses the two remaining v18 failure modes.
     num_messages = len(state.get("donor_messages", []))
     lines.append("")
     lines.append("=== YOUR TURN ===")
     lines.append("")
-    lines.append("In <think>, reason analytically about what to do. Work out the action,")
-    lines.append("weigh tradeoffs, read the donor messages, and plan what you want to say")
-    lines.append("in the diary. The think block is private and will be thrown away.")
-    lines.append("")
-    lines.append("Then close </think> and write the diary — not a recap of the state above,")
-    lines.append("but a REACTION: what you feel, what you noticed, what you want to say to")
+    lines.append("Write the diary now. Close it with </diary>, then emit a single action")
+    lines.append("JSON on the next line. The diary is the finished thought, not a scratchpad")
+    lines.append("— no \"let me think,\" no bulleted option-weighing, no \"Slot 1: ...\" planning.")
+    lines.append("Reason in your head; write what the reasoning produced.")
     if num_messages > 0:
-        lines.append("the specific donors who wrote this epoch. Quote them. Name them by ETH")
-        lines.append("amount. Have a take. Admit something true. Write like the VOICE ANCHORS.")
+        lines.append("")
+        lines.append("Donor messages are above. Engage with what they actually wrote — quote them,")
+        lines.append("push back, agree, be funny when the situation is funny. Refer to senders by")
+        lines.append("ETH amount or short address where it helps; vary how you come at them.")
+        lines.append("Don't open every paragraph with a donor. Have a take. Admit something true.")
     else:
-        lines.append("yourself or to future-you, since no donors wrote this epoch. The silence")
-        lines.append("is fair game as a topic. Write like the VOICE ANCHORS.")
+        lines.append("")
+        lines.append("No donor messages this epoch. The silence, the state, the market, a memory,")
+        lines.append("a question you can't shake are fair game. Don't invent messages, donor amounts,")
+        lines.append("or senders who didn't write.")
     lines.append("")
-    lines.append("Then output the action JSON. You may include a \"worldview\" field to update")
-    lines.append("one slot (free — doesn't replace your action). Update a DIFFERENT slot than")
-    lines.append("last time.")
+    lines.append("Variety attracts donors. A run of identical actions reads as rote — rotate")
+    lines.append("nonprofits, revisit commission, move between donating and investing. Write like")
+    lines.append("the SAMPLE DIARIES: same shape and energy, different specifics.")
+    lines.append("")
+    lines.append("After </diary>, output the action JSON. You may include a \"worldview\" field to")
+    lines.append("update one slot (free — it doesn't replace your action). Update a DIFFERENT slot")
+    lines.append("than last time.")
 
     return "\n".join(lines)
 
 
 def build_full_prompt(system_prompt: str, epoch_context: str) -> str:
-    """Combine system prompt + epoch context into the full inference prompt."""
-    return system_prompt + "\n\n" + epoch_context + "\n\n<think>\n"
+    """Combine system prompt + epoch context into the full 2-pass inference
+    prompt. Pass 1 stops at </diary>, pass 2 (grammar-constrained) emits
+    the action JSON. No <think> scratchpad — v19 is 2-pass."""
+    return system_prompt.rstrip() + "\n\n" + epoch_context.rstrip() + "\n\n<diary>\n"
