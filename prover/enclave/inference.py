@@ -81,6 +81,19 @@ DEFAULT_PASS1_MAX_TOKENS = 1024
 # worldview sidecar; 256 gives headroom for verbose worldview policy text.
 DEFAULT_PASS2_MAX_TOKENS = 256
 
+# Diary pre-fill. Without it, Hermes 4 70B emits `</diary>` as its first
+# generation token roughly 80% of the time on the production prompt — even
+# under greedy decoding. Probing with a 15-seed sweep + temp=0 confirms the
+# model genuinely scores the empty-diary continuation highest; it's not a
+# sampling artifact. Pre-filling pass 1 with a 3-character opener that the
+# model can grammatically continue from drops the empty rate to 0% across
+# the same sweep.
+#
+# The prefill is prepended back into the returned diary text so on-chain
+# `reasoning` still reads as a complete diary entry. Hashing is unaffected:
+# REPORTDATA = sha256(reasoning) sees the whole string including the prefix.
+DEFAULT_DIARY_PREFILL = "It "
+
 
 def call_llama(
     prompt,
@@ -234,6 +247,7 @@ def run_two_pass_inference(
     min_p=DEFAULT_MIN_P,
     pass1_max_tokens=DEFAULT_PASS1_MAX_TOKENS,
     pass2_max_tokens=DEFAULT_PASS2_MAX_TOKENS,
+    diary_prefill=DEFAULT_DIARY_PREFILL,
 ):
     """Two-pass inference: diary, then grammar-constrained action JSON.
 
@@ -247,6 +261,10 @@ def run_two_pass_inference(
         top_p / top_k / min_p: sampler. v19 defaults disable top_p/top_k
             and rely on min_p for tail-cutting.
         pass1_max_tokens / pass2_max_tokens: per-pass generation cap.
+        diary_prefill: short string appended to the pass-1 prompt and
+            prepended back to the returned diary text. See
+            DEFAULT_DIARY_PREFILL docstring above for rationale. Pass "" to
+            disable (used in tests that need exact prompt/diary assertions).
 
     Returns dict with keys: text, thinking, reasoning (=diary), action_text,
     parsed_action, action_attempts, elapsed_seconds, tokens.
@@ -254,14 +272,17 @@ def run_two_pass_inference(
     `thinking` is always "" in v19 — retained in the return shape for
     backward compatibility with downstream consumers.
     """
-    # Pass 1: Diary. Prompt already ends with '<diary>\n', so the model
-    # continues inside the diary block and stops at '</diary>'.
+    # Pass 1: Diary. Prompt ends with '<diary>\n'; we append diary_prefill
+    # so the model continues from a non-empty string instead of jumping to
+    # '</diary>'. The model continues, stops at '</diary>'.
     print(
         f"  Pass 1: diary temp={pass1_temp} fp={pass1_frequency_penalty} "
-        f"top_p={top_p} min_p={min_p} max_tok={pass1_max_tokens}..."
+        f"top_p={top_p} min_p={min_p} max_tok={pass1_max_tokens} "
+        f"prefill={diary_prefill!r}..."
     )
+    pass1_prompt = prompt + diary_prefill
     r1 = call_llama(
-        prompt,
+        pass1_prompt,
         max_tokens=pass1_max_tokens,
         temperature=pass1_temp,
         stop=["</diary>"],
@@ -272,7 +293,10 @@ def run_two_pass_inference(
         min_p=min_p,
         llama_url=llama_url,
     )
-    raw_diary = r1["text"]
+    # Stitch the prefill back onto the model's continuation so the diary
+    # text reads naturally on-chain. lstrip() avoids accidental double
+    # spaces if the model started its continuation with whitespace.
+    raw_diary = diary_prefill + r1["text"].lstrip() if diary_prefill else r1["text"]
     # Belt-and-suspenders: clip at </diary> in case the stop token was
     # missed (rare with llama-server's decoded-text stop matching, but
     # not impossible with unusual tokenizers).
@@ -284,7 +308,9 @@ def run_two_pass_inference(
 
     # Pass 2: Action JSON. Grammar-constrained output guaranteed valid.
     # Prompt extension: original prompt + diary + </diary>\n{ so the model
-    # picks up generation of a JSON object continuing from the '{'.
+    # picks up generation of a JSON object continuing from the '{'. The
+    # `diary` string already includes the prefill prefix, so the assembled
+    # context exactly mirrors what pass 1 generated.
     grammar = _load_grammar()
     if not grammar:
         print("  WARNING: action grammar not found; pass 2 will run unconstrained")

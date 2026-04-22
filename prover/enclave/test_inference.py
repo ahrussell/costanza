@@ -18,6 +18,7 @@ from .inference import (
     run_three_pass_inference,
     truncate_reasoning,
     strip_diary_stray_tags,
+    DEFAULT_DIARY_PREFILL,
     MAX_REASONING_BYTES,
 )
 from .action_encoder import parse_action
@@ -48,7 +49,8 @@ class TestTwoPassInference(unittest.TestCase):
         ]
 
         prompt = "<diary>\n"
-        result = run_two_pass_inference(prompt, seed=42)
+        # diary_prefill="" so pass-1 args[0] equals `prompt` exactly.
+        result = run_two_pass_inference(prompt, seed=42, diary_prefill="")
 
         self.assertEqual(mock_call.call_count, 2)
 
@@ -95,7 +97,8 @@ class TestTwoPassInference(unittest.TestCase):
             make_llama_response('"action": "do_nothing", "params": {}}'),
         ]
 
-        result = run_two_pass_inference("<diary>\n", seed=1)
+        # diary_prefill="" so reasoning equals the mocked diary text exactly.
+        result = run_two_pass_inference("<diary>\n", seed=1, diary_prefill="")
 
         # thinking is always "" in v19 (no scratchpad pass).
         self.assertEqual(result["thinking"], "")
@@ -249,6 +252,88 @@ class TestTwoPassInference(unittest.TestCase):
         self.assertIn("real diary body", result["reasoning"])
         self.assertNotIn("leaked action", result["reasoning"])
         self.assertNotIn("</diary>", result["reasoning"])
+
+
+class TestDiaryPrefill(unittest.TestCase):
+    """Tests for the diary pre-fill that prevents empty pass-1 output.
+
+    Without the prefill, Hermes 4 70B emits </diary> as its first generation
+    token roughly 80% of the time on production prompts (verified greedy +
+    a 15-seed sweep). The prefill rescues the empty-diary case to 0%.
+    """
+
+    @patch("prover.enclave.inference.call_llama")
+    def test_default_prefill_appended_to_pass1_prompt(self, mock_call):
+        """Pass-1 sees `prompt + DEFAULT_DIARY_PREFILL`, not just `prompt`."""
+        mock_call.side_effect = [
+            make_llama_response(" was a long epoch."),
+            make_llama_response('"action":"do_nothing","params":{}}'),
+        ]
+        prompt = "<diary>\n"
+        run_two_pass_inference(prompt, seed=1)
+
+        args1, _ = mock_call.call_args_list[0]
+        self.assertEqual(args1[0], prompt + DEFAULT_DIARY_PREFILL)
+
+    @patch("prover.enclave.inference.call_llama")
+    def test_prefill_prepended_to_returned_diary(self, mock_call):
+        """`reasoning` includes the prefill so on-chain text reads naturally."""
+        mock_call.side_effect = [
+            make_llama_response("was a quiet epoch — no donors said anything."),
+            make_llama_response('"action":"do_nothing","params":{}}'),
+        ]
+        result = run_two_pass_inference("<diary>\n", seed=1)
+
+        self.assertTrue(
+            result["reasoning"].startswith(DEFAULT_DIARY_PREFILL),
+            f"reasoning should start with prefill; got {result['reasoning']!r}",
+        )
+        self.assertIn("was a quiet epoch", result["reasoning"])
+
+    @patch("prover.enclave.inference.call_llama")
+    def test_prefill_lstrips_model_continuation(self, mock_call):
+        """Avoid double-space when the model starts its continuation with whitespace."""
+        # Model's first emitted character is a space — common after a
+        # short prefill like "It " where the model is "completing" with
+        # what looks like a continuation phrase including its own spacing.
+        mock_call.side_effect = [
+            make_llama_response("   was a quiet epoch."),
+            make_llama_response('"action":"do_nothing","params":{}}'),
+        ]
+        result = run_two_pass_inference("<diary>\n", seed=1)
+
+        # Should be "It was a quiet epoch." — single space between
+        # prefill and continuation, no leading whitespace from the model.
+        self.assertEqual(result["reasoning"], "It was a quiet epoch.")
+
+    @patch("prover.enclave.inference.call_llama")
+    def test_empty_prefill_is_supported(self, mock_call):
+        """diary_prefill='' restores the pre-prefill behavior — used by tests."""
+        mock_call.side_effect = [
+            make_llama_response("raw diary"),
+            make_llama_response('"action":"do_nothing","params":{}}'),
+        ]
+        prompt = "<diary>\n"
+        result = run_two_pass_inference(prompt, seed=1, diary_prefill="")
+
+        args1, _ = mock_call.call_args_list[0]
+        self.assertEqual(args1[0], prompt)
+        self.assertEqual(result["reasoning"], "raw diary")
+
+    @patch("prover.enclave.inference.call_llama")
+    def test_pass2_sees_full_diary_with_prefill(self, mock_call):
+        """Pass 2's prompt must include the prefilled diary so context is consistent."""
+        mock_call.side_effect = [
+            make_llama_response("was a busy day."),
+            make_llama_response('"action":"do_nothing","params":{}}'),
+        ]
+        run_two_pass_inference("<diary>\n", seed=1)
+
+        args2, _ = mock_call.call_args_list[1]
+        # Pass 2 prompt = original_prompt + diary + "\n</diary>\n{"
+        # The diary in there must include the prefix.
+        self.assertIn("It was a busy day.", args2[0])
+        self.assertIn("</diary>\n{", args2[0])
 
 
 class TestBackwardCompatibility(unittest.TestCase):

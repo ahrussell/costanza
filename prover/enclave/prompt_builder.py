@@ -368,6 +368,22 @@ def build_epoch_context(state, seed=None, voice_anchors: str = ""):
 
     lines = []
 
+    # -- Section 0: Voice anchors (FIRST, per v17/v18/v19) --
+    # The shipped v17–v19 prompt-engineering layout placed sample diaries at
+    # the TOP of the epoch context. Putting them last (immediately before
+    # YOUR TURN) primes the model to emit `</diary>` as its first generation
+    # token because the closing tags from sample diaries sit at the freshest
+    # position in attention. Empirically (15-seed sweep, greedy-confirmed):
+    # samples-last → ~80% empty pass-1 diaries; samples-first → ~50%; the
+    # remaining empties are eliminated by the diary_prefill mechanism in
+    # inference.run_two_pass_inference. Putting samples first restores the
+    # v17–v19 layout that this branch's prompt rebuild had drifted from.
+    if voice_anchors:
+        lines.append("=== SAMPLE DIARIES — voice references, not your history ===")
+        lines.append("")
+        lines.append(voice_anchors)
+        lines.append("")
+
     # -- Section 1: Vitals --
     lines.append(f"=== EPOCH {epoch} — YOUR CURRENT STATE ===")
     lines.append("")
@@ -684,21 +700,13 @@ def build_epoch_context(state, seed=None, voice_anchors: str = ""):
                 display_body = b if b else "(empty body)"
                 lines.append(f"  [{i}] {display_title}: {display_body}")
 
-    # -- Voice anchors — right before the generation point --
-    # These are the freshest context the model sees before it starts writing
-    # the <diary> block. The voice_anchors string is already rendered with
-    # per-sample fiction framing by voice_anchors.select_anchors() — each
-    # sample is wrapped with "FICTIONAL VOICE REFERENCE · not your state"
-    # delimiters so the framing stays adjacent to every chunk of sample
-    # prose (fixes v17 seed-43-ep-11 where the model copied Sample 1
-    # verbatim as its "real" diary).
-    anchors = voice_anchors
-    if anchors:
-        lines.append("")
-        lines.append("=== SAMPLE DIARIES — voice references, not your history ===")
-        lines.append("")
-        lines.append(anchors)
-        lines.append("")
+    # NOTE: voice anchors moved to TOP of the epoch context (Section 0,
+    # near the top of this function). Per the v17–v19 prompt-engineering
+    # layout, samples must NOT sit immediately before the generation point
+    # or the model treats their closing tags as a cue to emit `</diary>`
+    # as its first token. The per-sample "FICTIONAL VOICE REFERENCE" framing
+    # rendered by voice_anchors.select_anchors() still keeps each sample
+    # disambiguated from the agent's real state.
 
     # -- Final instructions — the LAST thing before <diary> opens --
     # v19 is 2-pass (diary, then action JSON), so this block ends with the
