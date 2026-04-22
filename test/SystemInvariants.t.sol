@@ -128,12 +128,12 @@ import "./helpers/EpochTest.sol";
 ///    - `submitAuctionResult` NEVER reverts on a valid proof, regardless of
 ///      whether the action parses, validates, or executes successfully.
 ///      The winner receives bounty + bond-back as long as the proof verifies;
-///      invalid actions emit `ActionRejected`, invalid policy sidecars fail
+///      invalid actions emit `ActionRejected`, invalid memory sidecars fail
 ///      silently. This is load-bearing for liveness — a malicious enclave
 ///      output can't DoS the payment path
 ///    - FREEZE_SUNSET: blocks new-auction opens and donations; `migrate` drains
 ///      via `_resetAuction` and withdraws; FREEZE_MIGRATE is terminal
-///    - Other freezes: AUCTION_CONFIG, INVESTMENT_WIRING, WORLDVIEW_WIRING,
+///    - Other freezes: AUCTION_CONFIG, INVESTMENT_WIRING, MEMORY_WIRING,
 ///      NONPROFITS — each permanently disables a specific setter once set
 ///
 /// ─── TEST ORGANIZATION ──────────────────────────────────────────────
@@ -1828,10 +1828,10 @@ contract SystemInvariantsTest is EpochTest {
         assertEq(fund.currentBond(), base, "bond resets on success");
     }
 
-    /// Policy sidecar failure (invalid slot in batch) must NOT revert the
-    /// submission. Same liveness concern: a bad policy update entry can't
+    /// Memory sidecar failure (invalid slot in batch) must NOT revert the
+    /// submission. Same liveness concern: a bad memory update entry can't
     /// block payment, and must not block valid entries elsewhere in the batch.
-    function test_submit_invalidPolicySlot_stillSucceeds() public {
+    function test_submit_invalidMemorySlot_stillSucceeds() public {
         uint256 bond = fund.currentBond();
         bytes32 salt = bytes32(uint256(0xF00D));
         vm.prank(runner1);
@@ -1842,10 +1842,10 @@ contract SystemInvariantsTest is EpochTest {
         fund.nextPhase();
 
         // Batch with one invalid slot (99 is out of 0..9 range).
-        IWorldView.PolicyUpdate[] memory updates = new IWorldView.PolicyUpdate[](1);
-        updates[0] = IWorldView.PolicyUpdate({slot: 99, title: "bad", body: "invalid"});
+        IAgentMemory.MemoryUpdate[] memory updates = new IAgentMemory.MemoryUpdate[](1);
+        updates[0] = IAgentMemory.MemoryUpdate({slot: 99, title: "bad", body: "invalid"});
 
-        // Submit with an invalid policy slot in the batch.
+        // Submit with an invalid memory slot in the batch.
         vm.prank(runner1);
         fund.submitAuctionResult(
             abi.encodePacked(uint8(0)),
@@ -1857,6 +1857,6 @@ contract SystemInvariantsTest is EpochTest {
 
         // Execution still recorded; epoch marked executed.
         ( , , , , , , bool executed) = fund.getEpochRecord(1);
-        assertTrue(executed, "executed despite bad policy sidecar");
+        assertTrue(executed, "executed despite bad memory sidecar");
     }
 }

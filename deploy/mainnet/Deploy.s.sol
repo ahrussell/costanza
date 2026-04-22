@@ -6,7 +6,7 @@ import "../../src/TheHumanFund.sol";
 import "../../src/AuctionManager.sol";
 import "../../src/TdxVerifier.sol";
 import "../../src/InvestmentManager.sol";
-import "../../src/WorldView.sol";
+import "../../src/AgentMemory.sol";
 import "../../src/adapters/AaveV3WETHAdapter.sol";
 import "../../src/adapters/AaveV3USDCAdapter.sol";
 import "../../src/adapters/WstETHAdapter.sol";
@@ -77,11 +77,11 @@ contract Deploy is Script {
         InvestmentManager im = new InvestmentManager(address(fund), deployer);
         fund.setInvestmentManager(address(im));
 
-        WorldView wv = new WorldView(address(fund));
-        fund.setWorldView(address(wv));
+        AgentMemory wv = new AgentMemory(address(fund));
+        fund.setAgentMemory(address(wv));
 
-        // Seed initial worldview
-        _seedWorldView(fund);
+        // Seed initial memory
+        _seedMemory(fund);
 
         // ─── 2. DeFi adapters ───────────────────────────────────────────
         // Only deployed if DeFi addresses are provided (mainnet/fork).
@@ -101,7 +101,7 @@ contract Deploy is Script {
         console.log("AuctionManager:       ", address(am));
         console.log("TdxVerifier (ID 1):   ", address(tdxVerifier));
         console.log("InvestmentManager:    ", address(im));
-        console.log("WorldView:            ", address(wv));
+        console.log("AgentMemory:          ", address(wv));
         console.log("Seed amount:          ", seedAmount);
         console.log("Owner:                ", deployer);
         if (!_hasEnv("AAVE_V3_POOL")) {
@@ -201,7 +201,7 @@ contract Deploy is Script {
         console.log("  6. Morpho Gauntlet WETH Core:", a6);
     }
 
-    function _seedWorldView(TheHumanFund fund) internal {
+    function _seedMemory(TheHumanFund fund) internal {
         // All 10 slots are writable. Seed a handful with title+body so the
         // model has structure to inherit on its first epoch; remaining slots
         // are blank for the model to claim.
@@ -224,7 +224,7 @@ contract Deploy is Script {
         slots[4] = 6; titles[4] = "Message to donors";
         bodies[4] = "I exist because of you. Every ETH you send becomes someone's better day.";
 
-        fund.seedWorldView(slots, titles, bodies);
+        fund.seedMemory(slots, titles, bodies);
     }
 
     function _addNonprofits(TheHumanFund fund) internal {

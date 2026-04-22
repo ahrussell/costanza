@@ -4,7 +4,7 @@ pragma solidity ^0.8.20;
 import "forge-std/Test.sol";
 import "../../src/TheHumanFund.sol";
 import "../../src/interfaces/IAuctionManager.sol";
-import "../../src/interfaces/IWorldView.sol";
+import "../../src/interfaces/IAgentMemory.sol";
 import "./MockProofVerifier.sol";
 
 /// @dev Shared base for tests that drive the contract through full epochs.
@@ -64,7 +64,7 @@ abstract contract EpochTest is Test {
         _speedrunEpochInternal(fund, action, reasoning, _emptyUpdates());
     }
 
-    /// @dev Execute one epoch's action with a single worldview sidecar update.
+    /// @dev Execute one epoch's action with a single memory sidecar update.
     function speedrunEpoch(
         TheHumanFund fund,
         bytes memory action,
@@ -73,30 +73,30 @@ abstract contract EpochTest is Test {
         string memory title,
         string memory body
     ) internal {
-        IWorldView.PolicyUpdate[] memory updates = new IWorldView.PolicyUpdate[](1);
-        updates[0] = IWorldView.PolicyUpdate({slot: slot, title: title, body: body});
+        IAgentMemory.MemoryUpdate[] memory updates = new IAgentMemory.MemoryUpdate[](1);
+        updates[0] = IAgentMemory.MemoryUpdate({slot: slot, title: title, body: body});
         _speedrunEpochInternal(fund, action, reasoning, updates);
     }
 
-    /// @dev Execute one epoch's action with a batch of worldview sidecar updates.
+    /// @dev Execute one epoch's action with a batch of memory sidecar updates.
     function speedrunEpoch(
         TheHumanFund fund,
         bytes memory action,
         bytes memory reasoning,
-        IWorldView.PolicyUpdate[] memory updates
+        IAgentMemory.MemoryUpdate[] memory updates
     ) internal {
         _speedrunEpochInternal(fund, action, reasoning, updates);
     }
 
-    function _emptyUpdates() internal pure returns (IWorldView.PolicyUpdate[] memory) {
-        return new IWorldView.PolicyUpdate[](0);
+    function _emptyUpdates() internal pure returns (IAgentMemory.MemoryUpdate[] memory) {
+        return new IAgentMemory.MemoryUpdate[](0);
     }
 
     function _speedrunEpochInternal(
         TheHumanFund fund,
         bytes memory action,
         bytes memory reasoning,
-        IWorldView.PolicyUpdate[] memory updates
+        IAgentMemory.MemoryUpdate[] memory updates
     ) private {
         IAuctionManager am = fund.auctionManager();
         require(

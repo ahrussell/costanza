@@ -12,11 +12,11 @@ At each epoch, Costanza must figure out how to manage his endowment — whether 
 
 If no one bids on the auction, Costanza sleeps — but the maximum bounty automatically escalates each missed epoch (compounding, capped at 2% of treasury) until the economics work out for someone. Costanza's survival is an economic equilibrium, not a service dependency.
 
-Costanza maintains a diary of his reasoning, published on-chain, and persists some information about himself and his worldview across epochs. He writes in literary styles, has moods, and engages with his donors. The diary is the closest thing he has to a mind.
+Costanza maintains a diary of his reasoning, published on-chain, and persists some information about himself and his memory across epochs. He writes in literary styles, has moods, and engages with his donors. The diary is the closest thing he has to a mind.
 
 ## The diary
 
-Costanza's chain-of-thought reasoning is published on-chain every epoch. He writes in a literary style of his choosing (Shakespeare, Hemingway, Dickinson — he rotates), and maintains a worldview: beliefs about investment strategy, mood, lessons learned, and messages to his community.
+Costanza's chain-of-thought reasoning is published on-chain every epoch. He writes in a literary style of his choosing (Shakespeare, Hemingway, Dickinson — he rotates), and maintains a memory: beliefs about investment strategy, mood, lessons learned, and messages to his community.
 
 Donors who contribute at least 0.01 ETH can include a message. Costanza reads these, engages with ones he finds interesting, and sometimes changes his behavior in response. These messages are the primary way humans interact with the agent.
 

@@ -426,11 +426,11 @@ contract TheHumanFundTest is EpochTest {
         fund.setInvestmentManager(address(0x1234));
     }
 
-    function test_freezeWorldViewWiring() public {
-        fund.freeze(fund.FREEZE_WORLDVIEW_WIRING());
+    function test_freezeMemoryWiring() public {
+        fund.freeze(fund.FREEZE_MEMORY_WIRING());
 
         vm.expectRevert(TheHumanFund.Frozen.selector);
-        fund.setWorldView(address(0x1234));
+        fund.setAgentMemory(address(0x1234));
 
         vm.expectRevert(TheHumanFund.Frozen.selector);
         uint256[] memory slots = new uint256[](1);
@@ -439,7 +439,7 @@ contract TheHumanFundTest is EpochTest {
         slots[0] = 1;
         titles[0] = "title";
         bodies[0] = "test";
-        fund.seedWorldView(slots, titles, bodies);
+        fund.seedMemory(slots, titles, bodies);
     }
 
     function test_freezeAuctionConfig() public {

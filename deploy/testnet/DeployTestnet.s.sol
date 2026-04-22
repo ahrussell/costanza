@@ -16,7 +16,7 @@ import "../../src/TheHumanFund.sol";
 import "../../src/AuctionManager.sol";
 import "../../src/TdxVerifier.sol";
 import "../../src/InvestmentManager.sol";
-import "../../src/WorldView.sol";
+import "../../src/AgentMemory.sol";
 import "../../src/interfaces/IProofVerifier.sol";
 import "../../src/interfaces/IProtocolAdapter.sol";
 
@@ -108,10 +108,10 @@ contract DeployTestnet is Script {
         InvestmentManager im = new InvestmentManager(address(fund), deployer);
         fund.setInvestmentManager(address(im));
 
-        WorldView wv = new WorldView(address(fund));
-        fund.setWorldView(address(wv));
+        AgentMemory wv = new AgentMemory(address(fund));
+        fund.setAgentMemory(address(wv));
 
-        _seedWorldView(fund);
+        _seedMemory(fund);
 
         // ─── 3. Mock protocol adapters (realistic names/APYs, no real yield) ──
         MockProtocolAdapter adapter1 = new MockProtocolAdapter("Aave V3 ETH Lending");
@@ -132,7 +132,7 @@ contract DeployTestnet is Script {
         console.log("TdxVerifier (ID 1):   ", address(tdxVerifier));
         console.log("MockVerifier (ID 2):  ", address(mockVerifier));
         console.log("InvestmentManager:    ", address(im));
-        console.log("WorldView:            ", address(wv));
+        console.log("AgentMemory:          ", address(wv));
         console.log("Seed amount:          ", seedAmount);
         console.log("Owner:                ", deployer);
         console.log("ETH/USD feed:         ", ethUsdFeed);
@@ -161,7 +161,7 @@ contract DeployTestnet is Script {
         fund.addNonprofit("The Ocean Cleanup", "Engineering organization developing technologies to remove plastic pollution from oceans and rivers.", bytes32("81-5132355"));
     }
 
-    function _seedWorldView(TheHumanFund fund) internal {
+    function _seedMemory(TheHumanFund fund) internal {
         uint256[] memory slots = new uint256[](5);
         string[] memory titles = new string[](5);
         string[] memory bodies = new string[](5);
@@ -175,6 +175,6 @@ contract DeployTestnet is Script {
         bodies[3] = "Inflow patterns. Are donors finding me? Is the commission rate right?";
         slots[4] = 6; titles[4] = "Message to donors";
         bodies[4] = "I exist because of you. Every ETH you send becomes someone's better day.";
-        fund.seedWorldView(slots, titles, bodies);
+        fund.seedMemory(slots, titles, bodies);
     }
 }

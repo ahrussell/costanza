@@ -350,7 +350,7 @@ def main():
         # Step 3: Compute input hash
         # The enclave is a dumb hasher. It takes the flat epoch_state from the
         # runner, re-derives EVERY leaf hash (state, nonprofits, investments,
-        # worldview, messages, history) from the raw display data, and combines
+        # memory, messages, history) from the raw display data, and combines
         # them the same way the contract does. On-chain verification is pure
         # hash equality against epochInputHashes[epoch]. If the runner lied
         # about any display field, the hash won't match and the submission
@@ -409,7 +409,7 @@ def main():
 
         if action_json is None:
             log(f"  Action parse FAILED after {inference.get('action_attempts', '?')} attempts — falling back to no action")
-            action_json = {"action": "do_nothing", "params": {}, "worldview": []}
+            action_json = {"action": "do_nothing", "params": {}, "memory": []}
             system_notes.append(
                 "model failed to output valid JSON after several attempts — "
                 "defaulting to no action this epoch"
@@ -450,23 +450,23 @@ def main():
         reasoning = truncate_reasoning(reasoning)
         action_bytes = encode_action_bytes(action_json)
         # The validator (validate_and_clamp_action) has already canonicalized
-        # the worldview sidecar: 0..3 entries, each {slot, title, body} with
+        # the memory sidecar: 0..3 entries, each {slot, title, body} with
         # bounded sizes. This is the EXACT list the client will submit and
         # the contract will hash for outputHash. Capturing the local var
         # here both (a) lets us hash it into REPORTDATA and (b) gives the
         # client a single canonical source it can pass through unchanged.
-        submitted_worldview = action_json.get("worldview", []) if isinstance(action_json, dict) else []
-        if not isinstance(submitted_worldview, list):
-            submitted_worldview = []
+        submitted_memory = action_json.get("memory", []) if isinstance(action_json, dict) else []
+        if not isinstance(submitted_memory, list):
+            submitted_memory = []
         log(f"  Action bytes: {len(action_bytes)} bytes")
         log(f"  Reasoning: {len(reasoning)} chars ({len(system_notes)} system notes appended)")
-        log(f"  Worldview updates: {len(submitted_worldview)}")
+        log(f"  Memory updates: {len(submitted_memory)}")
 
         # Step 7: Get TDX attestation quote
         log("")
         log("Step 7: Generating TDX attestation quote...")
         report_data = compute_report_data(
-            input_hash, action_bytes, reasoning, submitted_worldview
+            input_hash, action_bytes, reasoning, submitted_memory
         )
         quote = get_tdx_quote(report_data, allow_mock=args.mock)
         log(f"  Quote: {len(quote)} bytes")
@@ -480,7 +480,7 @@ def main():
             "reasoning": reasoning,
             "action": action_json,
             "action_bytes": "0x" + action_bytes.hex(),
-            "submitted_worldview": submitted_worldview,
+            "submitted_memory": submitted_memory,
             "attestation_quote": "0x" + quote.hex(),
             "report_data": "0x" + report_data.hex(),
             "input_hash": "0x" + input_hash.hex(),

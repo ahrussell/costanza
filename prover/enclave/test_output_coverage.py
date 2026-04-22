@@ -22,8 +22,8 @@ The walker compares two sets:
   - SUBMITTED: top-level keys of `tee_result` consumed by
     `prover/client/client.py::_submit_result`. Extracted via the same AST
     walker that backs `test_hash_coverage.py` (handles `.get()`, aliasing,
-    `or` chains, and the `tee_result["action"]["worldview"]` nested path
-    that the worldview sidecar currently flows through).
+    `or` chains, and the `tee_result["submitted_memory"]` nested path
+    that the memory sidecar currently flows through).
 
   - ATTESTED: top-level keys of `result = {...}` in
     `prover/enclave/enclave_runner.py::main` whose value expressions
@@ -84,7 +84,7 @@ def _submitted_top_level_keys() -> Set[str]:
     """Top-level keys of `tee_result` that `_submit_result` reads.
 
     Reuses the AST walker from test_hash_coverage.py with `tee_result` as
-    the tainted root. The walker emits dotted paths like `action.worldview`
+    the tainted root. The walker emits dotted paths like `action.memory`
     when the client extracts a nested field via `.get()` or subscript;
     we collapse to top-level keys because that's the granularity at which
     `result = {...}` is constructed in the enclave.
@@ -262,13 +262,13 @@ def test_submitted_fields_are_all_attested():
     accepts the substituted value as if it came from the TEE. This
     completely undermines the integrity of the affected field.
 
-    Concrete example caught by this test today: the worldview sidecar
-    (`tee_result["action"]["worldview"]`) is consumed as
-    `worldview_updates` in the submission call, but `compute_report_data`
+    Concrete example caught by this test today: the memory sidecar
+    (`tee_result["submitted_memory"]`) is consumed as
+    `memory_updates` in the submission call, but `compute_report_data`
     only takes `(input_hash, action_bytes, reasoning)`. A compromised
-    prover can therefore strip the model's worldview updates or inject
-    arbitrary policy text — persistent prompt injection that survives
-    across epochs because worldview is the agent's only cross-epoch memory.
+    prover can therefore strip the model's memory updates or inject
+    arbitrary content — persistent prompt injection that survives
+    across epochs because memory is the agent's only cross-epoch store.
     """
     submitted = _submitted_top_level_keys()
     attested = _attested_result_keys()
@@ -310,11 +310,11 @@ def test_compute_report_data_uses_all_params():
     Pathological example caught here:
 
         def compute_report_data(input_hash, action_bytes, reasoning,
-                                submitted_worldview):
-            output_hash = sha256(action_bytes + reasoning)  # forgot worldview
+                                submitted_memory):
+            output_hash = sha256(action_bytes + reasoning)  # forgot memory
             return sha256(input_hash + output_hash).ljust(64, b'\\x00')
 
-    `submitted_worldview` is declared but never referenced — backward
+    `submitted_memory` is declared but never referenced — backward
     trace from `return` doesn't reach it, so it's flagged.
     """
     func = _find_function(_ATTESTATION, "compute_report_data")

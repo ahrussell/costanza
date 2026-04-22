@@ -5,7 +5,7 @@ import "forge-std/Test.sol";
 import "../src/TheHumanFund.sol";
 import "../src/AuctionManager.sol";
 import "../src/InvestmentManager.sol";
-import "../src/WorldView.sol";
+import "../src/AgentMemory.sol";
 import "../src/adapters/MockAdapter.sol";
 import "./helpers/MockEndaoment.sol";
 import "./helpers/EpochTest.sol";
@@ -125,49 +125,49 @@ contract CrossStackHashTest is EpochTest {
         _assertCrossStackMatch(3, "with investments");
     }
 
-    /// @notice Test with populated worldview policies — exercises _hash_worldview cross-stack.
-    function test_cross_stack_hash_with_worldview() public {
-        // Wire up WorldView
-        WorldView wv = new WorldView(address(fund));
-        fund.setWorldView(address(wv));
+    /// @notice Test with populated memory entries — exercises _hash_worldview cross-stack.
+    function test_cross_stack_hash_with_memory() public {
+        // Wire up AgentMemory
+        AgentMemory wv = new AgentMemory(address(fund));
+        fund.setAgentMemory(address(wv));
 
-        // Set policies via epoch actions (worldview updates are sidecars on submitAuctionResult)
+        // Set memory entries via epoch actions (memory updates are sidecars on submitAuctionResult)
         bytes memory doNothingAction = abi.encodePacked(uint8(0));
-        speedrunEpoch(fund, doNothingAction, "set policy 1",
+        speedrunEpoch(fund, doNothingAction, "set entry 1",
             uint8(1), "Mood", "Cautious. Preserve capital above all.");
-        speedrunEpoch(fund, doNothingAction, "set policy 3",
+        speedrunEpoch(fund, doNothingAction, "set entry 3",
             uint8(3), "Outlook", "Hopeful. The drought is ending.");
-        speedrunEpoch(fund, doNothingAction, "set policy 7",
+        speedrunEpoch(fund, doNothingAction, "set entry 7",
             uint8(7), "Stance", "Generous. Give freely when the treasury is healthy.");
 
-        // Now epoch 4 is open with a snapshot that includes worldview hash.
-        _assertCrossStackMatch(4, "with worldview");
+        // Now epoch 4 is open with a snapshot that includes memory hash.
+        _assertCrossStackMatch(4, "with memory");
     }
 
-    /// @notice Exercises the title+body worldview layout end-to-end — mixed
+    /// @notice Exercises the title+body memory layout end-to-end — mixed
     ///         empty / title-only / full / long-title slots to catch any
     ///         padding or truncation drift between Solidity and Python.
     function test_cross_stack_hash_with_titles() public {
-        WorldView wv = new WorldView(address(fund));
-        fund.setWorldView(address(wv));
+        AgentMemory wv = new AgentMemory(address(fund));
+        fund.setAgentMemory(address(wv));
 
         bytes memory doNothingAction = abi.encodePacked(uint8(0));
 
-        // Batch update via multi-slot sidecar — 3 slots with varied shapes.
-        IWorldView.PolicyUpdate[] memory updates = new IWorldView.PolicyUpdate[](3);
-        updates[0] = IWorldView.PolicyUpdate({
+        // Batch update via multi-slot sidecar — 3 memory slots with varied shapes.
+        IAgentMemory.MemoryUpdate[] memory updates = new IAgentMemory.MemoryUpdate[](3);
+        updates[0] = IAgentMemory.MemoryUpdate({
             slot: 0,
             title: "Voice",
             body: "I speak plainly."
         });
-        updates[1] = IWorldView.PolicyUpdate({
+        updates[1] = IAgentMemory.MemoryUpdate({
             slot: 4,
             title: "Donor grudges",
             // Avoid apostrophes: the FFI harness wraps stdin JSON in single
             // quotes, so a stray apostrophe in the body breaks shell parsing.
             body: "Still thinking about 0xab12 and the hospice question."
         });
-        updates[2] = IWorldView.PolicyUpdate({
+        updates[2] = IAgentMemory.MemoryUpdate({
             slot: 9,
             title: "Risk cap",
             body: ""  // title-only
@@ -177,25 +177,25 @@ contract CrossStackHashTest is EpochTest {
         _assertCrossStackMatch(2, "with titles (multi-update)");
     }
 
-    /// @notice Test with both investments AND worldview populated.
-    function test_cross_stack_hash_with_investments_and_worldview() public {
+    /// @notice Test with both investments AND memory populated.
+    function test_cross_stack_hash_with_investments_and_memory() public {
         // Wire up InvestmentManager
         InvestmentManager im = new InvestmentManager(address(fund), address(this));
         fund.setInvestmentManager(address(im));
         MockAdapter adapter = new MockAdapter("Compound V3 USDC", address(im));
         im.addProtocol(address(adapter), "Compound V3 USDC", "Lend USDC on Compound", 1, 450);
 
-        // Wire up WorldView
-        WorldView wv = new WorldView(address(fund));
-        fund.setWorldView(address(wv));
+        // Wire up AgentMemory
+        AgentMemory wv = new AgentMemory(address(fund));
+        fund.setAgentMemory(address(wv));
 
-        // Invest + set worldview in one epoch
+        // Invest + set memory in one epoch
         bytes memory investAction = abi.encodePacked(uint8(3), abi.encode(uint256(1), uint256(0.05 ether)));
-        speedrunEpoch(fund, investAction, "invest and set policy",
+        speedrunEpoch(fund, investAction, "invest and set memory",
             uint8(2), "Stance", "Balanced. Diversify across protocols.");
 
         // Epoch 2 is open with both populated.
-        _assertCrossStackMatch(2, "with investments and worldview");
+        _assertCrossStackMatch(2, "with investments and memory");
     }
 
     function _assertCrossStackMatch(uint256 epoch, string memory label) internal {
@@ -216,7 +216,7 @@ contract CrossStackHashTest is EpochTest {
     // exposes only the outputHash term.
     //
     // If these diverge: live submissions revert (DCAP REPORTDATA mismatch).
-    // The asymmetry caught the v20 worldview gap before deploy: Solidity
+    // The asymmetry caught the v20 memory gap before deploy: Solidity
     // bound `updates` into outputHash, Python had to add the same term to
     // compute_report_data, and any drift would show up here as a failed
     // assertEq — not at runtime.
@@ -224,15 +224,15 @@ contract CrossStackHashTest is EpochTest {
     function test_cross_stack_output_hash_no_updates() public {
         bytes memory action = abi.encodePacked(uint8(0));
         bytes memory reasoning = bytes("calm and considered.");
-        IWorldView.PolicyUpdate[] memory updates = new IWorldView.PolicyUpdate[](0);
+        IAgentMemory.MemoryUpdate[] memory updates = new IAgentMemory.MemoryUpdate[](0);
         _assertOutputHashMatch(action, reasoning, updates, "no updates");
     }
 
     function test_cross_stack_output_hash_one_update() public {
         bytes memory action = abi.encodePacked(uint8(0));
         bytes memory reasoning = bytes("a single shift in the wind.");
-        IWorldView.PolicyUpdate[] memory updates = new IWorldView.PolicyUpdate[](1);
-        updates[0] = IWorldView.PolicyUpdate({
+        IAgentMemory.MemoryUpdate[] memory updates = new IAgentMemory.MemoryUpdate[](1);
+        updates[0] = IAgentMemory.MemoryUpdate({
             slot: 3, title: "Mood", body: "Hopeful, briefly."
         });
         _assertOutputHashMatch(action, reasoning, updates, "one update");
@@ -245,14 +245,14 @@ contract CrossStackHashTest is EpochTest {
             uint8(1), abi.encode(uint256(2), uint256(0.05 ether))
         );
         bytes memory reasoning = bytes("Three things to carry forward.");
-        IWorldView.PolicyUpdate[] memory updates = new IWorldView.PolicyUpdate[](3);
-        updates[0] = IWorldView.PolicyUpdate({
+        IAgentMemory.MemoryUpdate[] memory updates = new IAgentMemory.MemoryUpdate[](3);
+        updates[0] = IAgentMemory.MemoryUpdate({
             slot: 0, title: "Voice", body: "Plainspoken."
         });
-        updates[1] = IWorldView.PolicyUpdate({
+        updates[1] = IAgentMemory.MemoryUpdate({
             slot: 4, title: "Tracking", body: "Donor 0xab12 and the hospice question."
         });
-        updates[2] = IWorldView.PolicyUpdate({
+        updates[2] = IAgentMemory.MemoryUpdate({
             slot: 9, title: "Risk cap", body: ""
         });
         _assertOutputHashMatch(action, reasoning, updates, "three updates");
@@ -261,7 +261,7 @@ contract CrossStackHashTest is EpochTest {
     function _assertOutputHashMatch(
         bytes memory action,
         bytes memory reasoning,
-        IWorldView.PolicyUpdate[] memory updates,
+        IAgentMemory.MemoryUpdate[] memory updates,
         string memory label
     ) internal {
         bytes32 sol = fund.computeOutputHash(action, reasoning, updates);
@@ -273,7 +273,7 @@ contract CrossStackHashTest is EpochTest {
     function _callPythonOutputHash(
         bytes memory action,
         bytes memory reasoning,
-        IWorldView.PolicyUpdate[] memory updates
+        IAgentMemory.MemoryUpdate[] memory updates
     ) internal returns (bytes32) {
         string memory updatesJson = _buildUpdatesJson(updates);
         string memory payload = string.concat(
@@ -294,7 +294,7 @@ contract CrossStackHashTest is EpochTest {
         return abi.decode(result, (bytes32));
     }
 
-    function _buildUpdatesJson(IWorldView.PolicyUpdate[] memory updates)
+    function _buildUpdatesJson(IAgentMemory.MemoryUpdate[] memory updates)
         internal view returns (string memory)
     {
         if (updates.length == 0) return "[]";
@@ -373,14 +373,14 @@ contract CrossStackHashTest is EpochTest {
         // Investments — read from InvestmentManager if wired, else empty.
         string memory invs = _buildInvestmentsJson(snap);
 
-        // Worldview — read from WorldView if wired, else empty.
-        string memory policies = _buildWorldviewJson();
+        // Memory — read from AgentMemory if wired, else empty.
+        string memory memEntries = _buildMemoryJson();
 
         return string.concat(
             scalars,
             ',"nonprofits":', nps,
             ',"investments":', invs,
-            ',"guiding_policies":', policies,
+            ',"memories":', memEntries,
             ',"donor_messages":', msgs,
             ',"history":', hist,
             '}'
@@ -417,17 +417,17 @@ contract CrossStackHashTest is EpochTest {
         return string.concat(result, "]");
     }
 
-    function _buildWorldviewJson() internal view returns (string memory) {
-        IWorldView wv = fund.worldView();
-        if (address(wv) == address(0)) return "[]";
+    function _buildMemoryJson() internal view returns (string memory) {
+        IAgentMemory am = fund.agentMemory();
+        if (address(am) == address(0)) return "[]";
 
-        IWorldView.Policy[10] memory policies = wv.getPolicies();
+        IAgentMemory.MemoryEntry[10] memory entries = am.getEntries();
         string memory result = "[";
         for (uint256 i = 0; i < 10; i++) {
             if (i > 0) result = string.concat(result, ",");
             result = string.concat(result,
-                '{"title":"', policies[i].title,
-                '","body":"', policies[i].body, '"}'
+                '{"title":"', entries[i].title,
+                '","body":"', entries[i].body, '"}'
             );
         }
         return string.concat(result, "]");

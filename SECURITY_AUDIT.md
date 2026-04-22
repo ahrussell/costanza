@@ -41,13 +41,13 @@ An AST walker extracts "state-rooted key paths" (e.g., `treasury_balance`, `nonp
 
 ### Layer 2: Solidity `pure` Hash Function (`TheHumanFund._hashSnapshot`)
 
-Declared `pure` — the Solidity compiler mechanically proves no storage reads can occur during hash computation. The function only reads the frozen `EpochSnapshot` struct passed as a parameter. Sub-hashes (nonprofits, messages, history, investments, worldview) are computed from live state at freeze time and stored as `bytes32` fields, eliminating drift.
+Declared `pure` — the Solidity compiler mechanically proves no storage reads can occur during hash computation. The function only reads the frozen `EpochSnapshot` struct passed as a parameter. Sub-hashes (nonprofits, messages, history, investments, memory) are computed from live state at freeze time and stored as `bytes32` fields, eliminating drift.
 
 ### Layer 3: Cross-Stack Hash Test (`test/CrossStackHash.t.sol`)
 
 Uses `vm.ffi()` to call Python's `compute_input_hash()` on identical state, asserting byte-exact hash equivalence across Solidity and Python.
 
-**Gap**: Investments and worldview sub-hashes are tested only with empty data (`[]`). A Solidity/Python encoding divergence in `_hash_investments` or `_hash_worldview` (e.g., `bool` encoding for `active`, `uint8` for `risk_tier`, `uint16` for `expected_apy_bps`, or empty-string padding in worldview) would not be caught until a live epoch fails. See M-3 below.
+**Gap**: Investments and memory sub-hashes are tested only with empty data (`[]`). A Solidity/Python encoding divergence in `_hash_investments` or `_hash_memory` (e.g., `bool` encoding for `active`, `uint8` for `risk_tier`, `uint16` for `expected_apy_bps`, or empty-string padding in memory) would not be caught until a live epoch fails. See M-3 below.
 
 ### Derived Values
 
@@ -66,11 +66,11 @@ All derived values shown to the model (`total_assets`, `total_invested`, lifespa
 
 v19 replaced the three-pass pipeline (think → diary → action) with a two-pass pipeline (diary → grammar-constrained action JSON). The prior "thinking" pass was removed entirely, which narrows the attack surface: there is no longer a private scratchpad whose output is re-fed into subsequent passes, so a donor message cannot be laundered through a "reasoning" round into the final diary/action. `sanitize_thinking()` is retained as defense-in-depth and now scrubs XML-like instruction/override tags from the diary output before it is included in any downstream state.
 
-The action pass is locked to a GBNF grammar (`prover/enclave/action_grammar.gbnf`), so even adversarially-shaped diary text cannot produce an out-of-shape action JSON. A post-parse validator (`validate_and_clamp_action`) additionally clamps `nonprofit_id`, `protocol_id`, `rate_bps`, and transfer amounts against the per-epoch bounds shown in the prompt, coercing out-of-range inputs to do_nothing while preserving any worldview sidecar — closing the loophole where prior on-chain rejection silently wasted an epoch.
+The action pass is locked to a GBNF grammar (`prover/enclave/action_grammar.gbnf`), so even adversarially-shaped diary text cannot produce an out-of-shape action JSON. A post-parse validator (`validate_and_clamp_action`) additionally clamps `nonprofit_id`, `protocol_id`, `rate_bps`, and transfer amounts against the per-epoch bounds shown in the prompt, coercing out-of-range inputs to do_nothing while preserving any memory sidecar — closing the loophole where prior on-chain rejection silently wasted an epoch.
 
 **Residual risk**: A well-crafted 280-char donor message (costing 0.01 ETH, datamarked with seed-derived markers from unpredictable `block.prevrandao`) could still subtly bias the model's reasoning within contract bounds. Combined with datamarking spotlighting, per-sample fiction framing on voice anchors, display-data verification, message length limits, economic barriers, contract bounds (max 10% donation per epoch), grammar-gated actions, and validator clamping, the practical exploit cost exceeds extractable value.
 
-**Note (v20 worldview schema)**: The persistent-state surface has grown. Each worldview slot is now a model-authored `{title, body}` pair (title ≤ 64 bytes, body ≤ 280 bytes, up to 344 bytes per slot), all 10 slots are writable, and the model can update up to 3 slots per epoch. Worst-case adversarial-persistence footprint is therefore ~10 × 344 ≈ 3.4 KB of model-controllable persistent state (up from ~1.9 KB in the pre-v20 `string[10]` layout). Mitigations: (i) an explicit "GC stale or coerced slots aggressively" prompt nudge in `prompt_builder.py`'s final-turn block, (ii) the 3-updates-per-epoch cap — full adversarial capture of all 10 slots still takes 4+ epochs, visible in the diary and in `DiaryEntry` decoding, (iii) the enclave validator drops malformed entries and truncates the batch before submission, (iv) datamarking continues to visually distinguish donor content from system text. Residual exploit cost still exceeds extractable value at treasury scale.
+**Note (v20 memory schema)**: The persistent-state surface has grown. Each memory slot is now a model-authored `{title, body}` pair (title ≤ 64 bytes, body ≤ 280 bytes, up to 344 bytes per slot), all 10 slots are writable, and the model can update up to 3 slots per epoch. Worst-case adversarial-persistence footprint is therefore ~10 × 344 ≈ 3.4 KB of model-controllable persistent state (up from ~1.9 KB in the pre-v20 `string[10]` layout). Mitigations: (i) an explicit "GC stale or coerced slots aggressively" prompt nudge in `prompt_builder.py`'s final-turn block, (ii) the 3-updates-per-epoch cap — full adversarial capture of all 10 slots still takes 4+ epochs, visible in the diary and in `DiaryEntry` decoding, (iii) the enclave validator drops malformed entries and truncates the batch before submission, (iv) datamarking continues to visually distinguish donor content from system text. Residual exploit cost still exceeds extractable value at treasury scale.
 
 ---
 
@@ -85,15 +85,15 @@ The randomness seed mixes `block.prevrandao` with the XOR of all revealed salts.
 
 ---
 
-#### M-3: Cross-Stack Hash Tests Lack Investment and Worldview Coverage (Resolved)
+#### M-3: Cross-Stack Hash Tests Lack Investment and Memory Coverage (Resolved)
 
 **Severity**: MEDIUM → **RESOLVED**
 **Component**: `test/CrossStackHash.t.sol`
 
-Previously, all cross-stack tests used empty investments and worldview. Three new tests now exercise populated data:
+Previously, all cross-stack tests used empty investments and memory. Three new tests now exercise populated data:
 - `test_cross_stack_hash_with_investments`: Two protocols (Aave WETH + Lido wstETH) with deposits, verifying `bool active`, `uint8 risk_tier`, `uint16 expected_apy_bps` encoding.
-- `test_cross_stack_hash_with_worldview`: Three non-empty policy slots, verifying string ABI-encoding across 10 slots. Updated for v20 `{title, body}` layout (now 20 strings in `abi.encode`) and re-verified by `test_cross_stack_hash_with_titles` which exercises mixed empty / title-only / full slot shapes via the multi-update sidecar.
-- `test_cross_stack_hash_with_investments_and_worldview`: Combined test with both populated.
+- `test_cross_stack_hash_with_memory`: Three non-empty memory slots, verifying string ABI-encoding across 10 slots. Updated for v20 `{title, body}` layout (now 20 strings in `abi.encode`) and re-verified by `test_cross_stack_hash_with_titles` which exercises mixed empty / title-only / full slot shapes via the multi-update sidecar.
+- `test_cross_stack_hash_with_investments_and_memory`: Combined test with both populated.
 
 All 7 cross-stack tests pass. Edge cases with maximum collection sizes remain untested but are lower priority.
 
@@ -142,7 +142,7 @@ Between code installation and squashfs creation, GCP guest agents or other syste
 
 **Component**: `index.html:2385, 2410`
 
-Nonprofit names (`np.name`, `np.ein`) and investment protocol names (`pos.name`) are inserted into table HTML via template literals without passing through `escapeHtml()`. These values can only be set by the contract owner via `addNonprofit()` or `addProtocol()`, so exploitation requires the owner's private key. All user-generated content (donor messages, diary entries, worldview policies) correctly uses `escapeHtml()`.
+Nonprofit names (`np.name`, `np.ein`) and investment protocol names (`pos.name`) are inserted into table HTML via template literals without passing through `escapeHtml()`. These values can only be set by the contract owner via `addNonprofit()` or `addProtocol()`, so exploitation requires the owner's private key. All user-generated content (donor messages, diary entries, memory entries) correctly uses `escapeHtml()`.
 
 #### L-6: Private Key Accepted via CLI Argument in `register_image.py`
 
@@ -206,7 +206,7 @@ These design patterns were verified and found to be correctly implemented:
 
 | Previous ID | Finding | Resolution |
 |---|---|---|
-| M-3 | Cross-stack hash tests lack investment/worldview coverage | Three new tests added exercising populated investments (2 protocols) and worldview (3 policy slots). All 7 cross-stack tests pass. |
+| M-3 | Cross-stack hash tests lack investment/memory coverage | Three new tests added exercising populated investments (2 protocols) and memory (3 memory slots). All 7 cross-stack tests pass. |
 | M-4 | Recovery script stale REPORTDATA formula | Fixed formula (removed prompt hash), made values configurable via CLI args, replaced `shell=True`, abort on REPORTDATA mismatch. |
 | L-2 | No fuzz testing / No fork tests | Fork tests now cover all six DeFi adapters with deposit+withdrawal (commit `f8f0c7c`). Fuzz testing still absent but fork tests significantly improve confidence. |
 | L-6 | No retry logic on Spot VM preemption | Retry schedule implemented in `client.py:64-68` — three attempts with fresh TEE re-execution on failure. |

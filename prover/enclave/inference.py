@@ -88,7 +88,7 @@ DEFAULT_PASS1_FREQUENCY_PENALTY = 0.4
 DEFAULT_PASS1_MAX_TOKENS = 1024
 
 # Pass 2 max_tokens. Action JSON is ~100-200 tokens tops even with the
-# worldview sidecar; 256 gives headroom for verbose worldview policy text.
+# memory sidecar; 256 gives headroom for verbose memory entry text.
 DEFAULT_PASS2_MAX_TOKENS = 256
 
 # Diary pre-fill. Without it, Hermes 4 70B emits `</diary>` as its first

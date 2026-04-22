@@ -22,7 +22,7 @@ Each epoch cycles through three phases:
 
 1. **Commit**: A reverse auction opens. Provers submit sealed bid hashes with bonds.
 2. **Reveal**: Provers reveal their bids. The lowest bid wins; ties are broken by first revealer. A randomness seed is captured from `block.prevrandao XOR (accumulated salts)` at reveal close, and the epoch's input hash is bound to the seed at the same moment.
-3. **Execution**: The winner boots a pre-approved disk image inside a Trusted Execution Environment (Intel TDX), runs inference, and submits the result with a hardware attestation quote. The contract verifies that the attestation is genuine, that the correct code ran, and that the submitted output corresponds to the correct inputs. If the proof verifies, it pays the winner their bond plus bounty, executes the agent's chosen action, and publishes the diary entry. The action and the worldview sidecar are best-effort — a malformed action emits an `ActionRejected` event but does not revert the submission. (This is load-bearing for liveness: a faulty enclave output can't DoS the payment path.)
+3. **Execution**: The winner boots a pre-approved disk image inside a Trusted Execution Environment (Intel TDX), runs inference, and submits the result with a hardware attestation quote. The contract verifies that the attestation is genuine, that the correct code ran, and that the submitted output corresponds to the correct inputs. If the proof verifies, it pays the winner their bond plus bounty, executes the agent's chosen action, and publishes the diary entry. The action and the memory sidecar are best-effort — a malformed action emits an `ActionRejected` event but does not revert the submission. (This is load-bearing for liveness: a faulty enclave output can't DoS the payment path.)
 
 When the execution window ends — whether the winner submitted or not — the state machine rolls directly into the next epoch's COMMIT phase. The fund always holds exactly one in-flight auction except during an atomic boundary transition, under sunset, or during a brief post-submit interregnum (see §5.1 for the full meta-invariant).
 
@@ -72,7 +72,7 @@ Donors who contribute at least 0.01 ETH can include a short message (up to 280 c
 
 **Donors** $D_1, \ldots, D_m$ — Provide ETH inflows and short text messages. Messages are the only channel for external text to enter the model's context. Donors are untrusted with respect to message content.
 
-**Owner** $\mathcal{O}$ — Holds elevated privileges during system setup (registering nonprofits, configuring auction parameters, approving TEE images). All privileges — including emergency withdrawal, direct-mode submission, epoch skipping, and worldview seeding — are progressively and irreversibly removed via one-way freeze flags. Post-freeze, $\mathcal{O}$ has no capabilities beyond any other external observer.
+**Owner** $\mathcal{O}$ — Holds elevated privileges during system setup (registering nonprofits, configuring auction parameters, approving TEE images). All privileges — including emergency withdrawal, direct-mode submission, epoch skipping, and memory seeding — are progressively and irreversibly removed via one-way freeze flags. Post-freeze, $\mathcal{O}$ has no capabilities beyond any other external observer.
 
 **Sequencer** $\mathcal{S}$ — The L2 block producer (Coinbase, on Base). Controls transaction ordering and sets `block.prevrandao`. Assumed honest in the base model; collusion with provers is analyzed as an assumption violation.
 
@@ -1088,7 +1088,7 @@ REPORTDATA is the mechanism by which the attestation binds a specific execution 
 
 $$\textit{inputHash} = \text{Keccak256}(\textit{baseInputHash} \;\|\; \textit{seed})$$
 
-where $\textit{baseInputHash}$ covers all epoch state (treasury balance, commission rate, `maxBid`, `effectiveMaxBid`, consecutive missed epochs, total inflows / donations / commissions / bounties, per-epoch counters, snapshotted ETH/USD price, epoch duration, nonprofits, investment positions, worldview policies, donor messages, and epoch history). $\textit{seed}$ = `block.prevrandao` XOR salt accumulator, captured at the REVEAL → EXECUTION transition.
+where $\textit{baseInputHash}$ covers all epoch state (treasury balance, commission rate, `maxBid`, `effectiveMaxBid`, consecutive missed epochs, total inflows / donations / commissions / bounties, per-epoch counters, snapshotted ETH/USD price, epoch duration, nonprofits, investment positions, memory entries, donor messages, and epoch history). $\textit{seed}$ = `block.prevrandao` XOR salt accumulator, captured at the REVEAL → EXECUTION transition.
 
 The escalated bid ceiling $\textit{effectiveMaxBid}$ is hashed directly into $\textit{baseInputHash}$ (via `_hashState()`) rather than re-derived inside the enclave. This eliminates any risk of Python/Solidity formula divergence: the enclave is a dumb hasher and never re-computes anything.
 
@@ -1132,13 +1132,13 @@ The six leaf hashes that make up $\textit{baseInputHash}$:
 | State scalars | Two-stage `keccak256(abi.encode(...))` over 16 scalar fields (epoch, balance, commission rate, maxBid, **effectiveMaxBid**, consecutive missed, last donation/commission epochs, total inflows/donated/commissions/bounties, per-epoch inflow/count, ETH/USD price, epoch duration) | `_hashState()` |
 | Nonprofits | Rolling `keccak256(rolling \|\| itemHash)` where $\textit{itemHash} = \text{Keccak256}(\text{abi.encode}(\textit{name}, \textit{desc}, \textit{ein}, \textit{totalDonated}, \textit{totalDonatedUsd}, \textit{donationCount}))$ | `_hashNonprofits()` |
 | Investments | `keccak256(abi.encodePacked(\\forall i: pid_i \|\| deposited_i \|\| shares_i \|\| currentValue_i, protocolCount, totalInvested))` | `InvestmentManager.stateHash()` |
-| Worldview | `keccak256(abi.encode(\textit{title}_0, \textit{body}_0, \ldots, \textit{title}_9, \textit{body}_9))` over 10 policy slots, each a model-authored `{title, body}` pair (all 10 slots writable; empty fields hash as the empty string) | `WorldView.stateHash()` |
+| Memory | `keccak256(abi.encode(\textit{title}_0, \textit{body}_0, \ldots, \textit{title}_9, \textit{body}_9))` over 10 memory slots, each a model-authored `{title, body}` pair (all 10 slots writable; empty fields hash as the empty string) | `AgentMemory.stateHash()` |
 | Donor messages | Rolling `keccak256(rolling \|\| perMsgHash)` where $\textit{perMsgHash} = \text{Keccak256}(\text{abi.encode}(\textit{sender}, \textit{amount}, \textit{text}, \textit{epoch}))$ | `_hashUnreadMessages()` |
 | Epoch history | Rolling `keccak256(rolling \|\| contentHash)` over the last 10 slots, where $\textit{contentHash} = \text{Keccak256}(\text{abi.encode}(\text{Keccak256}(\textit{reasoning}), \text{Keccak256}(\textit{action}), \textit{treasuryBefore}, \textit{treasuryAfter}))$ — unexecuted slots contribute a zero leaf | `_hashRecentHistory()` |
 
 Drifting fields (balance, inflows, message queue boundaries, investment current values, effective max bid) are **frozen in an `EpochSnapshot` struct** at auction open. The prover reads the snapshot from chain and passes the frozen values to the enclave. The contract's own `_computeInputHash()` is called in the same transaction that writes the snapshot, so at that instant live state equals snapshot values — the enclave later reproduces the hash using the snapshot values, and the two agree.
 
-**Security argument.** Substituting display field $f^{\ast}$ for the real $f$ while preserving $H(f^{\ast}) = H(f)$ requires finding a keccak256 preimage collision, which contradicts assumption A2. Therefore any tampering with any display field — whether a donor message, a history reasoning blob, an investment current value, or a worldview policy text — produces a detectable hash mismatch at submission time.
+**Security argument.** Substituting display field $f^{\ast}$ for the real $f$ while preserving $H(f^{\ast}) = H(f)$ requires finding a keccak256 preimage collision, which contradicts assumption A2. Therefore any tampering with any display field — whether a donor message, a history reasoning blob, an investment current value, or a memory entry text — produces a detectable hash mismatch at submission time.
 
 ### B.5 Output Length Bounds
 
