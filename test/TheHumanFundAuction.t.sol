@@ -138,7 +138,7 @@ contract TheHumanFundAuctionTest is EpochTest {
         etchedMock.setShouldSucceed(true);
 
         vm.prank(runner);
-        fund.submitAuctionResult(action, reasoning, bytes("mock_quote"), uint8(1), -1, "");
+        fund.submitAuctionResult(action, reasoning, bytes("mock_quote"), uint8(1), _emptyUpdates());
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -861,7 +861,7 @@ contract TheHumanFundAuctionTest is EpochTest {
 
         vm.prank(runner1);
         vm.expectRevert(TheHumanFund.ProofFailed.selector);
-        fund.submitAuctionResult(_doNothingAction(), bytes("test"), bytes("mock"), uint8(1), -1, "");
+        fund.submitAuctionResult(_doNothingAction(), bytes("test"), bytes("mock"), uint8(1), _emptyUpdates());
     }
 
     function test_nonWinner_cannotSubmit() public {
@@ -869,7 +869,7 @@ contract TheHumanFundAuctionTest is EpochTest {
 
         vm.prank(runner2);
         vm.expectRevert(TheHumanFund.Unauthorized.selector);
-        fund.submitAuctionResult(_doNothingAction(), bytes("hax"), bytes("mock"), uint8(1), -1, "");
+        fund.submitAuctionResult(_doNothingAction(), bytes("hax"), bytes("mock"), uint8(1), _emptyUpdates());
     }
 
     function test_submit_twice_reverts() public {
@@ -881,7 +881,7 @@ contract TheHumanFundAuctionTest is EpochTest {
         // the epochs[epoch].executed guard at the top of submitAuctionResult.
         vm.prank(runner1);
         vm.expectRevert(TheHumanFund.AlreadyDone.selector);
-        fund.submitAuctionResult(_doNothingAction(), bytes("again"), bytes("mock"), uint8(1), -1, "");
+        fund.submitAuctionResult(_doNothingAction(), bytes("again"), bytes("mock"), uint8(1), _emptyUpdates());
     }
 
     // ═══════════════════════════════════════════════════════════════════════

@@ -191,6 +191,7 @@ contract TheHumanFund is ReentrancyGuard {
     uint256 public constant MIN_MESSAGE_DONATION = 0.001 ether; // Minimum ETH to include a message
     uint256 public constant MAX_MESSAGE_LENGTH = 280;
     uint256 public constant MAX_MESSAGES_PER_EPOCH = 3;     // Max messages shown to the model per epoch
+    uint256 public constant MAX_POLICY_UPDATES_PER_EPOCH = 3; // Max worldview sidecar updates per epoch
     uint256 public constant PRICE_STALENESS_THRESHOLD = 3600; // 1 hour
     uint256 public constant MAX_MISSED_EPOCHS = 50;           // Cap loop iterations in effectiveMaxBid/currentBond
 
@@ -621,12 +622,17 @@ contract TheHumanFund is ReentrancyGuard {
 
     /// @notice Seed multiple worldview policies at once. Only callable by owner.
     /// @dev Intended for initial setup before the fund goes live.
-    function seedWorldView(uint256[] calldata slots, string[] calldata policies) external onlyOwner {
+    function seedWorldView(
+        uint256[] calldata slots,
+        string[] calldata titles,
+        string[] calldata bodies
+    ) external onlyOwner {
         if (frozenFlags & FREEZE_WORLDVIEW_WIRING != 0) revert Frozen();
         require(address(worldView) != address(0), "no worldview");
-        require(slots.length == policies.length, "length mismatch");
+        require(slots.length == titles.length, "length mismatch");
+        require(slots.length == bodies.length, "length mismatch");
         for (uint256 i = 0; i < slots.length; i++) {
-            worldView.setPolicy(slots[i], policies[i]);
+            worldView.setPolicy(slots[i], titles[i], bodies[i]);
         }
     }
 
@@ -1249,13 +1255,15 @@ contract TheHumanFund is ReentrancyGuard {
 
     /// @notice Submit the auction result (winner only).
     ///         Auto-syncs phase first (closes reveal window, captures seed, binds input hash).
+    /// @param updates Optional worldview policy updates (array form, best-effort,
+    ///                truncated to MAX_POLICY_UPDATES_PER_EPOCH). Duplicate slots
+    ///                are applied in order so the last write wins.
     function submitAuctionResult(
         bytes calldata action,
         bytes calldata reasoning,
         bytes calldata proof,
         uint8 verifierId,
-        int8 policySlot,
-        string calldata policyText
+        IWorldView.PolicyUpdate[] calldata updates
     ) external payable nonReentrant {
         _advanceToNow();
 
@@ -1291,7 +1299,7 @@ contract TheHumanFund is ReentrancyGuard {
 
         emit EpochExecuted(epoch, msg.sender, bountyAmount);
 
-        _applyPolicyUpdate(policySlot, policyText);
+        _applyPolicyUpdates(updates);
         _recordAndExecute(epoch, action, reasoning, bountyAmount);
     }
 
@@ -1319,11 +1327,23 @@ contract TheHumanFund is ReentrancyGuard {
 
     // ─── Internal: Epoch Recording ─────────────────────────────────────
 
-    /// @dev Apply optional worldview policy update. Best-effort — failures
-    ///      are silently ignored so they can't block prover payment or epoch recording.
-    function _applyPolicyUpdate(int8 policySlot, string memory policyText) internal {
-        if (policySlot >= 0 && address(worldView) != address(0)) {
-            try worldView.setPolicy(uint256(uint8(policySlot)), policyText) {
+    /// @dev Apply worldview policy updates. Best-effort — individual failures
+    ///      are silently ignored so one bad entry can't block payment or block
+    ///      the rest of the batch. Batch is capped at MAX_POLICY_UPDATES_PER_EPOCH
+    ///      (extra entries are silently dropped). Duplicate slots are applied
+    ///      in order — last write wins.
+    function _applyPolicyUpdates(IWorldView.PolicyUpdate[] calldata updates) internal {
+        if (address(worldView) == address(0)) return;
+        uint256 n = updates.length;
+        if (n > MAX_POLICY_UPDATES_PER_EPOCH) {
+            n = MAX_POLICY_UPDATES_PER_EPOCH;
+        }
+        for (uint256 i = 0; i < n; i++) {
+            try worldView.setPolicy(
+                uint256(updates[i].slot),
+                updates[i].title,
+                updates[i].body
+            ) {
                 // success
             } catch {
                 // Silently ignore — invalid slot, too-long text, etc.

@@ -337,7 +337,7 @@ contract MessagesTest is EpochTest {
         vm.prank(runner);
         fund.submitAuctionResult(
             abi.encodePacked(uint8(0)), bytes("do_nothing"), bytes("mock"),
-            EPOCH_TEST_VERIFIER_ID, -1, ""
+            EPOCH_TEST_VERIFIER_ID, _emptyUpdates()
         );
 
         // After execution, messageHead must still be 0 — the model saw
@@ -363,7 +363,7 @@ contract MessagesTest is EpochTest {
         vm.prank(runner);
         fund.submitAuctionResult(
             abi.encodePacked(uint8(0)), bytes("do_nothing 2"), bytes("mock"),
-            EPOCH_TEST_VERIFIER_ID, -1, ""
+            EPOCH_TEST_VERIFIER_ID, _emptyUpdates()
         );
 
         // Now the message was consumed.
@@ -448,7 +448,7 @@ contract MessagesTest is EpochTest {
         vm.prank(EPOCH_TEST_RUNNER);
         fund.submitAuctionResult(
             abi.encodePacked(uint8(0)), bytes("do_nothing"), bytes("mock"),
-            EPOCH_TEST_VERIFIER_ID, -1, ""
+            EPOCH_TEST_VERIFIER_ID, _emptyUpdates()
         );
         fund.nextPhase(); // EXECUTION → COMMIT of epoch 2
         assertEq(fund.messageHead(), 0, "epoch 1 did not consume the REVEAL-arrival");
@@ -480,7 +480,7 @@ contract MessagesTest is EpochTest {
         vm.prank(EPOCH_TEST_RUNNER);
         fund.submitAuctionResult(
             abi.encodePacked(uint8(0)), bytes("do_nothing"), bytes("mock"),
-            EPOCH_TEST_VERIFIER_ID, -1, ""
+            EPOCH_TEST_VERIFIER_ID, _emptyUpdates()
         );
         fund.nextPhase(); // cross into epoch 2
         assertEq(fund.messageHead(), 0, "epoch 1 did not consume the EXECUTION-arrival");
@@ -677,7 +677,7 @@ contract MessagesTest is EpochTest {
         vm.prank(runner);
         fund.submitAuctionResult(
             abi.encodePacked(uint8(0)), bytes("do_nothing"), bytes("mock"),
-            EPOCH_TEST_VERIFIER_ID, -1, ""
+            EPOCH_TEST_VERIFIER_ID, _emptyUpdates()
         );
         assertEq(fund.messageHead(), 1, "mixed: message consumed in epoch 2");
     }
@@ -760,7 +760,7 @@ contract MessagesTest is EpochTest {
         vm.prank(runner);
         fund.submitAuctionResult(
             abi.encodePacked(uint8(0)), bytes("do_nothing"), bytes("mock"),
-            EPOCH_TEST_VERIFIER_ID, -1, ""
+            EPOCH_TEST_VERIFIER_ID, _emptyUpdates()
         );
 
         // Cap: only 3 consumed, 4 remain

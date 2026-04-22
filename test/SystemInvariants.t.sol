@@ -1621,7 +1621,7 @@ contract SystemInvariantsTest is EpochTest {
             vm.prank(runner1);
             fund.submitAuctionResult(
                 abi.encodePacked(uint8(0)), bytes("do_nothing"), bytes("mock"),
-                EPOCH_TEST_VERIFIER_ID, -1, ""
+                EPOCH_TEST_VERIFIER_ID, _emptyUpdates()
             );
             fund.nextPhase(); // cross boundary
         }
@@ -1679,7 +1679,7 @@ contract SystemInvariantsTest is EpochTest {
             bytes("reasoning"),
             bytes("mock"),
             EPOCH_TEST_VERIFIER_ID,
-            -1, ""
+            _emptyUpdates()
         );
 
         // Winner got bond refund + bounty regardless of action validity.
@@ -1828,8 +1828,9 @@ contract SystemInvariantsTest is EpochTest {
         assertEq(fund.currentBond(), base, "bond resets on success");
     }
 
-    /// Policy sidecar failure (invalid slot) must NOT revert the submission.
-    /// Same liveness concern: bad policy text can't block payment.
+    /// Policy sidecar failure (invalid slot in batch) must NOT revert the
+    /// submission. Same liveness concern: a bad policy update entry can't
+    /// block payment, and must not block valid entries elsewhere in the batch.
     function test_submit_invalidPolicySlot_stillSucceeds() public {
         uint256 bond = fund.currentBond();
         bytes32 salt = bytes32(uint256(0xF00D));
@@ -1840,15 +1841,18 @@ contract SystemInvariantsTest is EpochTest {
         fund.reveal(0.003 ether, salt);
         fund.nextPhase();
 
-        // Submit with an invalid policy slot (slot 99 is out of range).
+        // Batch with one invalid slot (99 is out of 0..9 range).
+        IWorldView.PolicyUpdate[] memory updates = new IWorldView.PolicyUpdate[](1);
+        updates[0] = IWorldView.PolicyUpdate({slot: 99, title: "bad", body: "invalid"});
+
+        // Submit with an invalid policy slot in the batch.
         vm.prank(runner1);
         fund.submitAuctionResult(
             abi.encodePacked(uint8(0)),
             bytes("reasoning"),
             bytes("mock"),
             EPOCH_TEST_VERIFIER_ID,
-            int8(99),            // invalid slot
-            "invalid"
+            updates
         );
 
         // Execution still recorded; epoch marked executed.
