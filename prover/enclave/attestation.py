@@ -129,13 +129,13 @@ def compute_report_data(
     input_hash: bytes,
     action_bytes: bytes,
     reasoning: str,
-    submitted_worldview,
+    submitted_memory,
 ) -> bytes:
     """Compute the 64-byte report data bound into the TDX quote.
 
     Creates a cryptographic binding between:
     - The input (epoch state, randomness seed)
-    - The output (action + reasoning + submitted worldview updates)
+    - The output (action + reasoning + submitted memory updates)
     - The TEE identity (RTMR values in the quote)
 
     The system prompt is verified via dm-verity image key (RTMR[2]) and no
@@ -149,13 +149,13 @@ def compute_report_data(
                           sha256(action), sha256(reasoning), updatesHash
                       ))
 
-    `submitted_worldview` MUST be the same canonical, validator-clamped list
+    `submitted_memory` MUST be the same canonical, validator-clamped list
     the client will pass to submitAuctionResult — otherwise the contract's
     re-computed outputHash diverges and proof verification fails.
     """
     action_hash = hashlib.sha256(action_bytes).digest()
     reasoning_hash = hashlib.sha256(reasoning.encode("utf-8")).digest()
-    updates_hash = _hash_submitted_updates(submitted_worldview)
+    updates_hash = _hash_submitted_updates(submitted_memory)
 
     # outputHash = keccak256(sha256(action) || sha256(reasoning) || updatesHash)
     output_hash = _keccak256(action_hash + reasoning_hash + updates_hash)

@@ -288,9 +288,9 @@ def deploy_contracts(w3, account):
     w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
     nonce += 1
 
-    # Deploy WorldView
-    print("Deploying WorldView...")
-    wv_artifact = json.loads((ABI_DIR / "WorldView.sol" / "WorldView.json").read_text())
+    # Deploy AgentMemory
+    print("Deploying AgentMemory...")
+    wv_artifact = json.loads((ABI_DIR / "AgentMemory.sol" / "AgentMemory.json").read_text())
     wv_contract = w3.eth.contract(abi=wv_artifact["abi"], bytecode=wv_artifact["bytecode"]["object"])
     tx = wv_contract.constructor(fund_addr).build_transaction({
         "from": deployer, "nonce": nonce, "gas": 1_000_000,
@@ -300,13 +300,13 @@ def deploy_contracts(w3, account):
     tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
     receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
     if receipt.status != 1:
-        raise RuntimeError(f"WorldView deployment failed! Gas: {receipt.gasUsed}")
+        raise RuntimeError(f"AgentMemory deployment failed! Gas: {receipt.gasUsed}")
     wv_addr = receipt.contractAddress
-    print(f"  WorldView: {wv_addr} (gas: {receipt.gasUsed})")
+    print(f"  AgentMemory: {wv_addr} (gas: {receipt.gasUsed})")
     nonce += 1
 
-    # Link fund -> WorldView
-    tx = fund.functions.setWorldView(wv_addr).build_transaction({
+    # Link fund -> AgentMemory
+    tx = fund.functions.setAgentMemory(wv_addr).build_transaction({
         "from": deployer, "nonce": nonce, "gas": 100_000,
         "maxFeePerGas": w3.eth.gas_price * 2, "maxPriorityFeePerGas": w3.to_wei(0.001, "gwei"),
     })
@@ -812,15 +812,13 @@ def run_auction_e2e(w3, account, fund_addr, am_addr, nonce):
     attestation_bytes = bytes.fromhex(tee_result["attestation_quote"].replace("0x", ""))
     print(f"      Reasoning: {len(reasoning_bytes)} bytes (truncated by enclave if needed)")
 
-    # Extract worldview update if present
-    action_json = tee_result.get("action", {})
-    if isinstance(action_json, str):
-        action_json = json.loads(action_json)
-    wv = action_json.get("worldview", {})
-    policy_slot = wv.get("slot", -1)  # -1 = no update
-    policy_text = wv.get("policy", "")
-    if policy_slot >= 0:
-        print(f"      Worldview update: slot {policy_slot} = {policy_text!r}")
+    # Extract memory update if present
+    raw_mem = tee_result.get("submitted_memory", [])
+    if raw_mem:
+        print(f"      Memory updates: {len(raw_mem)} slot(s)")
+        for entry in raw_mem:
+            if isinstance(entry, dict):
+                print(f"        slot {entry.get('slot', '?')}: {entry.get('title', '')} / {entry.get('body', '')[:60]!r}")
 
     # Verify REPORTDATA matches before submitting
     # Formula: outputHash = keccak256(sha256(action) + sha256(reasoning))

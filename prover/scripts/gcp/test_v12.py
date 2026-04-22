@@ -68,7 +68,7 @@ EPOCH_STATE = {
     "investments": [],
     "total_invested": 0,
     "total_assets": 10 * 10**18,
-    "guiding_policies": ["", "", "", "", "", "", "", "", "", ""],
+    "memories": ["", "", "", "", "", "", "", "", "", ""],
     "donor_messages": [],
     "history": [],
 }

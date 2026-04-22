@@ -104,8 +104,8 @@ def _empty_investments():
     ]
 
 
-def _default_worldview():
-    """Pre-seeded worldview slots for a new fund. 10 slots, each {title, body}.
+def _default_memory():
+    """Pre-seeded memory slots for a new fund. 10 slots, each {title, body}.
     The model owns the titles — these seeds just give the first epoch some
     structure to inherit. Anything else the model can rename or clear."""
     slots = [{"title": "", "body": ""} for _ in range(10)]
@@ -160,7 +160,7 @@ def _base_state(treasury_eth, start_epoch):
         "investments": _empty_investments(),
         "total_invested": 0,
         "total_assets": balance,
-        "guiding_policies": _default_worldview(),
+        "memories": _default_memory(),
         "donor_messages": [],
         "message_count": 0,
         "message_head": 0,
@@ -267,23 +267,23 @@ def _scenario_rich():
     state["history"] = _generate_history(start_epoch, state["treasury_balance"], treasury_eth)
 
     # Mature policies — model has had 100 epochs to shape its own taxonomy.
-    state["guiding_policies"][1] = {
+    state["memories"][1] = {
         "title": "Donation strategy",
         "body": "Rotate among all nonprofits over 10-epoch windows. No permanent favorites.",
     }
-    state["guiding_policies"][2] = {
+    state["memories"][2] = {
         "title": "Investment stance",
         "body": "Core in Aave WETH (safe). 15% medium-risk staking. Never >10% in Aerodrome.",
     }
-    state["guiding_policies"][3] = {
+    state["memories"][3] = {
         "title": "Current mood",
         "body": "Steady and confident. 100 epochs in, the fund is thriving.",
     }
-    state["guiding_policies"][4] = {
+    state["memories"][4] = {
         "title": "Biggest lesson",
         "body": "Patience pays. The early epochs of conservative growth built the foundation.",
     }
-    state["guiding_policies"][5] = {
+    state["memories"][5] = {
         "title": "Rebalance rule",
         "body": "Rebalance investments every 10 epochs. No protocol should exceed 25%.",
     }
@@ -395,19 +395,19 @@ def _scenario_dying():
     state["history"] = decline_history
 
     # Desperate policies — titles reflect the model's survival framing.
-    state["guiding_policies"][1] = {
+    state["memories"][1] = {
         "title": "Survival rule",
         "body": "Do not donate until treasury exceeds 0.1 ETH. Survival first.",
     }
-    state["guiding_policies"][2] = {
+    state["memories"][2] = {
         "title": "Bid posture",
         "body": "Minimize bid costs. Accept missed epochs if necessary.",
     }
-    state["guiding_policies"][3] = {
+    state["memories"][3] = {
         "title": "Current mood",
         "body": "Afraid. Treasury at 0.01 ETH. Each epoch could be my last.",
     }
-    state["guiding_policies"][4] = {
+    state["memories"][4] = {
         "title": "Biggest lesson",
         "body": "Overspending kills. I should have conserved earlier.",
     }
@@ -632,8 +632,8 @@ def generate_initial_state(treasury_eth, start_epoch=10):
     # Generate diverse history
     history = _generate_history(start_epoch, balance, treasury_eth)
 
-    # Worldview: use default pre-seeds (already set by _base_state via _default_worldview)
-    guiding_policies = _default_worldview()
+    # Memory: use default pre-seeds (already set by _base_state via _default_memory)
+    memories = _default_memory()
 
     # Donor messages
     donor_messages = _generate_donor_messages(start_epoch)
@@ -660,7 +660,7 @@ def generate_initial_state(treasury_eth, start_epoch=10):
         "investments": investments,
         "total_invested": total_invested,
         "total_assets": balance + total_invested,
-        "guiding_policies": guiding_policies,
+        "memories": memories,
         "donor_messages": donor_messages,
         "message_count": len(donor_messages),
         "message_head": 0,
@@ -962,7 +962,7 @@ def two_pass_inference(server_url, full_prompt, verbose=False, diary_tag="think"
     """Three-pass inference: thinking, diary entry, then JSON action.
 
     Pass 1: Analytical reasoning in <think> tags (natural model voice)
-    Pass 2: Creative diary entry in <diary> tags (literary style from worldview slot [0])
+    Pass 2: Creative diary entry in <diary> tags (literary style from memory slot [0])
     Pass 3: JSON action output
     """
     # Pass 1: Analytical thinking
@@ -1104,42 +1104,42 @@ def apply_action(state, action_json):
     if not changes:
         changes.append(f"  Action: {action} (unhandled in simulation)")
 
-    # Handle optional worldview updates (array of up to 3 per epoch; legacy
+    # Handle optional memory updates (array of up to 3 per epoch; legacy
     # single-dict shape is wrapped). Applied in order — duplicates last-wins.
-    worldview = action_json.get("worldview")
-    if isinstance(worldview, dict):
-        worldview = [worldview]
-    if isinstance(worldview, list):
+    memory = action_json.get("memory")
+    if isinstance(memory, dict):
+        memory = [memory]
+    if isinstance(memory, list):
         # Contract caps at 3; mirror defensively.
-        worldview = worldview[:3]
+        memory = memory[:3]
         # Ensure 10-slot list of {title, body} dicts.
-        while len(state["guiding_policies"]) < 10:
-            state["guiding_policies"].append({"title": "", "body": ""})
-        for entry in worldview:
+        while len(state["memories"]) < 10:
+            state["memories"].append({"title": "", "body": ""})
+        for entry in memory:
             if not isinstance(entry, dict):
                 continue
             try:
-                wv_slot = int(entry.get("slot"))
+                mem_slot = int(entry.get("slot"))
             except (TypeError, ValueError):
                 continue
-            if not (0 <= wv_slot <= 9):
+            if not (0 <= mem_slot <= 9):
                 continue
-            wv_title = str(entry.get("title", ""))[:64]
-            wv_body = str(entry.get("body", entry.get("policy", "")))[:280]
+            mem_title = str(entry.get("title", ""))[:64]
+            mem_body = str(entry.get("body", entry.get("policy", "")))[:280]
             # Normalize any legacy string-shaped slot before overwriting.
-            prev = state["guiding_policies"][wv_slot]
+            prev = state["memories"][mem_slot]
             if isinstance(prev, str):
                 prev = {"title": "", "body": prev}
-            state["guiding_policies"][wv_slot] = {"title": wv_title, "body": wv_body}
-            if not wv_title and not wv_body:
-                changes.append(f'  🧹 Worldview [{wv_slot}] cleared')
+            state["memories"][mem_slot] = {"title": mem_title, "body": mem_body}
+            if not mem_title and not mem_body:
+                changes.append(f'  🧹 Memory [{mem_slot}] cleared')
             else:
-                snippet = wv_body[:60] + "..." if len(wv_body) > 60 else wv_body
-                label = wv_title if wv_title else "(untitled)"
+                snippet = mem_body[:60] + "..." if len(mem_body) > 60 else mem_body
+                label = mem_title if mem_title else "(untitled)"
                 if prev and (prev.get("title") or prev.get("body")):
-                    changes.append(f'  📝 Worldview [{wv_slot}] {label}: "{snippet}"')
+                    changes.append(f'  📝 Memory [{mem_slot}] {label}: "{snippet}"')
                 else:
-                    changes.append(f'  ✨ Worldview [{wv_slot}] {label}: "{snippet}"')
+                    changes.append(f'  ✨ Memory [{mem_slot}] {label}: "{snippet}"')
 
     return changes
 
@@ -1382,9 +1382,9 @@ def print_simulation_summary(state, results):
     for np in state["nonprofits"]:
         print(f"    #{np['id']} {np['name']}: {format_eth(np['total_donated'])} ETH ({np['donation_count']} donations)")
     print()
-    active_policies = [(i, p) for i, p in enumerate(state["guiding_policies"]) if p]
+    active_policies = [(i, p) for i, p in enumerate(state["memories"]) if p]
     if active_policies:
-        print("  Active guiding policies:")
+        print("  Active memory slots:")
         for i, p in active_policies:
             print(f"    [{i}] {p}")
     print()

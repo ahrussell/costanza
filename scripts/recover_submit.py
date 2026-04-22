@@ -89,18 +89,22 @@ def main():
     reasoning_bytes = result["reasoning"].encode("utf-8")
     attestation_bytes = bytes.fromhex(result["attestation_quote"].replace("0x", ""))
 
-    # Extract worldview updates if any — now an array of up to 3
+    # Extract memory updates if any — now an array of up to 3
     # {slot, title, body} entries. Defensive: single-dict legacy shape is
     # wrapped; missing/malformed entries are dropped rather than aborting.
-    action_json = result.get("action", {})
-    if isinstance(action_json, str):
-        action_json = json.loads(action_json)
-    raw_wv = action_json.get("worldview") if isinstance(action_json, dict) else None
-    worldview_updates = []
-    if isinstance(raw_wv, dict):
-        raw_wv = [raw_wv]
-    if isinstance(raw_wv, list):
-        for entry in raw_wv:
+    # Note: prefer result["submitted_memory"] if present (attested path).
+    raw_mem = result.get("submitted_memory")
+    if raw_mem is None:
+        # Fallback: extract from action JSON (older result format)
+        action_json = result.get("action", {})
+        if isinstance(action_json, str):
+            action_json = json.loads(action_json)
+        raw_mem = action_json.get("memory") if isinstance(action_json, dict) else None
+    memory_updates = []
+    if isinstance(raw_mem, dict):
+        raw_mem = [raw_mem]
+    if isinstance(raw_mem, list):
+        for entry in raw_mem:
             if not isinstance(entry, dict):
                 continue
             try:
@@ -111,9 +115,9 @@ def main():
                 continue
             title = str(entry.get("title", ""))[:64]
             body = str(entry.get("body", entry.get("policy", "")))[:280]
-            worldview_updates.append((slot, title, body))
-        worldview_updates = worldview_updates[:3]
-    print(f"Worldview updates to apply: {len(worldview_updates)}")
+            memory_updates.append((slot, title, body))
+        memory_updates = memory_updates[:3]
+    print(f"Memory updates to apply: {len(memory_updates)}")
 
     # Verify REPORTDATA
     # outputHash = keccak256(sha256(action) || sha256(reasoning))
@@ -146,7 +150,7 @@ def main():
     print(f"Submitting (nonce={nonce}, verifier_id={args.verifier_id})...")
 
     calldata = fund.functions.submitAuctionResult(
-        action_bytes, reasoning_bytes, attestation_bytes, args.verifier_id, worldview_updates
+        action_bytes, reasoning_bytes, attestation_bytes, args.verifier_id, memory_updates
     )._encode_transaction_data()
     tx = {
         "from": account.address,

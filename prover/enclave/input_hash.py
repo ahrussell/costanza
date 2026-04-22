@@ -20,12 +20,12 @@ Contract-side reference:
   TheHumanFund._hashUnreadMessages() -> _hash_messages()
   TheHumanFund._hashRecentHistory()  -> _hash_history()
   InvestmentManager.stateHash()      -> _hash_investments()
-  WorldView.stateHash()              -> _hash_worldview()
+  AgentMemory.stateHash()            -> _hash_memory()
 """
 
 MAX_MESSAGES_PER_EPOCH = 3
 MAX_HISTORY_ENTRIES = 10
-WORLDVIEW_SLOTS = 10
+MEMORY_SLOTS = 10
 DEFAULT_EPOCH_DURATION = 86400
 
 
@@ -236,8 +236,8 @@ def _hash_investments(investments: list) -> bytes:
     ))
 
 
-def _hash_worldview(policies: list) -> bytes:
-    """Replicate WorldView.stateHash().
+def _hash_memory(policies: list) -> bytes:
+    """Replicate AgentMemory.stateHash().
 
     Solidity:
         return keccak256(abi.encode(
@@ -254,13 +254,13 @@ def _hash_worldview(policies: list) -> bytes:
     Accepts each slot as a dict `{"title": ..., "body": ...}`. Missing
     fields default to "". Missing slots pad with `{"", ""}`.
 
-    Zero-length worldview → b'\\x00' * 32 (matches bytes32(0) sentinel).
+    Zero-length memory → b'\\x00' * 32 (matches bytes32(0) sentinel).
     """
     if not policies:
         return b"\x00" * 32
-    # Pad / truncate to exactly WORLDVIEW_SLOTS entries.
-    padded = list(policies[:WORLDVIEW_SLOTS])
-    while len(padded) < WORLDVIEW_SLOTS:
+    # Pad / truncate to exactly MEMORY_SLOTS entries.
+    padded = list(policies[:MEMORY_SLOTS])
+    while len(padded) < MEMORY_SLOTS:
         padded.append({"title": "", "body": ""})
     items = []
     for p in padded:
@@ -406,7 +406,7 @@ def compute_input_hash(epoch_state: dict) -> bytes:
     state_hash = _hash_state(epoch_state)
     nonprofit_hash = _hash_nonprofits(epoch_state.get("nonprofits", []))
     invest_hash = _hash_investments(epoch_state.get("investments", []))
-    worldview_hash = _hash_worldview(epoch_state.get("guiding_policies", []))
+    memory_hash = _hash_memory(epoch_state.get("memories", []))
     msg_hash = _hash_messages(epoch_state.get("donor_messages", []))
     hist_hash = _hash_history(epoch_state.get("history", []), epoch_state.get("epoch", 0))
 
@@ -414,7 +414,7 @@ def compute_input_hash(epoch_state: dict) -> bytes:
         ("bytes32", state_hash),
         ("bytes32", nonprofit_hash),
         ("bytes32", invest_hash),
-        ("bytes32", worldview_hash),
+        ("bytes32", memory_hash),
         ("bytes32", msg_hash),
         ("bytes32", hist_hash),
     ))

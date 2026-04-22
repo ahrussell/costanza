@@ -4,7 +4,7 @@
 # "\n</diary>\n{", so the model is continuing inside an already-open object.
 # This grammar matches the continuation from AFTER that opening brace.
 #
-# Structure: exactly one action + params, optional worldview sidecar (an
+# Structure: exactly one action + params, optional memory sidecar (an
 # array of 0-3 {slot, title, body} updates), then close and stop. No
 # trailing content — no ```json fences, no </output>, no second action
 # JSON, no EOS-literal echoing.
@@ -13,7 +13,7 @@
 # title/body lengths; the validator clamps and the contract enforces
 # bounds. This only constrains STRUCTURAL validity.
 
-root ::= ws "\"action\":" ws action-body (ws "," ws worldview-kv)? ws "}"
+root ::= ws "\"action\":" ws action-body (ws "," ws memory-kv)? ws "}"
 
 action-body ::= donate-body | invest-body | withdraw-body | commission-body | do-nothing-body
 
@@ -28,9 +28,9 @@ invest-params     ::= "{" ws "\"protocol_id\":"  ws integer ws "," ws "\"amount_
 withdraw-params   ::= "{" ws "\"protocol_id\":"  ws integer ws "," ws "\"amount_eth\":" ws number ws "}"
 commission-params ::= "{" ws "\"rate_bps\":"     ws integer ws "}"
 
-worldview-kv ::= "\"worldview\":" ws "[" ws worldview-body "]"
-worldview-body ::= (worldview-update (ws "," ws worldview-update)*)? ws
-worldview-update ::= "{" ws "\"slot\":" ws integer ws "," ws "\"title\":" ws string ws "," ws "\"body\":" ws string ws "}"
+memory-kv ::= "\"memory\":" ws "[" ws memory-body "]"
+memory-body ::= (memory-update (ws "," ws memory-update)*)? ws
+memory-update ::= "{" ws "\"slot\":" ws integer ws "," ws "\"title\":" ws string ws "," ws "\"body\":" ws string ws "}"
 
 integer ::= [0-9]+
 number  ::= "-"? ("0" | [1-9] [0-9]*) ("." [0-9]+)?

@@ -272,11 +272,11 @@ def _parse_eth_amount(raw) -> Optional[float]:
         return None
 
 
-# Worldview sidecar bounds — must match src/WorldView.sol constants.
+# Memory sidecar bounds — must match src/AgentMemory.sol constants.
 MAX_POLICY_UPDATES_PER_EPOCH = 3
 MAX_TITLE_BYTES = 64
 MAX_BODY_BYTES = 280
-WORLDVIEW_SLOTS = 10
+MEMORY_SLOTS = 10
 
 
 def _truncate_utf8(raw, cap: int) -> str:
@@ -297,8 +297,8 @@ def _truncate_utf8(raw, cap: int) -> str:
     return truncated.decode("utf-8", errors="ignore")
 
 
-def _clamp_worldview_sidecar(action_json: dict, notes: List[str]) -> None:
-    """Normalize `action_json["worldview"]` to a sanitized list of 0..3
+def _clamp_memory_sidecar(action_json: dict, notes: List[str]) -> None:
+    """Normalize `action_json["memory"]` to a sanitized list of 0..3
     `{slot, title, body}` dicts.
 
     - Single-dict shape (legacy `{slot, policy}` or `{slot, title, body}`)
@@ -316,7 +316,7 @@ def _clamp_worldview_sidecar(action_json: dict, notes: List[str]) -> None:
     Mutates `action_json` in place so the downstream submission path sees
     only clean data.
     """
-    raw = action_json.get("worldview")
+    raw = action_json.get("memory")
     if raw is None:
         return
 
@@ -325,9 +325,9 @@ def _clamp_worldview_sidecar(action_json: dict, notes: List[str]) -> None:
         raw = [raw]
     if not isinstance(raw, list):
         # Unsupported shape (string, number, etc.) — drop silently.
-        action_json["worldview"] = []
+        action_json["memory"] = []
         notes.append(
-            "worldview sidecar dropped — expected a list of up to 3 "
+            "memory sidecar dropped — expected a list of up to 3 "
             "{slot, title, body} entries"
         )
         return
@@ -346,7 +346,7 @@ def _clamp_worldview_sidecar(action_json: dict, notes: List[str]) -> None:
         except (TypeError, ValueError):
             dropped += 1
             continue
-        if slot < 0 or slot >= WORLDVIEW_SLOTS:
+        if slot < 0 or slot >= MEMORY_SLOTS:
             dropped += 1
             continue
 
@@ -360,23 +360,23 @@ def _clamp_worldview_sidecar(action_json: dict, notes: List[str]) -> None:
     over_cap = max(0, len(cleaned) - MAX_POLICY_UPDATES_PER_EPOCH)
     cleaned = cleaned[:MAX_POLICY_UPDATES_PER_EPOCH]
 
-    action_json["worldview"] = cleaned
+    action_json["memory"] = cleaned
 
     if dropped > 0:
         notes.append(
-            f"worldview sidecar dropped {dropped} malformed entr"
+            f"memory sidecar dropped {dropped} malformed entr"
             f"{'ies' if dropped > 1 else 'y'} (bad slot or shape)"
         )
     if over_cap > 0:
         notes.append(
-            f"worldview sidecar truncated to {MAX_POLICY_UPDATES_PER_EPOCH} "
+            f"memory sidecar truncated to {MAX_POLICY_UPDATES_PER_EPOCH} "
             f"entries (extra {over_cap} dropped)"
         )
 
 
 def validate_and_clamp_action(action_json: dict, state: dict):
     """Clamp donate/invest/withdraw amounts to the bounds shown in the prompt.
-    Also clamp the optional worldview sidecar (slot range, title/body length,
+    Also clamp the optional memory sidecar (slot range, title/body length,
     max 3 entries) before it's handed to the contract.
 
     Args:
@@ -396,9 +396,9 @@ def validate_and_clamp_action(action_json: dict, state: dict):
     if not isinstance(action_json, dict):
         return action_json, notes
 
-    # Always normalize/clamp the worldview sidecar — runs regardless of action
+    # Always normalize/clamp the memory sidecar — runs regardless of action
     # shape so fallback + garbage-action paths still strip malformed sidecars.
-    _clamp_worldview_sidecar(action_json, notes)
+    _clamp_memory_sidecar(action_json, notes)
 
     action = str(action_json.get("action", "")).split("(")[0].strip().lower()
 

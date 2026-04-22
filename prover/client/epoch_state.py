@@ -12,7 +12,7 @@ reads leak into the hash path.
 For the prover side to be drift-free, this module must mirror that
 discipline: every scalar the enclave sees comes from `getEpochSnapshot`,
 not from live getters. Raw collection data (nonprofits, messages,
-history entries, investment metadata, worldview policies) are still
+history entries, investment metadata, memory policies) are still
 read live, but bounded by counts/heads/epochs frozen in the snapshot.
 That bounding is load-bearing — it's why admin-added nonprofits or
 new donor messages after auction open are invisible to the enclave
@@ -30,9 +30,9 @@ Drift analysis per collection:
   - Investments: currentValues/active come from the snapshot directly
     (they drift due to yield); immutable metadata (name/risk/apy) is
     read live bounded by snap.investment_protocol_count → drift-free.
-  - Worldview: policies can only change via `_applyPolicyUpdate`,
+  - Memory: entries can only change via `_applyMemoryUpdate`,
     which runs inside `submitAuctionResult`
-    AFTER input-hash verification. Between freeze and verify, worldview
+    AFTER input-hash verification. Between freeze and verify, memory
     is stable. Read live → drift-free in the observed window.
 
 If you're tempted to add a new contract call here, first ask whether
@@ -93,7 +93,7 @@ _SNAP_FIELDS = (
     "total_inflows", "total_donated", "total_commissions", "total_bounties",
     "epoch_inflow", "epoch_donation_count", "epoch_eth_usd_price",
     "epoch_duration", "message_head", "message_count", "nonprofit_count",
-    "nonprofits_hash", "messages_hash", "history_hash", "worldview_hash",
+    "nonprofits_hash", "messages_hash", "history_hash", "memory_hash",
     "investments_hash", "investment_protocol_count",
     "investment_current_values", "investment_active",
 )
@@ -104,7 +104,7 @@ def read_epoch_snapshot(contract, epoch):
 
     The single storage read the prover needs for all scalars + frozen
     sub-hashes + investment raw values. Raw collection data
-    (nonprofits / messages / history / worldview policies) still needs
+    (nonprofits / messages / history / memory entries) still needs
     separate live reads, bounded by the counts returned here.
     """
     snap = contract.functions.getEpochSnapshot(epoch).call()
@@ -132,7 +132,7 @@ def read_epoch_snapshot(contract, epoch):
         snap[19],  # nonprofitsHash
         snap[20],  # messagesHash
         snap[21],  # historyHash
-        snap[22],  # worldviewHash
+        snap[22],  # memoryHash
         snap[23],  # investmentsHash
         snap[24],  # investmentProtocolCount
         snap[25],  # investmentCurrentValues (uint256[21])
@@ -249,11 +249,11 @@ def read_contract_state(contract, w3, epoch=None):
     except Exception:
         pass
 
-    # ── Worldview (live read — stable between freeze and verify) ─────────
+    # ── Memory (live read — stable between freeze and verify) ─────────────
     # Each slot is a {title, body} pair. All 10 slots are writable.
-    state["guiding_policies"] = [{"title": "", "body": ""} for _ in range(10)]
+    state["memories"] = [{"title": "", "body": ""} for _ in range(10)]
     try:
-        wv_addr = contract.functions.worldView().call()
+        wv_addr = contract.functions.agentMemory().call()
         if wv_addr and wv_addr != "0x0000000000000000000000000000000000000000":
             wv = w3.eth.contract(address=Web3.to_checksum_address(wv_addr), abi=_WV_ABI)
             # web3.py decodes the tuple[10] return as a list of (title, body)
@@ -273,7 +273,7 @@ def read_contract_state(contract, w3, epoch=None):
             # Pad / truncate to exactly 10 slots.
             while len(normalized) < 10:
                 normalized.append({"title": "", "body": ""})
-            state["guiding_policies"] = normalized[:10]
+            state["memories"] = normalized[:10]
     except Exception:
         pass
 

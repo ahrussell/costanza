@@ -505,16 +505,16 @@ def _submit_result(chain, config, tee_result, auction, saved, state_dir, ntfy):
     reasoning_bytes = tee_result["reasoning"].encode("utf-8")
     attestation_bytes = bytes.fromhex(tee_result["attestation_quote"].replace("0x", ""))
 
-    # Worldview updates come from the enclave's canonical, pre-validated
-    # `submitted_worldview` field — the SAME bytes the enclave hashed into
+    # Memory updates come from the enclave's canonical, pre-validated
+    # `submitted_memory` field — the SAME bytes the enclave hashed into
     # REPORTDATA. Reading any other source (e.g. tee_result["action"]
-    # ["worldview"]) would let a compromised client substitute updates the
+    # ["memory"]) would let a compromised client substitute updates the
     # enclave never produced; the static analyzer in
     # prover/enclave/test_output_coverage.py enforces this invariant.
-    raw_wv = tee_result.get("submitted_worldview", [])
-    worldview_updates = []
-    if isinstance(raw_wv, list):
-        for entry in raw_wv:
+    raw_mem = tee_result.get("submitted_memory", [])
+    memory_updates = []
+    if isinstance(raw_mem, list):
+        for entry in raw_mem:
             if not isinstance(entry, dict):
                 continue
             try:
@@ -525,9 +525,9 @@ def _submit_result(chain, config, tee_result, auction, saved, state_dir, ntfy):
                 continue
             title = str(entry.get("title", ""))[:64]
             body = str(entry.get("body", ""))[:280]
-            worldview_updates.append((slot, title, body))
+            memory_updates.append((slot, title, body))
         # Belt-and-suspenders: contract caps at 3. Enclave already clamped.
-        worldview_updates = worldview_updates[:3]
+        memory_updates = memory_updates[:3]
 
     # Action name for notification — derive from the FIRST byte of action_bytes
     # rather than tee_result["action"], so notifications can't be swayed by a
@@ -535,8 +535,8 @@ def _submit_result(chain, config, tee_result, auction, saved, state_dir, ntfy):
     action_name = _ACTION_NAMES.get(action_bytes[0], "?") if action_bytes else "?"
 
     verifier_id = config["verifier_id"]
-    logger.info("Submitting result (verifier=%d, worldview_updates=%d, attempt=%d/%d)...",
-               verifier_id, len(worldview_updates), attempts + 1, MAX_SUBMIT_RETRIES)
+    logger.info("Submitting result (verifier=%d, memory_updates=%d, attempt=%d/%d)...",
+               verifier_id, len(memory_updates), attempts + 1, MAX_SUBMIT_RETRIES)
 
     try:
         receipt = submit_result(
@@ -545,7 +545,7 @@ def _submit_result(chain, config, tee_result, auction, saved, state_dir, ntfy):
             reasoning=reasoning_bytes,
             proof=attestation_bytes,
             verifier_id=verifier_id,
-            worldview_updates=worldview_updates,
+            memory_updates=memory_updates,
         )
         logger.info("Result submitted! tx=%s", receipt['transactionHash'].hex())
 

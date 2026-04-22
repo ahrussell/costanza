@@ -577,7 +577,7 @@ def test_freezing(results):
     freeze_names = {
         1: ("FREEZE_NONPROFITS", "addNonprofit"),
         2: ("FREEZE_INVESTMENT_WIRING", "setInvestmentManager"),
-        4: ("FREEZE_WORLDVIEW_WIRING", "setWorldView"),
+        4: ("FREEZE_MEMORY_WIRING", "setAgentMemory"),
         8: ("FREEZE_AUCTION_CONFIG", "resetAuction"),
         16: ("FREEZE_VERIFIERS", "approveVerifier"),
         128: ("FREEZE_MIGRATE", "withdrawAll"),
@@ -593,7 +593,7 @@ def test_freezing(results):
                 elif flag == 2:
                     receipt = send_tx(fund.functions.setInvestmentManager(owner.address), gas=200_000)
                 elif flag == 4:
-                    receipt = send_tx(fund.functions.setWorldView(owner.address), gas=200_000)
+                    receipt = send_tx(fund.functions.setAgentMemory(owner.address), gas=200_000)
                 elif flag == 8:
                     receipt = send_tx(fund.functions.resetAuction(1200, 1200, 3000), gas=200_000)
                 elif flag == 16:

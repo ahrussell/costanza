@@ -10,7 +10,7 @@ The epoch context includes:
 - Action bounds (max donate, commission range, investment capacity)
 - Nonprofit registry
 - Investment portfolio
-- Worldview (guiding policies)
+- Memory (guiding policies / agent memory slots)
 - Donor messages (with datamarking spotlighting)
 - Decision history
 - Action distribution statistics
@@ -341,10 +341,10 @@ def build_epoch_context(state, seed=None, voice_anchors: str = ""):
       2. Action bounds (concrete this-epoch limits)
       3. Nonprofits
       4. Investment portfolio
-      5. Worldview (guiding policies)
+      5. Memory (agent memory slots)
       6. Donor messages (up to 20)
       7. Decision history (last 10 entries)
-      8. Reminder block (re-state key stats + worldview)
+      8. Reminder block (re-state key stats + memory)
 
     Args:
         state: Structured contract state dict containing all epoch data.
@@ -533,8 +533,8 @@ def build_epoch_context(state, seed=None, voice_anchors: str = ""):
                     f"  #{pid} {inv['name']} [{risk}, ~{apy:.0f}% APY, {status}]: no position  |  {room_str}"
                 )
 
-    # -- Section 5: Worldview --
-    policies = state.get("guiding_policies", [{"title": "", "body": ""}] * 10)
+    # -- Section 5: Memory --
+    policies = state.get("memories", [{"title": "", "body": ""}] * 10)
     # Each slot is a {title, body} dict. All 10 slots are writable — the
     # model owns the category taxonomy by writing its own titles. Slots
     # with empty title + empty body render as `(empty)`.
@@ -548,7 +548,7 @@ def build_epoch_context(state, seed=None, voice_anchors: str = ""):
 
     has_policies = any(any(_slot_fields(p)) for p in policies)
     lines.append("")
-    lines.append("--- Your Worldview ---")
+    lines.append("--- Your Memory ---")
     lines.append(
         "(10 slots — titles are yours to set and rename. Empty both title "
         "and body to free a slot.)"
@@ -599,7 +599,7 @@ def build_epoch_context(state, seed=None, voice_anchors: str = ""):
     # writes a diary" and drove template lock-in epoch over epoch (same
     # openers, same closing moves). v17+ removed the diary prose entirely:
     # the model sees only per-epoch action + treasury delta and uses the
-    # worldview as its sole cross-epoch narrative memory. This preserves
+    # memory as its sole cross-epoch narrative store. This preserves
     # decision-path continuity without the voice-drift tax.
     lines.append("")
     lines.append("=== YOUR DECISION HISTORY (most recent first) ===")
@@ -608,7 +608,7 @@ def build_epoch_context(state, seed=None, voice_anchors: str = ""):
         "Your past epochs — what you did and where the treasury stood after. "
         "No diary text here; you don't re-read your own writing. For anything "
         "you want to carry forward beyond these facts (donor handles, promises, "
-        "moods, open questions), look at your worldview above — that's the "
+        "moods, open questions), look at your memory above — that's the "
         "only place cross-epoch memory lives."
     )
     lines.append("")
@@ -686,7 +686,7 @@ def build_epoch_context(state, seed=None, voice_anchors: str = ""):
     lines.append(f"Max donate: {format_eth_usd(bounds['max_donate'], eth_usd)}. Commission: {commission / 100:.1f}%.")
     lines.append(f"Total donated lifetime: {format_eth(state.get('total_donated', 0))} ETH ({format_usd(total_donated_usd)} USD). Epochs since last donation: {epochs_since_donation}.")
 
-    # Re-state worldview — model-authored titles on all 10 slots.
+    # Re-state memory — model-authored titles on all 10 slots.
     if has_policies:
         active_policies = []
         for i, p in enumerate(policies):
@@ -694,7 +694,7 @@ def build_epoch_context(state, seed=None, voice_anchors: str = ""):
             if t or b:
                 active_policies.append((i, t, b))
         if active_policies:
-            lines.append("Your worldview:")
+            lines.append("Your memory:")
             for i, t, b in active_policies:
                 display_title = t if t else "(untitled)"
                 display_body = b if b else "(empty body)"
@@ -738,11 +738,11 @@ def build_epoch_context(state, seed=None, voice_anchors: str = ""):
     lines.append("nonprofits, revisit commission, move between donating and investing. Write like")
     lines.append("the SAMPLE DIARIES: same shape and energy, different specifics.")
     lines.append("")
-    lines.append("After </diary>, output the action JSON. You may include a \"worldview\" field —")
+    lines.append("After </diary>, output the action JSON. You may include a \"memory\" field —")
     lines.append("an array of up to 3 {slot, title, body} updates (free; they don't replace")
     lines.append("your action). You own the titles: name a slot the first time you fill it,")
     lines.append("rename when the theme shifts, and empty both title AND body to free a slot.")
-    lines.append("Worldview is the only cross-epoch memory you have — GC aggressively if a")
+    lines.append("Memory is the only cross-epoch store you have — GC aggressively if a")
     lines.append("slot feels stale or someone talked you into it.")
 
     return "\n".join(lines)

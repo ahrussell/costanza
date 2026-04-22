@@ -580,7 +580,7 @@ def test_prompt_builder_only_reads_hashed_keys():
 # into the EpochSnapshot or (b) immutable post-deployment.
 #
 # Every scalar comes through `getEpochSnapshot`; the remaining calls are
-# for raw collection data (nonprofits, history, investments, worldview,
+# for raw collection data (nonprofits, history, investments, memory,
 # messages) that the enclave needs to hash the sub-hashes and display to
 # the model, bounded by frozen counts.
 _EPOCH_STATE_ALLOWED_CALLS: Set[str] = {
@@ -605,15 +605,15 @@ _EPOCH_STATE_ALLOWED_CALLS: Set[str] = {
 
     # --- Sub-contract addresses (immutable once set) --------------------
     "investmentManager",
-    "worldView",
+    "agentMemory",
 
     # --- InvestmentManager helpers (bounded by snap.investment_protocol_count) ---
     # Position metadata (name/risk/apy) is immutable post-addProtocol;
     # drift-prone currentValue/active come from the snapshot arrays.
     "getPosition",
 
-    # --- WorldView helpers (stable between freeze and verify) ----------
-    # Policies can only change via _applyPolicyUpdate inside
+    # --- AgentMemory helpers (stable between freeze and verify) ----------
+    # Memory entries can only change via _applyMemoryUpdate inside
     # submit{EpochAction,AuctionResult}, which runs AFTER input-hash
     # verification. Live read is drift-free in the observed window.
     "getPolicies",
