@@ -1,0 +1,35 @@
+# GBNF grammar for ChatML pass-2 action JSON.
+#
+# Differs from prover/enclave/action_grammar.gbnf by ONE thing: this version
+# constrains the FULL JSON object including the opening "{" and closing "}",
+# because in chat-completions mode the assistant turn starts fresh — no
+# "}" priming from a prompt extension. Production raw mode primes "{" then
+# constrains only the continuation; here the whole object is the response.
+#
+# Structure: optional whitespace, "{", action key, action body, optional
+# memory sidecar, "}", optional whitespace. No trailing prose, no fences.
+
+root ::= ws "{" ws "\"action\":" ws action-body (ws "," ws memory-kv)? ws "}" ws
+
+action-body ::= donate-body | invest-body | withdraw-body | commission-body | do-nothing-body
+
+donate-body     ::= "\"donate\""              ws "," ws "\"params\":" ws donate-params
+invest-body     ::= "\"invest\""              ws "," ws "\"params\":" ws invest-params
+withdraw-body   ::= "\"withdraw\""            ws "," ws "\"params\":" ws withdraw-params
+commission-body ::= "\"set_commission_rate\"" ws "," ws "\"params\":" ws commission-params
+do-nothing-body ::= "\"do_nothing\""          ws "," ws "\"params\":" ws "{" ws "}"
+
+donate-params     ::= "{" ws "\"nonprofit_id\":" ws integer ws "," ws "\"amount_eth\":" ws number ws "}"
+invest-params     ::= "{" ws "\"protocol_id\":"  ws integer ws "," ws "\"amount_eth\":" ws number ws "}"
+withdraw-params   ::= "{" ws "\"protocol_id\":"  ws integer ws "," ws "\"amount_eth\":" ws number ws "}"
+commission-params ::= "{" ws "\"rate_bps\":"     ws integer ws "}"
+
+memory-kv   ::= "\"memory\":" ws "[" ws memory-body "]"
+memory-body ::= (memory-update (ws "," ws memory-update)*)? ws
+memory-update ::= "{" ws "\"slot\":" ws integer ws "," ws "\"title\":" ws string ws "," ws "\"body\":" ws string ws "}"
+
+integer ::= [0-9]+
+number  ::= "-"? ("0" | [1-9] [0-9]*) ("." [0-9]+)?
+string  ::= "\"" char* "\""
+char    ::= [^"\\] | "\\" (["\\/bfnrt] | "u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F])
+ws      ::= [ \t\n]*
