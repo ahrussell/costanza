@@ -130,7 +130,8 @@ def _fingerprint_result(result: dict, fixture: dict) -> dict:
     try:
         if parsed_action is None:
             raise ValueError("action parse failed")
-        clamped = validate_and_clamp_action(parsed_action, fixture["epoch_state"])
+        # validate_and_clamp_action returns (dict, notes_list); we want the dict.
+        clamped, _notes = validate_and_clamp_action(parsed_action, fixture["epoch_state"])
         action_bytes = encode_action_bytes(clamped)
         action_hex = action_bytes.hex()
 
@@ -210,9 +211,13 @@ def cmd_run(args):
                   f"action={fp['action_text_sha256'][:12]} "
                   f"({fp['elapsed_s']}s)")
 
-        # Same-host determinism check: all fingerprints must match fingerprints[0].
-        baseline = fingerprints[0]
-        all_match = all(fp == baseline for fp in fingerprints[1:])
+        # Same-host determinism check: all CONTENT fingerprints must match
+        # the baseline. `elapsed_s` naturally varies (cold vs warm cache)
+        # and is excluded from the equality check.
+        def _content(fp):
+            return {k: v for k, v in fp.items() if k != "elapsed_s"}
+        baseline = _content(fingerprints[0])
+        all_match = all(_content(fp) == baseline for fp in fingerprints[1:])
         if not all_match:
             overall_pass = False
 
@@ -266,9 +271,12 @@ def cmd_compare(args):
             per_host.append((name, match["fingerprints"][0]))
 
         baseline_host, baseline_fp = per_host[0]
+        def _content(fp):
+            return None if fp is None else {k: v for k, v in fp.items() if k != "elapsed_s"}
+        baseline_content = _content(baseline_fp)
         divergences = [
             (name, fp) for name, fp in per_host[1:]
-            if fp is None or fp != baseline_fp
+            if _content(fp) != baseline_content
         ]
 
         if divergences:

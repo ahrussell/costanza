@@ -221,9 +221,13 @@ def start_llama_server() -> subprocess.Popen:
 
     # Determinism-critical flags — order must not vary across builds.
     #   -ngl 99         full GPU offload (all layers)
-    #   -b 1            physical batch size 1
+    #   -b 1            logical batch size 1
+    #   -ub 1           physical batch size 1 (the one that actually pins
+    #                   kernel launch shapes for determinism)
     #   --parallel 1    single server slot, no request parallelism
-    #   --flash-attn 0  disable flash attention (reduction-order varies)
+    # Flash attention is OFF by default in llama.cpp b5270; passing
+    # `--flash-attn` would ENABLE it (it's a bare boolean flag, not a
+    # value flag), so we simply omit it.
     cmd = [
         LLAMA_SERVER_BIN,
         "-m", MODEL_PATH,
@@ -232,8 +236,8 @@ def start_llama_server() -> subprocess.Popen:
         "--port", str(LLAMA_SERVER_PORT),
         "-ngl", "99",
         "-b", "1",
+        "-ub", "1",
         "--parallel", "1",
-        "--flash-attn", "0",
     ]
 
     proc = subprocess.Popen(
