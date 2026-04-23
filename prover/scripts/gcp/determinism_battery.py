@@ -140,7 +140,13 @@ def _fingerprint_result(result: dict, fixture: dict) -> dict:
         seed_bytes = seed.to_bytes(32, "big") if seed > 0 else b"\x00" * 32
         input_hash = _keccak256(base_hash + seed_bytes)
         bound_reasoning = truncate_reasoning(diary)
-        report_data = compute_report_data(input_hash, action_bytes, bound_reasoning)
+        # Memory sidecar updates — post-rename (PR #20), compute_report_data
+        # takes the validator-clamped memory list so REPORTDATA binds what
+        # the contract will re-derive. Empty list if the model didn't emit.
+        submitted_memory = clamped.get("memory", []) if isinstance(clamped, dict) else []
+        report_data = compute_report_data(
+            input_hash, action_bytes, bound_reasoning, submitted_memory,
+        )
         report_data_hex = report_data.hex()
     except Exception as e:
         action_hex = f"error: {e}"
