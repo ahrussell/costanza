@@ -1,0 +1,36 @@
+{
+  "phase1": {
+    "S1_ep1_fresh": {
+      "n": 30,
+      "first_empty_rate": 0.0,
+      "mean_attempts": 1.0,
+      "max_attempts": 1
+    },
+    "S1_ep3_estab": {
+      "n": 30,
+      "first_empty_rate": 0.0,
+      "mean_attempts": 1.0,
+      "max_attempts": 1
+    },
+    "S2_ep100_rich": {
+      "n": 30,
+      "first_empty_rate": 0.0,
+      "mean_attempts": 1.0,
+      "max_attempts": 1
+    }
+  },
+  "phase2": {
+    "n_epochs": 20,
+    "distinct_openers": 20,
+    "openers_total": 20,
+    "mean_diary_len": 1397.0,
+    "action_distribution": {
+      "invest": 3,
+      "donate": 15,
+      "do_nothing": 1,
+      "withdraw": 1
+    },
+    "multi_update_rate": 0.4,
+    "first_attempt_empty_count": 0
+  }
+}

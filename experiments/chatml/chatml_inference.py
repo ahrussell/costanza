@@ -127,6 +127,33 @@ def call_chat(
     }
 
 
+def _word_5grams(text: str) -> set:
+    """Word-level 5-grams (lowercased) from text."""
+    words = text.lower().split()
+    return set(tuple(words[i:i + 5]) for i in range(len(words) - 4))
+
+
+def _check_voice_violations(
+    diary: str,
+    forbidden_phrases: Optional[List[str]] = None,
+    forbidden_5grams: Optional[set] = None,
+) -> Optional[str]:
+    """Returns a string describing the violation if any, else None."""
+    if not diary:
+        return None
+    if forbidden_phrases:
+        for phrase in forbidden_phrases:
+            if phrase in diary:
+                return f"forbidden phrase: {phrase!r}"
+    if forbidden_5grams:
+        diary_grams = _word_5grams(diary)
+        overlap = diary_grams & forbidden_5grams
+        if overlap:
+            sample = next(iter(overlap))
+            return f"5-gram overlap with system prompt: {' '.join(sample)!r}"
+    return None
+
+
 def run_chat_two_pass(
     messages: List[Dict[str, str]],
     seed: int = -1,
@@ -139,20 +166,28 @@ def run_chat_two_pass(
     min_p: float = DEFAULT_MIN_P,
     pass1_max_tokens: int = DEFAULT_PASS1_MAX_TOKENS,
     pass2_max_tokens: int = DEFAULT_PASS2_MAX_TOKENS,
+    forbidden_phrases: Optional[List[str]] = None,
+    forbidden_5grams: Optional[set] = None,
 ) -> Dict[str, Any]:
     """Two-pass ChatML inference.
 
     Pass 1: send `messages` (which ends with the diary user turn). Sample
-    with diary config. Retry on empty assistant response.
+    with diary config. Retry on:
+      - Empty assistant response (<5 chars after stripping)
+      - Any of `forbidden_phrases` appearing as a substring in the diary
+        (e.g. ["Costanza"] to prevent third-person self-reference)
+      - Any 5-gram overlap with `forbidden_5grams` (e.g. system-prompt
+        5-grams to prevent verbatim system-prompt parroting)
 
     Pass 2: append the pass-1 assistant message + ACTION_USER_PROMPT,
     sample with action config + grammar.
 
     Returns: {
         diary, action_json, parsed_action,
-        pass1_attempts, action_attempts,
+        pass1_attempts, pass1_violations,  # list of per-attempt violation strings
+        action_attempts,
         elapsed_seconds, tokens,
-        pass1_messages, pass2_messages,  # for transcript / viewer
+        pass1_messages, pass2_messages,
     }
     """
     # ---- Pass 1: diary ----
@@ -160,6 +195,7 @@ def run_chat_two_pass(
     p1_prompt_tok = 0
     p1_comp_tok = 0
     pass1_attempts = 0
+    pass1_violations: List[str] = []
     diary = ""
     seeds = _pass1_retry_seeds(seed, MAX_PASS1_RETRIES)
     for attempt, attempt_seed in enumerate(seeds):
@@ -187,22 +223,31 @@ def run_chat_two_pass(
         # samples (defensive — should not happen since few-shot pairs strip
         # them, but just in case).
         candidate = candidate.replace("<diary>", "").replace("</diary>", "").strip()
-        if len(candidate) >= 5:
-            diary = candidate
-            print(
-                f"  Diary: {len(diary)} chars, {r1['elapsed_seconds']}s "
-                f"(attempt {pass1_attempts})"
-            )
-            break
-        print(
-            f"  Pass 1 attempt {pass1_attempts}: empty diary (<5 chars) "
-            f"— re-rolling"
+        if len(candidate) < 5:
+            pass1_violations.append("empty (<5 chars)")
+            print(f"  Pass 1 attempt {pass1_attempts}: empty diary — re-rolling")
+            continue
+        # Voice-violation checks (forbidden phrases / 5-grams).
+        violation = _check_voice_violations(
+            candidate, forbidden_phrases, forbidden_5grams,
         )
+        if violation:
+            pass1_violations.append(violation)
+            print(f"  Pass 1 attempt {pass1_attempts}: {violation} — re-rolling")
+            continue
+        # Accepted.
+        diary = candidate
+        print(
+            f"  Diary: {len(diary)} chars, {r1['elapsed_seconds']}s "
+            f"(attempt {pass1_attempts})"
+        )
+        break
     else:
         print(
-            f"  Pass 1: ALL {MAX_PASS1_RETRIES} retries empty — proceeding "
-            f"with empty diary"
+            f"  Pass 1: ALL {MAX_PASS1_RETRIES} retries violated — proceeding "
+            f"with last candidate (may be empty or violate)"
         )
+        diary = candidate  # last candidate, even if it violates
 
     # ---- Pass 2: action JSON ----
     pass2_messages = list(messages) + [
@@ -273,6 +318,7 @@ def run_chat_two_pass(
         "action_text": (action_text or "").strip(),
         "parsed_action": parsed_action,
         "pass1_attempts": pass1_attempts,
+        "pass1_violations": pass1_violations,
         "action_attempts": action_attempts,
         "elapsed_seconds": total_elapsed,
         "tokens": {

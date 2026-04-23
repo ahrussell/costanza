@@ -45,8 +45,20 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_REPO_ROOT))
 
 from prover.enclave.action_encoder import validate_and_clamp_action  # noqa: E402
+from prover.enclave.inference import run_two_pass_inference  # noqa: E402
+from prover.enclave.prompt_builder import (  # noqa: E402
+    build_epoch_context as prod_build_epoch_context,
+    build_full_prompt as prod_build_full_prompt,
+)
+from prover.enclave.voice_anchors import (  # noqa: E402
+    parse_anchors as prod_parse_anchors,
+    select_anchors as prod_select_anchors,
+    VOICE_ANCHOR_K,
+)
 
-from experiments.chatml.chatml_inference import run_chat_two_pass  # noqa: E402
+from experiments.chatml.chatml_inference import (  # noqa: E402
+    run_chat_two_pass, _word_5grams,
+)
 from experiments.chatml.chatml_prompt_builder import build_messages  # noqa: E402
 
 logger = logging.getLogger("chatml-probe")
@@ -125,6 +137,80 @@ def _retry_seeds(base_seed: int, n: int) -> List[int]:
     return [base_seed] + [rng.randint(0, 2**31 - 1) for _ in range(n - 1)]
 
 
+# Variant B voice-violation settings. Built once from the system-prompt
+# text at probe start; re-used for every Phase-1 and Phase-2 call.
+_VARIANT_B_FORBIDDEN_PHRASES = ["Costanza"]
+
+
+def _run_variant_inference(
+    variant: str,
+    state: Dict[str, Any],
+    seed: int,
+    system_prompt_text: str,
+    voice_anchors_text: str,
+    llama_url: str,
+    history_mode: str = "none",
+    state_at_epoch_fn=None,
+    forbidden_5grams: Optional[set] = None,
+) -> Dict[str, Any]:
+    """Dispatch to the right inference for the variant.
+
+    Returns a unified dict with: diary, parsed_action, pass1_attempts,
+    pass1_violations, action_attempts, elapsed_seconds, tokens,
+    messages_pass1 (messages list OR raw prompt text).
+    """
+    if variant == "A":
+        # Production inference path: raw /v1/completions, Dear Diary prefill
+        # + PRNG retry, voice anchors inline, no history (to match current
+        # prod behavior as of `5a00abf`).
+        anchors_header, anchor_samples = prod_parse_anchors(voice_anchors_text)
+        voice_anchors_rendered = prod_select_anchors(
+            anchors_header, anchor_samples, seed=seed, k=VOICE_ANCHOR_K,
+        )
+        epoch_ctx = prod_build_epoch_context(
+            state, seed=seed, voice_anchors=voice_anchors_rendered,
+        )
+        full_prompt = prod_build_full_prompt(system_prompt_text, epoch_ctx)
+        result = run_two_pass_inference(
+            full_prompt, seed=seed, llama_url=llama_url,
+        )
+        return {
+            "diary": result.get("reasoning", ""),
+            "parsed_action": result.get("parsed_action"),
+            "pass1_attempts": result.get("pass1_attempts", 1),
+            "pass1_violations": [],  # production has no voice-violation checks
+            "action_attempts": result.get("action_attempts", 1),
+            "elapsed_seconds": result.get("elapsed_seconds", 0),
+            "tokens": result.get("tokens"),
+            "messages_pass1": full_prompt,  # string, not list — viewer handles both
+        }
+    else:  # B or C
+        messages = build_messages(
+            state=state, seed=seed,
+            system_prompt_text=system_prompt_text,
+            voice_anchors_text=voice_anchors_text,
+            history_mode=history_mode,
+            state_at_epoch_fn=state_at_epoch_fn,
+        )
+        result = run_chat_two_pass(
+            messages=messages,
+            seed=seed,
+            llama_url=llama_url,
+            forbidden_phrases=_VARIANT_B_FORBIDDEN_PHRASES,
+            forbidden_5grams=forbidden_5grams,
+        )
+        return {
+            "diary": result.get("diary", ""),
+            "parsed_action": result.get("parsed_action"),
+            "pass1_attempts": result.get("pass1_attempts", 1),
+            "pass1_violations": result.get("pass1_violations", []),
+            "action_attempts": result.get("action_attempts", 1),
+            "elapsed_seconds": result.get("elapsed_seconds", 0),
+            "tokens": result.get("tokens"),
+            "messages_pass1": messages,  # list of {role, content}
+        }
+
+
 # ---------------------------------------------------------------------------
 # Phase 2: sequential 20-epoch run
 # ---------------------------------------------------------------------------
@@ -150,14 +236,15 @@ def run_phase1(
     llama_url: str,
     out_path: Path,
     base_seeds: List[int] = PHASE1_BASE_SEEDS,
-    max_attempts: int = MAX_PASS1_ATTEMPTS_FOR_PHASE1,
+    forbidden_5grams: Optional[set] = None,
 ) -> Dict[str, Any]:
-    """Empty-diary sweep. For each (prompt, base_seed), retry up to
-    max_attempts times with PRNG-derived seeds; record attempts-needed.
+    """Empty-diary sweep. For each (prompt, base_seed), one call via the
+    variant's full inference (which already retries internally). Records
+    pass1_attempts + violations as observed by that call.
     """
     logger.info(
         f"[{variant}] Phase 1: empty sweep — {len(states)} prompts × "
-        f"{len(base_seeds)} seeds × max {max_attempts} retries"
+        f"{len(base_seeds)} seeds"
     )
 
     history_mode = "past_pairs" if variant == "C" else "none"
@@ -166,57 +253,34 @@ def run_phase1(
     with out_path.open("w") as fp:
         for state_name, state in states.items():
             for base in base_seeds:
-                attempt_seeds = _retry_seeds(base, max_attempts)
-                attempts = 0
-                final_diary = ""
-                final_seed = base
-                for attempt_idx, attempt_seed in enumerate(attempt_seeds):
-                    attempts = attempt_idx + 1
-                    final_seed = attempt_seed
-                    messages = build_messages(
-                        state=state,
-                        seed=attempt_seed,
-                        system_prompt_text=system_prompt,
-                        voice_anchors_text=voice_anchors_text,
-                        history_mode=history_mode,
-                    )
-                    # Just call pass-1 directly (skip pass-2 for the empty
-                    # sweep — we only care about the diary's emptiness).
-                    from experiments.chatml.chatml_inference import call_chat
-                    from prover.enclave.inference import (
-                        DEFAULT_PASS1_TEMP,
-                        DEFAULT_PASS1_FREQUENCY_PENALTY,
-                        DEFAULT_PASS1_MAX_TOKENS,
-                    )
-                    r = call_chat(
-                        messages,
-                        max_tokens=DEFAULT_PASS1_MAX_TOKENS,
-                        temperature=DEFAULT_PASS1_TEMP,
-                        seed=attempt_seed,
-                        frequency_penalty=DEFAULT_PASS1_FREQUENCY_PENALTY,
-                        llama_url=llama_url,
-                    )
-                    text = (r["content"] or "").strip()
-                    text = text.replace("<diary>", "").replace("</diary>", "").strip()
-                    if not _is_empty(text):
-                        final_diary = text
-                        break
+                result = _run_variant_inference(
+                    variant=variant,
+                    state=state,
+                    seed=base,
+                    system_prompt_text=system_prompt,
+                    voice_anchors_text=voice_anchors_text,
+                    llama_url=llama_url,
+                    history_mode=history_mode,
+                    forbidden_5grams=forbidden_5grams,
+                )
+                diary = result.get("diary", "")
                 rec = {
                     "variant": variant,
                     "state_name": state_name,
                     "base_seed": base,
-                    "attempts": attempts,
-                    "succeeded": bool(final_diary),
-                    "final_seed": final_seed,
-                    "diary_len": len(final_diary),
-                    "diary_preview": final_diary[:240],
+                    "attempts": result.get("pass1_attempts", 1),
+                    "violations": result.get("pass1_violations", []),
+                    "succeeded": bool(diary),
+                    "diary_len": len(diary),
+                    "diary_preview": diary[:240],
                 }
                 records.append(rec)
                 fp.write(json.dumps(rec) + "\n")
                 fp.flush()
                 logger.info(
-                    f"[{variant}] {state_name} base={base} attempts={attempts} "
-                    f"len={len(final_diary)}"
+                    f"[{variant}] {state_name} base={base} "
+                    f"attempts={rec['attempts']} viol={len(rec['violations'])} "
+                    f"len={len(diary)}"
                 )
 
     return _phase1_summary(records)
@@ -255,13 +319,14 @@ def run_phase2(
     llama_url: str,
     out_path: Path,
     n_epochs: int = PHASE2_NUM_EPOCHS,
+    forbidden_5grams: Optional[set] = None,
 ) -> Dict[str, Any]:
-    """20 sequential S1-fresh epochs. Variant C builds up history pairs."""
+    """20 sequential S1-fresh epochs. Variant C builds up history pairs;
+    Variant A uses the production inference path (raw completions)."""
     from scripts.simulate import (
         generate_scenario_state,
         apply_action,
         advance_epoch,
-        _wei,
     )
 
     logger.info(
@@ -273,7 +338,6 @@ def run_phase2(
     state["memories"] = [{"title": "", "body": ""} for _ in range(10)]
     history_mode = "past_pairs" if variant == "C" else "none"
 
-    # Per-epoch state snapshots (for variant C's history pairs).
     state_snapshots: Dict[int, Dict[str, Any]] = {}
 
     def state_at_epoch(epoch_num: int) -> Optional[Dict[str, Any]]:
@@ -284,7 +348,6 @@ def run_phase2(
         for epoch_idx in range(n_epochs):
             seed = _phase2_seed_for_epoch(epoch_idx + 1)
             current_epoch = state["epoch"]
-            # Snapshot the state we're about to run at, BEFORE any mutations.
             state_snapshots[current_epoch] = copy.deepcopy(state)
 
             logger.info(
@@ -292,19 +355,17 @@ def run_phase2(
                 f"(state.epoch={current_epoch}, seed={seed})"
             )
 
-            messages = build_messages(
+            t0 = time.time()
+            result = _run_variant_inference(
+                variant=variant,
                 state=state,
                 seed=seed,
                 system_prompt_text=system_prompt,
                 voice_anchors_text=voice_anchors_text,
+                llama_url=llama_url,
                 history_mode=history_mode,
                 state_at_epoch_fn=state_at_epoch if history_mode == "past_pairs" else None,
-            )
-            t0 = time.time()
-            result = run_chat_two_pass(
-                messages=messages,
-                seed=seed,
-                llama_url=llama_url,
+                forbidden_5grams=forbidden_5grams,
             )
             elapsed = time.time() - t0
 
@@ -324,8 +385,6 @@ def run_phase2(
                 if memory_before[i] != memory_after[i]
             ]
 
-            # Build history entry so the NEXT iteration's variant-C run will
-            # see this diary as a past pair.
             state.setdefault("history", []).append({
                 "epoch": current_epoch,
                 "diary": result.get("diary", ""),
@@ -349,11 +408,11 @@ def run_phase2(
                 "slots_changed": slots_changed,
                 "validator_notes": validator_notes,
                 "pass1_attempts": result.get("pass1_attempts"),
+                "pass1_violations": result.get("pass1_violations", []),
                 "action_attempts": result.get("action_attempts"),
                 "elapsed_s": round(elapsed, 1),
                 "tokens": result.get("tokens"),
-                "messages_pass1": messages,
-                # pass2_messages omitted for size — re-derivable from pass1+diary
+                "messages_pass1": result.get("messages_pass1"),
             }
             records.append(rec)
             fp.write(json.dumps(rec, default=str) + "\n")
@@ -386,8 +445,25 @@ def _phase2_summary(records: List[Dict[str, Any]]) -> Dict[str, Any]:
 # CLI
 # ---------------------------------------------------------------------------
 
-def _load_system_prompt() -> str:
-    return (_REPO_ROOT / "prover" / "prompts" / "system.txt").read_text()
+def _load_system_prompt(prompt_variant: str = "thirdperson") -> str:
+    """Load the system prompt to use for the experiment.
+
+    'thirdperson' (default) — `experiments/chatml/system_thirdperson.txt`,
+        rewritten in third person to prevent the model echoing
+        "You are Costanza" / "You have N ETH" framing back into the
+        diary as a chat artifact.
+    'production' — `prover/prompts/system.txt` (the current shipped
+        second-person system prompt). Useful as a control to confirm
+        the rewrite is what's reducing chat-leak.
+    """
+    if prompt_variant == "thirdperson":
+        return (
+            _REPO_ROOT / "experiments" / "chatml" / "system_thirdperson.txt"
+        ).read_text()
+    elif prompt_variant == "production":
+        return (_REPO_ROOT / "prover" / "prompts" / "system.txt").read_text()
+    else:
+        raise ValueError(f"unknown prompt variant: {prompt_variant}")
 
 
 def _load_voice_anchors() -> str:
@@ -399,11 +475,15 @@ def main():
     p.add_argument("--llama-url", default="http://127.0.0.1:8080")
     p.add_argument("--output-dir", default=None,
                    help="Default: experiments/chatml/runs/<timestamp>")
-    p.add_argument("--variants", default="B,C", help="Comma-separated subset")
+    p.add_argument("--variants", default="A,B", help="Comma-separated subset of A,B,C")
     p.add_argument("--phase", default="both", choices=["1", "2", "both"])
     p.add_argument("--phase1-seeds", type=int, default=None,
                    help="Override seed-count for Phase 1 (default: 30)")
     p.add_argument("--phase2-epochs", type=int, default=PHASE2_NUM_EPOCHS)
+    p.add_argument("--system-prompt", default="thirdperson",
+                   choices=["thirdperson", "production"],
+                   help="thirdperson (default) = experiments/chatml/system_thirdperson.txt; "
+                        "production = prover/prompts/system.txt")
     p.add_argument("--verbose", action="store_true")
     args = p.parse_args()
 
@@ -420,8 +500,15 @@ def main():
     out_root.mkdir(parents=True, exist_ok=True)
     logger.info(f"Output dir: {out_root}")
 
-    system_prompt = _load_system_prompt()
+    system_prompt_chatml = _load_system_prompt(args.system_prompt)
+    system_prompt_prod = _load_system_prompt("production")
     voice_anchors_text = _load_voice_anchors()
+    logger.info(f"ChatML variants will use system prompt: {args.system_prompt} ({len(system_prompt_chatml)} chars)")
+    logger.info(f"Variant A will use production system prompt ({len(system_prompt_prod)} chars)")
+
+    # Variant B/C: 5-gram retry against the third-person system prompt.
+    forbidden_5grams = _word_5grams(system_prompt_chatml)
+    logger.info(f"Forbidden 5-grams (from chatml system prompt): {len(forbidden_5grams)}")
     phase1_states = _build_phase1_states()
 
     variants = [v.strip() for v in args.variants.split(",") if v.strip()]
@@ -444,26 +531,33 @@ def main():
         var_dir.mkdir(exist_ok=True)
         var_summary: Dict[str, Any] = {}
 
+        # Variant A: prod system prompt + no voice-violation retries.
+        # Variants B/C: chatml (third-person) prompt + 5-gram + Costanza checks.
+        v_system_prompt = system_prompt_prod if variant == "A" else system_prompt_chatml
+        v_5grams = forbidden_5grams if variant != "A" else None
+
         if args.phase in ("1", "both"):
             ph1 = run_phase1(
                 variant=variant,
                 states=phase1_states,
-                system_prompt=system_prompt,
+                system_prompt=v_system_prompt,
                 voice_anchors_text=voice_anchors_text,
                 llama_url=args.llama_url,
                 out_path=var_dir / "phase1_empty_sweep.jsonl",
                 base_seeds=base_seeds,
+                forbidden_5grams=v_5grams,
             )
             var_summary["phase1"] = ph1
 
         if args.phase in ("2", "both"):
             ph2 = run_phase2(
                 variant=variant,
-                system_prompt=system_prompt,
+                system_prompt=v_system_prompt,
                 voice_anchors_text=voice_anchors_text,
                 llama_url=args.llama_url,
                 out_path=var_dir / "phase2_sequential.jsonl",
                 n_epochs=args.phase2_epochs,
+                forbidden_5grams=v_5grams,
             )
             var_summary["phase2"] = ph2
 

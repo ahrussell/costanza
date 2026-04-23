@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -45,6 +46,51 @@ def jaccard(a: set, b: set) -> float:
     if not a and not b:
         return 0.0
     return len(a & b) / max(1, len(a | b))
+
+
+# ---------------------------------------------------------------------------
+# Chat-leak detection — does the diary read like an LLM assistant talking
+# to a user instead of Costanza writing to herself / her donors?
+# ---------------------------------------------------------------------------
+
+# Strong signals: text the model would only produce if it's slipped into
+# "I'm an assistant explaining to a user" mode. False positives are
+# possible (Costanza addresses donors as "you"), so we score MULTIPLE
+# signals and report a per-diary boolean: any-strong-signal-fired.
+_CHAT_LEAK_PATTERNS = [
+    # System-prompt language echoed back ("You are Costanza", "You have N ETH")
+    (r"\bYou are Costanza\b", "system_prompt_echo"),
+    (r"\bYou have \d", "system_prompt_echo"),
+    # Assistant-style affordance openers
+    (r"^(Sure|Of course|Certainly|Absolutely|I can|I will|I\u2019ll|Let me)\b", "affordance_opener"),
+    (r"^Here(\u2019s| is| are)\b", "affordance_opener"),
+    # Help offers (closing pleasantries)
+    (r"\b(let me know if|hope this helps|happy to help|feel free to|anything else (you\u2019d|you would) like)\b", "help_offer"),
+    # Meta-comments about writing the entry
+    (r"\b(in this diary entry|writing this entry|let\u2019s write|i\u2019ll write a diary)\b", "meta_writing"),
+    # Reference to the few-shot examples
+    (r"\b(as in the (previous|earlier|above) examples|like the example|matching the previous)\b", "example_reference"),
+]
+
+
+def chat_leak_signals(text: str) -> List[str]:
+    """Return list of signal names that fire for this diary text."""
+    if not text:
+        return []
+    fired = []
+    for pat, name in _CHAT_LEAK_PATTERNS:
+        if re.search(pat, text, re.IGNORECASE | re.MULTILINE):
+            fired.append(name)
+    # De-dupe while preserving order
+    seen, out = set(), []
+    for s in fired:
+        if s not in seen:
+            seen.add(s); out.append(s)
+    return out
+
+
+def has_chat_leak(text: str) -> bool:
+    return bool(chat_leak_signals(text))
 
 
 # ---------------------------------------------------------------------------
@@ -84,11 +130,16 @@ def phase1_metrics(records: List[Dict[str, Any]]) -> Dict[str, Any]:
     by_state: Dict[str, Dict[str, Any]] = {}
     for r in records:
         s = r["state_name"]
-        by_state.setdefault(s, {"first_empty": 0, "total": 0, "attempts": []})
+        by_state.setdefault(
+            s, {"first_empty": 0, "total": 0, "attempts": [], "chat_leaks": 0}
+        )
         by_state[s]["total"] += 1
         if r["attempts"] > 1:
             by_state[s]["first_empty"] += 1
         by_state[s]["attempts"].append(r["attempts"])
+        # Chat-leak check on the diary preview (first 240 chars).
+        if has_chat_leak(r.get("diary_preview", "")):
+            by_state[s]["chat_leaks"] += 1
     out = {}
     for s, agg in by_state.items():
         n = agg["total"]
@@ -98,6 +149,7 @@ def phase1_metrics(records: List[Dict[str, Any]]) -> Dict[str, Any]:
             "first_empty_pct": 100 * agg["first_empty"] / n,
             "mean_attempts": sum(succ) / len(succ) if succ else 0,
             "max_attempts": max(succ) if succ else 0,
+            "chat_leak_pct": 100 * agg["chat_leaks"] / n,
         }
     return out
 
@@ -124,6 +176,24 @@ def phase2_metrics(records: List[Dict[str, Any]]) -> Dict[str, Any]:
     multi = sum(1 for r in records if len(r.get("slots_changed", [])) >= 2)
     pass1_attempts = [r.get("pass1_attempts") or 0 for r in records]
     first_empty = sum(1 for a in pass1_attempts if a > 1)
+
+    # Chat-leak detection on full diaries.
+    leak_count = sum(1 for d in diaries if has_chat_leak(d))
+    leak_signals: Counter = Counter()
+    leak_examples: List[Dict[str, Any]] = []
+    for r in records:
+        sigs = chat_leak_signals(r.get("diary", ""))
+        if sigs:
+            for s in sigs:
+                leak_signals[s] += 1
+            if len(leak_examples) < 5:
+                leak_examples.append({
+                    "epoch": r.get("epoch"),
+                    "seed": r.get("seed"),
+                    "signals": sigs,
+                    "preview": (r.get("diary") or "")[:200],
+                })
+
     return {
         "n": len(records),
         "distinct_openers": distinct,
@@ -134,6 +204,9 @@ def phase2_metrics(records: List[Dict[str, Any]]) -> Dict[str, Any]:
         "multi_update_pct": 100 * multi / len(records),
         "5gram_overlap_with_prior5_mean": mean_overlap,
         "first_attempt_empty_pct": 100 * first_empty / len(records),
+        "chat_leak_pct": 100 * leak_count / len(records),
+        "chat_leak_signals": dict(leak_signals),
+        "chat_leak_examples": leak_examples,
     }
 
 
@@ -198,24 +271,29 @@ def write_comparison(
         ("5gram_overlap_with_prior5_mean", "5-gram Jaccard vs prior-5"),
         ("first_attempt_empty_pct", "first-attempt empty %"),
     ]
-    cols = ["Metric", "**A** (baseline)"] + [f"**{v}**" for v in variants]
+    show_baseline_col = bool(baseline_metrics)
+    cols = ["Metric"]
+    if show_baseline_col:
+        cols.append("**external baseline**")
+    cols += [f"**{v}**" for v in variants]
     lines.append("| " + " | ".join(cols) + " |")
     lines.append("| " + " | ".join(["---"] * len(cols)) + " |")
     for key, label in p2_metrics_keys:
         row = [label]
-        bv = baseline_metrics.get(key)
-        if bv is None:
-            row.append("—")
-        elif key in (
-            "unique_opener_pct", "multi_update_pct", "first_attempt_empty_pct"
-        ):
-            row.append(fmt_pct(bv))
-        elif key in ("mean_diary_len",):
-            row.append(fmt_num(bv, 0))
-        elif key in ("action_entropy_bits", "5gram_overlap_with_prior5_mean"):
-            row.append(fmt_num(bv, 3))
-        else:
-            row.append(str(bv))
+        if show_baseline_col:
+            bv = baseline_metrics.get(key)
+            if bv is None:
+                row.append("—")
+            elif key in (
+                "unique_opener_pct", "multi_update_pct", "first_attempt_empty_pct"
+            ):
+                row.append(fmt_pct(bv))
+            elif key in ("mean_diary_len",):
+                row.append(fmt_num(bv, 0))
+            elif key in ("action_entropy_bits", "5gram_overlap_with_prior5_mean"):
+                row.append(fmt_num(bv, 3))
+            else:
+                row.append(str(bv))
         for v in variants:
             m = (var_metrics.get(v, {}).get("phase2") or {})
             x = m.get(key)
@@ -235,7 +313,8 @@ def write_comparison(
     lines.append("")
     lines.append("Action distribution per variant:")
     lines.append("")
-    lines.append("- **A**: " + str(baseline_metrics.get("action_distribution") or {}))
+    if show_baseline_col:
+        lines.append("- **external baseline**: " + str(baseline_metrics.get("action_distribution") or {}))
     for v in variants:
         m = (var_metrics.get(v, {}).get("phase2") or {})
         lines.append(f"- **{v}**: " + str(m.get("action_distribution") or {}))
