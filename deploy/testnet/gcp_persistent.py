@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 VM_NAME = "humanfund-testnet"
 LLAMA_SERVER_BIN = "/opt/humanfund/bin/llama-server"
-MODEL_PATH = "/models/model.gguf"
+MODEL_PATH = "/models/NousResearch_Hermes-4-70B-Q6_K-00001-of-00002.gguf"
 REMOTE_PROVER_DIR = "/opt/humanfund/prover"
 LLAMA_SERVER_PORT = 8080
 

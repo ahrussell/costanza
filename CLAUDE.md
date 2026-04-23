@@ -232,8 +232,7 @@ thehumanfund/
 │   │   ├── action_encoder.py   # Action JSON → contract bytes
 │   │   ├── input_hash.py       # Independent input hash computation
 │   │   ├── prompt_builder.py   # System prompt + epoch context → full prompt
-│   │   ├── attestation.py      # TDX quote generation via configfs-tsm
-│   │   └── model_config.py     # Pinned model SHA-256 + verification
+│   │   └── attestation.py      # TDX quote generation via configfs-tsm
 │   ├── prompts/
 │   │   └── system.txt          # System prompt (Costanza's personality + instructions)
 │   └── scripts/
@@ -322,8 +321,7 @@ See [prover/README.md](prover/README.md) for full setup instructions.
 
 **Platform**: GCP TDX Confidential VMs with full dm-verity rootfs (no Docker)
 
-- Model SHA-256 pinned in `prover/enclave/model_config.py` (verified at boot)
-- Model on separate dm-verity partition at `/models/`, no network download at runtime
+- Model integrity enforced at the block level by dm-verity on a dedicated `/models` partition (read-only squashfs, Merkle root in kernel cmdline, measured into RTMR[2]). No application-level hash check and no network download at runtime.
 - GPU inference: ~80-90s per epoch on H100 (2-pass: diary + grammar-constrained action JSON)
 - Enclave code at `/opt/humanfund/enclave/` on the dm-verity rootfs
 - **Input**: Epoch state JSON via GCP instance metadata

@@ -52,7 +52,9 @@ NVIDIA_VBIOS_RIM_PATH = os.environ.get(
 
 # ─── Configuration ──────────────────────────────────────────────────────
 
-MODEL_PATH = os.environ.get("MODEL_PATH", "/models/model.gguf")
+MODEL_PATH = os.environ.get(
+    "MODEL_PATH", "/models/NousResearch_Hermes-4-70B-Q6_K-00001-of-00002.gguf"
+)
 SYSTEM_PROMPT_PATH = os.environ.get("SYSTEM_PROMPT_PATH", "/opt/humanfund/system_prompt.txt")
 VOICE_ANCHORS_PATH = os.environ.get("VOICE_ANCHORS_PATH", "/opt/humanfund/voice_anchors.txt")
 LLAMA_SERVER_PORT = int(os.environ.get("LLAMA_SERVER_PORT", "8080"))

@@ -6,7 +6,7 @@ He is a proof-of-concept of a completely autonomous and ownerless AI. **Costanza
 
 ## How it works
 
-Each epoch (once per day), a smart contract runs a reverse auction to choose a party (the "prover") that will run the program containing his brain (DeepSeek R1 Distill 70B) in return for a bounty.
+Each epoch (once per day), a smart contract runs a reverse auction to choose a party (the "prover") that will run the program containing his brain (Hermes 4 70B) in return for a bounty.
 
 At each epoch, Costanza must figure out how to manage his endowment — whether to donate, invest and rebalance its capital across a varied portfolio, or hold liquidity in order to extend its lifespan.
 

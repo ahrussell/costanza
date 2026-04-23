@@ -744,7 +744,7 @@ The current construction relies on GCP for TDX-capable Confidential VMs, instanc
 
 ### 10.6 Model Weights Distribution
 
-The 42.5 GB model file is baked into the disk image during Phase 1 of the build. Any prover who wants to participate needs access to this image (or the ability to build it from the same model weights). The model's SHA-256 hash is pinned in source code, so anyone can verify they have the correct weights.
+The Hermes 4 70B Q6_K split GGUF (~58 GB across two shards) is baked into the disk image during Phase 1 of the build. Any prover who wants to participate needs access to this image (or the ability to build it from the same model weights). The per-shard SHA-256 hashes are pinned in the build scripts for wget-time integrity, and the full `/models` partition is integrity-covered by dm-verity once sealed.
 
 ### 10.7 nv-attestation-sdk Deprecation Runway
 
@@ -891,10 +891,9 @@ platformKey
   ← RTMR[2] (kernel + command line)
        ← dm-verity root hash for rootfs (embedded in kernel cmdline)
             ← every byte of: enclave code, system prompt,
-               llama-server binary, NVIDIA drivers,
-               model_config.py (pinned MODEL_SHA256)
+               llama-server binary, NVIDIA drivers, NVIDIA RIMs
        ← dm-verity root hash for models (embedded in kernel cmdline)
-            ← every byte of the 42.5 GB model file
+            ← every byte of the Hermes 4 70B Q6_K split GGUF (~58 GB, 2 shards)
 ```
 
 **The key invariant:** Changing any file on the rootfs or model partition changes the squashfs image, which changes the dm-verity root hash, which changes the kernel command line, which changes RTMR[2], which changes the platform key, which fails the on-chain check.
@@ -1036,7 +1035,6 @@ The full boot sequence, from hardware power-on to enclave execution:
 9. Enclave runs (one-shot, then system halts):
    - Reads epoch state from GCP instance metadata
    - Reads system prompt from /opt/humanfund/system_prompt.txt (dm-verity)
-   - Verifies model hash against pinned MODEL_SHA256
    - Computes inputHash from the runner-supplied epoch state
    - Requires `nvidia-smi conf-compute -f` to report CC status ON
      and Ready-state READY; aborts otherwise
@@ -1122,7 +1120,7 @@ The sealed partitions are written to a **separate output disk**, not the boot di
 
 - **Squashfs**: Built with `-mkfs-time 0 -all-time 0 -no-xattrs` — fixed timestamps, no extended attributes. The same filesystem contents always produce the same squashfs image.
 - **dm-verity**: Uses a fixed all-zero salt. The same squashfs always produces the same dm-verity root hash.
-- **Model weights**: The GGUF file has a pinned SHA-256 hash in `prover/enclave/model_config.py`. The enclave verifies this at startup (defense in depth — dm-verity already prevents modification).
+- **Model weights**: Integrity is enforced at the block level by dm-verity on a dedicated `/models` partition. The squashfs containing the Hermes 4 70B Q6_K split GGUF is built with fixed timestamps + all-zero salt, so the Merkle root hash is reproducible; it's embedded in the kernel command line and measured into RTMR[2].
 
 These properties mean that given the same source code, model weights, and base image, the build produces the same platform key. An auditor can reproduce the build and verify that the registered key matches.
 
