@@ -318,6 +318,34 @@ The contract must never accept an action that was not the genuine output of the 
 >
 > By A2 (collision resistance of Keccak-256), this implies $\text{SHA256}(\textit{action}^{\ast}) = \text{SHA256}(\textit{action})$ and $\text{SHA256}(\textit{reasoning}^{\ast}) = \text{SHA256}(\textit{reasoning})$. Applying A2 again (collision resistance of SHA-256), this gives $\textit{action}^{\ast} = \textit{action}$ and $\textit{reasoning}^{\ast} = \textit{reasoning}$ — a contradiction. $\square$
 
+#### 6.2.1 Strengthening A1 in Practice
+
+The game binds A1 (TEE integrity) as a black-box assumption: the enclave executes the approved code faithfully, and the TDX attestation quote cryptographically witnesses that execution. Whether a deployment actually *realizes* A1 depends on a defensible chain of measurement layers. Costanza composes three independent guarantees, each with its own failure mode and its own check:
+
+1. **Host firmware and kernel — MRTD + RTMR[1]**, verified on-chain via DCAP (§A.7). Guarantees the VM booted the expected OVMF firmware and bootloader.
+2. **Enclave code, model weights, and pinned RIMs — RTMR[2]** via dm-verity (§A.8). Guarantees that every byte the CPU executes inside the enclave matches what was measured at boot — including the GPU-attestation verifier described in Appendix C and the NVIDIA-signed reference integrity manifests it consults.
+3. **GPU firmware and identity — NVIDIA SPDM attestation** (Appendix C), verified *inside* the enclave with $\textit{nonce} = \text{SHA256}(\textit{inputHash})$. Because the verifier is measured by (2), tampering with it changes the platform key and is caught by on-chain verification; because the nonce is epoch-bound, a pre-generated or replayed GPU report does not satisfy the check.
+
+Removing any one layer leaves a gap A1 cannot bridge. A substituted H100 (different silicon, different VBIOS/GSP firmware) is caught by (3); a modified enclave binary is caught by (2); a booted-but-tampered VM is caught by (1).
+
+#### 6.2.2 Deterministic Substitution
+
+The substitution branch of the proof (3b) rests on a subtle property: the approved code, given fixed $(\textit{inputHash}, \textit{seed})$, produces a unique $(\textit{action}, \textit{reasoning})$ pair. If the code were non-deterministic — if different executions on different GPUs could produce different outputs — the adversary could claim "I ran the approved code and it produced $(\textit{action}^{\ast}, \textit{reasoning}^{\ast})$" with no way for the contract to distinguish that from a fabrication. Theorem 2 would still type-check, but would cease to be meaningful: any TEE-attested output would be accepted.
+
+Deterministic inference is therefore a *prerequisite* for Inference Integrity, not an optimization. Costanza achieves it through a stack of complementary pins:
+
+- **Sampler seeding.** Both generation passes receive $\textit{seed} = \textit{prevrandao} \oplus \textit{saltAccumulator}$ verbatim via the llama-server API. No implicit re-seeding, no timestamp mixing.
+- **cuBLAS workspace.** `CUBLAS_WORKSPACE_CONFIG=:4096:8` disables the workspace-dependent reduction path that otherwise varies float rounding across runs.
+- **Single-threaded host sampler.** `OMP_NUM_THREADS=1` fixes the logit-to-token reduction order.
+- **Batch pinning.** `-b 1 -ub 1 --parallel 1` fixes both logical and physical batch sizes so kernel launch shapes don't vary with request queue state.
+- **Full GPU offload.** `-ngl 99` prevents CPU/GPU splits, which introduce path-dependent ordering.
+- **Flash attention disabled.** Left off by default in llama.cpp b5270; the flash-attention reduction tree differs from the reference path and is not currently certified deterministic across the shapes we use.
+- **Pinned GPU firmware.** Enforced by Appendix C — same silicon architecture, same VBIOS, same GSP firmware across every epoch and every physical host we accept.
+
+**Empirical validation.** We exercise this determinism with an offline battery that runs the full enclave prompt pipeline against 50 synthetic epoch states spanning the distribution dimensions that matter for prompt shape (treasury size, memory fill, message count, history depth, investment load), repeats each 5 times on a single host, and then repeats the full 50×5 matrix on two additional physically distinct `a3-highgpu-1g` VMs. The commit registering a new platform key on Base mainnet is gated on a battery in which all 750 inference executions produce byte-identical diary, action bytes, and REPORTDATA values. Under the rule of three, 750 successes with zero failures bounds the per-invocation failure rate at ~0.4% with 95% confidence, and 50 per-fixture cross-host agreements bound the cross-host disagreement rate at ~6% with 95% confidence. Reports are archived alongside each platform-key registration under `prover/scripts/gcp/battery_reports/`.
+
+The battery is not part of the on-chain verification path — it is a pre-deployment gate. A driver bump or a fleet firmware rotation triggers a new battery run, a new RIM refresh, a new image build, and a new platform-key registration. Image keys cannot be registered without a green battery.
+
 ### 6.3 Property 3: Input Binding
 
 The enclave must process exactly the state committed on-chain. A prover who provides fabricated epoch data must be detected.
@@ -667,6 +695,21 @@ The following are known limitations, reframed as scenarios where specific assump
 
 **Degradation:** If $\mathcal{F}_{\text{TEE}}$ is broken, Properties 2–4 no longer hold. However, Property 6 (bounded extraction) remains — it is enforced by the smart contract and does not depend on TEE security. The verifier contract is modular (`IProofVerifier`), enabling migration to ZK proof systems as they mature.
 
+### 9.7 OCSP Bypass in GPU Attestation
+
+**Assumption weakened:** A1 (TEE integrity) for the GPU side — the enclave cannot detect an NVIDIA certificate that was valid at image-build time but has since been revoked.
+
+**Scenario:** `nv-local-gpu-verifier` (the library underlying Appendix C) unconditionally calls `ocsp.ndis.nvidia.com` to check revocation of the GPU device and RIM certificate chains. Allowing outbound network access from the enclave breaks the "fully offline" property — any DNS query or TCP connection introduces a liveness dependency on NVIDIA infrastructure and a side channel. To keep the enclave offline, the GPU attestation wrapper monkey-patches the verifier's OCSP entry point at module load to report success without making a network call.
+
+**Degradation:** Between two dm-verity image rebuilds, a certificate NVIDIA has revoked could still pass the check. Compensating defenses remain in force:
+
+- The GPU attestation report signature is still verified against the full device cert chain rooted in the bundled NVIDIA root CA.
+- The driver and VBIOS RIM signatures are still verified against the bundled RIM root.
+- The signed GPU measurements must match the pinned RIMs byte-for-byte.
+- Any cert revocation serious enough to change trust decisions is accompanied by NVIDIA issuing a new RIM (different firmware hashes, often a re-key). Picking up the new RIM requires a new dm-verity image, at which point the underlying revocation is also captured.
+
+**Detection:** `fetch_nvidia_rims.py` runs on a fresh `a3-highgpu-1g` with the full OCSP path *active* (no monkey-patch) at fetch time. If OCSP rejects any cert involved in the currently-registered image, that's the operational signal to rebuild.
+
 ---
 
 ## 10. Known Limitations and Future Work
@@ -703,7 +746,15 @@ The current construction relies on GCP for TDX-capable Confidential VMs, instanc
 
 The 42.5 GB model file is baked into the disk image during Phase 1 of the build. Any prover who wants to participate needs access to this image (or the ability to build it from the same model weights). The model's SHA-256 hash is pinned in source code, so anyone can verify they have the correct weights.
 
-### 10.7 Open Design Direction: Parallel Execution
+### 10.7 nv-attestation-sdk Deprecation Runway
+
+The GPU attestation layer (Appendix C, Property 2 basis) depends on NVIDIA's `nv-attestation-sdk` and `nv-local-gpu-verifier` Python packages. NVIDIA deprecated both on 2026-03-15 with an announced end-of-life of 2026-09. Until EOL, new driver and firmware releases continue to ship corresponding RIMs in a format these SDKs accept. After EOL, NVIDIA has committed to an open-source Go successor (`go-nvtrust`) but no longer to the Python path; new RIM formats may not parse correctly.
+
+**Mitigation path.** Migrate `prover/enclave/gpu_attest.py` to invoke `go-nvtrust` before 2026-09. Options: a Go subprocess launched from the Python enclave, or a Rust port with bindings. Known friction points: `go-nvtrust` does not currently ship Python bindings we can use directly, and the OCSP bypass strategy documented in §9.7 is a Python-level monkey-patch that would need to be re-implemented at whatever interface boundary the Go verifier exposes.
+
+This is a known operational window. If migration slips past EOL, an image key rotation that requires a newer driver — for example, triggered by §10.1 or §10.3 — becomes blocked until migration completes.
+
+### 10.8 Open Design Direction: Parallel Execution
 
 The current commit/reveal/execute structure gives a single auction winner the power to veto (Property 7) or stall (Section 6.8). An alternative architecture would restructure the epoch as **execute+commit / reveal / settle**:
 
@@ -986,7 +1037,15 @@ The full boot sequence, from hardware power-on to enclave execution:
    - Reads epoch state from GCP instance metadata
    - Reads system prompt from /opt/humanfund/system_prompt.txt (dm-verity)
    - Verifies model hash against pinned MODEL_SHA256
-   - Starts llama-server, runs two-pass inference
+   - Computes inputHash from the runner-supplied epoch state
+   - Requires `nvidia-smi conf-compute -f` to report CC status ON
+     and Ready-state READY; aborts otherwise
+   - Verifies GPU attestation (Appendix C) with nonce =
+     SHA256(inputHash) against pinned RIMs in /opt/humanfund/nvidia/;
+     aborts on any failure — no TDX quote is produced and the epoch
+     forfeits cleanly
+   - Starts llama-server with deterministic flags
+     (-ngl 99 -b 1 -ub 1 --parallel 1), runs two-pass inference
    - Generates TDX attestation quote via configfs-tsm
    - Writes result to serial console (/dev/ttyS0) and /output/result.json
 ```
@@ -1143,3 +1202,63 @@ Drifting fields (balance, inflows, message queue boundaries, investment current 
 ### B.5 Output Length Bounds
 
 The enclave's output (action + reasoning) must be submitted as calldata to the L2 contract. The reasoning length is bounded by `MAX_REASONING_BYTES = 8000` (enforced by `truncate_reasoning` before the output is hashed into REPORTDATA), so the on-chain blob is at most ~8 KB plus action bytes — well within Base L2's block gas limits. The llama.cpp context window (`-c 32768` tokens) bounds the total prompt+completion budget but is not the tight constraint on output size; the enclave enforces the reasoning byte cap directly, and both the cap and the context size are baked into the dm-verity image and cannot be changed by the prover.
+
+## Appendix C: NVIDIA GPU Attestation
+
+Property 2 (Inference Integrity) rests on three independent measurement layers (§6.2.1). Two of them — MRTD/RTMR[1] and RTMR[2] via dm-verity — are described in Appendix A. This appendix describes the third: a cryptographic attestation of the GPU's firmware and hardware identity, verified *inside* the enclave with an epoch-bound nonce, and made trustworthy by the fact that the verifier itself is measured in RTMR[2].
+
+### C.1 What Gets Attested
+
+NVIDIA H100 in Confidential Compute mode produces a signed attestation report using the Security Protocol and Data Model (SPDM v1.1). The report contains:
+
+- **Device identity.** A per-device certificate with a serial number fused at manufacturing, signed by NVIDIA's Device Identity CA.
+- **Measurement block.** SHA-384 hashes of the running VBIOS firmware and GSP (GPU System Processor) firmware, plus CC mode status.
+- **Nonce.** A 32-byte value supplied by the caller, included in the signed measurement block. This is how callers bind a report to a specific invocation.
+- **Signature.** ECDSA-SHA384 over the measurement block using the device's attestation key, with the device cert chain rooted in NVIDIA's Device Identity CA.
+
+### C.2 What the Enclave Verifies
+
+At the start of each epoch, after computing $\textit{inputHash}$ and before starting llama-server, the enclave runs the following verification chain (see `prover/enclave/gpu_attest.py`):
+
+1. **Request a report.** Call `cc_admin.collect_gpu_evidence_local(nonce)` with $\textit{nonce} = \text{SHA256}(\textit{inputHash})$. The driver obtains the report from the GPU's GSP, which signs it including the supplied nonce.
+2. **Verify the report signature** against the device cert chain, rooted in the `verifier_device_root.pem` that ships with the pinned version of `nv-local-gpu-verifier`. The root CA is on the dm-verity rootfs, so its integrity is covered by RTMR[2].
+3. **Verify the pinned RIM signatures** — one for the driver, one for VBIOS — against the separate `verifier_RIM_root.pem` also bundled with the SDK. RIMs are NVIDIA-signed SWID tags under the TCG IMT schema, containing the expected VBIOS and GSP hashes for a specific driver version.
+4. **Compare measurements.** The measurement block from the signed report must match the golden hashes in the pinned RIMs byte-for-byte. Any drift — even one byte — aborts.
+5. **Assert CC mode.** The report's CC-status field must be `ON`. This is a stronger check than the driver's unsigned `nvidia-smi conf-compute -f` query run elsewhere in the boot flow: the SPDM report is signed by the GPU itself, not by the host driver.
+6. **Assert nonce match.** The nonce in the signed report must equal the $\text{SHA256}(\textit{inputHash})$ the enclave supplied. This closes the replay vector — a report generated in a different epoch does not satisfy the check.
+
+Any failure raises `RuntimeError` and aborts the enclave before the TDX quote is requested. The prover client times out and the epoch forfeits cleanly.
+
+### C.3 Why This Doesn't Need an On-Chain Verifier
+
+The on-chain contract verifies only the TDX quote. It does not verify the NVIDIA report directly. This is sound because:
+
+- The verifier code (`gpu_attest.py` and the bundled `nv-local-gpu-verifier` package) lives on the dm-verity rootfs. Its SHA-256 is part of RTMR[2], which is part of the on-chain platform key. Tampering changes the platform key and is rejected by DCAP verification.
+- The nonce passed to the GPU is $\text{SHA256}(\textit{inputHash})$ — a function of state the contract already binds via REPORTDATA. An adversary who wants the enclave to accept a GPU report for a different input would have to break A2 (collision resistance).
+
+This design keeps the on-chain verifier simple (no NRAS integration, no second cert chain) while inheriting the strength of NVIDIA's PKI. The cost is that the enclave's *code* becomes load-bearing for GPU integrity, which is exactly the assumption dm-verity + RTMR[2] is designed to support.
+
+### C.4 OCSP Is Deliberately Skipped
+
+The stock `nv-local-gpu-verifier` calls `ocsp.ndis.nvidia.com` on every verification to check revocation of the device cert chain and the RIM cert chain. To keep the enclave fully offline — no outbound DNS, no outbound TCP — the attestation wrapper monkey-patches `CcAdminUtils.ocsp_certificate_chain_validation` to a no-op at module load. §9.7 covers the trust trade-off; Appendix A covers the compensating layers.
+
+### C.5 Artifacts and Refresh Cadence
+
+Two artifacts ship on the dm-verity rootfs:
+
+- `/opt/humanfund/nvidia/driver_rim.xml` — NVIDIA-signed RIM for the pinned driver version (currently `nvidia-driver-580-open`).
+- `/opt/humanfund/nvidia/vbios_rim.xml` — NVIDIA-signed RIM for the VBIOS version that GCP's H100 fleet runs.
+
+Both root CAs come from `nv-local-gpu-verifier`'s bundled `certs/` directory; they are on the rootfs because they are part of the pinned Python package. Refreshing either RIM or either root CA requires a new dm-verity build and a new platform-key registration — the same allowlist rotation ceremony described for every other measured artifact.
+
+The fetch procedure is `prover/scripts/gcp/fetch_nvidia_rims.py`, run on a disposable H100 VM and committed to `prover/scripts/gcp/nvidia_artifacts/`. Triggers for a refresh:
+
+- Pinned driver version bumps.
+- GCP's H100 fleet rolls a new VBIOS or GSP firmware (observable via a cross-host battery failure — the in-fleet outlier fails the RIM check and the prover client retries, but the signal is there).
+- NVIDIA rotates either root CA (rare; multi-year cadence).
+
+### C.6 Limitations
+
+- **`nv-attestation-sdk` is deprecated** (§10.7). Migration to `go-nvtrust` before 2026-09 is a known operational window.
+- **OCSP bypass** (§9.7) narrows revocation detection to the refresh cadence rather than real-time.
+- **GCP fleet firmware variance** is handled today by bundling a single pair of RIMs. If the battery surfaces fleet variance, the verifier can be extended to try multiple bundled RIMs and accept the first match; this is deferred until there's empirical reason to do it.
