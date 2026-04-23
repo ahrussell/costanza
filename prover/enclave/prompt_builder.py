@@ -374,10 +374,10 @@ def build_epoch_context(state, seed=None, voice_anchors: str = ""):
     # YOUR TURN) primes the model to emit `</diary>` as its first generation
     # token because the closing tags from sample diaries sit at the freshest
     # position in attention. Empirically (15-seed sweep, greedy-confirmed):
-    # samples-last → ~80% empty pass-1 diaries; samples-first → ~50%; the
-    # remaining empties are eliminated by the diary_prefill mechanism in
-    # inference.run_two_pass_inference. Putting samples first restores the
-    # v17–v19 layout that this branch's prompt rebuild had drifted from.
+    # samples-last → ~80% empty pass-1 diaries; samples-first → ~50%. v20's
+    # 3-pass architecture eliminates the remaining empties structurally
+    # (pass 2 starts mid-response after `</think>`, no empty-slot pathology).
+    # Sample-first layout is preserved here for prompt clarity.
     if voice_anchors:
         lines.append("=== SAMPLE DIARIES — voice references, not your history ===")
         lines.append("")

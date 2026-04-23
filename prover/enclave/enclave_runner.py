@@ -34,7 +34,7 @@ import sys
 import time
 from pathlib import Path
 
-from .inference import run_two_pass_inference, truncate_reasoning
+from .inference import run_three_pass_inference, truncate_reasoning
 from .action_encoder import parse_action, encode_action_bytes, validate_and_clamp_action
 from .input_hash import compute_input_hash, _keccak256
 from .attestation import get_tdx_quote, compute_report_data
@@ -473,14 +473,16 @@ def main():
             llama_proc = start_llama_server()
             wait_for_llama_server()
 
-        # run_two_pass_inference (v19): pass 1 emits the diary, pass 2
-        # emits the action JSON under GBNF grammar constraints. Pass 2
-        # retries with an incrementing seed on the rare chance the model
-        # produces output the parser can't read (grammar should make that
-        # basically impossible). If all retries fail, parsed_action is
-        # None and we fall back to a no-action result with a system note
-        # so Costanza can see what happened next epoch.
-        inference = run_two_pass_inference(
+        # run_three_pass_inference (v20): pass 1 generates the think
+        # block (deliberation, NOT on chain), pass 2 emits the diary as
+        # a finished post-deliberation thought, pass 3 emits the action
+        # JSON under GBNF grammar constraints. Pass 3 retries with an
+        # incrementing seed on the rare chance the model produces output
+        # the parser can't read (grammar should make that basically
+        # impossible). If all retries fail, parsed_action is None and we
+        # fall back to a no-action result with a system note so Costanza
+        # can see what happened next epoch.
+        inference = run_three_pass_inference(
             full_prompt, seed=llama_seed, llama_url=LLAMA_SERVER_URL,
         )
         action_json = inference.get("parsed_action")
