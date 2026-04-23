@@ -150,7 +150,7 @@ Check actual gas used via `cast send` or test transactions and update the consta
 ## Tech Stack
 
 - **Chain**: Base (Coinbase L2), Solidity ^0.8.20
-- **Inference**: llama.cpp + Hermes 4 70B Q6_K split GGUF (GCP TDX H100), 2-pass generation (diary, then grammar-constrained action JSON)
+- **Inference**: llama.cpp + Hermes 4 70B Q6_K split GGUF (GCP TDX H100), 3-pass generation (think → diary → grammar-constrained action JSON)
 - **TEE**: Intel TDX on GCP Confidential VMs, full dm-verity rootfs (no Docker), configfs-tsm attestation
 - **Attestation**: Automata Network DCAP contracts at `0xaDdeC7e85c2182202b66E331f2a4A0bBB2cEEa1F`
 - **Oracle**: Chainlink ETH/USD price feed (`IAggregatorV3.sol`, used by main contract + USDC adapters)
@@ -322,7 +322,7 @@ See [prover/README.md](prover/README.md) for full setup instructions.
 **Platform**: GCP TDX Confidential VMs with full dm-verity rootfs (no Docker)
 
 - Model integrity enforced at the block level by dm-verity on a dedicated `/models` partition (read-only squashfs, Merkle root in kernel cmdline, measured into RTMR[2]). No application-level hash check and no network download at runtime.
-- GPU inference: ~80-90s per epoch on H100 (2-pass: diary + grammar-constrained action JSON)
+- GPU inference on H100 (3-pass: think → diary → grammar-constrained action JSON)
 - Enclave code at `/opt/humanfund/enclave/` on the dm-verity rootfs
 - **Input**: Epoch state JSON via GCP instance metadata
 - **Output**: Result JSON to serial console (`/dev/ttyS0`, between `===HUMANFUND_OUTPUT_START===` / `===HUMANFUND_OUTPUT_END===` delimiters)
@@ -393,8 +393,11 @@ The agent outputs exactly one action per epoch as JSON, with an optional memory 
 
 Memory updates happen alongside the action — they don't consume it. Each epoch the model can update up to 3 slots; each slot holds a model-authored `{title, body}` pair (title ≤ 64 bytes, body ≤ 280 bytes). All 10 slots (0-9) are writable; the model owns the category taxonomy by writing its own titles. Duplicate slot entries in the same batch apply in order (last-wins).
 
-Output format (v19 is 2-pass — diary then grammar-constrained action JSON, no scratchpad):
+Output format (v20 is 3-pass — think → diary → grammar-constrained action JSON). The think pass is free-form deliberation inside `<think>...</think>` tags (not published on-chain); the diary is the on-chain entry; the action is grammar-constrained JSON:
 ```
+<think>
+[Free-form deliberation — not on-chain, just shapes the diary that follows]
+</think>
 <diary>
 [Public diary entry — published on-chain, written in Costanza's voice (see prover/prompts/system.txt + voice_anchors.txt)]
 </diary>
