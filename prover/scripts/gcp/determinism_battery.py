@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Determinism validation battery — bit-identical output check.
 
-Runs `run_two_pass_inference` N times against a running llama-server for
+Runs `run_three_pass_inference` N times against a running llama-server for
 each fixture in a directory, then asserts all N outputs are bit-identical.
 The script is deliberately attestation-free — it tests the inference
 path, not the TDX quote path. Run it on a VM where llama-server is
@@ -47,7 +47,7 @@ import sys
 import time
 from pathlib import Path
 
-from prover.enclave.inference import run_two_pass_inference, truncate_reasoning
+from prover.enclave.inference import run_three_pass_inference, truncate_reasoning
 from prover.enclave.input_hash import compute_input_hash, _keccak256
 from prover.enclave.prompt_builder import build_epoch_context, build_full_prompt
 from prover.enclave.attestation import compute_report_data
@@ -116,8 +116,9 @@ def _fingerprint_result(result: dict, fixture: dict) -> dict:
     the diary, the action text, and the attestation REPORTDATA that
     would have been produced. Hash them for compact cross-run diffs.
 
-    `run_two_pass_inference` returns keys: reasoning (diary), action_text
-    (raw JSON), parsed_action (dict or None)."""
+    `run_three_pass_inference` returns keys: thinking (sanitized think,
+    NOT on chain), reasoning (diary), action_text (raw JSON),
+    parsed_action (dict or None)."""
     diary = result.get("reasoning", "")
     action_text = result.get("action_text", "") or ""
     parsed_action = result.get("parsed_action")
@@ -202,7 +203,7 @@ def cmd_run(args):
         for rep in range(args.repeats):
             t0 = time.time()
             try:
-                result = run_two_pass_inference(
+                result = run_three_pass_inference(
                     prompt, seed=seed, llama_url=args.llama_url,
                 )
             except Exception as e:
