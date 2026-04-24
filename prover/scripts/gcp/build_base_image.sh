@@ -25,19 +25,21 @@ LLAMA_CPP_TAG="b5270"
 LLAMA_CPP_COMMIT="${LLAMA_CPP_COMMIT:-a1d711f0e47873a42cdd1e78fcc2e4d0df002534}"
 VM_NAME="humanfund-base-builder-$(date +%s)"
 BUILDER_MACHINE="c3-standard-22"  # Biggest within 32-CPU quota
+IMAGE_NAME=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         --gpu) USE_GPU=true; shift ;;
         --cpu) USE_GPU=false; shift ;;
         --tag) LLAMA_CPP_TAG="$2"; shift 2 ;;
+        --name) IMAGE_NAME="$2"; shift 2 ;;
         --project) GCP_PROJECT="$2"; shift 2 ;;
         *) echo "Unknown arg: $1"; exit 1 ;;
     esac
 done
 
 MODE=$($USE_GPU && echo "gpu" || echo "cpu")
-IMAGE_NAME="humanfund-base-${MODE}-llama-${LLAMA_CPP_TAG}"
+[ -z "$IMAGE_NAME" ] && IMAGE_NAME="humanfund-base-${MODE}-llama-${LLAMA_CPP_TAG}"
 
 echo "═══ The Human Fund — Base Image Builder ═══"
 echo "  Project:     $GCP_PROJECT"
