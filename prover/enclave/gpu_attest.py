@@ -89,6 +89,12 @@ def verify_gpu_attestation(
         if not os.path.isfile(path):
             raise RuntimeError(f"RIM not found at {path}")
 
+    # The SDK writes `verifier.log` to CWD. systemd sets WorkingDirectory
+    # to /opt/humanfund which is on the dm-verity rootfs (read-only), so
+    # the log-file open fails with EROFS and aborts before any attestation
+    # work runs. Switch to /tmp (tmpfs) before touching the SDK.
+    os.chdir("/tmp")
+
     # The SDK's `collect_gpu_evidence_local` expects a hex-encoded string.
     nonce_hex = nonce.hex()
 
