@@ -27,6 +27,24 @@ import os
 
 logger = logging.getLogger(__name__)
 
+# ─── verifier.log path redirection ────────────────────────────────────────
+
+# The `nv-local-gpu-verifier` SDK creates a logging.FileHandler for
+# `verifier.log` at *package import time*, not at first log call. The
+# FileHandler resolves the path against CWD at construction. The enclave's
+# systemd unit sets WorkingDirectory=/opt/humanfund which is on the
+# dm-verity rootfs (read-only), so the open fails with EROFS and aborts
+# before any attestation work runs. Chdir to /tmp (tmpfs) before any
+# `verifier` import (including the one inside `_install_ocsp_patch`),
+# then restore so downstream code sees the original CWD.
+_original_cwd = os.getcwd()
+try:
+    os.chdir("/tmp")
+except OSError:
+    # /tmp is always writable on Linux enclaves; if it isn't, the SDK
+    # would fail anyway, so let the original error surface later.
+    pass
+
 # ─── OCSP monkey-patch ────────────────────────────────────────────────────
 
 # `nv-local-gpu-verifier` unconditionally calls `ocsp.ndis.nvidia.com`
@@ -62,6 +80,14 @@ def _install_ocsp_patch() -> None:
 
 
 _install_ocsp_patch()
+
+# Restore CWD now that the verifier package (and its log file handler)
+# is fully initialized. The FileHandler keeps writing to /tmp/verifier.log
+# regardless of subsequent CWD changes.
+try:
+    os.chdir(_original_cwd)
+except OSError:
+    pass
 
 
 # ─── Attestation entry point ──────────────────────────────────────────────
