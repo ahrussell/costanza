@@ -176,7 +176,7 @@ echo ""
 echo "─── Step 5: Python venv ───"
 
 # Upload requirements file and install with hash-pinned versions (supply chain defense)
-gcloud compute scp "tee/enclave/requirements.txt" "$VM_NAME:/tmp/requirements.txt" \
+gcloud compute scp "prover/enclave/requirements.txt" "$VM_NAME:/tmp/requirements.txt" \
     --project="$GCP_PROJECT" --zone="$GCP_ZONE" 2>&1
 vm_run "
     sudo python3 -m venv /opt/humanfund/venv
