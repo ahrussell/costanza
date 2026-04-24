@@ -1,0 +1,6 @@
+# Top-level TEE enclave runtime dependencies.
+#
+# Run: pip-compile --generate-hashes prover/enclave/requirements.in
+# to regenerate the fully-pinned requirements.txt lockfile.
+pycryptodome==3.21.0
+eth_abi==5.1.0
