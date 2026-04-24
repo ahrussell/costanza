@@ -354,7 +354,7 @@ python -m prover.client --ntfy-channel my-ch   # With push notifications
 # GCP disk image (dm-verity)
 bash prover/scripts/gcp/build_base_image.sh               # Build base image (slow, ~15min, once)
 bash prover/scripts/gcp/build_full_dmverity_image.sh \
-  --base-image humanfund-base-gpu-llama-b5270               # Build production dm-verity image
+  --base-image humanfund-base-gpu-llama-b5270-hermes        # Build production dm-verity image
 python prover/scripts/gcp/register_image.py \
   --image humanfund-dmverity-hardened-v8 \
   --verifier 0x...                            # Register image key on-chain

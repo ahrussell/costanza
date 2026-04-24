@@ -38,7 +38,7 @@ class GCPPersistentTEEClient(TEEClient):
     """Reusable spot VM for testnet inference. Not for production."""
 
     def __init__(self, project=None, zone="us-central1-a",
-                 image="humanfund-base-gpu-llama-b5270",
+                 image="humanfund-base-gpu-llama-b5270-hermes",
                  machine_type="a3-highgpu-1g",
                  inference_timeout=600,
                  source_dir="."):

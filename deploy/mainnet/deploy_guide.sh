@@ -83,7 +83,7 @@ cat << 'IMAGE'
 
 # Build the production dm-verity image:
 bash scripts/build_full_dmverity_image.sh \
-  --base-image humanfund-base-gpu-llama-b5270 \
+  --base-image humanfund-base-gpu-llama-b5270-hermes \
   --name humanfund-dmverity-gpu-mainnet-v1
 
 # Register image key on-chain:
