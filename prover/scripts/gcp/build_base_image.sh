@@ -20,9 +20,11 @@ GCP_PROJECT="${GCP_PROJECT:-the-human-fund}"
 GCP_ZONE="${GCP_ZONE:-us-central1-a}"
 USE_GPU=true
 LLAMA_CPP_TAG="b5270"
-# Pin to exact commit hash for supply chain integrity (git tags can be force-pushed)
-# Pin to known-good commit for tag b5270 — supply chain defense against tag force-push
-LLAMA_CPP_COMMIT="${LLAMA_CPP_COMMIT:-a1d711f0e47873a42cdd1e78fcc2e4d0df002534}"
+# Pin to exact commit hash for supply chain integrity (git tags can be force-pushed).
+# The original 2026-03-27 pin a1d711f0 is no longer reachable from ggml-org/llama.cpp
+# (tag b5270 was moved; old commit garbage-collected). Re-pinned 2026-04-24 to whatever
+# b5270 now resolves to; this is the commit our Hermes base image will be built from.
+LLAMA_CPP_COMMIT="${LLAMA_CPP_COMMIT:-3bf785f3efa89ed28294fbf73054558a2b034bfb}"
 VM_NAME="humanfund-base-builder-$(date +%s)"
 BUILDER_MACHINE="c3-standard-22"  # Biggest within 32-CPU quota
 IMAGE_NAME=""
