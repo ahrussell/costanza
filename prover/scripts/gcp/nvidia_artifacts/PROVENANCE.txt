@@ -1,0 +1,4 @@
+driver_version: 580.126.09
+vbios_version:  96.00.cf.00.01
+driver_rim_id:  NV_GPU_DRIVER_GH100_580.126.09
+vbios_rim_id:   NV_GPU_VBIOS_G520_0200_885_9600CF0001
