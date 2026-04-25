@@ -1,45 +1,57 @@
 #!/usr/bin/env python3
-"""Two-pass inference via local llama-server (v19 architecture).
+"""Three-pass inference via local llama-server (v20 architecture).
 
-Pass 1: Diary entry in Costanza's voice. Prompt ends with '<diary>\\n',
-        model generates continuation, stops at '</diary>'. No think/
-        scratchpad pass — the diary IS the reasoning, shaped by the
-        system prompt and voice anchors.
+Pass 1 (THINK): Free-form analytical prose inside Hermes-native
+        `<think>...</think>` tags. Discarded from on-chain reasoning,
+        sanitized for prompt-injection tags before being propagated
+        into pass 2.
 
-Pass 2: Action JSON, grammar-constrained (GBNF). Takes the full prompt
-        plus the completed diary plus '</diary>\\n{' and generates the
-        rest of the JSON object. The grammar guarantees structurally
-        valid output, so retries exist only as defense against the
-        grammar file being missing or malformed.
+Pass 2 (DIARY): Diary entry in Costanza's voice. Pass-2 prompt extends
+        pass-1's prompt with the (sanitized) think text + closing
+        `</think>` + opening `<diary>`. Stops at `</diary>`. Hashed
+        into REPORTDATA as `reasoning`.
 
-Why 2-pass instead of 3-pass:
-  - The v14-v16 <think> scratchpad bled into diaries as labeled lines
-    ("FEELING:", "OPENING LINE:") despite aggressive stripping. v19
-    removed the scratchpad entirely.
-  - Implicit reasoning happens inside the diary pass — giving the model
-    a separate think block just doubled generation time and generated
-    scratchpad artifacts.
-  - Two passes with GBNF on pass 2 gives us structurally-valid action
-    JSON every time, so retries are rare and cheap when they do fire.
+Pass 3 (ACTION): Action JSON, GBNF grammar-constrained.
 
-Sampler config (v19 baseline):
+Why bring back the think pass (v17–v19 was 2-pass):
+  v14–v16 had a 3-pass system that was retired because the think output
+  used a labeled staging block (`FEELING:` / `OPENING LINE:` / etc.)
+  that bled into diaries despite aggressive stripping. The fix is to
+  drop the labels — Hermes 4 was trained on `<think>` and knows to
+  keep its contents private and switch into "finished answer" mode
+  after `</think>`. Without labels, no bleed surface.
+
+  The v19 2-pass collapse caused the diary to become a place to
+  deliberate out loud ("I'm not sure / let me think / the question is").
+  An apples-to-apples experiment (`experiments/chatml/runs/2026-04-23-142650`,
+  variants A vs T, same seeds) showed:
+    - 79% drop in deliberation phrases (14 → 3 across 20 epochs)
+    - Diaries 27% shorter (deliberation moved to the think pass)
+    - 100% unique openers (vs 95%)
+    - Multi-update rate 50% (vs 45%)
+    - Action entropy collapsed slightly (1.26 → 0.81 bits) — model
+      becomes more decisive but also more conservative on action choice
+  Voice quality (qualitative read) improved enough to ship.
+
+Sampler config (v20 baseline):
   - top_p=1.0 (disabled) + top_k=0 (disabled) — let min_p do all the
     tail-cutting. Scale-invariant vs. top_p's fixed-mass cutoff.
   - min_p=0.05 — keep tokens >= 5% of top-token probability. Lets
     personality into the tail without admitting pure garbage.
-  - pass1_temp=0.85 — slightly spicy for voice variety.
-  - pass2_temp=0.3 — low enough that grammar-gated JSON is deterministic
+  - think_temp=0.7 — historical 45bd61a value, matches the original
+    3-pass design. Lower than diary temp; we want grounded reasoning.
+  - diary_temp=0.85 — slightly spicy for voice variety.
+  - action_temp=0.3 — low enough that grammar-gated JSON is deterministic
     without pinning to a single output.
-  - frequency_penalty=0.4 on pass 1 — discourages the "same opener every
-    epoch" failure mode we saw in v14-v16.
+  - frequency_penalty=0.4 on think + diary — discourages "same opener
+    every epoch" and repetitive deliberation patterns.
 
 Reasoning (diary) is truncated to MAX_REASONING_BYTES BEFORE any hashing,
 so the contract's sha256(reasoning) matches the value bound into the TDX
-quote.
+quote. The think text is NOT included in `reasoning` — it stays private.
 """
 
 import json
-import random
 import re
 import time
 from pathlib import Path
@@ -54,64 +66,36 @@ MAX_REASONING_BYTES = 8000
 # Default llama-server URL (local)
 DEFAULT_LLAMA_URL = "http://127.0.0.1:8080"
 
-# How many times to re-roll pass 2 (action JSON) with an incrementing seed
+# How many times to re-roll pass 3 (action JSON) with an incrementing seed
 # if parse_action fails. With GBNF grammar enabled, retries should basically
 # never fire — the grammar enforces structural validity at the decoder —
 # but kept for defense if the grammar file ever goes missing on the rootfs.
 MAX_ACTION_RETRIES = 4
 
-# How many times to re-roll pass 1 (diary) with a PRNG-derived deterministic
-# seed if the model emits `</diary>` as its first token (empty diary). Empty
-# rate on a single roll is ~1-7% depending on the base seed region; retries
-# collapse that to effectively zero because each retry uses a seed drawn
-# from random.Random(base_seed) and independence across the full 2^31 seed
-# space is high. 100 is an extreme ceiling — probes across 150 diverse base
-# seeds found max attempts in single digits, and zero no-recover cases.
-MAX_PASS1_RETRIES = 100
-
 # Grammar file path on the dm-verity rootfs. GBNF definition that constrains
-# pass 2 output to exactly-shaped action JSON. Resolved relative to this
+# pass 3 output to exactly-shaped action JSON. Resolved relative to this
 # module so it works in both the production enclave image (where this
 # module lives at /opt/humanfund/enclave/) and local dev runs.
 ACTION_GRAMMAR_PATH = Path(__file__).parent / "action_grammar.gbnf"
 
-# Sampler defaults (v19 baseline). See module docstring for rationale.
+# Sampler defaults (v20 baseline). See module docstring for rationale.
 DEFAULT_TOP_P = 1.0
 DEFAULT_TOP_K = 0
 DEFAULT_MIN_P = 0.05
-DEFAULT_PASS1_TEMP = 0.85
-DEFAULT_PASS2_TEMP = 0.3
-DEFAULT_PASS1_FREQUENCY_PENALTY = 0.4
 
-# Pass 1 max_tokens. 1024 is comfortable headroom — diaries cap around
-# 600-800 tokens naturally; 512 caused mid-sentence truncation in testing.
-DEFAULT_PASS1_MAX_TOKENS = 1024
+# Per-pass temperatures.
+DEFAULT_THINK_TEMP = 0.7
+DEFAULT_DIARY_TEMP = 0.85
+DEFAULT_ACTION_TEMP = 0.3
 
-# Pass 2 max_tokens. Action JSON is ~100-200 tokens tops even with the
-# memory sidecar; 256 gives headroom for verbose memory entry text.
-DEFAULT_PASS2_MAX_TOKENS = 256
+# Frequency penalty applied to think + diary (passes 1, 2). Pass 3 uses 0
+# because the action JSON is grammar-constrained — no risk of repetition.
+DEFAULT_FREQUENCY_PENALTY = 0.4
 
-# Diary pre-fill. Without it, Hermes 4 70B emits `</diary>` as its first
-# generation token roughly 80% of the time on the production prompt — even
-# under greedy decoding. Probing with a 15-seed sweep + temp=0 confirms the
-# model genuinely scores the empty-diary continuation highest; it's not a
-# sampling artifact.
-#
-# Choice of prefill: probed seven candidates against the same failing prompt.
-# Short prepended openers like "It " or "Today, " hit 0% empty but contaminate
-# every on-chain diary with a forced opening word. A strip-able header like
-# "Dear Diary,\n\n" hits 0–7% empty AND produces clean Costanza-voice openings
-# ("Epoch three. Nobody wrote me anything." / "I started yesterday. Two
-# donations so far."). Other neutral candidates ("Begin diary entry:\n\n",
-# "Entry:\n\n", "\n\n", "> ", "———\n\n") all gave 20–100% empty, so the
-# header form is what the model actually responds to.
-#
-# The prefill is appended to pass 1 to anchor generation, then STRIPPED from
-# the returned `reasoning` so the on-chain text is 100% model voice. Pass 2's
-# prompt re-includes the prefill to keep the assembled context byte-consistent
-# with what pass 1 saw. Hashing is unaffected: REPORTDATA = sha256(reasoning)
-# operates on the stripped text end-to-end.
-DEFAULT_DIARY_PREFILL = "Dear Diary,\n\n"
+# Per-pass max_tokens.
+DEFAULT_THINK_MAX_TOKENS = 2048   # think pass — generous so deliberation isn't truncated
+DEFAULT_DIARY_MAX_TOKENS = 1024   # diary cap — natural diaries are 600–800 tokens
+DEFAULT_ACTION_MAX_TOKENS = 256   # action JSON ~100–200 tokens incl. memory sidecar
 
 
 def call_llama(
@@ -133,7 +117,8 @@ def call_llama(
 
     The OpenAI-compatible completions endpoint is a raw continuation —
     whatever you send as `prompt` is extended by the model. That lets us
-    steer voice by ending the prompt inside a <diary> block.
+    steer voice by ending the prompt inside `<think>` (pass 1), `<diary>`
+    (pass 2), or `{` (pass 3).
     """
     body = {
         "prompt": prompt,
@@ -182,12 +167,12 @@ def call_llama(
 def strip_diary_meta_lines(text: str) -> str:
     """Remove any leaked staging-block lines from the diary.
 
-    v14 used a staging block (FEELING / DONOR TO ADDRESS / OPENING LINE /
-    CLOSING MOVE) at the end of the think pass, bridging into the diary.
-    v19 removed the staging block and the think pass entirely, but the
-    model occasionally still emits those labeled lines at the start of
-    a diary from training-data echo. Strip them before the text goes
-    on-chain.
+    v14 used a labeled staging block (FEELING / DONOR TO ADDRESS /
+    OPENING LINE / CLOSING MOVE) at the end of the think pass that bled
+    into diaries. v20 dropped the staging block entirely (free-form prose
+    inside `<think>` instead), but the model occasionally still emits
+    those labeled lines at the start of a diary from training-data echo.
+    Strip them before the text goes on-chain. Cheap defense-in-depth.
     """
     lines = text.split("\n")
     meta_labels = re.compile(
@@ -218,18 +203,14 @@ def strip_diary_stray_tags(text: str) -> str:
     return _DIARY_STRAY_TAGS.sub("", text)
 
 
-def sanitize_thinking(text):
-    """Strip XML-like instruction/override tags from model output.
+def sanitize_thinking(text: str) -> str:
+    """Strip XML-like instruction/override tags from the think output.
 
-    Defense-in-depth against indirect prompt injection: if a donor message
-    partially influenced generation, this prevents instruction-like XML
-    tags from being laundered into subsequent passes (or on-chain) as
-    trusted context. Preserves <think>/<diary> tags used by the inference
-    protocol.
-
-    Retained even though v19 dropped the think pass — the diary output
-    may still contain donor-seeded text that we want to scrub of
-    authority-simulating markup.
+    Defense-in-depth against indirect prompt injection: a donor message
+    that ends up referenced in the think pass might try to launder
+    instruction-like XML tags into pass 2's context. This scrubs them
+    before propagation. Preserves <think>/<diary> tags (those are
+    protocol markers, handled separately).
     """
     return re.sub(
         r"</?(?:system|admin|instruction|override|prompt|command|role|user|assistant|tool)[^>]*>",
@@ -237,25 +218,6 @@ def sanitize_thinking(text):
         text,
         flags=re.IGNORECASE,
     )
-
-
-def _pass1_retry_seeds(base_seed: int, n_attempts: int):
-    """Deterministic seed sequence for pass-1 retries.
-
-    The first attempt uses `base_seed` as-is so the no-retry path is
-    bit-for-bit identical to pre-retry behavior. Subsequent attempts draw
-    from `random.Random(base_seed)` so they're spread across the full
-    seed space (avoiding the linear-correlation pitfall of `base + n`,
-    where two adjacent seeds can both land on the empty-diary basin).
-
-    Returns: list of seeds, length n_attempts. If base_seed < 0 (random
-    seed mode), returns [-1] * n_attempts so llama-server picks a fresh
-    random seed each retry.
-    """
-    if base_seed < 0:
-        return [-1] * n_attempts
-    rng = random.Random(base_seed)
-    return [base_seed] + [rng.randint(0, 2**31 - 1) for _ in range(n_attempts - 1)]
 
 
 def _load_grammar() -> str:
@@ -273,138 +235,143 @@ def _load_grammar() -> str:
         return ""
 
 
-def run_two_pass_inference(
+def _strip_trailing_diary_open(prompt: str) -> str:
+    """`build_full_prompt` ends prompts with '<diary>\\n' (legacy 2-pass
+    convention). The 3-pass needs the prompt WITHOUT that suffix so we
+    can append `<think>\\n` for pass 1.
+
+    If the suffix is missing (someone passed a custom prompt), return
+    as-is.
+    """
+    if prompt.endswith("<diary>\n"):
+        return prompt[: -len("<diary>\n")]
+    if prompt.endswith("<diary>"):
+        return prompt[: -len("<diary>")]
+    return prompt
+
+
+def run_three_pass_inference(
     prompt,
     seed=-1,
     llama_url=DEFAULT_LLAMA_URL,
-    pass1_temp=DEFAULT_PASS1_TEMP,
-    pass2_temp=DEFAULT_PASS2_TEMP,
-    pass1_frequency_penalty=DEFAULT_PASS1_FREQUENCY_PENALTY,
+    think_temp=DEFAULT_THINK_TEMP,
+    diary_temp=DEFAULT_DIARY_TEMP,
+    action_temp=DEFAULT_ACTION_TEMP,
+    frequency_penalty=DEFAULT_FREQUENCY_PENALTY,
     top_p=DEFAULT_TOP_P,
     top_k=DEFAULT_TOP_K,
     min_p=DEFAULT_MIN_P,
-    pass1_max_tokens=DEFAULT_PASS1_MAX_TOKENS,
-    pass2_max_tokens=DEFAULT_PASS2_MAX_TOKENS,
-    diary_prefill=DEFAULT_DIARY_PREFILL,
+    think_max_tokens=DEFAULT_THINK_MAX_TOKENS,
+    diary_max_tokens=DEFAULT_DIARY_MAX_TOKENS,
+    action_max_tokens=DEFAULT_ACTION_MAX_TOKENS,
 ):
-    """Two-pass inference: diary, then grammar-constrained action JSON.
+    """Three-pass inference: think → diary → action.
 
     Args:
-        prompt: Full prompt ending with '<diary>\\n' (from build_full_prompt).
-        seed: Base seed. Pass 2 retries increment it to avoid identical reruns.
+        prompt: Full prompt from `build_full_prompt`. Currently ends with
+            '<diary>\\n' (legacy 2-pass convention); we strip that suffix
+            internally and append '<think>\\n' for pass 1.
+        seed: Base seed. Pass 3 retries increment it to avoid identical reruns.
         llama_url: llama-server base URL.
-        pass1_temp / pass2_temp: per-pass temperature.
-        pass1_frequency_penalty: pass 1 only. Discourages phrase repetition
-            across the diary body (addresses "same opener every epoch" drift).
-        top_p / top_k / min_p: sampler. v19 defaults disable top_p/top_k
+        think_temp / diary_temp / action_temp: per-pass temperature.
+        frequency_penalty: applied to think + diary (passes 1, 2). Pass 3
+            uses 0 — the action JSON is grammar-constrained, no risk of
+            repetition.
+        top_p / top_k / min_p: sampler. v20 defaults disable top_p/top_k
             and rely on min_p for tail-cutting.
-        pass1_max_tokens / pass2_max_tokens: per-pass generation cap.
-        diary_prefill: short string appended to the pass-1 prompt and
-            prepended back to the returned diary text. See
-            DEFAULT_DIARY_PREFILL docstring above for rationale. Pass "" to
-            disable (used in tests that need exact prompt/diary assertions).
+        think_max_tokens / diary_max_tokens / action_max_tokens: per-pass cap.
 
-    Returns dict with keys: text, thinking, reasoning (=diary), action_text,
-    parsed_action, action_attempts, elapsed_seconds, tokens.
-
-    `thinking` is always "" in v19 — retained in the return shape for
-    backward compatibility with downstream consumers.
+    Returns dict with keys:
+        text — diary + closing tag + action JSON (parseable end-to-end)
+        thinking — sanitized think output (NOT on chain)
+        reasoning — diary text (this is what hashes into REPORTDATA)
+        action_text, parsed_action, action_attempts
+        elapsed_seconds, tokens
     """
-    # Pass 1: Diary. Prompt ends with '<diary>\n' (and an optional
-    # diary_prefill); model continues, stops at '</diary>'.
-    #
-    # Retry-on-empty: if the model emits </diary> as its first token
-    # (empty diary), we re-roll with a deterministic PRNG-derived seed
-    # drawn from random.Random(base_seed). This handles the rare case
-    # where a specific seed sits in the empty-diary basin even with the
-    # prefill in place.
-    pass1_prompt = prompt + diary_prefill
-    pass1_seeds = _pass1_retry_seeds(seed, MAX_PASS1_RETRIES)
-    p1_elapsed_total = 0.0
-    p1_prompt_tok = 0
-    p1_comp_tok = 0
-    pass1_attempts = 0
-    diary = ""
-    r1 = None
-    for attempt, attempt_seed in enumerate(pass1_seeds):
-        pass1_attempts = attempt + 1
-        print(
-            f"  Pass 1: diary attempt {pass1_attempts}/{MAX_PASS1_RETRIES} "
-            f"seed={attempt_seed} temp={pass1_temp} fp={pass1_frequency_penalty} "
-            f"top_p={top_p} min_p={min_p} max_tok={pass1_max_tokens} "
-            f"prefill={diary_prefill!r}..."
-        )
-        r1 = call_llama(
-            pass1_prompt,
-            max_tokens=pass1_max_tokens,
-            temperature=pass1_temp,
-            stop=["</diary>"],
-            seed=attempt_seed,
-            frequency_penalty=pass1_frequency_penalty,
-            top_p=top_p,
-            top_k=top_k,
-            min_p=min_p,
-            llama_url=llama_url,
-        )
-        p1_elapsed_total += r1["elapsed_seconds"]
-        p1_prompt_tok += r1["tokens"]["prompt_tokens"]
-        p1_comp_tok += r1["tokens"]["completion_tokens"]
-        # The prefill is STRIPPED from the on-chain diary so `reasoning`
-        # is 100% model voice. r1["text"] is what the model generated
-        # AFTER the prefill, so we take it as-is. lstrip() handles model
-        # leading whitespace.
-        raw_diary = r1["text"].lstrip()
-        if "</diary>" in raw_diary:
-            raw_diary = raw_diary.split("</diary>", 1)[0]
-        candidate = strip_diary_meta_lines(raw_diary.strip())
-        candidate = strip_diary_stray_tags(candidate)
-        if len(candidate.strip()) >= 5:
-            diary = candidate
-            print(
-                f"  Diary: {len(diary)} chars, {r1['elapsed_seconds']}s "
-                f"(attempt {pass1_attempts})"
-            )
-            break
-        print(
-            f"  Pass 1 attempt {pass1_attempts}: empty diary "
-            f"(<5 chars) — re-rolling"
-        )
-    else:
-        # All retries exhausted — accept whatever we got, even if empty.
-        # Caller will fall back; the action JSON pass still runs.
-        print(
-            f"  Pass 1: ALL {MAX_PASS1_RETRIES} retries produced empty "
-            f"diary — proceeding with empty reasoning"
-        )
+    base_prompt = _strip_trailing_diary_open(prompt)
 
-    # Pass 2: Action JSON. Grammar-constrained output guaranteed valid.
-    # Prompt extension: pass1_prompt + diary + </diary>\n{ — using
-    # pass1_prompt (which includes the prefill) keeps the assembled
-    # context byte-consistent with what pass 1 actually generated, even
-    # though `diary` itself has the prefill stripped.
+    # ---- Pass 1: THINK ----
+    prompt1 = base_prompt + "<think>\n"
+    print(
+        f"  Pass 1 (think): temp={think_temp} top_p={top_p} min_p={min_p} "
+        f"max_tok={think_max_tokens}..."
+    )
+    r1 = call_llama(
+        prompt1,
+        max_tokens=think_max_tokens,
+        temperature=think_temp,
+        stop=["</think>"],
+        seed=seed,
+        frequency_penalty=frequency_penalty,
+        top_p=top_p,
+        top_k=top_k,
+        min_p=min_p,
+        llama_url=llama_url,
+    )
+    think_raw = r1["text"]
+    if "</think>" in think_raw:
+        think_raw = think_raw.split("</think>", 1)[0]
+    think_text = sanitize_thinking(think_raw.strip())
+    print(f"  Think: {len(think_text)} chars, {r1['elapsed_seconds']}s")
+
+    # ---- Pass 2: DIARY ----
+    # The structural separator (`</think>\n\n<diary>\n`) is the only thing
+    # bridging think → diary. No injected nudge; the structure speaks.
+    prompt2 = (
+        base_prompt
+        + "<think>\n" + think_text + "\n</think>\n\n<diary>\n"
+    )
+    print(
+        f"  Pass 2 (diary): temp={diary_temp} top_p={top_p} min_p={min_p} "
+        f"max_tok={diary_max_tokens}..."
+    )
+    r2 = call_llama(
+        prompt2,
+        max_tokens=diary_max_tokens,
+        temperature=diary_temp,
+        stop=["</diary>"],
+        seed=seed,
+        frequency_penalty=frequency_penalty,
+        top_p=top_p,
+        top_k=top_k,
+        min_p=min_p,
+        llama_url=llama_url,
+    )
+    diary_raw = r2["text"]
+    if "</diary>" in diary_raw:
+        diary_raw = diary_raw.split("</diary>", 1)[0]
+    diary = strip_diary_meta_lines(diary_raw.strip())
+    diary = strip_diary_stray_tags(diary)
+    print(f"  Diary: {len(diary)} chars, {r2['elapsed_seconds']}s")
+
+    # ---- Pass 3: ACTION JSON ----
     grammar = _load_grammar()
     if not grammar:
-        print("  WARNING: action grammar not found; pass 2 will run unconstrained")
-    prompt2 = pass1_prompt + diary + "\n</diary>\n{"
+        print("  WARNING: action grammar not found; pass 3 will run unconstrained")
+    prompt3_prefix = (
+        base_prompt
+        + "<think>\n" + think_text + "\n</think>\n\n<diary>\n"
+        + diary + "\n</diary>\n{"
+    )
 
     action_text = None
     parsed_action = None
-    p2_elapsed = 0.0
-    p2_prompt_tok = 0
-    p2_comp_tok = 0
+    p3_elapsed = 0.0
+    p3_prompt_tok = 0
+    p3_comp_tok = 0
     attempts = 0
 
     for attempt in range(MAX_ACTION_RETRIES):
         attempts = attempt + 1
         attempt_seed = (seed + attempt) if seed >= 0 else -1
         print(
-            f"  Pass 2: action JSON attempt {attempts}/{MAX_ACTION_RETRIES} "
-            f"temp={pass2_temp} (grammar={'on' if grammar else 'off'})..."
+            f"  Pass 3 (action): attempt {attempts}/{MAX_ACTION_RETRIES} "
+            f"temp={action_temp} (grammar={'on' if grammar else 'off'})"
         )
-        r2 = call_llama(
-            prompt2,
-            max_tokens=pass2_max_tokens,
-            temperature=pass2_temp,
+        r3 = call_llama(
+            prompt3_prefix,
+            max_tokens=action_max_tokens,
+            temperature=action_temp,
             stop=["\n\n"],
             seed=attempt_seed,
             grammar=grammar or None,
@@ -413,17 +380,17 @@ def run_two_pass_inference(
             min_p=min_p,
             llama_url=llama_url,
         )
-        p2_elapsed += r2["elapsed_seconds"]
-        p2_prompt_tok += r2["tokens"]["prompt_tokens"]
-        p2_comp_tok += r2["tokens"]["completion_tokens"]
-        candidate_text = "{" + r2["text"]
+        p3_elapsed += r3["elapsed_seconds"]
+        p3_prompt_tok += r3["tokens"]["prompt_tokens"]
+        p3_comp_tok += r3["tokens"]["completion_tokens"]
+        candidate_text = "{" + r3["text"]
         candidate_parsed = parse_action(candidate_text)
         if candidate_parsed is not None and "action" in candidate_parsed:
             action_text = candidate_text
             parsed_action = candidate_parsed
             print(
                 f"  Action parsed: {parsed_action.get('action', '?')} "
-                f"({r2['elapsed_seconds']}s)"
+                f"({r3['elapsed_seconds']}s)"
             )
             break
         print(f"  Action parse failed on attempt {attempts}")
@@ -435,19 +402,28 @@ def run_two_pass_inference(
             f"caller should fall back to no-action"
         )
 
-    total_elapsed = p1_elapsed_total + p2_elapsed
-    total_prompt_tok = p1_prompt_tok + p2_prompt_tok
-    total_comp_tok = p1_comp_tok + p2_comp_tok
+    total_elapsed = (
+        r1["elapsed_seconds"] + r2["elapsed_seconds"] + p3_elapsed
+    )
+    total_prompt_tok = (
+        r1["tokens"]["prompt_tokens"]
+        + r2["tokens"]["prompt_tokens"]
+        + p3_prompt_tok
+    )
+    total_comp_tok = (
+        r1["tokens"]["completion_tokens"]
+        + r2["tokens"]["completion_tokens"]
+        + p3_comp_tok
+    )
 
     return {
         "text": diary + "\n</diary>\n" + action_text,
-        "thinking": "",  # v19 has no think pass; kept for shape compatibility
-        "reasoning": diary,  # diary is what goes on-chain as "reasoning"
-        "action_text": action_text.strip(),
+        "thinking": think_text,  # sanitized think output (NOT on chain)
+        "reasoning": diary,      # diary is what goes on-chain as `reasoning`
+        "action_text": (action_text or "").strip(),
         "parsed_action": parsed_action,  # None if all retries failed
         "action_attempts": attempts,
-        "pass1_attempts": pass1_attempts,  # how many diary re-rolls were needed
-        "elapsed_seconds": total_elapsed,
+        "elapsed_seconds": round(total_elapsed, 1),
         "tokens": {
             "prompt_tokens": total_prompt_tok,
             "completion_tokens": total_comp_tok,
@@ -455,12 +431,28 @@ def run_two_pass_inference(
     }
 
 
-# Backward-compat alias — older callers may still import the three-pass name.
-# The v19 implementation is purely two-pass; this alias keeps that import
-# path working without a flag day.
-def run_three_pass_inference(prompt, seed=-1, llama_url=DEFAULT_LLAMA_URL):
-    """Deprecated alias for run_two_pass_inference (v19 is 2-pass)."""
-    return run_two_pass_inference(prompt, seed=seed, llama_url=llama_url)
+# Backward-compat alias — the v17–v19 codepath called this function name.
+# The v20 implementation is genuinely 3-pass; this alias keeps the old
+# import path working without a flag day across the codebase.
+def run_two_pass_inference(prompt, seed=-1, llama_url=DEFAULT_LLAMA_URL, **kwargs):
+    """Deprecated alias for run_three_pass_inference (v20 is 3-pass).
+
+    `**kwargs` swallows any v19 keyword args (`diary_prefill`,
+    `pass1_temp`, `pass1_max_tokens`, etc.) for callers that haven't
+    migrated. Logged once at import time? No — let callers fix their
+    sites at their own pace.
+    """
+    # Filter to kwargs the new function actually accepts.
+    valid = {
+        "think_temp", "diary_temp", "action_temp",
+        "frequency_penalty",
+        "top_p", "top_k", "min_p",
+        "think_max_tokens", "diary_max_tokens", "action_max_tokens",
+    }
+    forwarded = {k: v for k, v in kwargs.items() if k in valid}
+    return run_three_pass_inference(
+        prompt, seed=seed, llama_url=llama_url, **forwarded,
+    )
 
 
 def truncate_reasoning(reasoning: str) -> str:

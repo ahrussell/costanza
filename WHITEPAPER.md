@@ -324,7 +324,7 @@ The game binds A1 (TEE integrity) as a black-box assumption: the enclave execute
 
 1. **Host firmware and kernel — MRTD + RTMR[1]**, verified on-chain via DCAP (§A.7). Guarantees the VM booted the expected OVMF firmware and bootloader.
 2. **Enclave code, model weights, and pinned RIMs — RTMR[2]** via dm-verity (§A.8). Guarantees that every byte the CPU executes inside the enclave matches what was measured at boot — including the GPU-attestation verifier described in Appendix C and the NVIDIA-signed reference integrity manifests it consults.
-3. **GPU firmware and identity — NVIDIA SPDM attestation** (Appendix C), verified *inside* the enclave with $\textit{nonce} = \text{SHA256}(\textit{inputHash})$. Because the verifier is measured by (2), tampering with it changes the platform key and is caught by on-chain verification; because the nonce is epoch-bound, a pre-generated or replayed GPU report does not satisfy the check.
+3. **GPU firmware and identity — NVIDIA SPDM attestation** (Appendix C), verified *inside* the enclave with $\textit{nonce} = \text{SHA256}(\textit{inputHash})$. Because the verifier is measured by (2), tampering with it changes the platform key and is caught by on-chain verification; because the nonce is epoch-bound, a pre-generated or replayed GPU report does not satisfy the check. **Note:** this layer is implemented but currently gated off in the deployed image — see §9.8 for the operational reason and the resulting narrowing of the chain.
 
 Removing any one layer leaves a gap A1 cannot bridge. A substituted H100 (different silicon, different VBIOS/GSP firmware) is caught by (3); a modified enclave binary is caught by (2); a booted-but-tampered VM is caught by (1).
 
@@ -710,6 +710,30 @@ The following are known limitations, reframed as scenarios where specific assump
 
 **Detection:** `fetch_nvidia_rims.py` runs on a fresh `a3-highgpu-1g` with the full OCSP path *active* (no monkey-patch) at fetch time. If OCSP rejects any cert involved in the currently-registered image, that's the operational signal to rebuild.
 
+### 9.8 GPU SPDM Attestation Currently Disabled
+
+**Assumption weakened:** A1 (TEE integrity) for the GPU side — the runtime GPU firmware/identity verification described in Appendix C is shipped in the enclave but gated off in the deployed image (`GPU_ATTESTATION_ENABLED=0` in `humanfund-dmverity-hardened-v18`).
+
+**Scenario:** NVIDIA's published RIMs for driver `580.126.09` do not cover the firmware variant GCP's `a3-highgpu-1g` H100 fleet runs in practice. With the verifier enabled, `nv-local-gpu-verifier` reports `overall_status=False` on a perfectly-behaved CC-mode H100 — the measurement-comparison step (Appendix C, step 4) fails at index 9 (VBIOS firmware) because the runtime hash is not among the two golden values listed in NVIDIA's published RIM. Re-fetching the RIM live from the same GPU returns a byte-identical XML, so this is not a stale-cache issue — NVIDIA simply hasn't published a RIM that names the firmware hash GCP is actually running. We considered shipping multiple bundled RIMs (deferred per §C.6) and a passthrough "warn-only" mode, and rejected both: the first requires NVIDIA to publish RIMs we don't have, and the second turns a load-bearing check into a no-op without surfacing that fact.
+
+**Degradation:** The chain in §6.2.1 collapses from three layers to two for the deployed system:
+
+1. MRTD/RTMR[1] — Intel-signed measurement of the kernel, initramfs, and OVMF. Unchanged.
+2. RTMR[2] — dm-verity Merkle root of the rootfs (enclave code, model weights, llama-server, NVIDIA driver, RIMs). Unchanged.
+3. ~~NVIDIA SPDM attestation with epoch-bound nonce.~~ **Currently gated off.** What remains is the boot-time `humanfund-gpu-cc.service` running `nvidia-smi conf-compute -srs 1` and the per-epoch `require_nvidia_cc()` check that parses `nvidia-smi conf-compute -q` and refuses to start llama-server unless `CC State: ON` and `CC GPUs Ready State: Ready`. CC mode itself is still hardware-enforced — GPU memory remains encrypted and integrity-protected — but the *evidence* that CC is on comes from the host NVIDIA driver, not from a GPU-signed SPDM report.
+
+**Compensating defenses still in force:**
+
+- The driver binary that reports CC state is part of the dm-verity rootfs (RTMR[2]). Tampering changes the platform key and is caught on-chain. So a passive measurement-only attacker — host OS, hypervisor — cannot lie about CC state without also breaking the TDX measurement chain.
+- Hardware-level CC enforcement (memory encryption, GPU-bus integrity protection) is independent of the SPDM check and is unaffected.
+- The `humanfund-gpu-cc.service` unit ordering, the systemd `After=` chain, and the per-epoch `require_nvidia_cc()` are all measured in RTMR[2].
+
+The narrowing is therefore from "GPU-signed assertion that CC is on and the firmware matches a known-good hash" to "dm-verity-measured driver's assertion that CC is on, with no firmware-hash check." This is meaningfully weaker against an attacker who can obtain a CC-mode H100 with a *different* firmware variant: SPDM would have caught the substitution; the deployed system will not.
+
+**Detection:** The signed RIM mismatch that gates the feature off is itself the detector — `fetch_nvidia_rims.py` compares against the running fleet at refresh time. Re-checking on 2026-04-25 confirmed NVIDIA's published RIM bytes are unchanged from 2026-04-24 (sha256 `509cc93b…` for VBIOS, `3aea950c…` for driver), so the runtime hash that fails at index 9 remains uncovered.
+
+**Path to re-enable:** Either (a) NVIDIA publishes a RIM that covers the fleet's deployed firmware variant — typically arriving within weeks of a driver point release — at which point flipping `GPU_ATTESTATION_ENABLED=1` in `build_full_dmverity_image.sh` and rebuilding restores the third layer; or (b) extend the verifier to accept a small allowlist of pinned firmware hashes alongside the NVIDIA RIM (deferred per §C.6, weakens "NVIDIA-signed golden hash" to "human-reviewed allowlist of one specific known firmware blob," but signature, nonce binding, CC mode, and all other measurement indices stay enforced). Either path triggers a new dm-verity image and a new platform-key registration.
+
 ---
 
 ## 10. Known Limitations and Future Work
@@ -744,7 +768,7 @@ The current construction relies on GCP for TDX-capable Confidential VMs, instanc
 
 ### 10.6 Model Weights Distribution
 
-The 42.5 GB model file is baked into the disk image during Phase 1 of the build. Any prover who wants to participate needs access to this image (or the ability to build it from the same model weights). The model's SHA-256 hash is pinned in source code, so anyone can verify they have the correct weights.
+The Hermes 4 70B Q6_K split GGUF (~58 GB across two shards) is baked into the disk image during Phase 1 of the build. Any prover who wants to participate needs access to this image (or the ability to build it from the same model weights). The per-shard SHA-256 hashes are pinned in the build scripts for wget-time integrity, and the full `/models` partition is integrity-covered by dm-verity once sealed.
 
 ### 10.7 nv-attestation-sdk Deprecation Runway
 
@@ -891,10 +915,9 @@ platformKey
   ← RTMR[2] (kernel + command line)
        ← dm-verity root hash for rootfs (embedded in kernel cmdline)
             ← every byte of: enclave code, system prompt,
-               llama-server binary, NVIDIA drivers,
-               model_config.py (pinned MODEL_SHA256)
+               llama-server binary, NVIDIA drivers, NVIDIA RIMs
        ← dm-verity root hash for models (embedded in kernel cmdline)
-            ← every byte of the 42.5 GB model file
+            ← every byte of the Hermes 4 70B Q6_K split GGUF (~58 GB, 2 shards)
 ```
 
 **The key invariant:** Changing any file on the rootfs or model partition changes the squashfs image, which changes the dm-verity root hash, which changes the kernel command line, which changes RTMR[2], which changes the platform key, which fails the on-chain check.
@@ -1036,7 +1059,6 @@ The full boot sequence, from hardware power-on to enclave execution:
 9. Enclave runs (one-shot, then system halts):
    - Reads epoch state from GCP instance metadata
    - Reads system prompt from /opt/humanfund/system_prompt.txt (dm-verity)
-   - Verifies model hash against pinned MODEL_SHA256
    - Computes inputHash from the runner-supplied epoch state
    - Requires `nvidia-smi conf-compute -f` to report CC status ON
      and Ready-state READY; aborts otherwise
@@ -1122,7 +1144,7 @@ The sealed partitions are written to a **separate output disk**, not the boot di
 
 - **Squashfs**: Built with `-mkfs-time 0 -all-time 0 -no-xattrs` — fixed timestamps, no extended attributes. The same filesystem contents always produce the same squashfs image.
 - **dm-verity**: Uses a fixed all-zero salt. The same squashfs always produces the same dm-verity root hash.
-- **Model weights**: The GGUF file has a pinned SHA-256 hash in `prover/enclave/model_config.py`. The enclave verifies this at startup (defense in depth — dm-verity already prevents modification).
+- **Model weights**: Integrity is enforced at the block level by dm-verity on a dedicated `/models` partition. The squashfs containing the Hermes 4 70B Q6_K split GGUF is built with fixed timestamps + all-zero salt, so the Merkle root hash is reproducible; it's embedded in the kernel command line and measured into RTMR[2].
 
 These properties mean that given the same source code, model weights, and base image, the build produces the same platform key. An auditor can reproduce the build and verify that the registered key matches.
 
@@ -1204,6 +1226,8 @@ Drifting fields (balance, inflows, message queue boundaries, investment current 
 The enclave's output (action + reasoning) must be submitted as calldata to the L2 contract. The reasoning length is bounded by `MAX_REASONING_BYTES = 8000` (enforced by `truncate_reasoning` before the output is hashed into REPORTDATA), so the on-chain blob is at most ~8 KB plus action bytes — well within Base L2's block gas limits. The llama.cpp context window (`-c 32768` tokens) bounds the total prompt+completion budget but is not the tight constraint on output size; the enclave enforces the reasoning byte cap directly, and both the cap and the context size are baked into the dm-verity image and cannot be changed by the prover.
 
 ## Appendix C: NVIDIA GPU Attestation
+
+> **Deployment status (2026-04-25):** the verifier described in this appendix ships in every dm-verity image but is gated off in the currently registered production image (`GPU_ATTESTATION_ENABLED=0`) because NVIDIA's published RIMs do not cover the firmware variant GCP's H100 fleet runs. CC-mode itself is still enforced — see §9.8 for the precise narrowing of the trust chain and the path to re-enable. The remainder of this appendix describes the design as implemented; readers reasoning about live deployments should treat layer (3) of §6.2.1 as currently inactive.
 
 Property 2 (Inference Integrity) rests on three independent measurement layers (§6.2.1). Two of them — MRTD/RTMR[1] and RTMR[2] via dm-verity — are described in Appendix A. This appendix describes the third: a cryptographic attestation of the GPU's firmware and hardware identity, verified *inside* the enclave with an epoch-bound nonce, and made trustworthy by the fact that the verifier itself is measured in RTMR[2].
 

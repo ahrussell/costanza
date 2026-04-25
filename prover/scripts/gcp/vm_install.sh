@@ -33,8 +33,11 @@ log() {
 USE_GPU="${USE_GPU:-true}"
 SKIP_MODEL="${SKIP_MODEL:-true}"
 LLAMA_CPP_TAG="${LLAMA_CPP_TAG:-b5270}"
-MODEL_URL="https://huggingface.co/bartowski/DeepSeek-R1-Distill-Llama-70B-GGUF/resolve/main/DeepSeek-R1-Distill-Llama-70B-Q4_K_M.gguf"
-MODEL_SHA256="181a82a1d6d2fa24fe4db83a68eee030384986bdbdd4773ba76424e3a6eb9fd8"
+MODEL_BASE_URL="https://huggingface.co/bartowski/NousResearch_Hermes-4-70B-GGUF/resolve/main/NousResearch_Hermes-4-70B-Q6_K"
+SHARD1_NAME="NousResearch_Hermes-4-70B-Q6_K-00001-of-00002.gguf"
+SHARD2_NAME="NousResearch_Hermes-4-70B-Q6_K-00002-of-00002.gguf"
+SHARD1_SHA256="a2cdf6c2b9e5d698f14cfe30dcf23be86fb333a6eac828e559435eb76c1b7863"
+SHARD2_SHA256="a26ab3bac4b8533eb30cc4ddbb4d6e8cacd7a51132085787baf1511886c71f6f"
 
 log "═══ The Human Fund — VM Installation ═══"
 log "  GPU: $USE_GPU"
@@ -149,7 +152,7 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-Environment=MODEL_PATH=/models/model.gguf
+Environment=MODEL_PATH=/models/NousResearch_Hermes-4-70B-Q6_K-00001-of-00002.gguf
 Environment=SYSTEM_PROMPT_PATH=/opt/humanfund/system_prompt.txt
 Environment=LLAMA_SERVER_BIN=/opt/humanfund/bin/llama-server
 Environment=LD_LIBRARY_PATH=/opt/humanfund/bin
@@ -172,17 +175,21 @@ if [ "$SKIP_MODEL" = "true" ]; then
     log "─── Step 7: Skipping model download ───"
 else
     log ""
-    log "─── Step 7: Downloading model (42.5GB) ───"
-    if [ ! -f /models/model.gguf ]; then
-        wget --progress=dot:giga -O /models/model.gguf "$MODEL_URL"
-    fi
-    ACTUAL=$(sha256sum /models/model.gguf | awk '{print $1}')
-    if [ "$ACTUAL" != "$MODEL_SHA256" ]; then
-        log "FATAL: Model hash mismatch!"
-        echo "FAILED: model hash mismatch" > "$STATUS_FILE"
-        exit 1
-    fi
-    log "  Model verified."
+    log "─── Step 7: Downloading model (Hermes 4 70B Q6_K, ~58GB split) ───"
+    for entry in "$SHARD1_NAME|$SHARD1_SHA256" "$SHARD2_NAME|$SHARD2_SHA256"; do
+        NAME=${entry%%|*}
+        EXPECTED=${entry##*|}
+        if [ ! -f "/models/$NAME" ]; then
+            wget --progress=dot:giga -O "/models/$NAME" "$MODEL_BASE_URL/$NAME"
+        fi
+        ACTUAL=$(sha256sum "/models/$NAME" | awk '{print $1}')
+        if [ "$ACTUAL" != "$EXPECTED" ]; then
+            log "FATAL: Model hash mismatch on $NAME!"
+            echo "FAILED: model hash mismatch ($NAME)" > "$STATUS_FILE"
+            exit 1
+        fi
+        log "  Model verified: $NAME"
+    done
 fi
 
 # ─── Step 8: Seal rootfs ─────────────────────────────────────────────

@@ -20,24 +20,28 @@ GCP_PROJECT="${GCP_PROJECT:-the-human-fund}"
 GCP_ZONE="${GCP_ZONE:-us-central1-a}"
 USE_GPU=true
 LLAMA_CPP_TAG="b5270"
-# Pin to exact commit hash for supply chain integrity (git tags can be force-pushed)
-# Pin to known-good commit for tag b5270 — supply chain defense against tag force-push
-LLAMA_CPP_COMMIT="${LLAMA_CPP_COMMIT:-a1d711f0e47873a42cdd1e78fcc2e4d0df002534}"
+# Pin to exact commit hash for supply chain integrity (git tags can be force-pushed).
+# The original 2026-03-27 pin a1d711f0 is no longer reachable from ggml-org/llama.cpp
+# (tag b5270 was moved; old commit garbage-collected). Re-pinned 2026-04-24 to whatever
+# b5270 now resolves to; this is the commit our Hermes base image will be built from.
+LLAMA_CPP_COMMIT="${LLAMA_CPP_COMMIT:-3bf785f3efa89ed28294fbf73054558a2b034bfb}"
 VM_NAME="humanfund-base-builder-$(date +%s)"
 BUILDER_MACHINE="c3-standard-22"  # Biggest within 32-CPU quota
+IMAGE_NAME=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         --gpu) USE_GPU=true; shift ;;
         --cpu) USE_GPU=false; shift ;;
         --tag) LLAMA_CPP_TAG="$2"; shift 2 ;;
+        --name) IMAGE_NAME="$2"; shift 2 ;;
         --project) GCP_PROJECT="$2"; shift 2 ;;
         *) echo "Unknown arg: $1"; exit 1 ;;
     esac
 done
 
 MODE=$($USE_GPU && echo "gpu" || echo "cpu")
-IMAGE_NAME="humanfund-base-${MODE}-llama-${LLAMA_CPP_TAG}"
+[ -z "$IMAGE_NAME" ] && IMAGE_NAME="humanfund-base-${MODE}-llama-${LLAMA_CPP_TAG}"
 
 echo "═══ The Human Fund — Base Image Builder ═══"
 echo "  Project:     $GCP_PROJECT"
@@ -172,7 +176,7 @@ echo ""
 echo "─── Step 5: Python venv ───"
 
 # Upload requirements file and install with hash-pinned versions (supply chain defense)
-gcloud compute scp "tee/enclave/requirements.txt" "$VM_NAME:/tmp/requirements.txt" \
+gcloud compute scp "prover/enclave/requirements.txt" "$VM_NAME:/tmp/requirements.txt" \
     --project="$GCP_PROJECT" --zone="$GCP_ZONE" 2>&1
 vm_run "
     sudo python3 -m venv /opt/humanfund/venv
@@ -194,22 +198,33 @@ echo "  Done."
 # ─── Step 6: Download model weights ──────────────────────────────────
 
 echo ""
-echo "─── Step 6: Downloading model weights (42.5GB) ───"
+echo "─── Step 6: Downloading model weights (Hermes 4 70B Q6_K, ~58GB split) ───"
 
-MODEL_URL="https://huggingface.co/bartowski/DeepSeek-R1-Distill-Llama-70B-GGUF/resolve/main/DeepSeek-R1-Distill-Llama-70B-Q4_K_M.gguf"
-MODEL_SHA256="181a82a1d6d2fa24fe4db83a68eee030384986bdbdd4773ba76424e3a6eb9fd8"
+# Hermes 4 70B Q6_K is sharded across 2 GGUF files. llama.cpp auto-discovers
+# shard 2 when MODEL_PATH points at shard 1 (same directory). dm-verity on
+# the /models partition covers both shards; the per-file SHA256s below are
+# wget-time integrity only, not a trust boundary.
+MODEL_BASE_URL="https://huggingface.co/bartowski/NousResearch_Hermes-4-70B-GGUF/resolve/main/NousResearch_Hermes-4-70B-Q6_K"
+SHARD1_NAME="NousResearch_Hermes-4-70B-Q6_K-00001-of-00002.gguf"
+SHARD2_NAME="NousResearch_Hermes-4-70B-Q6_K-00002-of-00002.gguf"
+SHARD1_SHA256="a2cdf6c2b9e5d698f14cfe30dcf23be86fb333a6eac828e559435eb76c1b7863"
+SHARD2_SHA256="a26ab3bac4b8533eb30cc4ddbb4d6e8cacd7a51132085787baf1511886c71f6f"
 
 vm_run "
     sudo mkdir -p /models
-    if [ ! -f /models/model.gguf ]; then
-        sudo wget --progress=dot:giga -O /models/model.gguf '$MODEL_URL'
-    fi
-    ACTUAL=\$(sha256sum /models/model.gguf | awk '{print \$1}')
-    if [ \"\$ACTUAL\" != '$MODEL_SHA256' ]; then
-        echo \"FATAL: Hash mismatch! Expected: $MODEL_SHA256 Actual: \$ACTUAL\"
-        exit 1
-    fi
-    echo \"Model verified: \$(du -h /models/model.gguf | cut -f1)\"
+    for entry in '$SHARD1_NAME|$SHARD1_SHA256' '$SHARD2_NAME|$SHARD2_SHA256'; do
+        NAME=\${entry%%|*}
+        EXPECTED=\${entry##*|}
+        if [ ! -f /models/\$NAME ]; then
+            sudo wget --progress=dot:giga -O /models/\$NAME '$MODEL_BASE_URL'/\$NAME
+        fi
+        ACTUAL=\$(sha256sum /models/\$NAME | awk '{print \$1}')
+        if [ \"\$ACTUAL\" != \"\$EXPECTED\" ]; then
+            echo \"FATAL: Hash mismatch on \$NAME! Expected: \$EXPECTED Actual: \$ACTUAL\"
+            exit 1
+        fi
+        echo \"Model verified: \$NAME (\$(du -h /models/\$NAME | cut -f1))\"
+    done
 "
 
 # ─── Step 7: Clean up and create image ───────────────────────────────

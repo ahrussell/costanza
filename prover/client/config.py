@@ -54,7 +54,10 @@ Examples:
         "gcp_image": os.environ.get("GCP_IMAGE"),
         "gcp_machine_type": os.environ.get("GCP_MACHINE_TYPE", "a3-highgpu-1g"),
         "system_prompt_path": os.environ.get("SYSTEM_PROMPT_PATH", "prover/prompts/system.txt"),
-        "enclave_timeout": int(os.environ.get("ENCLAVE_TIMEOUT", "600")),
+        # H100 a3-highgpu-1g cold-start + Hermes-4-70B-Q6_K model load
+        # + 3-pass inference + TDX quote runs ~640s on a healthy boot.
+        # 600s was clipping legitimate runs by ~40s and forfeiting bonds.
+        "enclave_timeout": int(os.environ.get("ENCLAVE_TIMEOUT", "1200")),
         # From CLI
         "ntfy_channel": parsed.ntfy_channel,
         "tee_client": parsed.tee_client,

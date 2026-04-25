@@ -142,7 +142,7 @@ def get_tee_client(config):
         return GCPPersistentTEEClient(
             project=config["gcp_project"],
             zone=config["gcp_zone"],
-            image=config.get("gcp_image", "humanfund-base-gpu-llama-b5270"),
+            image=config.get("gcp_image", "humanfund-base-gpu-llama-b5270-hermes"),
             machine_type=config.get("gcp_machine_type", "a3-highgpu-1g"),
             inference_timeout=config.get("enclave_timeout", 600),
             source_dir=config.get("source_dir", "."),

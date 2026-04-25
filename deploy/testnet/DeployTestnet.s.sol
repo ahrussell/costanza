@@ -101,10 +101,10 @@ contract DeployTestnet is Script {
         // Verifier ID 2: MockVerifier — always passes (used by testnet prover)
         fund.approveVerifier(2, address(mockVerifier));
 
-        AuctionManager am = new AuctionManager(address(fund));
-        // Short epochs: 3min commit / 3min reveal / 6min exec = 12min total
-        fund.setAuctionManager(address(am), 3 minutes, 3 minutes, 6 minutes);
-
+        // ─── 3. Wire managers + adapters BEFORE setAuctionManager ────────
+        // setAuctionManager eagerly opens epoch 1's auction and freezes
+        // its EpochSnapshot — anything wired later is invisible to that
+        // snapshot's sub-hashes (caught by prover/client/test_pipeline.py).
         InvestmentManager im = new InvestmentManager(address(fund), deployer);
         fund.setInvestmentManager(address(im));
 
@@ -113,7 +113,7 @@ contract DeployTestnet is Script {
 
         _seedMemory(fund);
 
-        // ─── 3. Mock protocol adapters (realistic names/APYs, no real yield) ──
+        // Mock protocol adapters (realistic names/APYs, no real yield).
         MockProtocolAdapter adapter1 = new MockProtocolAdapter("Aave V3 ETH Lending");
         im.addProtocol(address(adapter1), "Aave V3 ETH",
             "Lend ETH on Aave V3. Borrowers pay interest. Extensively audited, instant liquidity.", 1, 300);
@@ -121,6 +121,11 @@ contract DeployTestnet is Script {
         MockProtocolAdapter adapter2 = new MockProtocolAdapter("Lido wstETH Staking");
         im.addProtocol(address(adapter2), "Lido wstETH",
             "Stake ETH via Lido for validator rewards. Risk: stETH depeg, slashing.", 1, 350);
+
+        AuctionManager am = new AuctionManager(address(fund));
+        // Burn-in epochs: 15min commit / 15min reveal / 60min exec = 90min total.
+        // Adjust at runtime via cli.py reset if needed (e.g., 5/5/15 for fast smoke tests).
+        fund.setAuctionManager(address(am), 15 minutes, 15 minutes, 60 minutes);
 
         vm.stopBroadcast();
 

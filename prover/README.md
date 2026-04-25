@@ -94,8 +94,8 @@ bash prover/scripts/gcp/build_base_image.sh
 
 # Build dm-verity sealed image from the base (~30-40 minutes)
 bash prover/scripts/gcp/build_full_dmverity_image.sh \
-  --base-image humanfund-base-gpu-llama-b5270 \
-  --name costanza-prover-tdx-h100-cc
+  --base-image humanfund-base-gpu-llama-b5270-hermes \
+  --name humanfund-dmverity-hardened-vN
 ```
 
 After building, verify your image matches the registered on-chain key before bidding (step 3 below).

@@ -51,8 +51,9 @@ def main():
 
     try:
         from verifier import cc_admin
+        from verifier.attestation import AttestationReport
         from verifier.cc_admin_utils import CcAdminUtils
-        from verifier.config import BaseSettings, HopperSettings
+        from verifier.config import HopperSettings
     except ImportError as e:
         sys.exit(f"nv-local-gpu-verifier not installed: {e}")
 
@@ -68,16 +69,34 @@ def main():
 
     gpu = evidence_list[0]
     driver_version = gpu.get_driver_version()
-    vbios_version = gpu.get_vbios_version().lower()
+    # NvmlHandler exposes driver + raw VBIOS, but project / project_sku /
+    # chip_sku only live in the signed attestation report's opaque data
+    # (SDK 2.7.0). Parse the report and pull them from there.
+    settings = HopperSettings()
+    report = AttestationReport(gpu.get_attestation_report(), settings)
+    opaque = report.get_response_message().get_opaque_data()
+
+    def _opaque_str(field: str) -> str:
+        return opaque.get_data(field).decode("ascii").strip().strip("\x00").upper()
+
+    project = _opaque_str("OPAQUE_FIELD_ID_PROJECT")
+    project_sku = _opaque_str("OPAQUE_FIELD_ID_PROJECT_SKU")
+    chip_sku = _opaque_str("OPAQUE_FIELD_ID_CHIP_SKU")
+
+    # The NvmlHandler's vbios string is the display form (dot-delimited,
+    # lowercase). The opaque-data VBIOS bytes need format_vbios_version
+    # to become the matching display form, then stripped of dots +
+    # uppercased for the RIM file ID.
+    from verifier.cc_admin_utils import format_vbios_version
+    vbios_version = format_vbios_version(
+        opaque.get_data("OPAQUE_FIELD_ID_VBIOS_VERSION")
+    ).lower()
+    vbios_version_for_id = vbios_version.replace(".", "").upper()
     print(f"Driver version: {driver_version}")
     print(f"VBIOS version:  {vbios_version}")
+    print(f"Project:        {project} (sku {project_sku}, chip_sku {chip_sku})")
 
-    # The SDK derives RIM IDs from live evidence via these helpers.
-    # Their exact signatures vary slightly across SDK versions, so we
-    # wrap the calls tolerantly and fail loud if the shape changes.
-    settings = HopperSettings()
     chip = gpu.get_gpu_architecture()
-
     try:
         driver_rim_id = CcAdminUtils.get_driver_rim_file_id(driver_version, settings, chip)
     except TypeError:
@@ -85,12 +104,8 @@ def main():
         driver_rim_id = CcAdminUtils.get_driver_rim_file_id(driver_version, settings)
     print(f"Driver RIM ID:  {driver_rim_id}")
 
-    # VBIOS RIM derivation needs project IDs from the evidence.
-    project = gpu.get_project()
-    project_sku = gpu.get_project_sku()
-    chip_sku = gpu.get_chip_sku()
     vbios_rim_id = CcAdminUtils.get_vbios_rim_file_id(
-        project, project_sku, chip_sku, vbios_version,
+        project, project_sku, chip_sku, vbios_version_for_id,
     )
     print(f"VBIOS RIM ID:   {vbios_rim_id}")
 

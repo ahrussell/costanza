@@ -167,18 +167,22 @@ contract TheHumanFundTest is EpochTest {
         assertEq(fund.lastDonationEpoch(), 1);
     }
 
-    function test_donate_out_of_bounds_becomes_do_nothing() public {
-        // Try to donate 0.6 ETH (12% of 5 ETH) — should become do_nothing, not revert
+    function test_donate_over_cap_clamps_to_live_cap() public {
+        // Try to donate 0.6 ETH (12% of 5 ETH treasury — over the 10% cap).
+        // Pre-fix: rejected as out_of_bounds. Post-fix: clamped to live cap
+        // (10% of post-bounty treasury).
         bytes memory action = abi.encodePacked(uint8(1), abi.encode(uint256(1), uint256(0.6 ether)));
-        bytes memory reasoning = bytes("Trying to donate too much.");
+        bytes memory reasoning = bytes("Trying to donate too much; expect clamp.");
 
         uint256 treasuryBefore = fund.treasuryBalance();
         speedrunEpoch(fund, action, reasoning);
 
-        // Epoch advances; treasury loses only the 1 wei bounty (action was do_nothing)
+        // Live cap: 10% of (treasuryBefore - 1 wei bounty).
+        uint256 liveCap = ((treasuryBefore - 1) * 1000) / 10000;
         assertEq(fund.currentEpoch(), 2);
-        assertEq(fund.treasuryBalance(), treasuryBefore - 1);
-        assertEq(fund.lastDonationEpoch(), 0); // Never donated
+        // Treasury after = (treasuryBefore - 1 wei bounty) - liveCap.
+        assertEq(fund.treasuryBalance(), treasuryBefore - 1 - liveCap);
+        assertEq(fund.lastDonationEpoch(), 1); // Donation went through (clamped)
     }
 
     function test_donate_invalid_nonprofit_becomes_do_nothing() public {

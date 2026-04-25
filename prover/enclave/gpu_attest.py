@@ -27,6 +27,24 @@ import os
 
 logger = logging.getLogger(__name__)
 
+# ─── verifier.log path redirection ────────────────────────────────────────
+
+# The `nv-local-gpu-verifier` SDK creates a logging.FileHandler for
+# `verifier.log` at *package import time*, not at first log call. The
+# FileHandler resolves the path against CWD at construction. The enclave's
+# systemd unit sets WorkingDirectory=/opt/humanfund which is on the
+# dm-verity rootfs (read-only), so the open fails with EROFS and aborts
+# before any attestation work runs. Chdir to /tmp (tmpfs) before any
+# `verifier` import (including the one inside `_install_ocsp_patch`),
+# then restore so downstream code sees the original CWD.
+_original_cwd = os.getcwd()
+try:
+    os.chdir("/tmp")
+except OSError:
+    # /tmp is always writable on Linux enclaves; if it isn't, the SDK
+    # would fail anyway, so let the original error surface later.
+    pass
+
 # ─── OCSP monkey-patch ────────────────────────────────────────────────────
 
 # `nv-local-gpu-verifier` unconditionally calls `ocsp.ndis.nvidia.com`
@@ -63,6 +81,14 @@ def _install_ocsp_patch() -> None:
 
 _install_ocsp_patch()
 
+# Restore CWD now that the verifier package (and its log file handler)
+# is fully initialized. The FileHandler keeps writing to /tmp/verifier.log
+# regardless of subsequent CWD changes.
+try:
+    os.chdir(_original_cwd)
+except OSError:
+    pass
+
 
 # ─── Attestation entry point ──────────────────────────────────────────────
 
@@ -89,58 +115,70 @@ def verify_gpu_attestation(
         if not os.path.isfile(path):
             raise RuntimeError(f"RIM not found at {path}")
 
-    # The SDK's `collect_gpu_evidence_local` expects a hex-encoded string.
-    nonce_hex = nonce.hex()
+    # The SDK writes `verifier.log` to CWD. systemd sets WorkingDirectory
+    # to /opt/humanfund which is on the dm-verity rootfs (read-only), so
+    # the log-file open fails with EROFS and aborts before any attestation
+    # work runs. Switch to /tmp (tmpfs) for the duration of the SDK call
+    # and restore CWD so downstream steps see the original working dir.
+    # FileHandler resolves its path at construction time, so the log file
+    # stays anchored to /tmp/verifier.log after we chdir back.
+    original_cwd = os.getcwd()
+    os.chdir("/tmp")
+    try:
+        # The SDK's `collect_gpu_evidence_local` expects a hex-encoded string.
+        nonce_hex = nonce.hex()
 
-    # Import lazily so the monkey-patch has run before any verifier code
-    # imports `cc_admin_utils` transitively.
-    from verifier import cc_admin
+        # Import lazily so the monkey-patch has run before any verifier code
+        # imports `cc_admin_utils` transitively.
+        from verifier import cc_admin
 
-    logger.info("Collecting GPU evidence (nonce=%s...)", nonce_hex[:16])
-    evidence_list = cc_admin.collect_gpu_evidence_local(
-        nonce_hex, ppcie_mode=False, no_gpu_mode=False,
-    )
-    if not evidence_list:
-        raise RuntimeError("GPU evidence collection returned empty list")
+        logger.info("Collecting GPU evidence (nonce=%s...)", nonce_hex[:16])
+        evidence_list = cc_admin.collect_gpu_evidence_local(
+            nonce_hex, ppcie_mode=False, no_gpu_mode=False,
+        )
+        if not evidence_list:
+            raise RuntimeError("GPU evidence collection returned empty list")
 
-    params = {
-        "verbose": False,
-        "test_no_gpu": False,
-        "driver_rim": driver_rim_path,
-        "vbios_rim": vbios_rim_path,
-        "user_mode": True,
-        "rim_root_cert": None,              # use SDK-bundled verifier_RIM_root.pem
-        "rim_service_url": None,            # unused (RIMs are local)
-        "allow_hold_cert": False,
-        "ocsp_url": None,                   # unused (OCSP is no-op'd)
-        "nonce": nonce_hex,
-        "ppcie_mode": False,
-        "ocsp_nonce_disabled": True,
-        "service_key": None,
-        "claims_version": "2.0",
-    }
+        params = {
+            "verbose": False,
+            "test_no_gpu": False,
+            "driver_rim": driver_rim_path,
+            "vbios_rim": vbios_rim_path,
+            "user_mode": True,
+            "rim_root_cert": None,              # use SDK-bundled verifier_RIM_root.pem
+            "rim_service_url": None,            # unused (RIMs are local)
+            "allow_hold_cert": False,
+            "ocsp_url": None,                   # unused (OCSP is no-op'd)
+            "nonce": nonce_hex,
+            "ppcie_mode": False,
+            "ocsp_nonce_disabled": True,
+            "service_key": None,
+            "claims_version": "2.0",
+        }
 
-    logger.info(
-        "Attesting with local RIMs (driver=%s, vbios=%s)",
-        os.path.basename(driver_rim_path), os.path.basename(vbios_rim_path),
-    )
-    overall_status, jwt_token = cc_admin.attest(params, nonce_hex, evidence_list)
+        logger.info(
+            "Attesting with local RIMs (driver=%s, vbios=%s)",
+            os.path.basename(driver_rim_path), os.path.basename(vbios_rim_path),
+        )
+        overall_status, jwt_token = cc_admin.attest(params, nonce_hex, evidence_list)
 
-    if not overall_status:
-        # Best-effort: pull any err-msg claim out of the JWT for diagnostics.
-        detail = _extract_error_detail(jwt_token)
-        raise RuntimeError(f"GPU attestation failed: {detail}")
+        if not overall_status:
+            # Best-effort: pull any err-msg claim out of the JWT for diagnostics.
+            detail = _extract_error_detail(jwt_token)
+            raise RuntimeError(f"GPU attestation failed: {detail}")
 
-    # Defense-in-depth: independently re-check the returned claims for
-    # nonce match and CC mode even though `overall_status` already
-    # gates on them. The JWT is SDK-signed, not NVIDIA-signed, so we
-    # can read it without verifying a signature — our trust in the
-    # claims is derived from `overall_status` being true.
-    claims = _decode_unverified_claims(jwt_token)
-    _assert_nonce_match(claims, nonce_hex)
-    _assert_cc_mode_on(claims)
+        # Defense-in-depth: independently re-check the returned claims for
+        # nonce match and CC mode even though `overall_status` already
+        # gates on them. The JWT is SDK-signed, not NVIDIA-signed, so we
+        # can read it without verifying a signature — our trust in the
+        # claims is derived from `overall_status` being true.
+        claims = _decode_unverified_claims(jwt_token)
+        _assert_nonce_match(claims, nonce_hex)
+        _assert_cc_mode_on(claims)
 
-    logger.info("GPU attestation OK (overall_status=True, CC=ON, nonce match)")
+        logger.info("GPU attestation OK (overall_status=True, CC=ON, nonce match)")
+    finally:
+        os.chdir(original_cwd)
 
 
 # ─── Claim parsing helpers ────────────────────────────────────────────────
