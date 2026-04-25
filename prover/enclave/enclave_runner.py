@@ -28,6 +28,7 @@ Output channels (all written):
 import hashlib
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -180,34 +181,35 @@ def require_nvidia_cc():
     quote is never produced — the prover client then times out and the
     epoch forfeits cleanly instead of producing unattested output.
     """
+    # Use `-q` (full query) — driver 580 prints `-f` as just `CC status: ON`
+    # with no readiness info, so the older "-f" + parse approach silently
+    # rejects every healthy boot. `-q` reports both:
+    #   CC State                   : ON
+    #   CC GPUs Ready State        : Ready
     try:
         result = subprocess.run(
-            ["nvidia-smi", "conf-compute", "-f"],
+            ["nvidia-smi", "conf-compute", "-q"],
             capture_output=True, text=True, timeout=10
         )
     except FileNotFoundError:
         raise RuntimeError("nvidia-smi not found — cannot verify CC mode")
     except subprocess.TimeoutExpired:
-        raise RuntimeError("nvidia-smi conf-compute timed out")
+        raise RuntimeError("nvidia-smi conf-compute -q timed out")
 
     if result.returncode != 0:
         raise RuntimeError(
-            f"nvidia-smi conf-compute failed (rc={result.returncode}): "
+            f"nvidia-smi conf-compute -q failed (rc={result.returncode}): "
             f"{result.stderr.strip()}"
         )
 
     output = result.stdout
-    # Expected lines (driver 580+):
-    #   CC status: ON
-    #   CC mode: ...
-    #   Ready-state: READY
-    status_on = "CC status: ON" in output
-    ready = "Ready-state: READY" in output or "Ready state: READY" in output
-    if not (status_on and ready):
+    cc_on = re.search(r"CC State\s*:\s*ON", output) is not None
+    ready = re.search(r"CC GPUs Ready State\s*:\s*Ready", output) is not None
+    if not (cc_on and ready):
         raise RuntimeError(
-            "NVIDIA CC not engaged. nvidia-smi conf-compute -f output:\n" + output
+            "NVIDIA CC not engaged. nvidia-smi conf-compute -q output:\n" + output
         )
-    log("  NVIDIA CC: ON, Ready-state: READY")
+    log("  NVIDIA CC: ON, GPUs Ready State: Ready")
 
 
 def start_llama_server() -> subprocess.Popen:
