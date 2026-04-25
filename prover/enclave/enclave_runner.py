@@ -50,6 +50,19 @@ NVIDIA_VBIOS_RIM_PATH = os.environ.get(
     "NVIDIA_VBIOS_RIM_PATH", "/opt/humanfund/nvidia/vbios_rim.xml"
 )
 
+# RIM-based GPU firmware attestation. Default OFF: NVIDIA's published
+# RIMs for driver 580.126.09 don't include the firmware variant the GCP
+# H100 fleet is running (index 9 / VBIOS firmware), so the SDK reports
+# overall_status=False even on a perfectly-behaved CC-mode H100.
+# CC-mode enforcement (`require_nvidia_cc()`) is unaffected and stays
+# mandatory — when the flag is off we still refuse to run on a non-CC
+# GPU, we just don't pin the runtime firmware hashes against the RIM.
+# Re-enable by setting GPU_ATTESTATION_ENABLED=1 (likely after NVIDIA
+# publishes a RIM that covers the deployed firmware).
+GPU_ATTESTATION_ENABLED = (
+    os.environ.get("GPU_ATTESTATION_ENABLED", "0").strip() == "1"
+)
+
 # ─── Configuration ──────────────────────────────────────────────────────
 
 MODEL_PATH = os.environ.get(
@@ -433,23 +446,33 @@ def main():
         log(f"  Base input hash: 0x{base_input_hash.hex()[:16]}...")
         log(f"  Input hash (with seed):  0x{input_hash.hex()[:16]}...")
 
-        # Step 3.5: Cryptographically pin GPU firmware + identity to this
-        # epoch. Fetches a signed SPDM attestation report from the GPU
-        # with nonce = sha256(input_hash), verifies it offline against
-        # bundled RIMs and the SDK's root CAs. Aborts before llama-server
-        # starts if firmware drifts from the pinned golden measurements.
+        # Step 3.5: GPU state checks.
         #
-        # Skipped when LLAMA_SERVER_EXTERNAL=1 (local dev on non-H100 hosts).
+        # CC-mode gate is mandatory (no silent CPU fallback). The
+        # RIM-based firmware attestation is gated on
+        # GPU_ATTESTATION_ENABLED — see the constant for context.
+        #
+        # Both are skipped when LLAMA_SERVER_EXTERNAL=1 (local dev on
+        # non-H100 hosts).
+        gpu_attestation_state = "skipped"
         if os.environ.get("LLAMA_SERVER_EXTERNAL", "").strip() != "1":
             log("")
-            log("Step 3.5: Verifying GPU attestation...")
-            from .gpu_attest import verify_gpu_attestation
-            gpu_nonce = hashlib.sha256(input_hash).digest()
-            verify_gpu_attestation(
-                nonce=gpu_nonce,
-                driver_rim_path=NVIDIA_DRIVER_RIM_PATH,
-                vbios_rim_path=NVIDIA_VBIOS_RIM_PATH,
-            )
+            log("Step 3.5: Verifying GPU state...")
+            require_nvidia_cc()
+            if GPU_ATTESTATION_ENABLED:
+                log("  GPU_ATTESTATION_ENABLED=1 — verifying firmware against RIMs")
+                from .gpu_attest import verify_gpu_attestation
+                gpu_nonce = hashlib.sha256(input_hash).digest()
+                verify_gpu_attestation(
+                    nonce=gpu_nonce,
+                    driver_rim_path=NVIDIA_DRIVER_RIM_PATH,
+                    vbios_rim_path=NVIDIA_VBIOS_RIM_PATH,
+                )
+                gpu_attestation_state = "verified"
+            else:
+                log("  GPU_ATTESTATION_ENABLED=0 — TDX-only attestation "
+                    "(GPU CC mode still required)")
+                gpu_attestation_state = "disabled"
 
         # Step 4: Build prompt (deterministically from the hashed state).
         # Any field the model sees is a field that contributed to the hash
@@ -469,7 +492,6 @@ def main():
         if external_llama:
             log("  LLAMA_SERVER_EXTERNAL=1 — using already-running llama-server")
         else:
-            require_nvidia_cc()
             llama_proc = start_llama_server()
             wait_for_llama_server()
 
@@ -568,6 +590,7 @@ def main():
             "seed": seed,
             "inference_seconds": inference["elapsed_seconds"],
             "tokens": inference["tokens"],
+            "gpu_attestation": gpu_attestation_state,
         }
         write_output(result)
 
