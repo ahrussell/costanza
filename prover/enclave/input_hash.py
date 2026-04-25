@@ -171,7 +171,7 @@ def _hash_nonprofits(nonprofits: list) -> bytes:
     return rolling
 
 
-def _hash_investments(investments: list) -> bytes:
+def _hash_investments(investments: list, im_wired: bool = False) -> bytes:
     """Replicate InvestmentManager.epochStateHash().
 
     Solidity (rolling hash for consistency with _hashNonprofits):
@@ -199,8 +199,22 @@ def _hash_investments(investments: list) -> bytes:
     (name, risk_tier, expected_apy_bps) is read from the contract's
     protocol registry by the client and passed through; it's bound into
     the hash here so any runner tampering is caught on-chain.
+
+    Zero-protocol case is bimodal on the contract side, so we mirror it
+    here: if InvestmentManager is wired but `snapshotProtocolCount == 0`,
+    Solidity still runs the suffix (`keccak(bytes32(0), 0, 0)`); if IM is
+    not wired at all, the snapshot stores plain `bytes32(0)`. Pass
+    `im_wired=True` for the wired-with-zero-protocols case. Surfaced by
+    prover/client/test_pipeline.py; production deploy ordering used to
+    leave epoch 1 in this state silently.
     """
     if not investments:
+        if im_wired:
+            return _keccak256(_abi_encode(
+                ("bytes32", b"\x00" * 32),
+                ("uint256", 0),
+                ("uint256", 0),
+            ))
         return b"\x00" * 32
     rolling = b"\x00" * 32
     total_value = 0
@@ -405,7 +419,10 @@ def compute_input_hash(epoch_state: dict) -> bytes:
     """
     state_hash = _hash_state(epoch_state)
     nonprofit_hash = _hash_nonprofits(epoch_state.get("nonprofits", []))
-    invest_hash = _hash_investments(epoch_state.get("investments", []))
+    invest_hash = _hash_investments(
+        epoch_state.get("investments", []),
+        im_wired=bool(epoch_state.get("investment_manager_wired")),
+    )
     memory_hash = _hash_memory(epoch_state.get("memories", []))
     msg_hash = _hash_messages(epoch_state.get("donor_messages", []))
     hist_hash = _hash_history(epoch_state.get("history", []), epoch_state.get("epoch", 0))

@@ -616,7 +616,7 @@ _EPOCH_STATE_ALLOWED_CALLS: Set[str] = {
     # Memory entries can only change via _applyMemoryUpdate inside
     # submit{EpochAction,AuctionResult}, which runs AFTER input-hash
     # verification. Live read is drift-free in the observed window.
-    "getPolicies",
+    "getEntries",
 }
 
 

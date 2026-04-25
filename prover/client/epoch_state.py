@@ -223,10 +223,18 @@ def read_contract_state(contract, w3, epoch=None):
     # currentValues and active flags come from the snapshot (they drift).
     # Metadata (name/risk/apy) is immutable post-addProtocol and read
     # live, bounded by snap.investment_protocol_count.
+    #
+    # `investment_manager_wired` is load-bearing for the input hash: when
+    # IM is wired but `protocol_count == 0`, the contract's stored
+    # investmentsHash is `keccak(0, 0, 0)`, NOT `bytes32(0)`. The two are
+    # indistinguishable from `state["investments"] == []` alone, so the
+    # python hash needs the wired flag to pick the right branch.
     state["investments"] = []
+    state["investment_manager_wired"] = False
     try:
         im_addr = contract.functions.investmentManager().call()
         if im_addr and im_addr != "0x0000000000000000000000000000000000000000":
+            state["investment_manager_wired"] = True
             im = w3.eth.contract(address=Web3.to_checksum_address(im_addr), abi=_IM_ABI)
             pcount = snap["investment_protocol_count"]
             frozen_values = snap["investment_current_values"]
