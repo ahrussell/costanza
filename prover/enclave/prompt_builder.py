@@ -225,11 +225,17 @@ def _compute_action_bounds(state):
     balance = state["treasury_balance"]
     total_invested, total_assets = _derive_trusted_aggregates(state)
 
-    # Donate bounds — use 95% of the theoretical max to account for the
-    # bounty payment that reduces treasury between snapshot and execution.
-    # Without this margin the model hits the exact cap and the contract
-    # rejects because treasuryBalance() is post-bounty.
-    max_donate = (balance * 1000) // 10000 * 95 // 100  # ~9.5% of treasury
+    # Donate bounds — subtract the maximum possible bounty from the
+    # snapshot balance before applying the 10% MAX_DONATION_BPS cap. The
+    # contract enforces the cap on the POST-bounty live balance, so a
+    # naive 10% of the snapshot balance overshoots whenever the bounty is
+    # large relative to treasury (small testnets, escalated max bid).
+    # `effective_max_bid` is a conservative upper bound on the bounty
+    # since the actual winning bid is ≤ effective_max_bid by construction.
+    # The contract also clamps any overshoot down to the live cap, so this
+    # is a UX hint (don't aim above what'll execute), not a safety bound.
+    post_bounty_balance = max(0, balance - state.get("effective_max_bid", 0))
+    max_donate = (post_bounty_balance * 1000) // 10000  # 10% of post-bounty balance
 
     # Commission bounds
     current_commission = state["commission_rate_bps"]
@@ -374,10 +380,10 @@ def build_epoch_context(state, seed=None, voice_anchors: str = ""):
     # YOUR TURN) primes the model to emit `</diary>` as its first generation
     # token because the closing tags from sample diaries sit at the freshest
     # position in attention. Empirically (15-seed sweep, greedy-confirmed):
-    # samples-last → ~80% empty pass-1 diaries; samples-first → ~50%; the
-    # remaining empties are eliminated by the diary_prefill mechanism in
-    # inference.run_two_pass_inference. Putting samples first restores the
-    # v17–v19 layout that this branch's prompt rebuild had drifted from.
+    # samples-last → ~80% empty pass-1 diaries; samples-first → ~50%. v20's
+    # 3-pass architecture eliminates the remaining empties structurally
+    # (pass 2 starts mid-response after `</think>`, no empty-slot pathology).
+    # Sample-first layout is preserved here for prompt clarity.
     if voice_anchors:
         lines.append("=== SAMPLE DIARIES — voice references, not your history ===")
         lines.append("")

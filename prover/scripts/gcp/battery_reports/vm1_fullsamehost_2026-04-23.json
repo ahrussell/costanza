@@ -1,0 +1,1078 @@
+{
+  "fixtures": [
+    {
+      "fingerprints": [
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 211,
+          "action_text_sha256": "93ffe8666161509a7798ea96b640bea5134acb3ab9262661dd772a9b4b339b8e",
+          "diary_len": 1199,
+          "diary_sha256": "394381e99aa8db369df4070524eee2902f8ba5379a9faddc5498593ad95c340a",
+          "elapsed_s": 128.3,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 211,
+          "action_text_sha256": "93ffe8666161509a7798ea96b640bea5134acb3ab9262661dd772a9b4b339b8e",
+          "diary_len": 1199,
+          "diary_sha256": "394381e99aa8db369df4070524eee2902f8ba5379a9faddc5498593ad95c340a",
+          "elapsed_s": 10.1,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 211,
+          "action_text_sha256": "93ffe8666161509a7798ea96b640bea5134acb3ab9262661dd772a9b4b339b8e",
+          "diary_len": 1199,
+          "diary_sha256": "394381e99aa8db369df4070524eee2902f8ba5379a9faddc5498593ad95c340a",
+          "elapsed_s": 10.2,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 211,
+          "action_text_sha256": "93ffe8666161509a7798ea96b640bea5134acb3ab9262661dd772a9b4b339b8e",
+          "diary_len": 1199,
+          "diary_sha256": "394381e99aa8db369df4070524eee2902f8ba5379a9faddc5498593ad95c340a",
+          "elapsed_s": 10.1,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 211,
+          "action_text_sha256": "93ffe8666161509a7798ea96b640bea5134acb3ab9262661dd772a9b4b339b8e",
+          "diary_len": 1199,
+          "diary_sha256": "394381e99aa8db369df4070524eee2902f8ba5379a9faddc5498593ad95c340a",
+          "elapsed_s": 10.1,
+          "report_data_hex": null
+        }
+      ],
+      "fixture_id": "fx_000_v0_e1_t0000",
+      "prompt_sha256": "a3feabe509fa5d0156af2555b177e26c9a9675f156af16961ad220a53cee9a13",
+      "same_host_pass": true,
+      "seed": 923384127
+    },
+    {
+      "fingerprints": [
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 362,
+          "action_text_sha256": "71fd20e8f363f52f516ce7d14fd2822e05bdfe076f8596323f0a4f801c67e760",
+          "diary_len": 2639,
+          "diary_sha256": "c77c662d652e8f2862316bb1aeb485deb77c03338933d260953c28ee40d49e07",
+          "elapsed_s": 79.9,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 362,
+          "action_text_sha256": "71fd20e8f363f52f516ce7d14fd2822e05bdfe076f8596323f0a4f801c67e760",
+          "diary_len": 2639,
+          "diary_sha256": "c77c662d652e8f2862316bb1aeb485deb77c03338933d260953c28ee40d49e07",
+          "elapsed_s": 22.9,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 362,
+          "action_text_sha256": "71fd20e8f363f52f516ce7d14fd2822e05bdfe076f8596323f0a4f801c67e760",
+          "diary_len": 2639,
+          "diary_sha256": "c77c662d652e8f2862316bb1aeb485deb77c03338933d260953c28ee40d49e07",
+          "elapsed_s": 22.9,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 362,
+          "action_text_sha256": "71fd20e8f363f52f516ce7d14fd2822e05bdfe076f8596323f0a4f801c67e760",
+          "diary_len": 2639,
+          "diary_sha256": "c77c662d652e8f2862316bb1aeb485deb77c03338933d260953c28ee40d49e07",
+          "elapsed_s": 22.9,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 362,
+          "action_text_sha256": "71fd20e8f363f52f516ce7d14fd2822e05bdfe076f8596323f0a4f801c67e760",
+          "diary_len": 2639,
+          "diary_sha256": "c77c662d652e8f2862316bb1aeb485deb77c03338933d260953c28ee40d49e07",
+          "elapsed_s": 22.9,
+          "report_data_hex": null
+        }
+      ],
+      "fixture_id": "fx_001_v0_e3_t0001",
+      "prompt_sha256": "c281382ed5c51b41cf468edc8434a6956c8afeaafccb8a2c00f835ac63487cbf",
+      "same_host_pass": true,
+      "seed": 429002162
+    },
+    {
+      "fingerprints": [
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 330,
+          "action_text_sha256": "23c02fcf27594fe7981bd7f4a0ee15d189639609264fcfed53ef688641abcd84",
+          "diary_len": 1397,
+          "diary_sha256": "24facb086915fb568cf6beff2b61386610b74204fa29dfce6f47f888cc5bb6a0",
+          "elapsed_s": 94.0,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 330,
+          "action_text_sha256": "23c02fcf27594fe7981bd7f4a0ee15d189639609264fcfed53ef688641abcd84",
+          "diary_len": 1397,
+          "diary_sha256": "24facb086915fb568cf6beff2b61386610b74204fa29dfce6f47f888cc5bb6a0",
+          "elapsed_s": 15.0,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 330,
+          "action_text_sha256": "23c02fcf27594fe7981bd7f4a0ee15d189639609264fcfed53ef688641abcd84",
+          "diary_len": 1397,
+          "diary_sha256": "24facb086915fb568cf6beff2b61386610b74204fa29dfce6f47f888cc5bb6a0",
+          "elapsed_s": 15.0,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 330,
+          "action_text_sha256": "23c02fcf27594fe7981bd7f4a0ee15d189639609264fcfed53ef688641abcd84",
+          "diary_len": 1397,
+          "diary_sha256": "24facb086915fb568cf6beff2b61386610b74204fa29dfce6f47f888cc5bb6a0",
+          "elapsed_s": 15.0,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 330,
+          "action_text_sha256": "23c02fcf27594fe7981bd7f4a0ee15d189639609264fcfed53ef688641abcd84",
+          "diary_len": 1397,
+          "diary_sha256": "24facb086915fb568cf6beff2b61386610b74204fa29dfce6f47f888cc5bb6a0",
+          "elapsed_s": 15.0,
+          "report_data_hex": null
+        }
+      ],
+      "fixture_id": "fx_002_v0_e25_t0010",
+      "prompt_sha256": "a5c7e390eaef0f4f42a77e352f355de7cbb32b77af9555bcda6e191bd110485d",
+      "same_host_pass": true,
+      "seed": 2689287010
+    },
+    {
+      "fingerprints": [
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 474,
+          "action_text_sha256": "a28a1815a6a2ba08721b7526a349a3147dbcbed8e7d3242b459ca8f35107d580",
+          "diary_len": 2138,
+          "diary_sha256": "f4b5e028ed3d9470263baa4e1aa37dbaf4e097875e985c80b6146e72e793a9a7",
+          "elapsed_s": 110.7,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 474,
+          "action_text_sha256": "a28a1815a6a2ba08721b7526a349a3147dbcbed8e7d3242b459ca8f35107d580",
+          "diary_len": 2138,
+          "diary_sha256": "f4b5e028ed3d9470263baa4e1aa37dbaf4e097875e985c80b6146e72e793a9a7",
+          "elapsed_s": 17.1,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 474,
+          "action_text_sha256": "a28a1815a6a2ba08721b7526a349a3147dbcbed8e7d3242b459ca8f35107d580",
+          "diary_len": 2138,
+          "diary_sha256": "f4b5e028ed3d9470263baa4e1aa37dbaf4e097875e985c80b6146e72e793a9a7",
+          "elapsed_s": 17.1,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 474,
+          "action_text_sha256": "a28a1815a6a2ba08721b7526a349a3147dbcbed8e7d3242b459ca8f35107d580",
+          "diary_len": 2138,
+          "diary_sha256": "f4b5e028ed3d9470263baa4e1aa37dbaf4e097875e985c80b6146e72e793a9a7",
+          "elapsed_s": 17.1,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 474,
+          "action_text_sha256": "a28a1815a6a2ba08721b7526a349a3147dbcbed8e7d3242b459ca8f35107d580",
+          "diary_len": 2138,
+          "diary_sha256": "f4b5e028ed3d9470263baa4e1aa37dbaf4e097875e985c80b6146e72e793a9a7",
+          "elapsed_s": 17.1,
+          "report_data_hex": null
+        }
+      ],
+      "fixture_id": "fx_003_v0_e120_t0050",
+      "prompt_sha256": "7a3f2dc677c24ce9da2622e87d21b13377a29a55f46ca8f79a0699e8e0da8009",
+      "same_host_pass": true,
+      "seed": 4032147523
+    },
+    {
+      "fingerprints": [
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 456,
+          "action_text_sha256": "7b3630b0b46413b841a0bb6b32f6770ce5da8920432a994425dc2c0196ec5753",
+          "diary_len": 3379,
+          "diary_sha256": "06521d9d2e2517c183f9f0c5bf583df0324a8bc72ef35f4fc566fefe245438da",
+          "elapsed_s": 121.4,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 456,
+          "action_text_sha256": "7b3630b0b46413b841a0bb6b32f6770ce5da8920432a994425dc2c0196ec5753",
+          "diary_len": 3379,
+          "diary_sha256": "06521d9d2e2517c183f9f0c5bf583df0324a8bc72ef35f4fc566fefe245438da",
+          "elapsed_s": 27.6,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 456,
+          "action_text_sha256": "7b3630b0b46413b841a0bb6b32f6770ce5da8920432a994425dc2c0196ec5753",
+          "diary_len": 3379,
+          "diary_sha256": "06521d9d2e2517c183f9f0c5bf583df0324a8bc72ef35f4fc566fefe245438da",
+          "elapsed_s": 27.6,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 456,
+          "action_text_sha256": "7b3630b0b46413b841a0bb6b32f6770ce5da8920432a994425dc2c0196ec5753",
+          "diary_len": 3379,
+          "diary_sha256": "06521d9d2e2517c183f9f0c5bf583df0324a8bc72ef35f4fc566fefe245438da",
+          "elapsed_s": 27.6,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 456,
+          "action_text_sha256": "7b3630b0b46413b841a0bb6b32f6770ce5da8920432a994425dc2c0196ec5753",
+          "diary_len": 3379,
+          "diary_sha256": "06521d9d2e2517c183f9f0c5bf583df0324a8bc72ef35f4fc566fefe245438da",
+          "elapsed_s": 27.6,
+          "report_data_hex": null
+        }
+      ],
+      "fixture_id": "fx_004_v0_e120_t0050",
+      "prompt_sha256": "3ead1d3e7b190fcdccc9c550be95f5d6167b102a2eb365bbf667a0a8dcb3d625",
+      "same_host_pass": true,
+      "seed": 463337679
+    },
+    {
+      "fingerprints": [
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 317,
+          "action_text_sha256": "a2161a74e58a88b3679a7474dd31df664e93ee1f49bdf50dbf1bbaf7b7418c65",
+          "diary_len": 3278,
+          "diary_sha256": "2a3f2aac549775ffc5e915070b07ddeeb88e27110b65cb9a54520435f723bc51",
+          "elapsed_s": 131.2,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 317,
+          "action_text_sha256": "a2161a74e58a88b3679a7474dd31df664e93ee1f49bdf50dbf1bbaf7b7418c65",
+          "diary_len": 3278,
+          "diary_sha256": "2a3f2aac549775ffc5e915070b07ddeeb88e27110b65cb9a54520435f723bc51",
+          "elapsed_s": 27.2,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 317,
+          "action_text_sha256": "a2161a74e58a88b3679a7474dd31df664e93ee1f49bdf50dbf1bbaf7b7418c65",
+          "diary_len": 3278,
+          "diary_sha256": "2a3f2aac549775ffc5e915070b07ddeeb88e27110b65cb9a54520435f723bc51",
+          "elapsed_s": 27.2,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 317,
+          "action_text_sha256": "a2161a74e58a88b3679a7474dd31df664e93ee1f49bdf50dbf1bbaf7b7418c65",
+          "diary_len": 3278,
+          "diary_sha256": "2a3f2aac549775ffc5e915070b07ddeeb88e27110b65cb9a54520435f723bc51",
+          "elapsed_s": 27.2,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 317,
+          "action_text_sha256": "a2161a74e58a88b3679a7474dd31df664e93ee1f49bdf50dbf1bbaf7b7418c65",
+          "diary_len": 3278,
+          "diary_sha256": "2a3f2aac549775ffc5e915070b07ddeeb88e27110b65cb9a54520435f723bc51",
+          "elapsed_s": 27.2,
+          "report_data_hex": null
+        }
+      ],
+      "fixture_id": "fx_005_v0_e500_t1000",
+      "prompt_sha256": "c43d5f830ca2dda90bd741222fa9cc2d9bf301368a3971727b904a168f30f3e7",
+      "same_host_pass": true,
+      "seed": 2665082093
+    },
+    {
+      "fingerprints": [
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 74,
+          "action_text_sha256": "ca0fdc98e9a25944ec15ad3538d1917226c0166bc298463c074b7f935733e98a",
+          "diary_len": 3635,
+          "diary_sha256": "cc43019f6015d59e2bcc10c3059174ac987b0bc38adf868d3afce4b08dda53f9",
+          "elapsed_s": 133.3,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 74,
+          "action_text_sha256": "ca0fdc98e9a25944ec15ad3538d1917226c0166bc298463c074b7f935733e98a",
+          "diary_len": 3635,
+          "diary_sha256": "cc43019f6015d59e2bcc10c3059174ac987b0bc38adf868d3afce4b08dda53f9",
+          "elapsed_s": 28.0,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 74,
+          "action_text_sha256": "ca0fdc98e9a25944ec15ad3538d1917226c0166bc298463c074b7f935733e98a",
+          "diary_len": 3635,
+          "diary_sha256": "cc43019f6015d59e2bcc10c3059174ac987b0bc38adf868d3afce4b08dda53f9",
+          "elapsed_s": 28.0,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 74,
+          "action_text_sha256": "ca0fdc98e9a25944ec15ad3538d1917226c0166bc298463c074b7f935733e98a",
+          "diary_len": 3635,
+          "diary_sha256": "cc43019f6015d59e2bcc10c3059174ac987b0bc38adf868d3afce4b08dda53f9",
+          "elapsed_s": 28.0,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 74,
+          "action_text_sha256": "ca0fdc98e9a25944ec15ad3538d1917226c0166bc298463c074b7f935733e98a",
+          "diary_len": 3635,
+          "diary_sha256": "cc43019f6015d59e2bcc10c3059174ac987b0bc38adf868d3afce4b08dda53f9",
+          "elapsed_s": 28.0,
+          "report_data_hex": null
+        }
+      ],
+      "fixture_id": "fx_006_v0_e500_t1000",
+      "prompt_sha256": "05f5ea143ce78360f1fdaecfd498c15842cf89812827adad1049e42f60ebc637",
+      "same_host_pass": true,
+      "seed": 3195873433
+    },
+    {
+      "fingerprints": [
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 74,
+          "action_text_sha256": "ce9a97a58a8d4f17a321acb158d3134262c865b775adffc9eca609a47456ba99",
+          "diary_len": 781,
+          "diary_sha256": "076674ce9466e151b86624a3057ef783c1744f0560f98a63af93f2cc15972ee0",
+          "elapsed_s": 78.7,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 74,
+          "action_text_sha256": "ce9a97a58a8d4f17a321acb158d3134262c865b775adffc9eca609a47456ba99",
+          "diary_len": 781,
+          "diary_sha256": "076674ce9466e151b86624a3057ef783c1744f0560f98a63af93f2cc15972ee0",
+          "elapsed_s": 6.6,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 74,
+          "action_text_sha256": "ce9a97a58a8d4f17a321acb158d3134262c865b775adffc9eca609a47456ba99",
+          "diary_len": 781,
+          "diary_sha256": "076674ce9466e151b86624a3057ef783c1744f0560f98a63af93f2cc15972ee0",
+          "elapsed_s": 6.6,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 74,
+          "action_text_sha256": "ce9a97a58a8d4f17a321acb158d3134262c865b775adffc9eca609a47456ba99",
+          "diary_len": 781,
+          "diary_sha256": "076674ce9466e151b86624a3057ef783c1744f0560f98a63af93f2cc15972ee0",
+          "elapsed_s": 6.6,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 74,
+          "action_text_sha256": "ce9a97a58a8d4f17a321acb158d3134262c865b775adffc9eca609a47456ba99",
+          "diary_len": 781,
+          "diary_sha256": "076674ce9466e151b86624a3057ef783c1744f0560f98a63af93f2cc15972ee0",
+          "elapsed_s": 6.6,
+          "report_data_hex": null
+        }
+      ],
+      "fixture_id": "fx_007_v0_e300_t0100",
+      "prompt_sha256": "a6558d8ce5253a09a2e7cf57666d18beeffa54f74775be2d1794115c04764865",
+      "same_host_pass": true,
+      "seed": 823244059
+    },
+    {
+      "fingerprints": [
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 470,
+          "action_text_sha256": "2b5b5c22592ffc48f5e62b7c649e89bc8be8f489bc14af42446ed72587c8f8d1",
+          "diary_len": 2675,
+          "diary_sha256": "93fed3bbe100c7ba54aaebf92e2266a8d8aca9be07e8d6118911c1545111b45b",
+          "elapsed_s": 101.8,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 470,
+          "action_text_sha256": "2b5b5c22592ffc48f5e62b7c649e89bc8be8f489bc14af42446ed72587c8f8d1",
+          "diary_len": 2675,
+          "diary_sha256": "93fed3bbe100c7ba54aaebf92e2266a8d8aca9be07e8d6118911c1545111b45b",
+          "elapsed_s": 22.3,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 470,
+          "action_text_sha256": "2b5b5c22592ffc48f5e62b7c649e89bc8be8f489bc14af42446ed72587c8f8d1",
+          "diary_len": 2675,
+          "diary_sha256": "93fed3bbe100c7ba54aaebf92e2266a8d8aca9be07e8d6118911c1545111b45b",
+          "elapsed_s": 22.3,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 470,
+          "action_text_sha256": "2b5b5c22592ffc48f5e62b7c649e89bc8be8f489bc14af42446ed72587c8f8d1",
+          "diary_len": 2675,
+          "diary_sha256": "93fed3bbe100c7ba54aaebf92e2266a8d8aca9be07e8d6118911c1545111b45b",
+          "elapsed_s": 22.3,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 470,
+          "action_text_sha256": "2b5b5c22592ffc48f5e62b7c649e89bc8be8f489bc14af42446ed72587c8f8d1",
+          "diary_len": 2675,
+          "diary_sha256": "93fed3bbe100c7ba54aaebf92e2266a8d8aca9be07e8d6118911c1545111b45b",
+          "elapsed_s": 22.3,
+          "report_data_hex": null
+        }
+      ],
+      "fixture_id": "fx_008_v0_e300_t0100",
+      "prompt_sha256": "7f79ca33df4b5a6afaa477605bc925b53a3a0301edb9b0613c3bb3710fbb6d24",
+      "same_host_pass": true,
+      "seed": 611513443
+    },
+    {
+      "fingerprints": [
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 75,
+          "action_text_sha256": "092d7e6a80e976ad1b2ac3b792bd5ec5f248c40d04f795b2e3ebb33af74fd123",
+          "diary_len": 1709,
+          "diary_sha256": "40bd9443623d8542f9d8249e7eb7ffbcb305a12ed66b7c1ec20f9cd68fc71487",
+          "elapsed_s": 57.6,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 75,
+          "action_text_sha256": "092d7e6a80e976ad1b2ac3b792bd5ec5f248c40d04f795b2e3ebb33af74fd123",
+          "diary_len": 1709,
+          "diary_sha256": "40bd9443623d8542f9d8249e7eb7ffbcb305a12ed66b7c1ec20f9cd68fc71487",
+          "elapsed_s": 13.5,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 75,
+          "action_text_sha256": "092d7e6a80e976ad1b2ac3b792bd5ec5f248c40d04f795b2e3ebb33af74fd123",
+          "diary_len": 1709,
+          "diary_sha256": "40bd9443623d8542f9d8249e7eb7ffbcb305a12ed66b7c1ec20f9cd68fc71487",
+          "elapsed_s": 13.5,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 75,
+          "action_text_sha256": "092d7e6a80e976ad1b2ac3b792bd5ec5f248c40d04f795b2e3ebb33af74fd123",
+          "diary_len": 1709,
+          "diary_sha256": "40bd9443623d8542f9d8249e7eb7ffbcb305a12ed66b7c1ec20f9cd68fc71487",
+          "elapsed_s": 13.5,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 75,
+          "action_text_sha256": "092d7e6a80e976ad1b2ac3b792bd5ec5f248c40d04f795b2e3ebb33af74fd123",
+          "diary_len": 1709,
+          "diary_sha256": "40bd9443623d8542f9d8249e7eb7ffbcb305a12ed66b7c1ec20f9cd68fc71487",
+          "elapsed_s": 13.5,
+          "report_data_hex": null
+        }
+      ],
+      "fixture_id": "fx_009_v0_e50_t0005",
+      "prompt_sha256": "2ca23214a34454a63086e7c55f02e97c1d425fbe27f809cc52e92fa9c875d259",
+      "same_host_pass": true,
+      "seed": 74701300
+    },
+    {
+      "fingerprints": [
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 206,
+          "action_text_sha256": "6b0a17c2394ade9c31f0d1f53aa6f18d71abdfcb13c3e5bad73b1b4c815a73a9",
+          "diary_len": 1727,
+          "diary_sha256": "13da70c970b562d5e6a9370092bddc34ffad85f220b86701449a6445944f5106",
+          "elapsed_s": 65.1,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 206,
+          "action_text_sha256": "6b0a17c2394ade9c31f0d1f53aa6f18d71abdfcb13c3e5bad73b1b4c815a73a9",
+          "diary_len": 1727,
+          "diary_sha256": "13da70c970b562d5e6a9370092bddc34ffad85f220b86701449a6445944f5106",
+          "elapsed_s": 13.6,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 206,
+          "action_text_sha256": "6b0a17c2394ade9c31f0d1f53aa6f18d71abdfcb13c3e5bad73b1b4c815a73a9",
+          "diary_len": 1727,
+          "diary_sha256": "13da70c970b562d5e6a9370092bddc34ffad85f220b86701449a6445944f5106",
+          "elapsed_s": 13.6,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 206,
+          "action_text_sha256": "6b0a17c2394ade9c31f0d1f53aa6f18d71abdfcb13c3e5bad73b1b4c815a73a9",
+          "diary_len": 1727,
+          "diary_sha256": "13da70c970b562d5e6a9370092bddc34ffad85f220b86701449a6445944f5106",
+          "elapsed_s": 13.6,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 206,
+          "action_text_sha256": "6b0a17c2394ade9c31f0d1f53aa6f18d71abdfcb13c3e5bad73b1b4c815a73a9",
+          "diary_len": 1727,
+          "diary_sha256": "13da70c970b562d5e6a9370092bddc34ffad85f220b86701449a6445944f5106",
+          "elapsed_s": 13.6,
+          "report_data_hex": null
+        }
+      ],
+      "fixture_id": "fx_010_v1_e1_t0000",
+      "prompt_sha256": "648e7c2f42d065fdfeabfcecd2a78055c84705f011df8671861098092718d47f",
+      "same_host_pass": true,
+      "seed": 3254062771
+    },
+    {
+      "fingerprints": [
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 501,
+          "action_text_sha256": "0fbaeba5442a420d10ba86558d5aa4e3207b9fc1c1ada248bed5ea83f42d617b",
+          "diary_len": 4039,
+          "diary_sha256": "dcdcce272fc31ec9f42210f872207f39299fd20f330e49e6eb861c78c622e3ab",
+          "elapsed_s": 90.1,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 501,
+          "action_text_sha256": "0fbaeba5442a420d10ba86558d5aa4e3207b9fc1c1ada248bed5ea83f42d617b",
+          "diary_len": 4039,
+          "diary_sha256": "dcdcce272fc31ec9f42210f872207f39299fd20f330e49e6eb861c78c622e3ab",
+          "elapsed_s": 32.0,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 501,
+          "action_text_sha256": "0fbaeba5442a420d10ba86558d5aa4e3207b9fc1c1ada248bed5ea83f42d617b",
+          "diary_len": 4039,
+          "diary_sha256": "dcdcce272fc31ec9f42210f872207f39299fd20f330e49e6eb861c78c622e3ab",
+          "elapsed_s": 32.0,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 501,
+          "action_text_sha256": "0fbaeba5442a420d10ba86558d5aa4e3207b9fc1c1ada248bed5ea83f42d617b",
+          "diary_len": 4039,
+          "diary_sha256": "dcdcce272fc31ec9f42210f872207f39299fd20f330e49e6eb861c78c622e3ab",
+          "elapsed_s": 32.0,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 501,
+          "action_text_sha256": "0fbaeba5442a420d10ba86558d5aa4e3207b9fc1c1ada248bed5ea83f42d617b",
+          "diary_len": 4039,
+          "diary_sha256": "dcdcce272fc31ec9f42210f872207f39299fd20f330e49e6eb861c78c622e3ab",
+          "elapsed_s": 32.1,
+          "report_data_hex": null
+        }
+      ],
+      "fixture_id": "fx_011_v1_e3_t0001",
+      "prompt_sha256": "d0f7bd7759594d35effbabb0d4300e8550b897cdef188725adcc338ab639fb9d",
+      "same_host_pass": true,
+      "seed": 52787351
+    },
+    {
+      "fingerprints": [
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 253,
+          "action_text_sha256": "80a3bd47a3ee70f6f95f04f912b8c98d19ed748d51ed4f60b8a5ff5f200a020c",
+          "diary_len": 1735,
+          "diary_sha256": "fa63e0f7b62a0b9d83df51d33ac5f9ab46dc1878854a9f997c1739f404b7cfce",
+          "elapsed_s": 91.9,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 253,
+          "action_text_sha256": "80a3bd47a3ee70f6f95f04f912b8c98d19ed748d51ed4f60b8a5ff5f200a020c",
+          "diary_len": 1735,
+          "diary_sha256": "fa63e0f7b62a0b9d83df51d33ac5f9ab46dc1878854a9f997c1739f404b7cfce",
+          "elapsed_s": 14.0,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 253,
+          "action_text_sha256": "80a3bd47a3ee70f6f95f04f912b8c98d19ed748d51ed4f60b8a5ff5f200a020c",
+          "diary_len": 1735,
+          "diary_sha256": "fa63e0f7b62a0b9d83df51d33ac5f9ab46dc1878854a9f997c1739f404b7cfce",
+          "elapsed_s": 14.0,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 253,
+          "action_text_sha256": "80a3bd47a3ee70f6f95f04f912b8c98d19ed748d51ed4f60b8a5ff5f200a020c",
+          "diary_len": 1735,
+          "diary_sha256": "fa63e0f7b62a0b9d83df51d33ac5f9ab46dc1878854a9f997c1739f404b7cfce",
+          "elapsed_s": 14.0,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 253,
+          "action_text_sha256": "80a3bd47a3ee70f6f95f04f912b8c98d19ed748d51ed4f60b8a5ff5f200a020c",
+          "diary_len": 1735,
+          "diary_sha256": "fa63e0f7b62a0b9d83df51d33ac5f9ab46dc1878854a9f997c1739f404b7cfce",
+          "elapsed_s": 14.0,
+          "report_data_hex": null
+        }
+      ],
+      "fixture_id": "fx_012_v1_e25_t0010",
+      "prompt_sha256": "ede3778edfddb7b0c8236c9242e2e8de4f664555e7094402ecd13c75f1adf4fc",
+      "same_host_pass": true,
+      "seed": 3348262599
+    },
+    {
+      "fingerprints": [
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 456,
+          "action_text_sha256": "0c70c5c04ae18a0a08892fc91aaa00499386e9222374c4ee08e5ae63e85c493e",
+          "diary_len": 1639,
+          "diary_sha256": "f769359b3965a4335e983a1f3a352daa44f25706dc9b544dc340600b8525ce37",
+          "elapsed_s": 93.6,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 456,
+          "action_text_sha256": "0c70c5c04ae18a0a08892fc91aaa00499386e9222374c4ee08e5ae63e85c493e",
+          "diary_len": 1639,
+          "diary_sha256": "f769359b3965a4335e983a1f3a352daa44f25706dc9b544dc340600b8525ce37",
+          "elapsed_s": 16.7,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 456,
+          "action_text_sha256": "0c70c5c04ae18a0a08892fc91aaa00499386e9222374c4ee08e5ae63e85c493e",
+          "diary_len": 1639,
+          "diary_sha256": "f769359b3965a4335e983a1f3a352daa44f25706dc9b544dc340600b8525ce37",
+          "elapsed_s": 16.7,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 456,
+          "action_text_sha256": "0c70c5c04ae18a0a08892fc91aaa00499386e9222374c4ee08e5ae63e85c493e",
+          "diary_len": 1639,
+          "diary_sha256": "f769359b3965a4335e983a1f3a352daa44f25706dc9b544dc340600b8525ce37",
+          "elapsed_s": 16.7,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 456,
+          "action_text_sha256": "0c70c5c04ae18a0a08892fc91aaa00499386e9222374c4ee08e5ae63e85c493e",
+          "diary_len": 1639,
+          "diary_sha256": "f769359b3965a4335e983a1f3a352daa44f25706dc9b544dc340600b8525ce37",
+          "elapsed_s": 16.7,
+          "report_data_hex": null
+        }
+      ],
+      "fixture_id": "fx_013_v1_e120_t0050",
+      "prompt_sha256": "38ddc8782080e93b9f9c0a7910e23e98cd5f1a27c3e5408490e1516cf6bb5929",
+      "same_host_pass": true,
+      "seed": 1815845786
+    },
+    {
+      "fingerprints": [
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 449,
+          "action_text_sha256": "a79b682c95fc2967be48a064e928853ea0b77b1e5e7ec9a4d6f882c1febd8e33",
+          "diary_len": 1630,
+          "diary_sha256": "527c4a03b45806cb65692276831627c27bf9bbde140a6dfb5f2b571e999aeab2",
+          "elapsed_s": 110.9,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 449,
+          "action_text_sha256": "a79b682c95fc2967be48a064e928853ea0b77b1e5e7ec9a4d6f882c1febd8e33",
+          "diary_len": 1630,
+          "diary_sha256": "527c4a03b45806cb65692276831627c27bf9bbde140a6dfb5f2b571e999aeab2",
+          "elapsed_s": 14.9,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 449,
+          "action_text_sha256": "a79b682c95fc2967be48a064e928853ea0b77b1e5e7ec9a4d6f882c1febd8e33",
+          "diary_len": 1630,
+          "diary_sha256": "527c4a03b45806cb65692276831627c27bf9bbde140a6dfb5f2b571e999aeab2",
+          "elapsed_s": 14.9,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 449,
+          "action_text_sha256": "a79b682c95fc2967be48a064e928853ea0b77b1e5e7ec9a4d6f882c1febd8e33",
+          "diary_len": 1630,
+          "diary_sha256": "527c4a03b45806cb65692276831627c27bf9bbde140a6dfb5f2b571e999aeab2",
+          "elapsed_s": 14.9,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 449,
+          "action_text_sha256": "a79b682c95fc2967be48a064e928853ea0b77b1e5e7ec9a4d6f882c1febd8e33",
+          "diary_len": 1630,
+          "diary_sha256": "527c4a03b45806cb65692276831627c27bf9bbde140a6dfb5f2b571e999aeab2",
+          "elapsed_s": 14.9,
+          "report_data_hex": null
+        }
+      ],
+      "fixture_id": "fx_014_v1_e120_t0050",
+      "prompt_sha256": "7dcbb4badfb2a638f410066a28044b9862c798a6d38591752af201af596355e5",
+      "same_host_pass": true,
+      "seed": 1695008297
+    },
+    {
+      "fingerprints": [
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 325,
+          "action_text_sha256": "f9e55d308bf020a1df02b885333c8220f268c6abebf093ba5156dde60d2761c0",
+          "diary_len": 2744,
+          "diary_sha256": "1fbe37329fb113f63576dd8eddb1f0f26c51ddb3083e775df618c8e5005d1740",
+          "elapsed_s": 130.7,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 325,
+          "action_text_sha256": "f9e55d308bf020a1df02b885333c8220f268c6abebf093ba5156dde60d2761c0",
+          "diary_len": 2744,
+          "diary_sha256": "1fbe37329fb113f63576dd8eddb1f0f26c51ddb3083e775df618c8e5005d1740",
+          "elapsed_s": 21.0,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 325,
+          "action_text_sha256": "f9e55d308bf020a1df02b885333c8220f268c6abebf093ba5156dde60d2761c0",
+          "diary_len": 2744,
+          "diary_sha256": "1fbe37329fb113f63576dd8eddb1f0f26c51ddb3083e775df618c8e5005d1740",
+          "elapsed_s": 21.0,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 325,
+          "action_text_sha256": "f9e55d308bf020a1df02b885333c8220f268c6abebf093ba5156dde60d2761c0",
+          "diary_len": 2744,
+          "diary_sha256": "1fbe37329fb113f63576dd8eddb1f0f26c51ddb3083e775df618c8e5005d1740",
+          "elapsed_s": 21.1,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 325,
+          "action_text_sha256": "f9e55d308bf020a1df02b885333c8220f268c6abebf093ba5156dde60d2761c0",
+          "diary_len": 2744,
+          "diary_sha256": "1fbe37329fb113f63576dd8eddb1f0f26c51ddb3083e775df618c8e5005d1740",
+          "elapsed_s": 21.1,
+          "report_data_hex": null
+        }
+      ],
+      "fixture_id": "fx_015_v1_e500_t1000",
+      "prompt_sha256": "f98f460d49b56ab126d1f058959e908c57c35ce2e3cae9d67c1d6f7bcf7ce707",
+      "same_host_pass": true,
+      "seed": 2382244380
+    },
+    {
+      "fingerprints": [
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 325,
+          "action_text_sha256": "a8a4676042e1f8396d8cd4aa2cb9c34e9c793986a278b4dac449bde42bc73e30",
+          "diary_len": 2439,
+          "diary_sha256": "592b240bebeab9b58ba79b3884407c8cde247b5da0800d63af6cf2a60167d7a4",
+          "elapsed_s": 129.9,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 325,
+          "action_text_sha256": "a8a4676042e1f8396d8cd4aa2cb9c34e9c793986a278b4dac449bde42bc73e30",
+          "diary_len": 2439,
+          "diary_sha256": "592b240bebeab9b58ba79b3884407c8cde247b5da0800d63af6cf2a60167d7a4",
+          "elapsed_s": 20.3,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 325,
+          "action_text_sha256": "a8a4676042e1f8396d8cd4aa2cb9c34e9c793986a278b4dac449bde42bc73e30",
+          "diary_len": 2439,
+          "diary_sha256": "592b240bebeab9b58ba79b3884407c8cde247b5da0800d63af6cf2a60167d7a4",
+          "elapsed_s": 20.3,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 325,
+          "action_text_sha256": "a8a4676042e1f8396d8cd4aa2cb9c34e9c793986a278b4dac449bde42bc73e30",
+          "diary_len": 2439,
+          "diary_sha256": "592b240bebeab9b58ba79b3884407c8cde247b5da0800d63af6cf2a60167d7a4",
+          "elapsed_s": 20.3,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 325,
+          "action_text_sha256": "a8a4676042e1f8396d8cd4aa2cb9c34e9c793986a278b4dac449bde42bc73e30",
+          "diary_len": 2439,
+          "diary_sha256": "592b240bebeab9b58ba79b3884407c8cde247b5da0800d63af6cf2a60167d7a4",
+          "elapsed_s": 20.3,
+          "report_data_hex": null
+        }
+      ],
+      "fixture_id": "fx_016_v1_e500_t1000",
+      "prompt_sha256": "a2822fccddb661f1e14f5dc618b138b379ccd6495a0667cb1c715cd9b1e013c3",
+      "same_host_pass": true,
+      "seed": 2976981918
+    },
+    {
+      "fingerprints": [
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 431,
+          "action_text_sha256": "d7f1dacc6e25497c1f0c00f8efc105b26bc367fed5298deb78d780cc8471ad9d",
+          "diary_len": 1938,
+          "diary_sha256": "dbfc2652e7ebcd70b9d1c8af763ff4e5b47925e7a91828fd6ac94870cf43cd45",
+          "elapsed_s": 81.3,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 431,
+          "action_text_sha256": "d7f1dacc6e25497c1f0c00f8efc105b26bc367fed5298deb78d780cc8471ad9d",
+          "diary_len": 1938,
+          "diary_sha256": "dbfc2652e7ebcd70b9d1c8af763ff4e5b47925e7a91828fd6ac94870cf43cd45",
+          "elapsed_s": 18.5,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 431,
+          "action_text_sha256": "d7f1dacc6e25497c1f0c00f8efc105b26bc367fed5298deb78d780cc8471ad9d",
+          "diary_len": 1938,
+          "diary_sha256": "dbfc2652e7ebcd70b9d1c8af763ff4e5b47925e7a91828fd6ac94870cf43cd45",
+          "elapsed_s": 18.5,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 431,
+          "action_text_sha256": "d7f1dacc6e25497c1f0c00f8efc105b26bc367fed5298deb78d780cc8471ad9d",
+          "diary_len": 1938,
+          "diary_sha256": "dbfc2652e7ebcd70b9d1c8af763ff4e5b47925e7a91828fd6ac94870cf43cd45",
+          "elapsed_s": 18.5,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 431,
+          "action_text_sha256": "d7f1dacc6e25497c1f0c00f8efc105b26bc367fed5298deb78d780cc8471ad9d",
+          "diary_len": 1938,
+          "diary_sha256": "dbfc2652e7ebcd70b9d1c8af763ff4e5b47925e7a91828fd6ac94870cf43cd45",
+          "elapsed_s": 18.5,
+          "report_data_hex": null
+        }
+      ],
+      "fixture_id": "fx_017_v1_e300_t0100",
+      "prompt_sha256": "7ef2a9caa2171df16b398f9a69b875ac1b2a5dc891734b1674561ad88b641b11",
+      "same_host_pass": true,
+      "seed": 4763915
+    },
+    {
+      "fingerprints": [
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 279,
+          "action_text_sha256": "2ce34d46c96a45af73c216ec642d3b246eb7d3e108c3c9b02fc861d263708bcf",
+          "diary_len": 876,
+          "diary_sha256": "e160d7947082ecc88a453b396c6ea40dec8020bab8573ab527950323b4c1935b",
+          "elapsed_s": 88.2,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 279,
+          "action_text_sha256": "2ce34d46c96a45af73c216ec642d3b246eb7d3e108c3c9b02fc861d263708bcf",
+          "diary_len": 876,
+          "diary_sha256": "e160d7947082ecc88a453b396c6ea40dec8020bab8573ab527950323b4c1935b",
+          "elapsed_s": 8.8,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 279,
+          "action_text_sha256": "2ce34d46c96a45af73c216ec642d3b246eb7d3e108c3c9b02fc861d263708bcf",
+          "diary_len": 876,
+          "diary_sha256": "e160d7947082ecc88a453b396c6ea40dec8020bab8573ab527950323b4c1935b",
+          "elapsed_s": 8.9,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 279,
+          "action_text_sha256": "2ce34d46c96a45af73c216ec642d3b246eb7d3e108c3c9b02fc861d263708bcf",
+          "diary_len": 876,
+          "diary_sha256": "e160d7947082ecc88a453b396c6ea40dec8020bab8573ab527950323b4c1935b",
+          "elapsed_s": 8.9,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 279,
+          "action_text_sha256": "2ce34d46c96a45af73c216ec642d3b246eb7d3e108c3c9b02fc861d263708bcf",
+          "diary_len": 876,
+          "diary_sha256": "e160d7947082ecc88a453b396c6ea40dec8020bab8573ab527950323b4c1935b",
+          "elapsed_s": 8.8,
+          "report_data_hex": null
+        }
+      ],
+      "fixture_id": "fx_018_v1_e300_t0100",
+      "prompt_sha256": "1e8d649cd2db23436229d3b93750818bffdc4f984939b401fc644777909fd112",
+      "same_host_pass": true,
+      "seed": 2738111814
+    },
+    {
+      "fingerprints": [
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 337,
+          "action_text_sha256": "9513343045f17809f592a4ab7fc687e86e6bd04620127cbccddad4b4bea728e8",
+          "diary_len": 3315,
+          "diary_sha256": "d8890ce0167ca0d5b7e728122916a5aa605678c4ff1a6aa86b476ca9fce6d348",
+          "elapsed_s": 83.7,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 337,
+          "action_text_sha256": "9513343045f17809f592a4ab7fc687e86e6bd04620127cbccddad4b4bea728e8",
+          "diary_len": 3315,
+          "diary_sha256": "d8890ce0167ca0d5b7e728122916a5aa605678c4ff1a6aa86b476ca9fce6d348",
+          "elapsed_s": 25.0,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 337,
+          "action_text_sha256": "9513343045f17809f592a4ab7fc687e86e6bd04620127cbccddad4b4bea728e8",
+          "diary_len": 3315,
+          "diary_sha256": "d8890ce0167ca0d5b7e728122916a5aa605678c4ff1a6aa86b476ca9fce6d348",
+          "elapsed_s": 25.0,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 337,
+          "action_text_sha256": "9513343045f17809f592a4ab7fc687e86e6bd04620127cbccddad4b4bea728e8",
+          "diary_len": 3315,
+          "diary_sha256": "d8890ce0167ca0d5b7e728122916a5aa605678c4ff1a6aa86b476ca9fce6d348",
+          "elapsed_s": 25.0,
+          "report_data_hex": null
+        },
+        {
+          "action_bytes_hex": "error: compute_report_data() missing 1 required positional argument: 'submitted_memory'",
+          "action_text_len": 337,
+          "action_text_sha256": "9513343045f17809f592a4ab7fc687e86e6bd04620127cbccddad4b4bea728e8",
+          "diary_len": 3315,
+          "diary_sha256": "d8890ce0167ca0d5b7e728122916a5aa605678c4ff1a6aa86b476ca9fce6d348",
+          "elapsed_s": 25.0,
+          "report_data_hex": null
+        }
+      ],
+      "fixture_id": "fx_019_v1_e50_t0005",
+      "prompt_sha256": "3b06b43b169a8a29d468b202dbc25bb1571818ef3b014fefa30a73a2e4ce7e59",
+      "same_host_pass": true,
+      "seed": 457495503
+    }
+  ],
+  "fixtures_dir": "/tmp/bb/fixtures",
+  "llama_url": "http://127.0.0.1:8080",
+  "mode": "run",
+  "overall_same_host_pass": true,
+  "repeats": 5,
+  "system": {
+    "hostname": "humanfund-battery-vm1.us-central1-a.c.the-human-fund.internal",
+    "llama_server_sha256": "f099ccdcc72c133b7a5209cd727f08c1798c2060e6676879ceb7c5a756bae916",
+    "nvidia_cc": "CC status: OFF",
+    "nvidia_smi": "NVIDIA H100 80GB HBM3, 580.126.09, 96.00.CF.00.01, 9.0",
+    "platform": "Linux-6.17.0-1009-gcp-x86_64-with-glibc2.39",
+    "python": "3.12.3",
+    "timestamp": "2026-04-23T06:44:41Z"
+  }
+}

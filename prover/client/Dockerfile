@@ -23,7 +23,7 @@ COPY prover/ /app/prover/
 COPY out/TheHumanFund.sol/ /app/out/TheHumanFund.sol/
 COPY out/AuctionManager.sol/ /app/out/AuctionManager.sol/
 COPY out/InvestmentManager.sol/ /app/out/InvestmentManager.sol/
-COPY out/WorldView.sol/ /app/out/WorldView.sol/
+COPY out/AgentMemory.sol/ /app/out/AgentMemory.sol/
 
 COPY prover/client/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh

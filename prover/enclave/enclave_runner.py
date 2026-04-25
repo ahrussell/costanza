@@ -28,22 +28,47 @@ Output channels (all written):
 import hashlib
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
 
-from .inference import run_two_pass_inference, truncate_reasoning
+from .inference import run_three_pass_inference, truncate_reasoning
 from .action_encoder import parse_action, encode_action_bytes, validate_and_clamp_action
 from .input_hash import compute_input_hash, _keccak256
 from .attestation import get_tdx_quote, compute_report_data
 from .prompt_builder import build_epoch_context, build_full_prompt
 from .voice_anchors import parse_anchors, select_anchors, VOICE_ANCHOR_K
 
+# ─── GPU attestation artifact paths ─────────────────────────────────────
+
+NVIDIA_DRIVER_RIM_PATH = os.environ.get(
+    "NVIDIA_DRIVER_RIM_PATH", "/opt/humanfund/nvidia/driver_rim.xml"
+)
+NVIDIA_VBIOS_RIM_PATH = os.environ.get(
+    "NVIDIA_VBIOS_RIM_PATH", "/opt/humanfund/nvidia/vbios_rim.xml"
+)
+
+# RIM-based GPU firmware attestation. Default OFF: NVIDIA's published
+# RIMs for driver 580.126.09 don't include the firmware variant the GCP
+# H100 fleet is running (index 9 / VBIOS firmware), so the SDK reports
+# overall_status=False even on a perfectly-behaved CC-mode H100.
+# CC-mode enforcement (`require_nvidia_cc()`) is unaffected and stays
+# mandatory — when the flag is off we still refuse to run on a non-CC
+# GPU, we just don't pin the runtime firmware hashes against the RIM.
+# Re-enable by setting GPU_ATTESTATION_ENABLED=1 (likely after NVIDIA
+# publishes a RIM that covers the deployed firmware).
+GPU_ATTESTATION_ENABLED = (
+    os.environ.get("GPU_ATTESTATION_ENABLED", "0").strip() == "1"
+)
+
 # ─── Configuration ──────────────────────────────────────────────────────
 
-MODEL_PATH = os.environ.get("MODEL_PATH", "/models/model.gguf")
+MODEL_PATH = os.environ.get(
+    "MODEL_PATH", "/models/NousResearch_Hermes-4-70B-Q6_K-00001-of-00002.gguf"
+)
 SYSTEM_PROMPT_PATH = os.environ.get("SYSTEM_PROMPT_PATH", "/opt/humanfund/system_prompt.txt")
 VOICE_ANCHORS_PATH = os.environ.get("VOICE_ANCHORS_PATH", "/opt/humanfund/voice_anchors.txt")
 LLAMA_SERVER_PORT = int(os.environ.get("LLAMA_SERVER_PORT", "8080"))
@@ -147,40 +172,90 @@ def write_error(error: str):
 
 # ─── llama-server management ───────────────────────────────────────────
 
+def require_nvidia_cc():
+    """Abort if NVIDIA Confidential Compute mode is not engaged on the GPU.
+
+    `humanfund-gpu-cc.service` attempts to enable CC mode on boot, but it's
+    best-effort (3 retries then shrug). Without this gate the enclave would
+    silently run inference with CC disabled. Hard-fail here so the TDX
+    quote is never produced — the prover client then times out and the
+    epoch forfeits cleanly instead of producing unattested output.
+    """
+    # Use `-q` (full query) — driver 580 prints `-f` as just `CC status: ON`
+    # with no readiness info, so the older "-f" + parse approach silently
+    # rejects every healthy boot. `-q` reports both:
+    #   CC State                   : ON
+    #   CC GPUs Ready State        : Ready
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "conf-compute", "-q"],
+            capture_output=True, text=True, timeout=10
+        )
+    except FileNotFoundError:
+        raise RuntimeError("nvidia-smi not found — cannot verify CC mode")
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("nvidia-smi conf-compute -q timed out")
+
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"nvidia-smi conf-compute -q failed (rc={result.returncode}): "
+            f"{result.stderr.strip()}"
+        )
+
+    output = result.stdout
+    cc_on = re.search(r"CC State\s*:\s*ON", output) is not None
+    ready = re.search(r"CC GPUs Ready State\s*:\s*Ready", output) is not None
+    if not (cc_on and ready):
+        raise RuntimeError(
+            "NVIDIA CC not engaged. nvidia-smi conf-compute -q output:\n" + output
+        )
+    log("  NVIDIA CC: ON, GPUs Ready State: Ready")
+
+
 def start_llama_server() -> subprocess.Popen:
-    """Start the local llama-server process."""
+    """Start the local llama-server process with deterministic flags.
+
+    Production enclave requires GPU — no CPU fallback. Any CPU-side
+    inference would diverge from the GPU baseline committed in the
+    validation battery. If nvidia-smi is unavailable or reports no GPU,
+    the enclave aborts before ever producing a TDX quote.
+    """
     if not os.path.exists(LLAMA_SERVER_BIN):
         raise RuntimeError(f"llama-server not found at {LLAMA_SERVER_BIN}")
     if not os.path.exists(MODEL_PATH):
         raise RuntimeError(f"Model not found at {MODEL_PATH}")
 
-    log(f"Starting llama-server (model: {MODEL_PATH})...")
-
-    # Detect GPU
-    gpu_layers = ""
     try:
         result = subprocess.run(
             ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
             capture_output=True, text=True, timeout=5
         )
-        if result.returncode == 0 and result.stdout.strip():
-            gpu_layers = "-ngl 99"
-            log(f"  GPU detected: {result.stdout.strip()}")
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        raise RuntimeError(f"GPU required but nvidia-smi unavailable: {e}")
+    if result.returncode != 0 or not result.stdout.strip():
+        raise RuntimeError(f"GPU required but nvidia-smi returned no device: {result.stderr.strip()}")
+    log(f"Starting llama-server (model: {MODEL_PATH}, GPU: {result.stdout.strip()})...")
 
-    if not gpu_layers:
-        log("  No GPU detected, using CPU inference")
-
+    # Determinism-critical flags — order must not vary across builds.
+    #   -ngl 99         full GPU offload (all layers)
+    #   -b 1            logical batch size 1
+    #   -ub 1           physical batch size 1 (the one that actually pins
+    #                   kernel launch shapes for determinism)
+    #   --parallel 1    single server slot, no request parallelism
+    # Flash attention is OFF by default in llama.cpp b5270; passing
+    # `--flash-attn` would ENABLE it (it's a bare boolean flag, not a
+    # value flag), so we simply omit it.
     cmd = [
         LLAMA_SERVER_BIN,
         "-m", MODEL_PATH,
         "-c", "32768",
         "--host", "127.0.0.1",
         "--port", str(LLAMA_SERVER_PORT),
+        "-ngl", "99",
+        "-b", "1",
+        "-ub", "1",
+        "--parallel", "1",
     ]
-    if gpu_layers:
-        cmd.extend(gpu_layers.split())
 
     proc = subprocess.Popen(
         cmd,
@@ -373,6 +448,34 @@ def main():
         log(f"  Base input hash: 0x{base_input_hash.hex()[:16]}...")
         log(f"  Input hash (with seed):  0x{input_hash.hex()[:16]}...")
 
+        # Step 3.5: GPU state checks.
+        #
+        # CC-mode gate is mandatory (no silent CPU fallback). The
+        # RIM-based firmware attestation is gated on
+        # GPU_ATTESTATION_ENABLED — see the constant for context.
+        #
+        # Both are skipped when LLAMA_SERVER_EXTERNAL=1 (local dev on
+        # non-H100 hosts).
+        gpu_attestation_state = "skipped"
+        if os.environ.get("LLAMA_SERVER_EXTERNAL", "").strip() != "1":
+            log("")
+            log("Step 3.5: Verifying GPU state...")
+            require_nvidia_cc()
+            if GPU_ATTESTATION_ENABLED:
+                log("  GPU_ATTESTATION_ENABLED=1 — verifying firmware against RIMs")
+                from .gpu_attest import verify_gpu_attestation
+                gpu_nonce = hashlib.sha256(input_hash).digest()
+                verify_gpu_attestation(
+                    nonce=gpu_nonce,
+                    driver_rim_path=NVIDIA_DRIVER_RIM_PATH,
+                    vbios_rim_path=NVIDIA_VBIOS_RIM_PATH,
+                )
+                gpu_attestation_state = "verified"
+            else:
+                log("  GPU_ATTESTATION_ENABLED=0 — TDX-only attestation "
+                    "(GPU CC mode still required)")
+                gpu_attestation_state = "disabled"
+
         # Step 4: Build prompt (deterministically from the hashed state).
         # Any field the model sees is a field that contributed to the hash
         # above. If the runner lied, the hash won't match on-chain and we
@@ -394,14 +497,16 @@ def main():
             llama_proc = start_llama_server()
             wait_for_llama_server()
 
-        # run_two_pass_inference (v19): pass 1 emits the diary, pass 2
-        # emits the action JSON under GBNF grammar constraints. Pass 2
-        # retries with an incrementing seed on the rare chance the model
-        # produces output the parser can't read (grammar should make that
-        # basically impossible). If all retries fail, parsed_action is
-        # None and we fall back to a no-action result with a system note
-        # so Costanza can see what happened next epoch.
-        inference = run_two_pass_inference(
+        # run_three_pass_inference (v20): pass 1 generates the think
+        # block (deliberation, NOT on chain), pass 2 emits the diary as
+        # a finished post-deliberation thought, pass 3 emits the action
+        # JSON under GBNF grammar constraints. Pass 3 retries with an
+        # incrementing seed on the rare chance the model produces output
+        # the parser can't read (grammar should make that basically
+        # impossible). If all retries fail, parsed_action is None and we
+        # fall back to a no-action result with a system note so Costanza
+        # can see what happened next epoch.
+        inference = run_three_pass_inference(
             full_prompt, seed=llama_seed, llama_url=LLAMA_SERVER_URL,
         )
         action_json = inference.get("parsed_action")
@@ -487,6 +592,7 @@ def main():
             "seed": seed,
             "inference_seconds": inference["elapsed_seconds"],
             "tokens": inference["tokens"],
+            "gpu_attestation": gpu_attestation_state,
         }
         write_output(result)
 

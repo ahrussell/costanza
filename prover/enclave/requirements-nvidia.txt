@@ -1,0 +1,13 @@
+# NVIDIA GPU attestation SDK. Large transitive dependency tree — not
+# hash-pinned (would require 50+ hashes that churn on every minor release).
+#
+# Exact versions are pinned so builds are reproducible. Post-build
+# integrity is covered by the dm-verity root hash (RTMR[2]) — any
+# tampering between install and rootfs-seal changes the platform key
+# and is caught at on-chain verification.
+#
+# NVIDIA deprecated `nv-attestation-sdk` on 2026-03-15 (EOL 2026-09).
+# Migration to `go-nvtrust` is queued. See
+# `prover/scripts/gcp/nvidia_artifacts/README.md`.
+nv-attestation-sdk==2.7.0
+nv-local-gpu-verifier==2.7.0

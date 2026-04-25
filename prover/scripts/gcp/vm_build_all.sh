@@ -204,7 +204,7 @@ echo "  Verity size: $(du -h /mnt/staging/rootfs.verity | cut -f1)"
 
 # ─── Step 3b: Models squashfs + verity ──────────────────────────────
 
-if [ -f /models/model.gguf ]; then
+if compgen -G "/models/*.gguf" > /dev/null; then
     echo ""
     echo "─── Step 3b: Building model squashfs + verity ───"
     rm -f /mnt/staging/models.squashfs /mnt/staging/models.verity
