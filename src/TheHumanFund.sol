@@ -1531,8 +1531,17 @@ contract TheHumanFund is ReentrancyGuard {
         if (nonprofitId < 1 || nonprofitId > nonprofitCount) return false;
         if (amount == 0) return false;
 
+        // Clamp to live cap (10% of treasury at action time) instead of
+        // rejecting. The model reasons against the snapshot treasury that
+        // was frozen at auction open, but actions execute AFTER the bounty
+        // is paid to the runner, so the live cap is strictly lower. Without
+        // clamping, the model's "donate as much as I'm allowed" intent
+        // gets voided every epoch by a few-thousandths-ETH overshoot.
         uint256 maxDonation = (address(this).balance * MAX_DONATION_BPS) / 10000;
-        if (amount > maxDonation) return false;
+        if (amount > maxDonation) {
+            amount = maxDonation;
+        }
+        if (amount == 0) return false;  // post-clamp guard: balance drained
 
         Nonprofit storage np = nonprofits[nonprofitId];
         if (!np.exists) return false;
