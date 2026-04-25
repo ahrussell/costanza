@@ -148,7 +148,7 @@ EOF' && vm_run "sudo systemctl daemon-reload && sudo systemctl enable humanfund-
 vm_run 'sudo tee /etc/systemd/system/humanfund-enclave.service > /dev/null << "EOF"
 [Unit]
 Description=The Human Fund TEE Enclave
-After=network-online.target
+After=network-online.target humanfund-gpu-cc.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
