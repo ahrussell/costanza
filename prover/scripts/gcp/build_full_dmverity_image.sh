@@ -183,9 +183,12 @@ for i in $(seq 1 60); do
 
     if [ "$STATUS" = "SUCCESS" ]; then
         echo "  ✓ Build complete!"
-        ROOTFS_HASH=$(vm_run "cat /mnt/staging/rootfs-verity-roothash" | tr -d '[:space:]')
-        MODELS_HASH=$(vm_run "cat /mnt/staging/models-verity-roothash 2>/dev/null" | tr -d '[:space:]')
-        echo "  Rootfs hash: $ROOTFS_HASH"
+        # Non-fatal hash echoes — a transient SSH hiccup here used to bail
+        # the script under set -e/pipefail before Step 5 could run, leaving
+        # the artifacts on the VM and the trap deleting the output disk.
+        ROOTFS_HASH=$(vm_run "cat /mnt/staging/rootfs-verity-roothash" | tr -d '[:space:]' || echo "")
+        MODELS_HASH=$(vm_run "cat /mnt/staging/models-verity-roothash 2>/dev/null" | tr -d '[:space:]' || echo "")
+        [ -n "$ROOTFS_HASH" ] && echo "  Rootfs hash: $ROOTFS_HASH"
         [ -n "$MODELS_HASH" ] && echo "  Models hash: $MODELS_HASH"
         break
     elif echo "$STATUS" | grep -q "FAILED"; then
@@ -204,12 +207,34 @@ echo "─── Step 5: Creating image ───"
 gcloud compute instances stop "$VM_NAME" --project="$GCP_PROJECT" --zone="$GCP_ZONE" --quiet 2>&1 | tail -3
 gcloud compute instances detach-disk "$VM_NAME" --project="$GCP_PROJECT" --zone="$GCP_ZONE" --disk="$OUTPUT_DISK" 2>&1
 gcloud compute images delete "$IMAGE_NAME" --project="$GCP_PROJECT" --quiet 2>/dev/null || true
+
+# --async + poll: gcloud sync mode times out at 5min, but image creation
+# from a 100GB pd-ssd often takes longer. Without --async, a client-side
+# timeout would propagate non-zero through set -e and bail Step 5 even
+# though the server-side operation succeeds.
 gcloud compute images create "$IMAGE_NAME" --project="$GCP_PROJECT" \
     --source-disk="$OUTPUT_DISK" --source-disk-zone="$GCP_ZONE" --family=humanfund-tee \
-    --guest-os-features=UEFI_COMPATIBLE,GVNIC,TDX_CAPABLE 2>&1
-gcloud compute disks delete "$OUTPUT_DISK" --project="$GCP_PROJECT" --zone="$GCP_ZONE" --quiet 2>&1
+    --guest-os-features=UEFI_COMPATIBLE,GVNIC,TDX_CAPABLE --async 2>&1
 
-IMAGE_CREATED=true
+echo "  Waiting for image to become READY..."
+for i in $(seq 1 45); do
+    sleep 20
+    IMG_STATUS=$(gcloud compute images describe "$IMAGE_NAME" --project="$GCP_PROJECT" --format="value(status)" 2>/dev/null || echo "")
+    if [ "$IMG_STATUS" = "READY" ]; then
+        echo "  ✓ Image $IMAGE_NAME ready (after $((i*20))s)"
+        IMAGE_CREATED=true
+        break
+    fi
+    echo "  [$((i*20))s] image status: ${IMG_STATUS:-unknown}"
+done
+
+if ! $IMAGE_CREATED; then
+    echo "  ✗ Image did not become READY within 15min — leaving output disk for inspection"
+    exit 1
+fi
+
+# Image captured — output disk is no longer needed
+gcloud compute disks delete "$OUTPUT_DISK" --project="$GCP_PROJECT" --zone="$GCP_ZONE" --quiet 2>&1 || true
 echo ""
 echo "═══ BUILD COMPLETE ═══"
 echo "  Image:       $IMAGE_NAME"
