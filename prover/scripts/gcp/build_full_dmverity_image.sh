@@ -55,7 +55,13 @@ cleanup() {
 trap cleanup EXIT
 
 vm_run() {
-    gcloud compute ssh "$VM_NAME" --project="$GCP_PROJECT" --zone="$GCP_ZONE" --command="$1" 2>&1
+    # ServerAlive*: kill the session after ~30s of unresponsiveness (3*10s)
+    # so a wedged SSH (e.g. VM died mid-build) doesn't hang the polling loop.
+    gcloud compute ssh "$VM_NAME" --project="$GCP_PROJECT" --zone="$GCP_ZONE" \
+        --ssh-flag="-o ConnectTimeout=30" \
+        --ssh-flag="-o ServerAliveInterval=10" \
+        --ssh-flag="-o ServerAliveCountMax=3" \
+        --command="$1" 2>&1
 }
 vm_scp() {
     gcloud compute scp "$1" "$VM_NAME:$2" --project="$GCP_PROJECT" --zone="$GCP_ZONE" 2>&1
@@ -70,7 +76,11 @@ DISK_SIZE=100
 IMAGE_FLAGS="--image-family=ubuntu-2404-lts-amd64 --image-project=ubuntu-os-cloud"
 [ -n "$BASE_IMAGE" ] && IMAGE_FLAGS="--image=$BASE_IMAGE"
 
-OUTPUT_DISK_FLAG="name=$OUTPUT_DISK,size=${DISK_SIZE}GB,type=pd-ssd,device-name=output"
+# auto-delete=no: if the builder VM dies mid-build (host maintenance,
+# preemption, etc.) the output disk survives and Step 5 can finish
+# manually. The cleanup() function still deletes it on a script-controlled
+# bail (gated on $IMAGE_CREATED).
+OUTPUT_DISK_FLAG="name=$OUTPUT_DISK,size=${DISK_SIZE}GB,type=pd-ssd,device-name=output,auto-delete=no"
 
 gcloud compute instances create "$VM_NAME" \
     --project="$GCP_PROJECT" --zone="$GCP_ZONE" \
@@ -208,13 +218,14 @@ gcloud compute instances stop "$VM_NAME" --project="$GCP_PROJECT" --zone="$GCP_Z
 gcloud compute instances detach-disk "$VM_NAME" --project="$GCP_PROJECT" --zone="$GCP_ZONE" --disk="$OUTPUT_DISK" 2>&1
 gcloud compute images delete "$IMAGE_NAME" --project="$GCP_PROJECT" --quiet 2>/dev/null || true
 
-# --async + poll: gcloud sync mode times out at 5min, but image creation
-# from a 100GB pd-ssd often takes longer. Without --async, a client-side
-# timeout would propagate non-zero through set -e and bail Step 5 even
-# though the server-side operation succeeds.
+# gcloud sync-mode HTTP read timeout is 5min, but image creation from a
+# 100GB pd-ssd often takes longer. The op continues server-side after a
+# client timeout, so swallow the client-side non-zero and poll for READY.
+# (`gcloud compute images create` doesn't accept --async — would be the
+# cleaner approach if it existed.)
 gcloud compute images create "$IMAGE_NAME" --project="$GCP_PROJECT" \
     --source-disk="$OUTPUT_DISK" --source-disk-zone="$GCP_ZONE" --family=humanfund-tee \
-    --guest-os-features=UEFI_COMPATIBLE,GVNIC,TDX_CAPABLE --async 2>&1
+    --guest-os-features=UEFI_COMPATIBLE,GVNIC,TDX_CAPABLE 2>&1 || true
 
 echo "  Waiting for image to become READY..."
 for i in $(seq 1 45); do
