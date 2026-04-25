@@ -102,8 +102,9 @@ contract DeployTestnet is Script {
         fund.approveVerifier(2, address(mockVerifier));
 
         AuctionManager am = new AuctionManager(address(fund));
-        // Short epochs: 3min commit / 3min reveal / 6min exec = 12min total
-        fund.setAuctionManager(address(am), 3 minutes, 3 minutes, 6 minutes);
+        // Burn-in epochs: 15min commit / 15min reveal / 60min exec = 90min total.
+        // Adjust at runtime via cli.py reset if needed (e.g., 5/5/15 for fast smoke tests).
+        fund.setAuctionManager(address(am), 15 minutes, 15 minutes, 60 minutes);
 
         InvestmentManager im = new InvestmentManager(address(fund), deployer);
         fund.setInvestmentManager(address(im));
