@@ -64,7 +64,7 @@ _IM_ABI = [
 ]
 
 _WV_ABI = [
-    {"name": "getPolicies", "type": "function", "inputs": [],
+    {"name": "getEntries", "type": "function", "inputs": [],
      "outputs": [
          {"type": "tuple[10]", "components": [
              {"name": "title", "type": "string"},
@@ -251,31 +251,30 @@ def read_contract_state(contract, w3, epoch=None):
 
     # ── Memory (live read — stable between freeze and verify) ─────────────
     # Each slot is a {title, body} pair. All 10 slots are writable.
+    # Hash divergence here = REPORTDATA divergence = on-chain submit revert,
+    # so don't silently swallow read errors — let them surface immediately.
     state["memories"] = [{"title": "", "body": ""} for _ in range(10)]
-    try:
-        wv_addr = contract.functions.agentMemory().call()
-        if wv_addr and wv_addr != "0x0000000000000000000000000000000000000000":
-            wv = w3.eth.contract(address=Web3.to_checksum_address(wv_addr), abi=_WV_ABI)
-            # web3.py decodes the tuple[10] return as a list of (title, body)
-            # tuples. Normalize to dicts so the prompt/hasher see a stable shape.
-            raw = wv.functions.getPolicies().call()
-            normalized = []
-            for entry in raw:
-                if isinstance(entry, (list, tuple)) and len(entry) >= 2:
-                    normalized.append({"title": entry[0] or "", "body": entry[1] or ""})
-                elif isinstance(entry, dict):
-                    normalized.append({
-                        "title": entry.get("title", "") or "",
-                        "body": entry.get("body", "") or "",
-                    })
-                else:
-                    normalized.append({"title": "", "body": ""})
-            # Pad / truncate to exactly 10 slots.
-            while len(normalized) < 10:
+    mem_addr = contract.functions.agentMemory().call()
+    if mem_addr and mem_addr != "0x0000000000000000000000000000000000000000":
+        mem = w3.eth.contract(address=Web3.to_checksum_address(mem_addr), abi=_WV_ABI)
+        # web3.py decodes the tuple[10] return as a list of (title, body)
+        # tuples. Normalize to dicts so the prompt/hasher see a stable shape.
+        raw = mem.functions.getEntries().call()
+        normalized = []
+        for entry in raw:
+            if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                normalized.append({"title": entry[0] or "", "body": entry[1] or ""})
+            elif isinstance(entry, dict):
+                normalized.append({
+                    "title": entry.get("title", "") or "",
+                    "body": entry.get("body", "") or "",
+                })
+            else:
                 normalized.append({"title": "", "body": ""})
-            state["memories"] = normalized[:10]
-    except Exception:
-        pass
+        # Pad / truncate to exactly 10 slots.
+        while len(normalized) < 10:
+            normalized.append({"title": "", "body": ""})
+        state["memories"] = normalized[:10]
 
     # ── Donor messages (live, bounded by snap.message_head/count) ────────
     # Individual message slots are immutable once written, and the
