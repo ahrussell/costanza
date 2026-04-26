@@ -356,10 +356,10 @@ bash prover/scripts/gcp/build_base_image.sh               # Build base image (sl
 bash prover/scripts/gcp/build_full_dmverity_image.sh \
   --base-image humanfund-base-gpu-llama-b5270-hermes        # Build production dm-verity image
 python prover/scripts/gcp/register_image.py \
-  --image humanfund-dmverity-hardened-v18 \
+  --image humanfund-dmverity-hardened-v19 \
   --verifier 0x...                            # Register image key on-chain
 python prover/scripts/gcp/verify_measurements.py \
-  --image humanfund-dmverity-hardened-v18 \
+  --image humanfund-dmverity-hardened-v19 \
   --verifier 0x...                            # Verify RTMR match
 
 # TEE enclave (local testing)
@@ -375,7 +375,7 @@ RPC_URL=https://sepolia.base.org
 CONTRACT_ADDRESS=0x...         # Deployed TheHumanFund contract address
 GCP_PROJECT=my-project         # GCP project ID
 GCP_ZONE=us-central1-a         # GCP zone with TDX support
-GCP_IMAGE=humanfund-dmverity-hardened-v18   # Production dm-verity disk image
+GCP_IMAGE=humanfund-dmverity-hardened-v19   # Production dm-verity disk image
 NTFY_CHANNEL=my-prover         # Optional: ntfy.sh channel
 ```
 

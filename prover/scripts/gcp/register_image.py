@@ -8,17 +8,17 @@ platform key, and registers it on-chain via TdxVerifier.approveImage().
 Usage:
     # Register a new image (creates a temporary VM, extracts measurements, registers)
     python prover/scripts/gcp/register_image.py \
-        --image humanfund-dmverity-hardened-v18 \
+        --image humanfund-dmverity-hardened-v19 \
         --verifier 0x1D9E...
 
     # Use an already-running VM (skip VM creation)
     python prover/scripts/gcp/register_image.py \
-        --vm-name humanfund-measure-v18 \
+        --vm-name humanfund-measure-v19 \
         --verifier 0x1D9E...
 
     # Dry run (extract and display key without registering)
     python prover/scripts/gcp/register_image.py \
-        --image humanfund-dmverity-hardened-v18 \
+        --image humanfund-dmverity-hardened-v19 \
         --verifier 0x1D9E... \
         --dry-run
 """
