@@ -43,8 +43,11 @@
     --nav-bg: rgba(245, 245, 247, 0.9);
     --modal-overlay: rgba(0,0,0,0.35);
     --accent-bg: rgba(74,110,204,0.1);
-    --chart-line: #4a6ecc;
-    --chart-fill: rgba(74,110,204,0.08);
+    /* Match the Treasury card's "Liquid ETH" (green) and "Invested" (cyan) labels. */
+    --chart-line: #1a9960;
+    --chart-fill: rgba(26,153,96,0.18);
+    --chart-invested-line: #1898a0;
+    --chart-invested-fill: rgba(24,152,160,0.18);
     --chart-bar-pos: rgba(26,153,96,0.4);
     --chart-bar-neg: rgba(208,64,64,0.3);
     --chart-bar-pos-border: #1a9960;
@@ -342,6 +345,9 @@
     padding: 28px;
     max-width: 480px; width: 90%;
     position: relative;
+    /* Stop touch-scroll inside the modal from bubbling to the page behind
+       it on mobile (iOS Safari is the worst offender). */
+    overscroll-behavior: contain;
   }
 
   .modal h3 {
@@ -1159,13 +1165,13 @@
     <div class="diary-viewer-layout">
       <div class="diary-viewer-left">
         <div style="font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.7px;color:var(--text-dim);margin-bottom:10px;">Messages Read</div>
-        <div id="diary-viewer-messages" style="font-size:13px;color:var(--text-secondary);max-height:400px;overflow-y:auto;">
+        <div id="diary-viewer-messages" style="font-size:13px;color:var(--text-secondary);max-height:400px;overflow-y:auto;overscroll-behavior:contain;">
           <div style="color:var(--text-dim);font-style:italic;">No messages this epoch</div>
         </div>
       </div>
       <div class="diary-viewer-right">
         <div style="font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.7px;color:var(--text-dim);margin-bottom:10px;">Diary Entry</div>
-        <div id="diary-viewer-entry" style="font-size:13px;line-height:1.8;white-space:pre-wrap;word-wrap:break-word;max-height:400px;overflow-y:auto;">
+        <div id="diary-viewer-entry" style="font-size:13px;line-height:1.8;white-space:pre-wrap;word-wrap:break-word;max-height:400px;overflow-y:auto;overscroll-behavior:contain;">
         </div>
         <div id="diary-viewer-action" style="margin-top:12px;font-family:var(--mono);font-size:12px;color:var(--text-secondary);padding:8px 12px;background:var(--bg);border-radius:var(--radius-xs);"></div>
         <div id="diary-viewer-memory"></div>
@@ -1331,7 +1337,7 @@ const FUND_ABI = [
   "function messageCount() view returns (uint256)",
   "function messageHead() view returns (uint256)",
   "function messages(uint256) view returns (address sender, uint256 amount, string text, uint256 epoch)",
-  "function getEpochSnapshot(uint256 epoch) view returns (uint256 epoch_, uint256 balance, uint256 commissionRateBps, uint256 maxBid, uint256 effectiveMaxBid, uint256 consecutiveMissedEpochs, uint256 lastDonationEpoch, uint256 lastCommissionChangeEpoch, uint256 totalInflows, uint256 totalDonatedToNonprofits, uint256 totalCommissionsPaid, uint256 totalBountiesPaid, uint256 currentEpochInflow, uint256 currentEpochDonationCount, uint256 epochEthUsdPrice, uint256 epochDuration, uint256 messageHead, uint256 messageCount, uint256 nonprofitCount)",
+  "function getEpochSnapshot(uint256 epoch) view returns (tuple(uint256 epoch, uint256 balance, uint256 commissionRateBps, uint256 maxBid, uint256 effectiveMaxBid, uint256 consecutiveMissedEpochs, uint256 lastDonationEpoch, uint256 lastCommissionChangeEpoch, uint256 totalInflows, uint256 totalDonatedToNonprofits, uint256 totalCommissionsPaid, uint256 totalBountiesPaid, uint256 currentEpochInflow, uint256 currentEpochDonationCount, uint256 epochEthUsdPrice, uint256 epochDuration, uint256 messageHead, uint256 messageCount, uint256 nonprofitCount, bytes32 nonprofitsHash, bytes32 messagesHash, bytes32 historyHash, bytes32 memoryHash, bytes32 investmentsHash, uint256 investmentProtocolCount, uint256[21] investmentCurrentValues, bool[21] investmentActive))",
   // Linked contracts
   "function agentMemory() view returns (address)",
   "function investmentManager() view returns (address)",
@@ -1367,7 +1373,7 @@ const INVESTMENT_ABI = [
 ];
 
 const AGENT_MEMORY_ABI = [
-  "function getMemory() view returns (tuple(string title, string body)[10])",
+  "function getEntries() view returns (tuple(string title, string body)[10])",
 ];
 
 const AUCTION_ABI = [
@@ -1837,7 +1843,7 @@ ACTIONS (choose exactly one per epoch):
 
 // Memory (v20+): 10 slots, each a {title, body} pair. Titles are
 // model-authored — there's no fixed SLOT_NAMES table. The frontend
-// reads titles live from the chain via AgentMemory.getMemory().
+// reads titles live from the chain via AgentMemory.getEntries().
 const MEMORY_SLOT_COUNT = 10;
 
 // Freeze flag definitions
@@ -2019,6 +2025,25 @@ function toggleHeroDiary() {
   body.classList.toggle('collapsed');
   btn.textContent = body.classList.contains('collapsed') ? '+' : '\u2212';
 }
+
+// Lock body scroll while any modal is open so mobile touches scroll the
+// modal's inner content instead of the page behind it. Watching class
+// changes on every .modal-overlay catches all open/close paths in one
+// place — modal X buttons toggle classList.remove directly, so we can't
+// rely on closeModal() being called.
+(function setupModalBodyLock() {
+  const sync = () => {
+    const anyOpen = document.querySelector('.modal-overlay.open') !== null;
+    document.body.style.overflow = anyOpen ? 'hidden' : '';
+  };
+  document.addEventListener('DOMContentLoaded', () => {
+    const obs = new MutationObserver(sync);
+    document.querySelectorAll('.modal-overlay').forEach(el => {
+      obs.observe(el, { attributes: true, attributeFilter: ['class'] });
+    });
+    sync();
+  });
+})();
 
 function openModal(id, opts = {}) {
   // 'message' redirects to the unified donate modal, focused on the message field
@@ -2446,10 +2471,10 @@ async function loadAll() {
   try {
     const currentBlock = await provider.getBlockNumber();
     const [diaryLogs, rejectedLogs, donationLogs, npDonationLogs] = await Promise.all([
-      fund.queryFilter(fund.filters.DiaryEntry(), DEPLOY_BLOCK, currentBlock),
-      fund.queryFilter(fund.filters.ActionRejected(), DEPLOY_BLOCK, currentBlock),
-      fund.queryFilter(fund.filters.DonationReceived(), DEPLOY_BLOCK, currentBlock),
-      fund.queryFilter(fund.filters.NonprofitDonation(), DEPLOY_BLOCK, currentBlock),
+      queryFilterChunked(fund, fund.filters.DiaryEntry(), DEPLOY_BLOCK, currentBlock),
+      queryFilterChunked(fund, fund.filters.ActionRejected(), DEPLOY_BLOCK, currentBlock),
+      queryFilterChunked(fund, fund.filters.DonationReceived(), DEPLOY_BLOCK, currentBlock),
+      queryFilterChunked(fund, fund.filters.NonprofitDonation(), DEPLOY_BLOCK, currentBlock),
     ]);
     for (const log of diaryLogs) {
       diaryEventsByEpoch[Number(log.args[0])] = log.transactionHash;
@@ -2462,12 +2487,21 @@ async function loadAll() {
     const epochBlockPairs = Object.entries(diaryBlockByEpoch)
       .map(([ep, bn]) => ({ epoch: Number(ep), block: Number(bn) }))
       .sort((a, b) => a.block - b.block);
+    // Latest executed epoch — used as the fallback bucket for donations
+    // that occurred after every recorded execution (post-settle window of
+    // the current bar). Attributing to currentEpochNum doesn't work
+    // because that epoch may not yet have an executed bar to host the
+    // value.
+    const latestExecuted = epochBlockPairs.length
+      ? epochBlockPairs[epochBlockPairs.length - 1].epoch
+      : null;
     for (const log of donationLogs) {
       const block = log.blockNumber;
       const amount = parseFloat(ethers.formatEther(log.args[1]));
       const epochEntry = epochBlockPairs.find(e => e.block >= block);
-      if (epochEntry) {
-        inflowsByEpoch[epochEntry.epoch] = (inflowsByEpoch[epochEntry.epoch] || 0) + amount;
+      const targetEpoch = epochEntry ? epochEntry.epoch : latestExecuted;
+      if (targetEpoch !== null) {
+        inflowsByEpoch[targetEpoch] = (inflowsByEpoch[targetEpoch] || 0) + amount;
       }
     }
     // NonprofitDonation events are epoch-indexed directly
@@ -2589,37 +2623,79 @@ async function loadAll() {
     document.getElementById('fund-invested').textContent = 'N/A';
   }
 
-  // Treasury chart (compact)
+  // Treasury chart (stacked area: liquid + invested)
   if (diaryEntries.length > 0) {
     const chartData = [...diaryEntries].reverse();
     const labels = chartData.map(e => `E${e.epoch}`);
-    const values = chartData.map(e => parseFloat(ethers.formatEther(e.treasuryAfter)));
+    const liquidValues = chartData.map(e => parseFloat(ethers.formatEther(e.treasuryAfter)));
+
+    // Per-epoch invested value comes from the *next* epoch's snapshot
+    // (frozen at auction-open, after the prior epoch executed). Includes
+    // accrued yield because investmentCurrentValues calls the live adapter.
+    // Snapshots are immutable once the epoch opens, so cache them.
+    const investedValues = await Promise.all(chartData.map(async (e) => {
+      const nextEpoch = e.epoch + 1;
+      if (nextEpoch > currentEpochNum) {
+        // No future snapshot yet — use live invested for the rightmost bar.
+        return parseFloat(ethers.formatEther(totalInvested));
+      }
+      const cached = cacheGet('snap-inv', nextEpoch);
+      if (cached !== null) return cached;
+      try {
+        const snap = await fund.getEpochSnapshot(nextEpoch);
+        const pCount = Number(snap.investmentProtocolCount);
+        let sum = 0n;
+        for (let i = 1; i <= pCount; i++) {
+          sum += snap.investmentCurrentValues[i];
+        }
+        const eth = parseFloat(ethers.formatEther(sum));
+        cacheSet('snap-inv', nextEpoch, eth);
+        return eth;
+      } catch {
+        return 0;
+      }
+    }));
+
+    // Same live-truth correction as the inflows fix: if the latest entry
+    // is the current live epoch, replace its liquid value with live
+    // treasuryBalance so post-settle donations show.
+    const last = chartData[chartData.length - 1];
+    if (last && last.epoch === currentEpochNum) {
+      liquidValues[liquidValues.length - 1] = parseFloat(ethers.formatEther(treasury));
+    }
 
     if (treasuryChart) treasuryChart.destroy();
     treasuryChart = new Chart(document.getElementById('treasury-chart'), {
       type: 'line',
       data: {
         labels,
-        datasets: [{
-          data: values,
-          borderColor: cv('--chart-line'),
-          backgroundColor: cv('--chart-fill'),
-          fill: true, tension: 0.3,
-          pointRadius: 2, pointBackgroundColor: cv('--chart-line'),
-          borderWidth: 1.5,
-        }]
+        datasets: [
+          {
+            label: 'Invested',
+            data: investedValues,
+            borderColor: cv('--chart-invested-line'),
+            backgroundColor: cv('--chart-invested-fill'),
+            fill: 'origin', tension: 0.3,
+            pointRadius: 2, pointBackgroundColor: cv('--chart-invested-line'),
+            borderWidth: 1.5,
+          },
+          {
+            label: 'Liquid',
+            data: liquidValues,
+            borderColor: cv('--chart-line'),
+            backgroundColor: cv('--chart-fill'),
+            fill: '-1', tension: 0.3,
+            pointRadius: 2, pointBackgroundColor: cv('--chart-line'),
+            borderWidth: 1.5,
+          },
+        ]
       },
       options: {
         responsive: true, maintainAspectRatio: false,
         plugins: { legend: { display: false } },
         scales: {
-          x: {
-            display: false,
-          },
-          y: {
-            display: false,
-            beginAtZero: false,
-          }
+          x: { display: false },
+          y: { display: false, stacked: true, beginAtZero: false },
         }
       }
     });
@@ -2768,7 +2844,7 @@ async function loadAll() {
     const memAddr = await fund.agentMemory();
     if (memAddr && memAddr !== '0x0000000000000000000000000000000000000000') {
       agentMemoryContract = new ethers.Contract(memAddr, AGENT_MEMORY_ABI, provider);
-      const raw = await agentMemoryContract.getMemory();
+      const raw = await agentMemoryContract.getEntries();
       // ethers v6 returns tuple[] as arrays of tuple-like Result objects —
       // index both by name and by position for resilience.
       const slots = Array.from(raw).map((p, i) => ({
@@ -3055,7 +3131,7 @@ async function loadEvents() {
     allEvents = [];
     for (const def of eventDefs) {
       try {
-        const logs = await fund.queryFilter(fund.filters[def.filter](), DEPLOY_BLOCK, currentBlock);
+        const logs = await queryFilterChunked(fund, fund.filters[def.filter](), DEPLOY_BLOCK, currentBlock);
         for (const log of logs) {
           let detail = '';
           try {
@@ -3132,6 +3208,20 @@ async function init() {
 
     provider = new ethers.JsonRpcProvider(RPC_URL, undefined, { batchMaxCount: 1 });
     fund = new ethers.Contract(CONTRACT_ADDRESS, FUND_ABI, provider);
+
+    // Base Sepolia public RPC caps eth_getLogs at 10,000 blocks per call;
+    // wide queryFilter calls otherwise fail silently and leave the page
+    // missing chart data. Paginate at 9,500 to stay under the limit with
+    // a small margin.
+    window.queryFilterChunked = async function(contract, filter, fromBlock, toBlock, chunk = 9500) {
+      const out = [];
+      for (let start = fromBlock; start <= toBlock; start += chunk) {
+        const end = Math.min(start + chunk - 1, toBlock);
+        const logs = await contract.queryFilter(filter, start, end);
+        out.push(...logs);
+      }
+      return out;
+    };
 
     document.getElementById('contract-link').textContent = fmtAddr(CONTRACT_ADDRESS);
     document.getElementById('contract-link').href = `${EXPLORER}/address/${CONTRACT_ADDRESS}`;
