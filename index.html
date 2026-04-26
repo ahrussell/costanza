@@ -344,6 +344,11 @@
     border-radius: var(--radius);
     padding: 28px;
     max-width: 480px; width: 90%;
+    /* Cap the modal at 90vh and let it scroll internally — without this,
+       a tall diary modal grows past the viewport and the user can't
+       reach the close button at the top. */
+    max-height: 90vh;
+    overflow-y: auto;
     position: relative;
     /* Stop touch-scroll inside the modal from bubbling to the page behind
        it on mobile (iOS Safari is the worst offender). */
@@ -376,6 +381,14 @@
     .hero-image { border-radius: var(--radius) var(--radius) 0 0; max-height: 300px; }
     .hero-stats-row { grid-template-columns: 1fr 1fr; }
     .hero-participate { flex-direction: column; }
+    /* Pin the close button to the viewport on mobile so it's always
+       reachable even when the modal content scrolls. */
+    .modal-close {
+      position: fixed;
+      top: 16px;
+      right: 16px;
+      z-index: 1001;
+    }
   }
 
   /* ── Stats ────────────────────────────────────────── */
