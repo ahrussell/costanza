@@ -334,6 +334,7 @@ def _clamp_memory_sidecar(action_json: dict, notes: List[str]) -> None:
 
     cleaned: List[dict] = []
     dropped = 0
+    cleared_empties = 0
     for entry in raw:
         if not isinstance(entry, dict):
             dropped += 1
@@ -350,9 +351,22 @@ def _clamp_memory_sidecar(action_json: dict, notes: List[str]) -> None:
             dropped += 1
             continue
 
-        # Title + body.
+        # Two valid shapes (matches grammar):
+        #   {"slot": N, "clear": true}      — explicit clear, encoded as ("", "")
+        #   {"slot": N, "title": ..., "body": ...}  — both must be non-empty
+        # Anything else (omitted fields, empty title, empty body without
+        # clear=true) is dropped here as a defensive backstop. Without
+        # this, an off-grammar JSON path (e.g. fallback parser) could
+        # silently wipe a slot the model didn't intend to clear.
+        if entry.get("clear") is True:
+            cleaned.append({"slot": slot, "title": "", "body": ""})
+            continue
+
         title = _truncate_utf8(entry.get("title", ""), MAX_TITLE_BYTES)
         body = _truncate_utf8(entry.get("body", ""), MAX_BODY_BYTES)
+        if not title or not body:
+            cleared_empties += 1
+            continue
 
         cleaned.append({"slot": slot, "title": title, "body": body})
 
@@ -365,6 +379,12 @@ def _clamp_memory_sidecar(action_json: dict, notes: List[str]) -> None:
         notes.append(
             f"memory sidecar dropped {dropped} malformed entr"
             f"{'ies' if dropped > 1 else 'y'} (bad slot or shape)"
+        )
+    if cleared_empties > 0:
+        notes.append(
+            f"memory sidecar dropped {cleared_empties} empty-field "
+            f"entr{'ies' if cleared_empties > 1 else 'y'} — to clear a "
+            f"slot use {{\"slot\": N, \"clear\": true}}"
         )
     if over_cap > 0:
         notes.append(

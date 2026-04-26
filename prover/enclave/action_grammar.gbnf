@@ -30,10 +30,18 @@ commission-params ::= "{" ws "\"rate_bps\":"     ws integer ws "}"
 
 memory-kv ::= "\"memory\":" ws "[" ws memory-body "]"
 memory-body ::= (memory-update (ws "," ws memory-update)*)? ws
-memory-update ::= "{" ws "\"slot\":" ws integer ws "," ws "\"title\":" ws string ws "," ws "\"body\":" ws string ws "}"
+
+# Two distinct shapes: a write must have non-empty title AND body; a clear
+# is its own opt-in shape `{slot, clear: true}`. Empty title or empty body
+# in a write is ungrammatical, so the model can't accidentally wipe a slot
+# by omitting fields.
+memory-update ::= write-update | clear-update
+write-update  ::= "{" ws "\"slot\":" ws integer ws "," ws "\"title\":" ws non-empty-string ws "," ws "\"body\":" ws non-empty-string ws "}"
+clear-update  ::= "{" ws "\"slot\":" ws integer ws "," ws "\"clear\":" ws "true" ws "}"
 
 integer ::= [0-9]+
 number  ::= "-"? ("0" | [1-9] [0-9]*) ("." [0-9]+)?
 string  ::= "\"" char* "\""
+non-empty-string ::= "\"" char+ "\""
 char    ::= [^"\\] | "\\" (["\\/bfnrt] | "u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F])
 ws      ::= [ \t\n]*
