@@ -12,7 +12,7 @@ Usage:
 
     # Verify an image by booting a temporary VM
     python prover/scripts/gcp/verify_measurements.py \
-        --image humanfund-dmverity-hardened-v6 \
+        --image humanfund-dmverity-hardened-v18 \
         --verifier 0x1D9E...
 
     # Verify against a known key (no chain access needed)
