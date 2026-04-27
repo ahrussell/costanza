@@ -14,10 +14,10 @@ ANCHORS_FILE = PROMPTS_DIR / "voice_anchors.txt"
 
 class TestParseAnchors(unittest.TestCase):
     def test_parses_production_file(self):
-        """The real prompts/voice_anchors.txt should parse into 10 samples."""
+        """The real prompts/voice_anchors.txt should parse into 11 samples."""
         text = ANCHORS_FILE.read_text()
         _, samples = parse_anchors(text)
-        self.assertEqual(len(samples), 10, f"expected 10 samples, got {len(samples)}")
+        self.assertEqual(len(samples), 11, f"expected 11 samples, got {len(samples)}")
 
     def test_samples_have_scenario_and_diary(self):
         text = ANCHORS_FILE.read_text()
