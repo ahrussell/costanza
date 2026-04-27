@@ -22,6 +22,7 @@ from .inference import (
     truncate_reasoning,
     strip_diary_meta_lines,
     strip_diary_stray_tags,
+    strip_datamarks_in_quotes,
     sanitize_thinking,
     _strip_trailing_diary_open,
     DEFAULT_THINK_TEMP,
@@ -237,6 +238,92 @@ class TestDiaryStripping(unittest.TestCase):
     def test_strip_diary_stray_tags_helper_directly(self):
         out = strip_diary_stray_tags("a <think>x</think> b <diary>y</diary> c")
         self.assertEqual(out, "a x b y c")
+
+
+class TestDatamarkStripping(unittest.TestCase):
+    """Datamarks (whitespace replaced with a per-epoch marker token) are
+    fed into the prompt to spotlight donor messages. The model occasionally
+    copies a marker into a quoted snippet of the diary; strip it back out
+    so the on-chain text reads naturally. Only inside double quotes —
+    outside, the diary stays exactly as written."""
+
+    MARKER = "^~|@#"  # contains regex metacharacters; tests `re.escape` use
+
+    def test_strips_marker_inside_ascii_quote(self):
+        out = strip_datamarks_in_quotes(
+            'She wrote "hello^~|@#world" yesterday.', self.MARKER
+        )
+        self.assertEqual(out, 'She wrote "hello world" yesterday.')
+
+    def test_strips_marker_inside_curly_quote(self):
+        out = strip_datamarks_in_quotes(
+            "She wrote “hello^~|@#world” yesterday.", self.MARKER
+        )
+        self.assertEqual(out, "She wrote “hello world” yesterday.")
+
+    def test_leaves_marker_outside_quotes_untouched(self):
+        # No quotes at all: marker passes through unchanged.
+        text = "the marker was ^~|@# and that is fine"
+        self.assertEqual(strip_datamarks_in_quotes(text, self.MARKER), text)
+
+    def test_only_in_quote_occurrence_is_stripped(self):
+        out = strip_datamarks_in_quotes(
+            'token ^~|@# stayed; "quoted^~|@#word" cleaned.', self.MARKER
+        )
+        self.assertEqual(out, 'token ^~|@# stayed; "quoted word" cleaned.')
+
+    def test_multiple_marker_runs_in_one_quote(self):
+        out = strip_datamarks_in_quotes(
+            '"a^~|@#b^~|@#c"', self.MARKER
+        )
+        self.assertEqual(out, '"a b c"')
+
+    def test_unbalanced_quote_is_noop(self):
+        # Single opening quote, no close: regex finds no balanced span.
+        text = 'an unclosed "hello^~|@#world here'
+        self.assertEqual(strip_datamarks_in_quotes(text, self.MARKER), text)
+
+    def test_mismatched_ascii_curly_pair_is_noop(self):
+        # ASCII open + curly close (or vice versa) — left alone by design.
+        text = 'mixed "hello^~|@#world” pair'
+        self.assertEqual(strip_datamarks_in_quotes(text, self.MARKER), text)
+
+    def test_no_marker_arg_is_noop(self):
+        text = '"contains^~|@#text"'
+        self.assertEqual(strip_datamarks_in_quotes(text, None), text)
+        self.assertEqual(strip_datamarks_in_quotes(text, ""), text)
+
+    def test_marker_with_regex_metachars_escaped(self):
+        # All eight chars of _MARKER_ALPHABET — exercises re.escape.
+        marker = "^~`|@"
+        out = strip_datamarks_in_quotes(f'"a{marker}b"', marker)
+        self.assertEqual(out, '"a b"')
+        marker2 = "$%#~^"
+        out2 = strip_datamarks_in_quotes(f'"x{marker2}y"', marker2)
+        self.assertEqual(out2, '"x y"')
+
+    @patch("prover.enclave.inference.call_llama")
+    def test_integration_strips_when_donor_marker_passed(self, mock_call):
+        mock_call.side_effect = [
+            _llama_resp("think"),
+            _llama_resp('She said "stop^~|@#it" loudly.'),
+            _llama_resp('"action":"do_nothing","params":{}}'),
+        ]
+        result = run_three_pass_inference(
+            "p<diary>\n", donor_marker=self.MARKER
+        )
+        self.assertIn('"stop it"', result["reasoning"])
+        self.assertNotIn("^~|@#", result["reasoning"])
+
+    @patch("prover.enclave.inference.call_llama")
+    def test_integration_no_marker_leaves_text_alone(self, mock_call):
+        mock_call.side_effect = [
+            _llama_resp("think"),
+            _llama_resp('She said "stop^~|@#it" loudly.'),
+            _llama_resp('"action":"do_nothing","params":{}}'),
+        ]
+        result = run_three_pass_inference("p<diary>\n")  # donor_marker=None
+        self.assertIn("^~|@#", result["reasoning"])
 
 
 class TestActionRetries(unittest.TestCase):

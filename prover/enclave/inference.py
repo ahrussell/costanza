@@ -203,6 +203,46 @@ def strip_diary_stray_tags(text: str) -> str:
     return _DIARY_STRAY_TAGS.sub("", text)
 
 
+# Quoted-span patterns for datamark stripping. ASCII pairs (`"…"`) and
+# curly pairs (`“…”`) are matched; mismatched pairs (e.g. ASCII open +
+# curly close) are left alone. The character classes intentionally
+# disallow the matching close char inside the span so each quoted region
+# stays balanced and short.
+_ASCII_QUOTED = re.compile(r'"([^"]*)"')
+_CURLY_QUOTED = re.compile('“([^”]*)”')
+
+
+def strip_datamarks_in_quotes(text: str, marker) -> str:
+    """Replace per-epoch datamark tokens with a single space inside
+    double-quoted spans of the diary.
+
+    Donor messages are spotlighted by replacing whitespace runs with a
+    pseudorandom marker (see `prompt_builder._generate_marker`). The
+    prompt instructs the model to read the marker as a space, but Hermes
+    occasionally copies a donor's text verbatim — marker and all —
+    inside a quote. Strip those leaked markers before the diary is
+    hashed and shipped on-chain.
+
+    Only runs inside ASCII (`"…"`) or curly (`“…”`) double-quoted
+    spans are touched; outside any quote the diary is left exactly as
+    the model wrote it. The marker alphabet contains regex
+    metacharacters, so `re.escape` is required.
+    """
+    if not marker:
+        return text
+    marker_pat = re.escape(marker)
+
+    def _replace_in_span(open_char: str, close_char: str):
+        def _sub(m):
+            cleaned = re.sub(marker_pat, " ", m.group(1))
+            return f"{open_char}{cleaned}{close_char}"
+        return _sub
+
+    text = _ASCII_QUOTED.sub(_replace_in_span('"', '"'), text)
+    text = _CURLY_QUOTED.sub(_replace_in_span('“', '”'), text)
+    return text
+
+
 def sanitize_thinking(text: str) -> str:
     """Strip XML-like instruction/override tags from the think output.
 
@@ -264,6 +304,7 @@ def run_three_pass_inference(
     think_max_tokens=DEFAULT_THINK_MAX_TOKENS,
     diary_max_tokens=DEFAULT_DIARY_MAX_TOKENS,
     action_max_tokens=DEFAULT_ACTION_MAX_TOKENS,
+    donor_marker=None,
 ):
     """Three-pass inference: think → diary → action.
 
@@ -342,6 +383,7 @@ def run_three_pass_inference(
         diary_raw = diary_raw.split("</diary>", 1)[0]
     diary = strip_diary_meta_lines(diary_raw.strip())
     diary = strip_diary_stray_tags(diary)
+    diary = strip_datamarks_in_quotes(diary, donor_marker)
     print(f"  Diary: {len(diary)} chars, {r2['elapsed_seconds']}s")
 
     # ---- Pass 3: ACTION JSON ----
@@ -448,6 +490,7 @@ def run_two_pass_inference(prompt, seed=-1, llama_url=DEFAULT_LLAMA_URL, **kwarg
         "frequency_penalty",
         "top_p", "top_k", "min_p",
         "think_max_tokens", "diary_max_tokens", "action_max_tokens",
+        "donor_marker",
     }
     forwarded = {k: v for k, v in kwargs.items() if k in valid}
     return run_three_pass_inference(

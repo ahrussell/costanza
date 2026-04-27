@@ -39,7 +39,7 @@ from .inference import run_three_pass_inference, truncate_reasoning
 from .action_encoder import parse_action, encode_action_bytes, validate_and_clamp_action
 from .input_hash import compute_input_hash, _keccak256
 from .attestation import get_tdx_quote, compute_report_data
-from .prompt_builder import build_epoch_context, build_full_prompt
+from .prompt_builder import build_epoch_context, build_full_prompt, derive_epoch_marker
 from .voice_anchors import parse_anchors, select_anchors, VOICE_ANCHOR_K
 
 # ─── GPU attestation artifact paths ─────────────────────────────────────
@@ -486,6 +486,7 @@ def main():
         log(f"  Epoch context built from verified state ({len(epoch_context)} chars)")
         full_prompt = build_full_prompt(system_prompt, epoch_context)
         log(f"  Full prompt: {len(full_prompt)} chars")
+        donor_marker = derive_epoch_marker(epoch_state, seed=seed)
 
         # Step 5: Start llama-server and run inference
         log("")
@@ -508,6 +509,7 @@ def main():
         # can see what happened next epoch.
         inference = run_three_pass_inference(
             full_prompt, seed=llama_seed, llama_url=LLAMA_SERVER_URL,
+            donor_marker=donor_marker,
         )
         action_json = inference.get("parsed_action")
         system_notes = []  # list[str] of clamp / fallback notices for the diary
