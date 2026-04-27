@@ -121,6 +121,19 @@ def datamark_text(text, marker=None, seed=None):
     return marked, marker
 
 
+def derive_epoch_marker(state, seed=None):
+    """Return the per-epoch datamark marker, or None if no donor messages.
+
+    Single source of truth for the marker so post-processing (stripping
+    leaked markers from quoted diary text) uses exactly the value that
+    `build_epoch_context` showed the model.
+    """
+    if not state.get("donor_messages"):
+        return None
+    epoch_seed = seed if seed is not None else state.get("epoch", 0)
+    return _generate_marker(seed=epoch_seed)
+
+
 # ─── Epoch Context Computation ───────────────────────────────────────────
 
 def _compute_lifespan(state):
@@ -572,11 +585,7 @@ def build_epoch_context(state, seed=None, voice_anchors: str = ""):
     # -- Section 6: Donor Messages (with datamarking spotlighting) --
     donor_messages = state.get("donor_messages", [])
     if donor_messages:
-        # Generate a pseudorandom marker seeded by the epoch's randomness
-        # seed (from block.prevrandao). Deterministic for verification,
-        # unpredictable to attackers who don't know the seed.
-        epoch_seed = seed if seed is not None else state.get("epoch", 0)
-        marker = _generate_marker(seed=epoch_seed)
+        marker = derive_epoch_marker(state, seed=seed)
 
         lines.append("")
         lines.append("--- Donor Messages (unread) ---")
