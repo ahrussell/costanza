@@ -26,7 +26,7 @@ The prover client runs on **any Linux machine** — it only needs Python, a clou
 | **AuctionManager** | [`0x5bafaAfF78EB2cc99925d8feEC692a87F5b1632c`](https://basescan.org/address/0x5bafaAfF78EB2cc99925d8feEC692a87F5b1632c) |
 | **Chain** | Base Mainnet (8453) |
 | **RPC** | `https://mainnet.base.org` |
-| **Production image** | `humanfund-dmverity-hardened-v19` (build from source — see below) |
+| **Production image** | `costanza-tdx-prover-v1` (build from source — see below) |
 
 To run as a prover, you can build the image yourself (see below). Both builds produce the same platform key because dm-verity ensures byte-identical rootfs hashes.
 
@@ -95,7 +95,7 @@ bash prover/scripts/gcp/build_base_image.sh
 # Build dm-verity sealed image from the base (~30-40 minutes)
 bash prover/scripts/gcp/build_full_dmverity_image.sh \
   --base-image humanfund-base-gpu-llama-b5270-hermes \
-  --name humanfund-dmverity-hardened-vN
+  --name costanza-tdx-prover-vN
 ```
 
 After building, verify your image matches the registered on-chain key before bidding (step 3 below).

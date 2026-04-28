@@ -8,7 +8,7 @@ platform key, and registers it on-chain via TdxVerifier.approveImage().
 Usage:
     # Register a new image (creates a temporary VM, extracts measurements, registers)
     python prover/scripts/gcp/register_image.py \
-        --image humanfund-dmverity-hardened-v19 \
+        --image costanza-tdx-prover-v1 \
         --verifier 0x1D9E...
 
     # Use an already-running VM (skip VM creation)
@@ -18,7 +18,7 @@ Usage:
 
     # Dry run (extract and display key without registering)
     python prover/scripts/gcp/register_image.py \
-        --image humanfund-dmverity-hardened-v19 \
+        --image costanza-tdx-prover-v1 \
         --verifier 0x1D9E... \
         --dry-run
 """
@@ -218,14 +218,18 @@ def main():
         image_key = compute_image_key(measurements)
 
         print(f"\n  Measurements:")
-        print(f"    MRTD:    {measurements['mrtd'].hex()[:32]}...")
-        print(f"    RTMR[1]: {measurements['rtmr1'].hex()[:32]}...")
-        print(f"    RTMR[2]: {measurements['rtmr2'].hex()[:32]}...")
+        print(f"    MRTD:    {measurements['mrtd'].hex()}")
+        if measurements.get('rtmr0'):
+            print(f"    RTMR[0]: {measurements['rtmr0'].hex()}  (not in image key)")
+        print(f"    RTMR[1]: {measurements['rtmr1'].hex()}")
+        print(f"    RTMR[2]: {measurements['rtmr2'].hex()}")
+        if measurements.get('rtmr3'):
+            print(f"    RTMR[3]: {measurements['rtmr3'].hex()}  (not in image key)")
         print(f"    Image key: 0x{image_key.hex()}")
         print(f"  Verifier: {args.verifier}")
 
         if args.dry_run:
-            print(f"\n  [DRY RUN] Would register image key 0x{image_key.hex()[:16]}...")
+            print(f"\n  [DRY RUN] Would register image key 0x{image_key.hex()}")
         else:
             register_on_chain(args.verifier, image_key, args.rpc_url, args.private_key)
 

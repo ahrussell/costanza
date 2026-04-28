@@ -712,7 +712,7 @@ The following are known limitations, reframed as scenarios where specific assump
 
 ### 9.8 GPU SPDM Attestation Currently Disabled
 
-**Assumption weakened:** A1 (TEE integrity) for the GPU side — the runtime GPU firmware/identity verification described in Appendix C is shipped in the enclave but gated off in the deployed image (`GPU_ATTESTATION_ENABLED=0` in `humanfund-dmverity-hardened-v19`).
+**Assumption weakened:** A1 (TEE integrity) for the GPU side — the runtime GPU firmware/identity verification described in Appendix C is shipped in the enclave but gated off in the deployed image (`GPU_ATTESTATION_ENABLED=0` in `costanza-tdx-prover-v1`).
 
 **Scenario:** NVIDIA's published RIMs for driver `580.126.09` do not cover the firmware variant GCP's `a3-highgpu-1g` H100 fleet runs in practice. With the verifier enabled, `nv-local-gpu-verifier` reports `overall_status=False` on a perfectly-behaved CC-mode H100 — the measurement-comparison step (Appendix C, step 4) fails at index 9 (VBIOS firmware) because the runtime hash is not among the two golden values listed in NVIDIA's published RIM. Re-fetching the RIM live from the same GPU returns a byte-identical XML, so this is not a stale-cache issue — NVIDIA simply hasn't published a RIM that names the firmware hash GCP is actually running. We considered shipping multiple bundled RIMs (deferred per §C.6) and a passthrough "warn-only" mode, and rejected both: the first requires NVIDIA to publish RIMs we don't have, and the second turns a load-bearing check into a no-op without surfacing that fact.
 
