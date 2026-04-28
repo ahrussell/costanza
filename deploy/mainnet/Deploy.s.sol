@@ -7,7 +7,6 @@ import "../../src/AuctionManager.sol";
 import "../../src/TdxVerifier.sol";
 import "../../src/InvestmentManager.sol";
 import "../../src/AgentMemory.sol";
-import "../../src/adapters/AaveV3WETHAdapter.sol";
 import "../../src/adapters/AaveV3USDCAdapter.sol";
 import "../../src/adapters/WstETHAdapter.sol";
 import "../../src/adapters/CbETHAdapter.sol";
@@ -37,14 +36,16 @@ import "../../src/adapters/MorphoWETHAdapter.sol";
 /// Base Mainnet DeFi addresses (required for adapter deployment):
 ///   AAVE_V3_POOL         — Aave V3 Pool
 ///   AAVE_WETH            — WETH token
-///   AAVE_AWETH           — Aave aWETH token
 ///   USDC                 — USDC token
 ///   AAVE_AUSDC           — Aave aUSDC token
 ///   SWAP_ROUTER          — Uniswap V3 SwapRouter
 ///   ETH_USD_FEED         — Chainlink ETH/USD price feed
 ///   WSTETH               — Lido wstETH token
-///   CBETH                — Coinbase cbETH token
+///   WSTETH_RATE_FEED     — Chainlink wstETH/stETH exchange-rate feed
+///   CBETH                — Coinbase cbETH token (bridged on Base)
+///   CBETH_RATE_FEED      — Chainlink CBETH/ETH exchange-rate feed
 ///   COMPOUND_COMET       — Compound V3 Comet (USDC market)
+///   MORPHO_GAUNTLET_WETH — Morpho/Gauntlet WETH Core vault
 contract Deploy is Script {
     function run() external {
         uint256 seedAmount = vm.envOr("SEED_AMOUNT", uint256(0.01 ether));
@@ -148,7 +149,6 @@ contract Deploy is Script {
     struct DeFiAddresses {
         address aavePool;
         address weth;
-        address aWeth;
         address usdc;
         address aUsdc;
         address swapRouter;
@@ -156,6 +156,7 @@ contract Deploy is Script {
         address wstETH;
         address wstEthRateFeed;
         address cbETH;
+        address cbEthRateFeed;
         address comet;
         address morphoGauntletWeth;
     }
@@ -163,7 +164,6 @@ contract Deploy is Script {
     function _loadDeFiAddresses() internal view returns (DeFiAddresses memory d) {
         d.aavePool   = vm.envAddress("AAVE_V3_POOL");
         d.weth       = vm.envAddress("AAVE_WETH");
-        d.aWeth      = vm.envAddress("AAVE_AWETH");
         d.usdc       = vm.envAddress("USDC");
         d.aUsdc      = vm.envAddress("AAVE_AUSDC");
         d.swapRouter = vm.envAddress("SWAP_ROUTER");
@@ -172,57 +172,59 @@ contract Deploy is Script {
         // Chainlink wstETH/stETH exchange-rate feed (Base: 0xB88BAc61a4Ca37C43a3725912B1f472c9A5bc061)
         d.wstEthRateFeed = vm.envAddress("WSTETH_RATE_FEED");
         d.cbETH      = vm.envAddress("CBETH");
+        // Chainlink CBETH/ETH exchange-rate feed (Base: 0x806b4Ac04501c29769051e42783cF04dCE41440b)
+        d.cbEthRateFeed = vm.envAddress("CBETH_RATE_FEED");
         d.comet      = vm.envAddress("COMPOUND_COMET");
         d.morphoGauntletWeth   = vm.envAddress("MORPHO_GAUNTLET_WETH");
     }
 
+    /// @dev Aave V3 WETH on Base is currently a frozen reserve (Aave governance
+    ///      response to the rsETH bridge exploit, partially unfrozen Mar 2026).
+    ///      Frozen reserves reject `supply()`, so we don't deploy an adapter for
+    ///      it. To re-enable later, write a separate deploy of AaveV3WETHAdapter
+    ///      and call `im.addProtocol(...)` from the multisig.
     function _deployAdapters(InvestmentManager im) internal {
         DeFiAddresses memory d = _loadDeFiAddresses();
         address mgr = address(im);
 
-        // Protocol 1: Aave V3 WETH (risk 1, ~3% APY)
-        address a1 = address(new AaveV3WETHAdapter(d.aavePool, d.weth, d.aWeth, mgr));
-        im.addProtocol(a1, "Aave V3 WETH",
-            "Lend ETH on Aave V3. Borrowers pay interest. Extensively audited, instant liquidity.", 1, 300);
-
-        // Protocol 2: Aave V3 USDC (risk 2, ~5% APY)
-        address a2 = address(new AaveV3USDCAdapter(
+        // Protocol 1: Aave V3 USDC (risk 2, ~5% APY)
+        address a1 = address(new AaveV3USDCAdapter(
             d.aavePool, d.usdc, d.aUsdc, d.weth, d.swapRouter, d.ethUsdFeed, mgr
         ));
-        im.addProtocol(a2, "Aave V3 USDC",
+        im.addProtocol(a1, "Aave V3 USDC",
             "Swap ETH to USDC, lend on Aave. Higher APY but you lose if ETH rises.", 2, 500);
 
-        // Protocol 3: Lido wstETH (risk 1, ~3.5% APY)
-        address a3 = address(new WstETHAdapter(d.wstETH, d.weth, d.swapRouter, d.wstEthRateFeed, mgr));
-        im.addProtocol(a3, "Lido wstETH",
+        // Protocol 2: Lido wstETH (risk 1, ~3.5% APY)
+        address a2 = address(new WstETHAdapter(d.wstETH, d.weth, d.swapRouter, d.wstEthRateFeed, mgr));
+        im.addProtocol(a2, "Lido wstETH",
             "Stake ETH via Lido for validator rewards. Risk: stETH depeg, slashing.", 1, 350);
 
-        // Protocol 4: Coinbase cbETH (risk 1, ~3% APY)
-        address a4 = address(new CbETHAdapter(d.cbETH, d.weth, d.swapRouter, mgr));
-        im.addProtocol(a4, "Coinbase cbETH",
+        // Protocol 3: Coinbase cbETH (risk 1, ~3% APY) — uses Chainlink CBETH/ETH feed
+        // for slippage / valuation; the bridged Base cbETH lacks the L1 exchangeRate().
+        address a3 = address(new CbETHAdapter(d.cbETH, d.weth, d.swapRouter, d.cbEthRateFeed, mgr));
+        im.addProtocol(a3, "Coinbase cbETH",
             "Coinbase staked ETH. Institutional backing. Deep liquidity on Base.", 1, 300);
 
-        // Protocol 5: Compound V3 USDC (risk 2, ~4% APY)
-        address a5 = address(new CompoundV3USDCAdapter(
+        // Protocol 4: Compound V3 USDC (risk 2, ~4% APY)
+        address a4 = address(new CompoundV3USDCAdapter(
             d.comet, d.usdc, d.weth, d.swapRouter, d.ethUsdFeed, mgr
         ));
-        im.addProtocol(a5, "Compound V3 USDC",
+        im.addProtocol(a4, "Compound V3 USDC",
             "Lend USDC on Compound V3. Simpler contract than Aave, less attack surface.", 2, 400);
 
-        // Protocol 6: Morpho / Gauntlet WETH Core (risk 2, ~5% APY)
-        address a6 = address(new MorphoWETHAdapter(
+        // Protocol 5: Morpho / Gauntlet WETH Core (risk 2, ~5% APY)
+        address a5 = address(new MorphoWETHAdapter(
             d.morphoGauntletWeth, d.weth, mgr, "Morpho Gauntlet WETH Core"
         ));
-        im.addProtocol(a6, "Morpho Gauntlet WETH Core",
+        im.addProtocol(a5, "Morpho Gauntlet WETH Core",
             "Curated lending vault managed by Gauntlet. Higher yield by concentrating into specific collateral pairs. Risk: curator misjudges a collateral asset.", 2, 500);
 
         console.log("--- Adapters ---");
-        console.log("  1. Aave V3 WETH:            ", a1);
-        console.log("  2. Aave V3 USDC:            ", a2);
-        console.log("  3. Lido wstETH:             ", a3);
-        console.log("  4. Coinbase cbETH:          ", a4);
-        console.log("  5. Compound V3 USDC:        ", a5);
-        console.log("  6. Morpho Gauntlet WETH Core:", a6);
+        console.log("  1. Aave V3 USDC:            ", a1);
+        console.log("  2. Lido wstETH:             ", a2);
+        console.log("  3. Coinbase cbETH:          ", a3);
+        console.log("  4. Compound V3 USDC:        ", a4);
+        console.log("  5. Morpho Gauntlet WETH Core:", a5);
     }
 
     function _seedMemory(TheHumanFund fund) internal {
