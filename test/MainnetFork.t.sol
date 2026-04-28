@@ -68,10 +68,10 @@ contract MainnetForkTest is EpochTest {
     address runner1 = address(0x4001);
 
     // Timing matching production
-    uint256 constant COMMIT_WIN = 1200;    // 20 min
-    uint256 constant REVEAL_WIN = 1200;    // 20 min
-    uint256 constant EXEC_WIN = 3000;      // 50 min
-    uint256 constant EPOCH_DUR = COMMIT_WIN + REVEAL_WIN + EXEC_WIN; // 90 min
+    uint256 constant COMMIT_WIN = 1800;    // 30 min
+    uint256 constant REVEAL_WIN = 1800;    // 30 min
+    uint256 constant EXEC_WIN = 3600;      // 60 min
+    uint256 constant EPOCH_DUR = COMMIT_WIN + REVEAL_WIN + EXEC_WIN; // 120 min
 
     modifier onlyOnFork() {
         // Skip these tests unless the test runner is forking a real Base chain.

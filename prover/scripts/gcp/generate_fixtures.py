@@ -230,7 +230,7 @@ def build_fixture(
         "epoch_inflow": 5 * 10**16 if message_count > 0 else 0,
         "epoch_donation_count": message_count,
         "epoch_eth_usd_price": eth_usd_price,
-        "epoch_duration": 5400,  # 90 min (mainnet)
+        "epoch_duration": 7200,  # 120 min (mainnet)
         "message_head": msg_head,
         "message_count": msg_count_total,
         "nonprofit_count": nonprofit_count,
