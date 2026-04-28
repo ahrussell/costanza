@@ -26,6 +26,7 @@ contract MockVerifier is IProofVerifier {
         return true;
     }
     function freeze() external {}
+    function transferOwner(address) external {}
 }
 
 // ─── Mock: donation executor — accepts ETH, returns fake USDC amount ─────────

@@ -163,8 +163,12 @@ contract InvestmentManager is IInvestmentManager, ReentrancyGuard {
     }
 
     /// @notice Transfer admin role.
-    function setAdmin(address _admin) external onlyAdmin {
+    /// @dev Callable by the current admin or by the fund contract. The latter
+    ///      lets TheHumanFund.transferOwnership fan out atomically.
+    function setAdmin(address _admin) external override {
+        if (msg.sender != admin && msg.sender != fund) revert Unauthorized();
         if (frozenAdmin) revert Frozen();
+        if (_admin == address(0)) revert Unauthorized();
         admin = _admin;
     }
 

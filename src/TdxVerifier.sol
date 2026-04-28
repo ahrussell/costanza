@@ -82,6 +82,7 @@ contract TdxVerifier is IProofVerifier {
     event ImageApproved(bytes32 indexed imageKey);
     event ImageRevoked(bytes32 indexed imageKey);
     event PermissionFrozen(string name);
+    event OwnerTransferred(address indexed previousOwner, address indexed newOwner);
 
     // ─── Constructor ─────────────────────────────────────────────────────
 
@@ -120,6 +121,19 @@ contract TdxVerifier is IProofVerifier {
         if (msg.sender != owner && msg.sender != fund) revert Unauthorized();
         frozenImages = true;
         emit PermissionFrozen("images");
+    }
+
+    /// @notice Transfer the verifier's owner to a new address.
+    /// @dev Callable by the current owner or by the fund contract. The latter
+    ///      lets TheHumanFund.transferOwnership fan out atomically. Not gated
+    ///      by frozenImages — even after the image registry is frozen, moving
+    ///      the (now-toothless) owner is still safe and lets the deploy wallet
+    ///      decommission cleanly.
+    function transferOwner(address newOwner) external override {
+        if (msg.sender != owner && msg.sender != fund) revert Unauthorized();
+        if (newOwner == address(0)) revert InvalidParams();
+        emit OwnerTransferred(owner, newOwner);
+        owner = newOwner;
     }
 
     // ─── IProofVerifier ─────────────────────────────────────────────────

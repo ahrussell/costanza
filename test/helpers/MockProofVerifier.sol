@@ -12,4 +12,6 @@ contract MockProofVerifier is IProofVerifier {
     }
 
     function freeze() external override {}
+
+    function transferOwner(address) external override {}
 }

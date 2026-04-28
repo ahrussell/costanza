@@ -1557,4 +1557,42 @@ contract TheHumanFundAuctionTest is EpochTest {
         assertEq(texts[0], "after epoch 1 open");
         assertEq(texts[1], "late arrival");
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Group 9: Revoked verifier rejection at submitAuctionResult
+    // ═══════════════════════════════════════════════════════════════════════
+
+    function test_submitAuctionResult_rejectsRevokedVerifier() public {
+        // Drive the auction to EXECUTION so the runner is eligible to submit.
+        _runAuctionTo(runner1, 0.005 ether, bytes32("revoked-test"));
+
+        // Revoke verifier ID 1 (the real TdxVerifier registered in setUp).
+        // verifiers[1] address binding stays — only the approval flag flips.
+        fund.revokeVerifier(1);
+        assertFalse(fund.verifierApproved(1));
+        assertEq(address(fund.verifiers(1)), address(verifier));
+
+        // Build a submission that would otherwise pass (correct DCAP output,
+        // matching report data) and verify it now reverts at the approval check.
+        bytes32 inputHash = fund.epochInputHashes(1);
+        bytes memory action = _doNothingAction();
+        bytes memory reasoning = bytes("would have been fine");
+        IAgentMemory.MemoryUpdate[] memory updates = _emptyUpdates();
+        bytes32 outputHash = fund.computeOutputHash(action, reasoning, updates);
+        bytes32 expectedReportData = sha256(abi.encodePacked(inputHash, outputHash));
+        AuctionMockDcapVerifier etchedMock =
+            AuctionMockDcapVerifier(0x95175096a9B74165BE0ac84260cc14Fc1c0EF5FF);
+        etchedMock.setOutput(_buildDcapOutput(expectedReportData));
+        etchedMock.setShouldSucceed(true);
+
+        vm.prank(runner1);
+        vm.expectRevert(TheHumanFund.InvalidParams.selector);
+        fund.submitAuctionResult(action, reasoning, bytes("mock_quote"), uint8(1), updates);
+
+        // Re-approving the same verifier address restores submission ability.
+        fund.approveVerifier(1, address(verifier));
+        assertTrue(fund.verifierApproved(1));
+        _submitAttestedResult(runner1, 1);
+        assertTrue(_executed(1));
+    }
 }

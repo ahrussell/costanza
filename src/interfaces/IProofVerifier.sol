@@ -20,4 +20,10 @@ interface IProofVerifier {
 
     /// @notice Permanently freeze the verifier's internal state (e.g., image registry).
     function freeze() external;
+
+    /// @notice Transfer the verifier's owner/admin to a new address.
+    /// @dev Implementations MUST authorize this for both the verifier's
+    ///      current owner AND the fund contract, so TheHumanFund's
+    ///      transferOwnership can fan out atomically.
+    function transferOwner(address newOwner) external;
 }
