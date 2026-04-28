@@ -19,7 +19,7 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 - **InvestmentManager**: [`0xD5C58523723F9ba367202A0e29c80358807b02D3`](https://basescan.org/address/0xD5C58523723F9ba367202A0e29c80358807b02D3)
 - **AgentMemory**: [`0x1370f47C7Ae6f6edF850bfF74c86BF591D7Ad3ae`](https://basescan.org/address/0x1370f47C7Ae6f6edF850bfF74c86BF591D7Ad3ae)
 - **Owner**: `0x495fB7ddD383be8030EFC93324Ff078f173eAb2A` (EOA, will transfer to Safe `0x6dF6f527E193fAf1334c26A6d811fAd62E79E5Db`)
-- **Epoch timing**: 90-min epochs (20m commit, 20m reveal, 50m execution)
+- **Epoch timing**: 120-min epochs (30m commit, 30m reveal, 60m execution)
 - **351 forge tests + 85 Python tests pass** (core + auction + TDX verifier + investment + memory + messages + cross-stack + system invariants + enclave inference + voice anchors)
 - GPU image: `humanfund-dmverity-hardened-v11`, key: `0xf23661d5f5a506472feb7c5fff267eb0b0d80caf5a87c0c831292e1f4809d614`
 - GCP TDX FMSPC `00806f050000` registered in Automata DCAP Dashboard

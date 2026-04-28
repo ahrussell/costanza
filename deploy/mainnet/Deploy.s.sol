@@ -95,8 +95,8 @@ contract Deploy is Script {
         fund.approveVerifier(1, address(tdxVerifier));  // ID 1 = Intel TDX
 
         AuctionManager am = new AuctionManager(address(fund));
-        // Production timing: 20m commit / 20m reveal / 50m exec = 90m epoch
-        fund.setAuctionManager(address(am), 20 minutes, 20 minutes, 50 minutes);
+        // Production timing: 30m commit / 30m reveal / 60m exec = 120m epoch
+        fund.setAuctionManager(address(am), 30 minutes, 30 minutes, 60 minutes);
 
         InvestmentManager im = new InvestmentManager(address(fund), deployer);
         fund.setInvestmentManager(address(im));
