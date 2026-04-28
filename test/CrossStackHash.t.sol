@@ -125,7 +125,7 @@ contract CrossStackHashTest is EpochTest {
         _assertCrossStackMatch(3, "with investments");
     }
 
-    /// @notice Test with populated memory entries — exercises _hash_worldview cross-stack.
+    /// @notice Test with populated memory entries — exercises _hashMemory cross-stack.
     function test_cross_stack_hash_with_memory() public {
         // Wire up AgentMemory
         AgentMemory wv = new AgentMemory(address(fund));

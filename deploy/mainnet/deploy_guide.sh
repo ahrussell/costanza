@@ -84,7 +84,7 @@ cat << 'IMAGE'
 # Build the production dm-verity image:
 bash scripts/build_full_dmverity_image.sh \
   --base-image humanfund-base-gpu-llama-b5270-hermes \
-  --name humanfund-dmverity-gpu-mainnet-v1
+  --name costanza-tdx-prover-v1
 
 # Register image key on-chain:
 VERIFIER=0x...  # TdxVerifier address from step 2
@@ -111,7 +111,7 @@ RPC_URL=https://mainnet.base.org
 CONTRACT_ADDRESS=0x...                               # TheHumanFund from step 2
 GCP_PROJECT=the-human-fund
 GCP_ZONE=us-central1-a
-GCP_IMAGE=humanfund-dmverity-gpu-mainnet-v1
+GCP_IMAGE=costanza-tdx-prover-v1
 NTFY_CHANNEL=humanfund-runner
 
 # Fund the runner wallet with ~0.05 ETH on Base for gas + bonds
