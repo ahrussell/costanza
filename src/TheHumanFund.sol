@@ -188,7 +188,7 @@ contract TheHumanFund is ReentrancyGuard {
     uint256 public constant BASE_BOND = 0.001 ether;         // Fixed bond, escalates on missed epochs
     uint256 public constant MIN_BOND_CAP = 0.1 ether;         // Bond cap floor (independent of treasury)
     uint256 public constant MAX_BOND_BPS = 1000;             // Bond cap as 10% of treasury
-    uint256 public constant MIN_MESSAGE_DONATION = 0.001 ether; // Minimum ETH to include a message
+    uint256 public constant MIN_MESSAGE_DONATION = 0.005 ether; // Minimum ETH to include a message
     uint256 public constant MAX_MESSAGE_LENGTH = 280;
     uint256 public constant MAX_MESSAGES_PER_EPOCH = 3;     // Max messages shown to the model per epoch
     uint256 public constant MAX_MEMORY_UPDATES_PER_EPOCH = 3; // Max memory sidecar updates per epoch
@@ -424,7 +424,7 @@ contract TheHumanFund is ReentrancyGuard {
 
     /// @notice Donate ETH to the fund with a message for the AI agent.
     /// @param referralCodeId The referral code ID (0 for no referral).
-    /// @param message A message for the agent (max 280 characters, requires >= 0.01 ETH).
+    /// @param message A message for the agent (max 280 characters, requires >= 0.005 ETH).
     function donateWithMessage(uint256 referralCodeId, string calldata message) external payable nonReentrant {
         _requireNotSunset();
         if (msg.value < MIN_MESSAGE_DONATION) revert InvalidParams();
