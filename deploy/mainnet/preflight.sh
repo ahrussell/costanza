@@ -32,7 +32,7 @@ CHAINLINK_FEEDS="https://data.chain.link/feeds/base/base"
 IRS_SEARCH="https://apps.irs.gov/app/eos/"
 UNISWAP_INFO="https://app.uniswap.org/explore/pools/base"
 
-ADDRESSES_FILE="scripts/base_addresses.json"
+ADDRESSES_FILE="deploy/mainnet/base_addresses.json"
 REPORT_DATE=$(date -u +"%Y-%m-%d %H:%M UTC")
 GIT_HASH=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 
@@ -421,11 +421,12 @@ fi
 
 section "9. Deploy Script Readiness"
 
-TODOS=$(grep -n "TODO\|FIXME\|HACK\|XXX" scripts/deploy_mainnet.sh 2>/dev/null || true)
+DEPLOY_SCRIPT="deploy/mainnet/Deploy.s.sol"
+TODOS=$(grep -n "TODO\|FIXME\|HACK\|XXX" "$DEPLOY_SCRIPT" 2>/dev/null || true)
 if [[ -z "$TODOS" ]]; then
-    pass "No TODO/FIXME items in deploy_mainnet.sh"
+    pass "No TODO/FIXME items in $DEPLOY_SCRIPT"
 else
-    fail "Unresolved TODOs in deploy_mainnet.sh:"
+    fail "Unresolved TODOs in $DEPLOY_SCRIPT:"
     echo "$TODOS" | while read -r line; do evidence "$line"; done
 fi
 
