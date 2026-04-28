@@ -95,26 +95,40 @@ contract Deploy is Script {
         TdxVerifier tdxVerifier = new TdxVerifier(address(fund));
         fund.approveVerifier(1, address(tdxVerifier));  // ID 1 = Intel TDX
 
-        AuctionManager am = new AuctionManager(address(fund));
-        // Production timing: 30m commit / 30m reveal / 60m exec = 120m epoch
-        fund.setAuctionManager(address(am), 30 minutes, 30 minutes, 60 minutes);
-
+        // Wire investment + memory subcontracts BEFORE setAuctionManager.
+        // setAuctionManager opens epoch 1 and freezes the snapshot — anything
+        // not wired in by then has memoryHash=0 / investmentsHash=0 in the
+        // snapshot while the live state has the wired values, which makes
+        // epoch 1's input hash diverge between the contract and the TEE.
+        // See test_deploy_epoch_1_snapshot_matches_live_state.
         InvestmentManager im = new InvestmentManager(address(fund), deployer);
         fund.setInvestmentManager(address(im));
 
         AgentMemory wv = new AgentMemory(address(fund));
         fund.setAgentMemory(address(wv));
 
-        // Seed initial memory
+        // Seed initial memory before the snapshot so the seeded entries
+        // are part of epoch 1's memoryHash.
         _seedMemory(fund);
 
         // ─── 2. DeFi adapters ───────────────────────────────────────────
         // Only deployed if DeFi addresses are provided (mainnet/fork).
         // On bare testnet without DeFi protocols, skip adapter deployment.
+        // Adapters must be registered before setAuctionManager so the
+        // protocol set is in epoch 1's investmentsHash.
 
         if (_hasEnv("AAVE_V3_POOL")) {
             _deployAdapters(im);
         }
+
+        // ─── 3. Open epoch 1 (must be last) ─────────────────────────────
+        // setAuctionManager runs the eager-open path: it freezes the epoch 1
+        // EpochSnapshot and computes epochBaseInputHashes[1]. By design every
+        // piece of state visible to the TEE must be wired here.
+
+        AuctionManager am = new AuctionManager(address(fund));
+        // Production timing: 30m commit / 30m reveal / 60m exec = 120m epoch
+        fund.setAuctionManager(address(am), 30 minutes, 30 minutes, 60 minutes);
 
         vm.stopBroadcast();
 
