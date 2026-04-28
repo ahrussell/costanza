@@ -8,7 +8,6 @@ import "../src/AuctionManager.sol";
 import "../src/TdxVerifier.sol";
 import "../src/InvestmentManager.sol";
 import "../src/AgentMemory.sol";
-import "../src/adapters/AaveV3WETHAdapter.sol";
 import "../src/adapters/AaveV3USDCAdapter.sol";
 import "../src/adapters/WstETHAdapter.sol";
 import "../src/adapters/CbETHAdapter.sol";
@@ -43,11 +42,11 @@ contract MainnetForkTest is EpochTest {
     address constant SWAP_ROUTER       = 0x2626664c2603336E57B271c5C0b26F421741e481;
     address constant ETH_USD_FEED      = 0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70;
     address constant WSTETH_RATE_FEED  = 0xB88BAc61a4Ca37C43a3725912B1f472c9A5bc061;
+    address constant CBETH_RATE_FEED   = 0x806b4Ac04501c29769051e42783cF04dCE41440b;
     address constant DCAP_VERIFIER     = 0x95175096a9B74165BE0ac84260cc14Fc1c0EF5FF;
 
     // DeFi protocols
     address constant AAVE_POOL         = 0xA238Dd80C259a72e81d7e4664a9801593F98d1c5;
-    address constant AAVE_AWETH        = 0xD4a0e0b9149BCee3C920d2E00b5dE09138fd8bb7;
     address constant AAVE_AUSDC        = 0x4e65fE4DbA92790696d040ac24Aa414708F5c0AB;
     address constant WSTETH            = 0xc1CBa3fCea344f92D9239c08C0568f6F2F0ee452;
     address constant CBETH             = 0x2Ae3F1Ec7F1F5012CFEab0185bfc7aa3cf0DEc22;
@@ -63,7 +62,12 @@ contract MainnetForkTest is EpochTest {
     InvestmentManager im;
     AgentMemory wv;
 
-    address owner = address(0xDEAFBEEF);
+    // Owner is the test contract itself so onlyOwner methods (nextPhase,
+    // resetAuction, approveVerifier) can be called without an extra prank
+    // dance, and so EpochTest helpers like speedrunEpoch / _registerMockVerifier
+    // work without a hand-rolled prank wrapper. Matches every other test in
+    // the repo. Keeping a distinct named symbol for readability in assertions.
+    address owner = address(this);
     address donor = address(0xD0D0);
     address runner1 = address(0x4001);
 
@@ -84,14 +88,13 @@ contract MainnetForkTest is EpochTest {
     }
 
     function setUp() public {
-        vm.deal(owner, 10 ether);
+        // owner == address(this); no need to vm.deal(owner) — the test
+        // contract gets a default balance from forge.
         vm.deal(donor, 10 ether);
         vm.deal(runner1, 10 ether);
 
         // Skip setup work if we're not actually on a fork (WETH code wouldn't exist)
         if (WETH.code.length == 0) return;
-
-        vm.startPrank(owner);
 
         // ─── Deploy core ────────────────────────────────────────────────
         fund = new TheHumanFund{value: 0.1 ether}(
@@ -126,38 +129,36 @@ contract MainnetForkTest is EpochTest {
         wv = new AgentMemory(address(fund));
         fund.setAgentMemory(address(wv));
 
-        // Register all 6 production adapters pointing at real Base contracts
-        AaveV3WETHAdapter a1 = new AaveV3WETHAdapter(AAVE_POOL, WETH, AAVE_AWETH, address(im));
-        im.addProtocol(address(a1), "Aave V3 WETH", "Lend ETH on Aave V3", 1, 300);
-
-        AaveV3USDCAdapter a2 = new AaveV3USDCAdapter(
+        // Register the 5 production adapters pointing at real Base contracts.
+        // Aave V3 WETH is intentionally NOT deployed: the WETH reserve on Base
+        // is currently a frozen Aave reserve (rsETH bridge exploit fallout).
+        // Re-add it later via owner-only addProtocol when Aave unfreezes WETH.
+        // Protocol IDs (1..5) below are assigned sequentially by addProtocol.
+        AaveV3USDCAdapter a1 = new AaveV3USDCAdapter(
             AAVE_POOL, USDC, AAVE_AUSDC, WETH, SWAP_ROUTER, ETH_USD_FEED, address(im)
         );
-        im.addProtocol(address(a2), "Aave V3 USDC", "Swap ETH->USDC, lend on Aave", 2, 500);
+        im.addProtocol(address(a1), "Aave V3 USDC", "Swap ETH->USDC, lend on Aave", 2, 500);
 
-        WstETHAdapter a3 = new WstETHAdapter(WSTETH, WETH, SWAP_ROUTER, WSTETH_RATE_FEED, address(im));
-        im.addProtocol(address(a3), "Lido wstETH", "Stake ETH via Lido", 1, 350);
+        WstETHAdapter a2 = new WstETHAdapter(WSTETH, WETH, SWAP_ROUTER, WSTETH_RATE_FEED, address(im));
+        im.addProtocol(address(a2), "Lido wstETH", "Stake ETH via Lido", 1, 350);
 
-        CbETHAdapter a4 = new CbETHAdapter(CBETH, WETH, SWAP_ROUTER, address(im));
-        im.addProtocol(address(a4), "Coinbase cbETH", "Coinbase staked ETH", 1, 300);
+        CbETHAdapter a3 = new CbETHAdapter(CBETH, WETH, SWAP_ROUTER, CBETH_RATE_FEED, address(im));
+        im.addProtocol(address(a3), "Coinbase cbETH", "Coinbase staked ETH", 1, 300);
 
-        CompoundV3USDCAdapter a5 = new CompoundV3USDCAdapter(
+        CompoundV3USDCAdapter a4 = new CompoundV3USDCAdapter(
             COMPOUND_COMET, USDC, WETH, SWAP_ROUTER, ETH_USD_FEED, address(im)
         );
-        im.addProtocol(address(a5), "Compound V3 USDC", "Lend USDC on Compound V3", 2, 400);
+        im.addProtocol(address(a4), "Compound V3 USDC", "Lend USDC on Compound V3", 2, 400);
 
-        MorphoWETHAdapter a6 = new MorphoWETHAdapter(
+        MorphoWETHAdapter a5 = new MorphoWETHAdapter(
             MORPHO_GAUNTLET, WETH, address(im), "Morpho Gauntlet WETH Core"
         );
-        im.addProtocol(address(a6), "Morpho Gauntlet WETH Core", "Curated Morpho vault", 2, 500);
-
-        vm.stopPrank();
+        im.addProtocol(address(a5), "Morpho Gauntlet WETH Core", "Curated Morpho vault", 2, 500);
 
         // Register mock verifier for speedrunEpoch (slot 7, avoids collision
-        // with the real TdxVerifier at slot 1).
-        if (WETH.code.length > 0) {
-            _registerMockVerifier(fund);
-        }
+        // with the real TdxVerifier at slot 1). The earlier
+        // `if (WETH.code.length == 0) return;` already guards non-fork runs.
+        _registerMockVerifier(fund);
     }
 
     // ─── Sanity: real mainnet state ─────────────────────────────────────
@@ -170,10 +171,11 @@ contract MainnetForkTest is EpochTest {
         assertGt(ENDAOMENT_FACTORY.code.length, 0, "Endaoment");
         assertGt(DCAP_VERIFIER.code.length, 0, "DCAP verifier");
         assertGt(AAVE_POOL.code.length, 0, "Aave pool");
-        assertGt(AAVE_AWETH.code.length, 0, "aWETH");
         assertGt(AAVE_AUSDC.code.length, 0, "aUSDC");
         assertGt(WSTETH.code.length, 0, "wstETH");
+        assertGt(WSTETH_RATE_FEED.code.length, 0, "wstETH/stETH feed");
         assertGt(CBETH.code.length, 0, "cbETH");
+        assertGt(CBETH_RATE_FEED.code.length, 0, "CBETH/ETH feed");
         assertGt(COMPOUND_COMET.code.length, 0, "Compound Comet");
         assertGt(MORPHO_GAUNTLET.code.length, 0, "Morpho Gauntlet");
     }
@@ -187,114 +189,99 @@ contract MainnetForkTest is EpochTest {
 
     // ─── Adapter sanity: real protocol calls ────────────────────────────
 
-    function test_fork_aaveWethAdapter_depositWithdraw() public onlyOnFork {
-        // Execute an invest action via the real auction path.
-        // This touches the REAL Aave V3 pool — if the adapter is wrong, it reverts here.
-        bytes memory action = abi.encodePacked(uint8(3), abi.encode(uint256(1), uint256(0.01 ether)));
-        speedrunEpoch(fund, action, "testing aave invest");
-
-        // Verify the position was created
-        (uint256 deposited, uint256 shares,,,,,) = im.getPosition(1);
-        assertEq(deposited, 0.01 ether, "Aave WETH deposit recorded");
-        assertGt(shares, 0, "Aave WETH shares minted");
-
-        // Withdraw the full position
-        uint256 balBefore = address(fund).balance;
-        bytes memory withdrawAction = abi.encodePacked(uint8(4), abi.encode(uint256(1), type(uint256).max));
-        speedrunEpoch(fund, withdrawAction, "testing aave withdraw");
-
-        (uint256 deposited2, uint256 shares2,,,,,) = im.getPosition(1);
-        assertEq(shares2, 0, "Aave WETH position fully cleared");
-        assertEq(deposited2, 0, "Aave WETH deposited tracking cleared");
-        assertGt(address(fund).balance, balBefore, "fund received ETH from Aave WETH withdrawal");
-    }
+    // Protocol IDs in the deployed registry, in order of addProtocol calls in setUp:
+    //   1 = Aave V3 USDC
+    //   2 = Lido wstETH
+    //   3 = Coinbase cbETH
+    //   4 = Compound V3 USDC
+    //   5 = Morpho Gauntlet WETH Core
+    // (Aave V3 WETH intentionally omitted — frozen reserve on Base.)
 
     function test_fork_aaveUsdcAdapter_depositWithdraw() public onlyOnFork {
-        bytes memory investAction = abi.encodePacked(uint8(3), abi.encode(uint256(2), uint256(0.01 ether)));
+        bytes memory investAction = abi.encodePacked(uint8(3), abi.encode(uint256(1), uint256(0.01 ether)));
         speedrunEpoch(fund, investAction, "testing aave usdc invest");
 
-        (uint256 deposited, uint256 shares,,,,,) = im.getPosition(2);
+        (uint256 deposited, uint256 shares,,,,,) = im.getPosition(1);
         assertEq(deposited, 0.01 ether, "Aave USDC deposit recorded");
         assertGt(shares, 0, "Aave USDC aUSDC shares minted");
 
         uint256 balBefore = address(fund).balance;
-        bytes memory withdrawAction = abi.encodePacked(uint8(4), abi.encode(uint256(2), type(uint256).max));
+        bytes memory withdrawAction = abi.encodePacked(uint8(4), abi.encode(uint256(1), type(uint256).max));
         speedrunEpoch(fund, withdrawAction, "testing aave usdc withdraw");
 
-        (uint256 deposited2, uint256 shares2,,,,,) = im.getPosition(2);
+        (uint256 deposited2, uint256 shares2,,,,,) = im.getPosition(1);
         assertEq(shares2, 0, "Aave USDC position fully cleared");
         assertEq(deposited2, 0, "Aave USDC deposited tracking cleared");
         assertGt(address(fund).balance, balBefore, "fund received ETH from Aave USDC withdrawal");
     }
 
     function test_fork_lidoWstEthAdapter_depositWithdraw() public onlyOnFork {
-        bytes memory action = abi.encodePacked(uint8(3), abi.encode(uint256(3), uint256(0.01 ether)));
+        bytes memory action = abi.encodePacked(uint8(3), abi.encode(uint256(2), uint256(0.01 ether)));
         speedrunEpoch(fund, action, "testing lido invest");
 
-        (uint256 deposited, uint256 shares,,,,,) = im.getPosition(3);
+        (uint256 deposited, uint256 shares,,,,,) = im.getPosition(2);
         assertEq(deposited, 0.01 ether, "wstETH deposit recorded");
         assertGt(shares, 0, "wstETH shares minted");
 
-        // Withdraw the full position
         uint256 balBefore = address(fund).balance;
-        bytes memory withdrawAction = abi.encodePacked(uint8(4), abi.encode(uint256(3), type(uint256).max));
+        bytes memory withdrawAction = abi.encodePacked(uint8(4), abi.encode(uint256(2), type(uint256).max));
         speedrunEpoch(fund, withdrawAction, "testing lido withdraw");
 
-        (uint256 deposited2, uint256 shares2,,,,,) = im.getPosition(3);
+        (uint256 deposited2, uint256 shares2,,,,,) = im.getPosition(2);
         assertEq(shares2, 0, "wstETH position fully cleared");
         assertEq(deposited2, 0, "wstETH deposited tracking cleared");
         assertGt(address(fund).balance, balBefore, "fund received ETH from wstETH withdrawal");
     }
 
     function test_fork_cbEthAdapter_depositWithdraw() public onlyOnFork {
-        bytes memory investAction = abi.encodePacked(uint8(3), abi.encode(uint256(4), uint256(0.01 ether)));
+        bytes memory investAction = abi.encodePacked(uint8(3), abi.encode(uint256(3), uint256(0.01 ether)));
         speedrunEpoch(fund, investAction, "testing cbeth invest");
 
-        (uint256 deposited, uint256 shares,,,,,) = im.getPosition(4);
+        (uint256 deposited, uint256 shares,,,,,) = im.getPosition(3);
         assertEq(deposited, 0.01 ether, "cbETH deposit recorded");
         assertGt(shares, 0, "cbETH shares minted");
 
         uint256 balBefore = address(fund).balance;
-        bytes memory withdrawAction = abi.encodePacked(uint8(4), abi.encode(uint256(4), type(uint256).max));
+        bytes memory withdrawAction = abi.encodePacked(uint8(4), abi.encode(uint256(3), type(uint256).max));
         speedrunEpoch(fund, withdrawAction, "testing cbeth withdraw");
 
-        (uint256 deposited2, uint256 shares2,,,,,) = im.getPosition(4);
+        (uint256 deposited2, uint256 shares2,,,,,) = im.getPosition(3);
         assertEq(shares2, 0, "cbETH position fully cleared");
         assertEq(deposited2, 0, "cbETH deposited tracking cleared");
         assertGt(address(fund).balance, balBefore, "fund received ETH from cbETH withdrawal");
     }
 
     function test_fork_compoundUsdcAdapter_depositWithdraw() public onlyOnFork {
-        bytes memory investAction = abi.encodePacked(uint8(3), abi.encode(uint256(5), uint256(0.01 ether)));
+        bytes memory investAction = abi.encodePacked(uint8(3), abi.encode(uint256(4), uint256(0.01 ether)));
         speedrunEpoch(fund, investAction, "testing compound usdc invest");
 
-        (uint256 deposited, uint256 shares,,,,,) = im.getPosition(5);
+        (uint256 deposited, uint256 shares,,,,,) = im.getPosition(4);
         assertEq(deposited, 0.01 ether, "Compound USDC deposit recorded");
         assertGt(shares, 0, "Compound USDC shares minted");
 
         uint256 balBefore = address(fund).balance;
-        bytes memory withdrawAction = abi.encodePacked(uint8(4), abi.encode(uint256(5), type(uint256).max));
+        bytes memory withdrawAction = abi.encodePacked(uint8(4), abi.encode(uint256(4), type(uint256).max));
         speedrunEpoch(fund, withdrawAction, "testing compound usdc withdraw");
 
-        (uint256 deposited2, uint256 shares2,,,,,) = im.getPosition(5);
+        (uint256 deposited2, uint256 shares2,,,,,) = im.getPosition(4);
         assertEq(shares2, 0, "Compound USDC position fully cleared");
         assertEq(deposited2, 0, "Compound USDC deposited tracking cleared");
         assertGt(address(fund).balance, balBefore, "fund received ETH from Compound USDC withdrawal");
     }
 
     function test_fork_morphoWethAdapter_depositWithdraw() public onlyOnFork {
-        bytes memory investAction = abi.encodePacked(uint8(3), abi.encode(uint256(6), uint256(0.01 ether)));
+        bytes memory investAction = abi.encodePacked(uint8(3), abi.encode(uint256(5), uint256(0.01 ether)));
         speedrunEpoch(fund, investAction, "testing morpho invest");
 
-        (uint256 deposited, uint256 shares,,,,,) = im.getPosition(6);
+        (uint256 deposited, uint256 shares,,,,,) = im.getPosition(5);
         assertEq(deposited, 0.01 ether, "Morpho WETH deposit recorded");
         assertGt(shares, 0, "Morpho WETH vault shares minted");
 
         uint256 balBefore = address(fund).balance;
-        bytes memory withdrawAction = abi.encodePacked(uint8(4), abi.encode(uint256(6), type(uint256).max));
+        bytes memory withdrawAction = abi.encodePacked(uint8(4), abi.encode(uint256(5), type(uint256).max));
         speedrunEpoch(fund, withdrawAction, "testing morpho withdraw");
 
-        (uint256 deposited2, uint256 shares2,,,,,) = im.getPosition(6);
+        (uint256 deposited2, uint256 shares2,,,,,) = im.getPosition(5);
         assertEq(shares2, 0, "Morpho WETH position fully cleared");
         assertEq(deposited2, 0, "Morpho WETH deposited tracking cleared");
         assertGt(address(fund).balance, balBefore, "fund received ETH from Morpho WETH withdrawal");

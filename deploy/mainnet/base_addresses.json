@@ -6,7 +6,9 @@
     "USDC": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
   },
   "oracles": {
-    "chainlink_ETH_USD": "0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70"
+    "chainlink_ETH_USD": "0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70",
+    "chainlink_wstETH_stETH": "0xB88BAc61a4Ca37C43a3725912B1f472c9A5bc061",
+    "chainlink_CBETH_ETH": "0x806b4Ac04501c29769051e42783cF04dCE41440b"
   },
   "aave_v3": {
     "pool": "0xa238dd80c259a72e81d7e4664a9801593f98d1c5",
