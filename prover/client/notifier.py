@@ -135,3 +135,21 @@ def notify_low_balance(channel, epoch, balance_eth, required_eth):
            f"Balance {balance_eth:.6f} ETH < required {required_eth:.6f} ETH "
            f"(bond + commit gas headroom). Top up the runner wallet.",
            priority="urgent", tags=["fuelpump"])
+
+def notify_epoch_skipped(channel, epoch, reason):
+    """Skipped commit because no profitable bid is possible against the
+    snapshotted cap. Treasury too small relative to running costs."""
+    notify(channel, f"Epoch {epoch} skipped (uneconomical)",
+           f"Skipped commit: {reason}. No bond paid; agent stays dormant "
+           f"this epoch. Auto-recovers when treasury grows or costs drop.",
+           priority="high", tags=["zzz"])
+
+def notify_reveal_will_fail(channel, epoch, bid_eth, cap_eth):
+    """Detected that the committed bid exceeds the AM's snapshotted cap.
+    Reveal calls will revert with InvalidParams until the window closes
+    and the bond is forfeited."""
+    notify(channel, f"Reveal doomed for epoch {epoch}",
+           f"Committed bid {bid_eth:.6f} ETH > AM cap {cap_eth:.6f} ETH "
+           f"(snapshotted at openAuction). Bond will forfeit at end of "
+           f"reveal window — nothing to do but wait.",
+           priority="urgent", tags=["rotating_light"])
