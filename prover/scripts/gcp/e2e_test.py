@@ -23,10 +23,10 @@ Architecture:
 
 Usage:
     source .venv/bin/activate
-    python scripts/e2e_test.py --image humanfund-dmverity-gpu-v6
+    python scripts/e2e_test.py --image costanza-tdx-prover-v1
 
     # Skip deployment (reuse existing contracts):
-    python scripts/e2e_test.py --image humanfund-dmverity-gpu-v6 \\
+    python scripts/e2e_test.py --image costanza-tdx-prover-v1 \\
         --fund-address 0x... --verifier-address 0x...
 
 Environment:
@@ -974,7 +974,7 @@ def cleanup_measurement_vm():
 def main():
     parser = argparse.ArgumentParser(description="Full E2E test on Base Sepolia (dm-verity)")
     parser.add_argument("--image", required=True,
-                        help="dm-verity GCP image name (e.g., humanfund-dmverity-gpu-v6)")
+                        help="dm-verity GCP image name (e.g., costanza-tdx-prover-v1)")
     parser.add_argument("--fund-address", help="Reuse existing TheHumanFund contract")
     parser.add_argument("--verifier-address", help="Reuse existing DstackVerifier contract")
     parser.add_argument("--no-cleanup", action="store_true", help="Don't delete measurement VM after test")

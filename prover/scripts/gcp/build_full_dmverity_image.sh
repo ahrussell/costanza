@@ -30,7 +30,11 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-[ -z "$IMAGE_NAME" ] && IMAGE_NAME="humanfund-dmverity-$($USE_GPU && echo gpu || echo cpu)-v5"
+if [ -z "$IMAGE_NAME" ]; then
+    echo "ERROR: --name <image-name> is required" >&2
+    echo "  example: --name costanza-tdx-prover-v1" >&2
+    exit 1
+fi
 
 echo "═══ The Human Fund — GCP Image Builder ═══"
 echo "  Base: ${BASE_IMAGE:-scratch}"
