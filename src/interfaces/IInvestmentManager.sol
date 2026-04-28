@@ -55,4 +55,10 @@ interface IInvestmentManager {
     /// @notice Get the current value of a position (from adapter.balance()).
     /// @param protocolId The protocol ID (1-indexed).
     function getProtocolValue(uint256 protocolId) external view returns (uint256);
+
+    /// @notice Transfer the admin role to a new address.
+    /// @dev Implementations MUST authorize this for both the current admin
+    ///      AND the fund contract, so TheHumanFund.transferOwnership can fan
+    ///      out atomically.
+    function setAdmin(address newAdmin) external;
 }

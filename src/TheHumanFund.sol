@@ -247,8 +247,22 @@ contract TheHumanFund is ReentrancyGuard {
     uint256 public currentEpochCommissions;
 
 
-    // Proof verifier registry — supports TEE (TDX) and future ZK verifiers
+    // Proof verifier registry — supports TEE (TDX) and future ZK verifiers.
+    //
+    // ID → address binding is permanent: once approveVerifier(id, addr) sets a
+    // slot, that slot is locked to that address forever. To use a different
+    // verifier, mint a new ID. This lets clients (provers, frontends, indexers)
+    // rely on "ID N always means this address."
+    //
+    // verifierApproved is the mutable authorization flag. Verification only
+    // succeeds when verifierApproved[id] is true; revokeVerifier flips it
+    // off without disturbing the address binding.
+    //
+    // verifierIds is an append-only list of every ID ever bound, used by
+    // transferOwnership to fan out and by indexers to enumerate.
     mapping(uint8 => IProofVerifier) public verifiers;
+    mapping(uint8 => bool) public verifierApproved;
+    uint8[] public verifierIds;
     mapping(uint256 => bytes) public epochProofs; // Raw proofs per epoch (attestation quotes, ZK proofs)
 
     // Base input hashes (pre-seed) — extended with randomness seed at closeAuction()
@@ -513,21 +527,37 @@ contract TheHumanFund is ReentrancyGuard {
     event VerifierApproved(uint8 indexed verifierId, address verifier);
     event VerifierRevoked(uint8 indexed verifierId);
 
-    /// @notice Register a proof verifier (TEE, ZK, etc.) at a given ID.
+    /// @notice Approve a proof verifier (TEE, ZK, etc.) at a given ID.
+    /// @dev First call to a fresh ID binds it permanently to `_verifier`.
+    ///      Subsequent calls must reference the same address (idempotent re-
+    ///      approve, e.g. to undo a revoke). To use a different verifier,
+    ///      mint a new ID.
     /// @param id Verifier ID (1+ recommended; 0 is valid but unusual).
     /// @param _verifier The IProofVerifier contract address.
     function approveVerifier(uint8 id, address _verifier) external onlyOwner {
         if (frozenFlags & FREEZE_VERIFIERS != 0) revert Frozen();
         if (_verifier == address(0)) revert InvalidParams();
-        verifiers[id] = IProofVerifier(_verifier);
+        if (address(verifiers[id]) == address(0)) {
+            // First-time binding — record permanently
+            verifiers[id] = IProofVerifier(_verifier);
+            verifierIds.push(id);
+        } else if (address(verifiers[id]) != _verifier) {
+            // ID already bound to a different address — refuse silent rebind
+            revert InvalidParams();
+        }
+        verifierApproved[id] = true;
         emit VerifierApproved(id, _verifier);
     }
 
-    /// @notice Remove a proof verifier from the registry.
+    /// @notice Revoke a proof verifier's approval.
+    /// @dev Sets verifierApproved[id] to false. Address binding stays so the
+    ///      ID never points elsewhere. Re-approve with the same address to
+    ///      restore. submitAuctionResult rejects revoked verifiers.
     function revokeVerifier(uint8 id) external onlyOwner {
         if (frozenFlags & FREEZE_VERIFIERS != 0) revert Frozen();
         if (address(verifiers[id]) == address(0)) revert InvalidParams();
-        delete verifiers[id];
+        if (!verifierApproved[id]) revert InvalidParams();
+        verifierApproved[id] = false;
         emit VerifierRevoked(id);
     }
 
@@ -537,11 +567,31 @@ contract TheHumanFund is ReentrancyGuard {
         investmentManager = IInvestmentManager(_im);
     }
 
-    /// @notice Transfer contract ownership to a new address (e.g., a multisig).
+    /// @notice Transfer ownership of the fund AND every subcontract that
+    ///         holds independent admin authority (verifiers + investment
+    ///         manager) atomically to `newOwner` (e.g. a multisig).
+    /// @dev Subcontracts are transferred FIRST so any failure (e.g. a
+    ///      verifier whose owner-transfer reverts) leaves fund.owner
+    ///      unchanged and the deployer can investigate.
+    ///      AuctionManager and AgentMemory are immutably bound to this
+    ///      contract via their `fund` field and have no separate owner
+    ///      to transfer.
     /// @dev Frozen by FREEZE_MIGRATE (same gate as withdrawAll/migrate).
     function transferOwnership(address newOwner) external onlyOwner {
         if (frozenFlags & FREEZE_MIGRATE != 0) revert Frozen();
         if (newOwner == address(0)) revert InvalidParams();
+
+        // Fan out to every ever-bound verifier, regardless of current
+        // approval status — a revoked verifier may be re-approved later,
+        // and we want the new owner in charge if/when that happens.
+        uint256 len = verifierIds.length;
+        for (uint256 i = 0; i < len; i++) {
+            verifiers[verifierIds[i]].transferOwner(newOwner);
+        }
+        if (address(investmentManager) != address(0)) {
+            investmentManager.setAdmin(newOwner);
+        }
+
         owner = newOwner;
         emit OwnershipTransferred(newOwner);
     }
@@ -1281,6 +1331,7 @@ contract TheHumanFund is ReentrancyGuard {
         {
             IProofVerifier v = verifiers[verifierId];
             if (address(v) == address(0)) revert InvalidParams();
+            if (!verifierApproved[verifierId]) revert InvalidParams();
             // outputHash binds the action bytes, reasoning text, AND the
             // memory update batch. Without the updatesHash term, a
             // malicious prover client could substitute its own memory
