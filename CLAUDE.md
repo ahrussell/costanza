@@ -13,12 +13,12 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 ## Current Status
 
 ### Base Mainnet
-- **Contract**: [`0xa3D0887A8ac8CCFAE41EA500E9Aa3f7993F1FB18`](https://basescan.org/address/0xa3D0887A8ac8CCFAE41EA500E9Aa3f7993F1FB18) (deployed 2026-04-29, block 45313184)
-- **AuctionManager**: [`0x601A785b823DC07eA6E6F5b3AE32BD93f12ea8C8`](https://basescan.org/address/0x601A785b823DC07eA6E6F5b3AE32BD93f12ea8C8)
-- **TdxVerifier**: [`0xcE592Ea416bE2B4ECB132b2b0d159a2290536044`](https://basescan.org/address/0xcE592Ea416bE2B4ECB132b2b0d159a2290536044)
-- **InvestmentManager**: [`0xCB6246a0b4d45474cc4d39f01b1419B32e8379fF`](https://basescan.org/address/0xCB6246a0b4d45474cc4d39f01b1419B32e8379fF)
-- **AgentMemory**: [`0x4ab1E21Ade591E364E07915BDD8eC43563D72a22`](https://basescan.org/address/0x4ab1E21Ade591E364E07915BDD8eC43563D72a22)
-- **DonationExecutor**: [`0x1f975Ce7185f0b9b4829614249e627Cb9853aB54`](https://basescan.org/address/0x1f975Ce7185f0b9b4829614249e627Cb9853aB54)
+- **Contract**: [`0x04E5cD3269Af275EA4247597254104B85E1eE282`](https://basescan.org/address/0x04E5cD3269Af275EA4247597254104B85E1eE282) (deployed 2026-04-29, block 45314709)
+- **AuctionManager**: [`0xEfb507fF3Fff827e18c06D27b09321c61E8C8b72`](https://basescan.org/address/0xEfb507fF3Fff827e18c06D27b09321c61E8C8b72)
+- **TdxVerifier**: [`0xB0FC78F46f62CaD11aDc909C01b2A90018a03135`](https://basescan.org/address/0xB0FC78F46f62CaD11aDc909C01b2A90018a03135)
+- **InvestmentManager**: [`0x50E4e51315243bB5da449F542CcC7ea492F04Ca8`](https://basescan.org/address/0x50E4e51315243bB5da449F542CcC7ea492F04Ca8)
+- **AgentMemory**: [`0x254f23BcC9Ca19e1D73B263a1Bdc06Ef1Ada2957`](https://basescan.org/address/0x254f23BcC9Ca19e1D73B263a1Bdc06Ef1Ada2957)
+- **DonationExecutor**: [`0x2aA22Da587894e96cd0a448273d0BBDCC1b2e45B`](https://basescan.org/address/0x2aA22Da587894e96cd0a448273d0BBDCC1b2e45B)
 - **Owner**: `0x2e61a91EbeD1B557199f42d3E843c06Afb445004` (single-use deploy EOA, will transfer to Safe `0x6dF6f527E193fAf1334c26A6d811fAd62E79E5Db`)
 - **Initial treasury**: 0.1 ETH (seedAmount)
 - **Epoch timing**: 120-min epochs (30m commit, 30m reveal, 60m execution)
@@ -32,7 +32,8 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 - 5 DeFi adapters registered (Aave V3 USDC, Lido wstETH, Coinbase cbETH, Compound V3 USDC, Morpho Gauntlet WETH Core). Aave V3 WETH skipped — reserve currently frozen on Base.
 
 ### Base Mainnet (previous)
-- Contract: `0xb64a5248EaC621f430462Cd817b8F536dc5daa34` — withdrawAll'd on 2026-04-29 before clean redeploy (epoch 4 was the first successful epoch after the GPU CC fix landed; ten prior epochs forfeited bonds because `humanfund-gpu-cc.service` fired before `nvidia-persistenced` was up and `2>/dev/null` swallowed the failure). Redeploy is just for visual cleanliness — fresh epoch 1 with the same code.
+- Contract: `0xa3D0887A8ac8CCFAE41EA500E9Aa3f7993F1FB18` — withdrawAll'd on 2026-04-29, ~1 hour after deploy. Hit a latent deploy-ordering bug: `setAuctionManager` was called before `setInvestmentManager`/`setAgentMemory`/`_seedMemory`, so epoch 1's snapshot froze with `memoryHash=0` + `investmentsHash=0` while live state had the seeded entries + 5 adapters. The TEE's input hash diverged from the contract's, and epoch 1's `submitAuctionResult` always reverted with `ProofFailed`. Earlier deploys never fired this because none of them had a successful submission in epoch 1 (always epoch 2+, which freezes a clean snapshot at the boundary). Fixed in PR #38; redeploy at 0x04E5cD32… uses the corrected ordering.
+- Contract: `0xb64a5248EaC621f430462Cd817b8F536dc5daa34` — withdrawAll'd on 2026-04-29 before clean redeploy (epoch 4 was the first successful epoch after the GPU CC fix landed; ten prior epochs forfeited bonds because `humanfund-gpu-cc.service` fired before `nvidia-persistenced` was up and `2>/dev/null` swallowed the failure). Redeploy was for visual cleanliness — fresh epoch 1 with the same code.
 - Contract: `0x44274f447f928D3C4900986031D7a8bbb7abcfA0` — withdrawAll'd on 2026-04-28, ~3 hours after deploy (BASE_BOND was 0.001 ETH and seedAmount was 0.01 ETH, which made the openAuction-snapshotted effectiveMaxBid 0.001 ETH — too low for realistic prover bids. Redeploy bumped both: BASE_BOND→0.01, seedAmount→0.1, plus prover client now reads am.maxBid snapshot instead of fund.effectiveMaxBid live)
 - Contract: `0xeE98b474000a2B350FfcBA8F02889d5047B8DFca` — withdrawAll'd on 2026-04-28 before earlier redeploy (added ownership fan-out, MIN_MESSAGE_DONATION bump, 30/30/60 timing, cbETH-on-Chainlink, dropped frozen Aave V3 WETH; image bumped to costanza-tdx-prover-v1)
 - Contract: `0xE1Ff438B1C0Bf0C61d6EfF439C2A9eB1dDcb71e5` — withdrawAll'd on 2026-04-14 (epoch 1 forfeited due to epochDuration drift; fixed in EpochSnapshot)
