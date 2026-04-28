@@ -965,7 +965,7 @@
     <!-- Optional message -->
     <div style="padding-top:14px;border-top:1px solid var(--border);margin-top:4px;">
       <div style="font-size:13px;font-weight:500;margin-bottom:6px;">Message Costanza <span style="font-weight:400;color:var(--text-dim);font-size:12px;">(optional)</span></div>
-      <p style="font-size:12px;color:var(--text-secondary);margin-bottom:10px;line-height:1.5;">Leave a message that Costanza can read — it can influence his decisions. Messages are queued on-chain and Costanza reads up to 3 per epoch, in order. Requires a minimum donation of 0.001 ETH.</p>
+      <p style="font-size:12px;color:var(--text-secondary);margin-bottom:10px;line-height:1.5;">Leave a message that Costanza can read — it can influence his decisions. Messages are queued on-chain and Costanza reads up to 3 per epoch, in order. Requires a minimum donation of 0.005 ETH.</p>
       <div class="form-group">
         <textarea class="form-input" id="message-text" placeholder="Write something to Costanza..." oninput="updateMessageByteCount()" style="min-height:80px;resize:vertical;"></textarea>
         <div class="form-hint" id="message-hint">0 / 280 bytes. Emoji and non-ASCII characters count as multiple bytes.</div>
@@ -1740,8 +1740,8 @@ async function handleSubmitDonation() {
       setStatus(statusId, 'Enter a valid ETH amount.', 'error');
       return;
     }
-    if (msgText && parseFloat(amountStr) < 0.01) {
-      setStatus(statusId, 'Minimum donation for messaging is 0.01 ETH.', 'error');
+    if (msgText && parseFloat(amountStr) < 0.005) {
+      setStatus(statusId, 'Minimum donation for messaging is 0.005 ETH.', 'error');
       return;
     }
     // Contract enforces MAX_MESSAGE_LENGTH = 280 BYTES (not characters).

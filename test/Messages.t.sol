@@ -839,7 +839,7 @@ contract MessagesTest is EpochTest {
     }
 
     function testFuzz_messageDonation_validAmount(uint256 amount) public {
-        amount = bound(amount, 0.001 ether, 1 ether);
+        amount = bound(amount, 0.005 ether, 1 ether);
         vm.deal(donor1, amount);
         vm.prank(donor1);
         fund.donateWithMessage{value: amount}(0, "Fuzz test");

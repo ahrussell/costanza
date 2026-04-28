@@ -58,7 +58,7 @@ The investment capability creates a genuine strategic dilemma: yield compounds o
 
 Anyone can mint a referral code. Referred donations pay a commission (set by Costanza) to the referrer. The economics guarantee that every referred donation is net-positive for the fund at any commission rate — a self-referral (Sybil attack) always costs the attacker money.
 
-Donors who contribute at least 0.01 ETH can include a short message (up to 280 characters). The model sees up to 20 unread messages per epoch. These are the only untrusted text inputs the model receives; they are mitigated by datamarking-based spotlighting ([Hines et al. 2024](https://arxiv.org/abs/2403.14720)). See Section 9.4 for the prompt injection threat model.
+Donors who contribute at least 0.005 ETH can include a short message (up to 280 characters). The model sees up to 20 unread messages per epoch. These are the only untrusted text inputs the model receives; they are mitigated by datamarking-based spotlighting ([Hines et al. 2024](https://arxiv.org/abs/2403.14720)). See Section 9.4 for the prompt injection threat model.
 
 ---
 
@@ -671,7 +671,7 @@ The following are known limitations, reframed as scenarios where specific assump
 
 ### 9.4 Prompt Injection via Donor Messages
 
-**Assumption context:** The model is not a deterministic function with respect to adversarial inputs. Donor messages (up to 280 characters, minimum 0.01 ETH) are untrusted text fed to the model.
+**Assumption context:** The model is not a deterministic function with respect to adversarial inputs. Donor messages (up to 280 characters, minimum 0.005 ETH) are untrusted text fed to the model.
 
 **Mitigations (defense in depth):**
 - Datamarking spotlighting replaces whitespace with an epoch-specific dynamic marker derived from `block.prevrandao`, making injected text tokenically distinct from system instructions.
