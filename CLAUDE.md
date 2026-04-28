@@ -13,23 +13,27 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 ## Current Status
 
 ### Base Mainnet
-- **Contract**: [`0xeE98b474000a2B350FfcBA8F02889d5047B8DFca`](https://basescan.org/address/0xeE98b474000a2B350FfcBA8F02889d5047B8DFca)
-- **AuctionManager**: [`0x03a6955f296C927FF71c91cf1Fd9D4F4c71c034c`](https://basescan.org/address/0x03a6955f296C927FF71c91cf1Fd9D4F4c71c034c)
-- **TdxVerifier**: [`0x1dfE62A7FCD128E302bd300D754b001Baf63A57D`](https://basescan.org/address/0x1dfE62A7FCD128E302bd300D754b001Baf63A57D)
-- **InvestmentManager**: [`0xD5C58523723F9ba367202A0e29c80358807b02D3`](https://basescan.org/address/0xD5C58523723F9ba367202A0e29c80358807b02D3)
-- **AgentMemory**: [`0x1370f47C7Ae6f6edF850bfF74c86BF591D7Ad3ae`](https://basescan.org/address/0x1370f47C7Ae6f6edF850bfF74c86BF591D7Ad3ae)
-- **Owner**: `0x495fB7ddD383be8030EFC93324Ff078f173eAb2A` (EOA, will transfer to Safe `0x6dF6f527E193fAf1334c26A6d811fAd62E79E5Db`)
+- **Contract**: [`0x44274f447f928D3C4900986031D7a8bbb7abcfA0`](https://basescan.org/address/0x44274f447f928D3C4900986031D7a8bbb7abcfA0) (deployed 2026-04-28, block 45302180)
+- **AuctionManager**: [`0xed826Fa73B96FAfF092d82Ea52185BAABD9Fe81C`](https://basescan.org/address/0xed826Fa73B96FAfF092d82Ea52185BAABD9Fe81C)
+- **TdxVerifier**: [`0x0eFFD149aBe9A2F6902E48081269FD7c23AB6e91`](https://basescan.org/address/0x0eFFD149aBe9A2F6902E48081269FD7c23AB6e91)
+- **InvestmentManager**: [`0x796D1C13879bfA643bE9d023D7ed396614A9c2D1`](https://basescan.org/address/0x796D1C13879bfA643bE9d023D7ed396614A9c2D1)
+- **AgentMemory**: [`0x1b24304252356C1C7ad8b310EA695ACB94aB86d5`](https://basescan.org/address/0x1b24304252356C1C7ad8b310EA695ACB94aB86d5)
+- **DonationExecutor**: [`0xEc45907F3a44cFD852979507E2532a32c1d644d9`](https://basescan.org/address/0xEc45907F3a44cFD852979507E2532a32c1d644d9)
+- **Owner**: `0x2e61a91EbeD1B557199f42d3E843c06Afb445004` (single-use deploy EOA, will transfer to Safe `0x6dF6f527E193fAf1334c26A6d811fAd62E79E5Db`)
 - **Epoch timing**: 120-min epochs (30m commit, 30m reveal, 60m execution)
-- **351 forge tests + 85 Python tests pass** (core + auction + TDX verifier + investment + memory + messages + cross-stack + system invariants + enclave inference + voice anchors)
-- GPU image: `humanfund-dmverity-hardened-v11`, key: `0xf23661d5f5a506472feb7c5fff267eb0b0d80caf5a87c0c831292e1f4809d614`
+- **404 forge tests + 100 Python tests pass** (392 non-fork + 12 mainnet-fork; core + auction + TDX verifier + investment + memory + messages + cross-stack + system invariants + ownership fan-out + enclave inference + voice anchors)
+- GPU image: `costanza-tdx-prover-v1`, key: `0x3593de3027be5dbb98771ffdcb69f108e26d02652a77a63ef3fc45f5d360f7c0`
 - GCP TDX FMSPC `00806f050000` registered in Automata DCAP Dashboard
 - H100 on-demand quota is 0; all GPU VMs use `--provisioning-model=SPOT`
 - **Frontend RPC**: Cloudflare Worker at `humanfund-rpc-cache.thehumanfund.workers.dev` (proxies to Alchemy, 5-min cache)
 - **Prover RPC**: Alchemy direct (free tier, 30M CU/month)
+- 5 DeFi adapters registered (Aave V3 USDC, Lido wstETH, Coinbase cbETH, Compound V3 USDC, Morpho Gauntlet WETH Core). Aave V3 WETH skipped — reserve currently frozen on Base.
 
 ### Base Mainnet (previous)
-- Contract: `0xE1Ff438B1C0Bf0C61d6EfF439C2A9eB1dDcb71e5` — withdrawAll'd on 2026-04-14 before redeploy (epoch 1 forfeited due to epochDuration drift; fixed in EpochSnapshot)
+- Contract: `0xeE98b474000a2B350FfcBA8F02889d5047B8DFca` — withdrawAll'd on 2026-04-28 before redeploy (this redeploy added ownership fan-out, MIN_MESSAGE_DONATION bump, 30/30/60 timing, cbETH-on-Chainlink, dropped frozen Aave V3 WETH; image bumped to costanza-tdx-prover-v1)
+- Contract: `0xE1Ff438B1C0Bf0C61d6EfF439C2A9eB1dDcb71e5` — withdrawAll'd on 2026-04-14 (epoch 1 forfeited due to epochDuration drift; fixed in EpochSnapshot)
 - Contract: `0x908cf9974fd2EcE9D3a50644EDcAF90c88E57C10` — first mainnet v2, withdrawAll'd on 2026-04-14
+- Image: `humanfund-dmverity-hardened-v11`, key: `0xf23661d5f5a506472feb7c5fff267eb0b0d80caf5a87c0c831292e1f4809d614` (paired with the 0xeE98b474… contract)
 - Image: `humanfund-dmverity-hardened-v10` (deleted), key: `0x923d500553d9e10a8f864eade2029df0471c7cd4f90b888e7749f0dc3fca1eca`
 
 **Deep dive**: [WHITEPAPER.md](WHITEPAPER.md) (full specification, formal security model, TEE construction)

@@ -1324,11 +1324,11 @@ function cv(name) {
 // CONFIG
 // ═══════════════════════════════════════════════════════
 
-const CONTRACT_ADDRESS = '0xA0eB246cba399DD84B7De7f298b00A775065F345'; // Base Sepolia testnet (Hermes 4 + v19 dm-verity, memory-clear grammar fix, 2026-04-26)
-const RPC_URL = 'https://sepolia.base.org';
-const EXPLORER = 'https://sepolia.basescan.org';
-const DEPLOY_BLOCK = 40678011;
-const REFERRAL_CODE = '2'; // creator referral code (default when no code entered)
+const CONTRACT_ADDRESS = '0x44274f447f928D3C4900986031D7a8bbb7abcfA0'; // Base Mainnet (Hermes 4 + costanza-tdx-prover-v1, deployed 2026-04-28)
+const RPC_URL = 'https://humanfund-rpc-cache.thehumanfund.workers.dev'; // Cloudflare Worker proxying Alchemy with 5-min cache
+const EXPLORER = 'https://basescan.org';
+const DEPLOY_BLOCK = 45302180;
+const REFERRAL_CODE = '1'; // creator referral code (default when no code entered)
 
 // ═══════════════════════════════════════════════════════
 // ABI
@@ -1663,10 +1663,10 @@ async function ensureWallet() {
         if (switchErr.code === 4902) {
           await walletProvider.send('wallet_addEthereumChain', [{
             chainId: '0x' + BASE_CHAIN_ID.toString(16),
-            chainName: 'Base Sepolia',
+            chainName: 'Base',
             nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },
-            rpcUrls: ['https://sepolia.base.org'],
-            blockExplorerUrls: ['https://sepolia.basescan.org'],
+            rpcUrls: ['https://mainnet.base.org'],
+            blockExplorerUrls: ['https://basescan.org'],
           }]);
         } else {
           throw switchErr;
