@@ -48,6 +48,7 @@ from .notifier import (
     notify_error, notify_submission_failed, notify_epoch_abandoned,
     notify_epoch_settled, notify_bond_forfeited, notify_bond_claimed,
     notify_cached_submission, notify_low_balance,
+    notify_epoch_skipped, notify_reveal_will_fail,
 )
 
 logger = logging.getLogger(__name__)
@@ -253,7 +254,10 @@ def _handle_commit(chain, config, auction, saved, participation, state_dir, ntfy
             save_state(saved, state_dir)
         return
 
-    max_bid = chain.get_effective_max_bid()
+    # The AM enforces the snapshotted maxBid (frozen at openAuction), NOT the
+    # live fund.effectiveMaxBid. Donations after openAuction don't lift this
+    # value for the in-flight auction.
+    max_bid = chain.get_auction_max_bid()
     eth_usd = _parse_eth_usd(chain.get_eth_usd_price())
 
     # Use observed costs if we have enough history
@@ -262,13 +266,39 @@ def _handle_commit(chain, config, auction, saved, participation, state_dir, ntfy
         logger.info("Using observed costs: gas=%d, vm=%.1f min (%d epochs)",
                     observed["avg_gas_used"], observed["avg_vm_minutes"], observed["num_epochs"])
 
-    bid = estimate_bid(
-        gas_price, machine_type=config.get("gcp_machine_type", "a3-highgpu-1g"),
+    machine_type = config.get("gcp_machine_type", "a3-highgpu-1g")
+
+    # Breakeven check: if even a margin=1.0 bid (zero profit) would exceed the
+    # snapshotted cap, no profitable bid exists for this epoch — skip the
+    # commit so we don't pay a bond we'll forfeit. Notify once per epoch.
+    breakeven = estimate_bid(
+        gas_price, machine_type=machine_type,
+        eth_usd_price=eth_usd, margin=1.0,
+        observed_costs=observed,
+    )
+    if breakeven > max_bid:
+        logger.warning(
+            "Skipping commit for epoch %d: breakeven cost %.6f ETH > snapshot cap %.6f ETH",
+            epoch, breakeven / 1e18, max_bid / 1e18,
+        )
+        if not saved.get("uneconomical_notified"):
+            notify_epoch_skipped(
+                ntfy, epoch,
+                f"breakeven {breakeven / 1e18:.6f} ETH > cap {max_bid / 1e18:.6f} ETH "
+                f"(treasury too small for profitable bid)",
+            )
+            saved["uneconomical_notified"] = True
+            save_state(saved, state_dir)
+        return
+
+    target_bid = estimate_bid(
+        gas_price, machine_type=machine_type,
         eth_usd_price=eth_usd, margin=config["bid_margin"],
         observed_costs=observed,
     )
-    bid = clamp_bid(bid, max_bid)
-    logger.info("Bid estimate: %.6f ETH (max: %.6f ETH)", bid / 1e18, max_bid / 1e18)
+    bid = clamp_bid(target_bid, max_bid)
+    logger.info("Bid estimate: %.6f ETH (target=%.6f, cap=%.6f ETH)",
+                bid / 1e18, target_bid / 1e18, max_bid / 1e18)
 
     saved = commit_bid(chain, bid, state_dir=state_dir)
     notify_bid_committed(ntfy, epoch, bid / 1e18)
@@ -296,6 +326,24 @@ def _handle_reveal(chain, auction, saved, participation, state_dir, ntfy):
         # Salt lost — cannot reveal. Bond will be forfeited.
         logger.warning("Cannot reveal for epoch %d: commit_salt or bid_amount missing "
                        "from local state. Bond will be forfeited.", epoch)
+        return
+
+    # Pre-flight: bid must be ≤ AM's snapshotted maxBid. If the cap was
+    # smaller than our committed bid (e.g., we read live effectiveMaxBid at
+    # commit time but a donation hadn't yet lifted the live value vs. the
+    # snapshot), reveal will revert with InvalidParams every cron tick until
+    # the window closes and bond forfeits. Notify once and stop trying.
+    snapshot_cap = chain.get_auction_max_bid()
+    if bid_amount > snapshot_cap:
+        if not saved.get("reveal_doomed_notified"):
+            logger.error(
+                "Reveal will fail for epoch %d: committed bid %.6f ETH > snapshot cap "
+                "%.6f ETH. Bond will be forfeited at end of reveal window.",
+                epoch, bid_amount / 1e18, snapshot_cap / 1e18,
+            )
+            notify_reveal_will_fail(ntfy, epoch, bid_amount / 1e18, snapshot_cap / 1e18)
+            saved["reveal_doomed_notified"] = True
+            save_state(saved, state_dir)
         return
 
     if reveal_bid(chain, saved):

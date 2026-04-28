@@ -182,8 +182,45 @@ class ChainClient:
             return None
 
     def get_effective_max_bid(self):
-        """Get the current effective max bid ceiling."""
+        """Get the current effective max bid ceiling (live, recomputed against
+        current treasury). Use this only for *informational* logging — the
+        AuctionManager enforces the snapshotted value frozen at openAuction,
+        which is what `get_auction_max_bid` returns.
+        """
         return self.contract.functions.effectiveMaxBid().call()
+
+    def get_auction_max_bid(self):
+        """Get the AuctionManager's snapshotted maxBid for the in-flight auction.
+
+        This is the binding ceiling for both commit and reveal: the AM stores
+        the effectiveMaxBid value computed at openAuction, and reveal() reverts
+        with InvalidParams if `bidAmount > am.maxBid`. After-the-fact donations
+        that would lift `fund.effectiveMaxBid()` do NOT lift this value.
+        """
+        am_address = self._auction_manager_address()
+        if am_address is None or am_address == "0x" + "0" * 40:
+            # Pre-setAuctionManager state (shouldn't happen post-deploy).
+            return self.contract.functions.maxBid().call()
+        am = self.w3.eth.contract(
+            address=am_address,
+            abi=[{
+                "inputs": [],
+                "name": "maxBid",
+                "outputs": [{"type": "uint256"}],
+                "stateMutability": "view",
+                "type": "function",
+            }],
+        )
+        return am.functions.maxBid().call()
+
+    def _auction_manager_address(self):
+        """Cached lookup of the AM address bound to the fund."""
+        if not hasattr(self, "_am_addr_cached"):
+            try:
+                self._am_addr_cached = self.contract.functions.auctionManager().call()
+            except Exception:
+                self._am_addr_cached = None
+        return self._am_addr_cached
 
     def get_gas_price(self):
         """Get current gas price in wei."""
