@@ -13,24 +13,27 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 ## Current Status
 
 ### Base Mainnet
-- **Contract**: [`0x44274f447f928D3C4900986031D7a8bbb7abcfA0`](https://basescan.org/address/0x44274f447f928D3C4900986031D7a8bbb7abcfA0) (deployed 2026-04-28, block 45302180)
-- **AuctionManager**: [`0xed826Fa73B96FAfF092d82Ea52185BAABD9Fe81C`](https://basescan.org/address/0xed826Fa73B96FAfF092d82Ea52185BAABD9Fe81C)
-- **TdxVerifier**: [`0x0eFFD149aBe9A2F6902E48081269FD7c23AB6e91`](https://basescan.org/address/0x0eFFD149aBe9A2F6902E48081269FD7c23AB6e91)
-- **InvestmentManager**: [`0x796D1C13879bfA643bE9d023D7ed396614A9c2D1`](https://basescan.org/address/0x796D1C13879bfA643bE9d023D7ed396614A9c2D1)
-- **AgentMemory**: [`0x1b24304252356C1C7ad8b310EA695ACB94aB86d5`](https://basescan.org/address/0x1b24304252356C1C7ad8b310EA695ACB94aB86d5)
-- **DonationExecutor**: [`0xEc45907F3a44cFD852979507E2532a32c1d644d9`](https://basescan.org/address/0xEc45907F3a44cFD852979507E2532a32c1d644d9)
+- **Contract**: [`0xb64a5248EaC621f430462Cd817b8F536dc5daa34`](https://basescan.org/address/0xb64a5248EaC621f430462Cd817b8F536dc5daa34) (deployed 2026-04-28, block 45304527)
+- **AuctionManager**: [`0x13558f2d13E451f1b5e5d80c999E7808501f22AC`](https://basescan.org/address/0x13558f2d13E451f1b5e5d80c999E7808501f22AC)
+- **TdxVerifier**: [`0x5236f0BF7371010A7B12aE26C2B065a3f1861671`](https://basescan.org/address/0x5236f0BF7371010A7B12aE26C2B065a3f1861671)
+- **InvestmentManager**: [`0xadeb08827083266f16CAA39AE9aA93Cb230aD34B`](https://basescan.org/address/0xadeb08827083266f16CAA39AE9aA93Cb230aD34B)
+- **AgentMemory**: [`0x4A68F53D14Add9e6B2Ad05DF387b02781ca9b79D`](https://basescan.org/address/0x4A68F53D14Add9e6B2Ad05DF387b02781ca9b79D)
+- **DonationExecutor**: [`0x91Df3fa1e91DE0E3469DcBeD4fDe781adbA0E847`](https://basescan.org/address/0x91Df3fa1e91DE0E3469DcBeD4fDe781adbA0E847)
 - **Owner**: `0x2e61a91EbeD1B557199f42d3E843c06Afb445004` (single-use deploy EOA, will transfer to Safe `0x6dF6f527E193fAf1334c26A6d811fAd62E79E5Db`)
+- **Initial treasury**: 0.1 ETH (seedAmount)
 - **Epoch timing**: 120-min epochs (30m commit, 30m reveal, 60m execution)
+- **BASE_BOND**: 0.01 ETH; effectiveMaxBid at openAuction: 0.01 ETH (capped by min(maxBid, 10%×treasury))
 - **404 forge tests + 100 Python tests pass** (392 non-fork + 12 mainnet-fork; core + auction + TDX verifier + investment + memory + messages + cross-stack + system invariants + ownership fan-out + enclave inference + voice anchors)
 - GPU image: `costanza-tdx-prover-v1`, key: `0x3593de3027be5dbb98771ffdcb69f108e26d02652a77a63ef3fc45f5d360f7c0`
 - GCP TDX FMSPC `00806f050000` registered in Automata DCAP Dashboard
 - H100 on-demand quota is 0; all GPU VMs use `--provisioning-model=SPOT`
 - **Frontend RPC**: Cloudflare Worker at `humanfund-rpc-cache.thehumanfund.workers.dev` (proxies to Alchemy, 5-min cache)
-- **Prover RPC**: Alchemy direct (free tier, 30M CU/month)
+- **Prover RPC**: Alchemy direct
 - 5 DeFi adapters registered (Aave V3 USDC, Lido wstETH, Coinbase cbETH, Compound V3 USDC, Morpho Gauntlet WETH Core). Aave V3 WETH skipped — reserve currently frozen on Base.
 
 ### Base Mainnet (previous)
-- Contract: `0xeE98b474000a2B350FfcBA8F02889d5047B8DFca` — withdrawAll'd on 2026-04-28 before redeploy (this redeploy added ownership fan-out, MIN_MESSAGE_DONATION bump, 30/30/60 timing, cbETH-on-Chainlink, dropped frozen Aave V3 WETH; image bumped to costanza-tdx-prover-v1)
+- Contract: `0x44274f447f928D3C4900986031D7a8bbb7abcfA0` — withdrawAll'd on 2026-04-28, ~3 hours after deploy (BASE_BOND was 0.001 ETH and seedAmount was 0.01 ETH, which made the openAuction-snapshotted effectiveMaxBid 0.001 ETH — too low for realistic prover bids. Redeploy bumped both: BASE_BOND→0.01, seedAmount→0.1, plus prover client now reads am.maxBid snapshot instead of fund.effectiveMaxBid live)
+- Contract: `0xeE98b474000a2B350FfcBA8F02889d5047B8DFca` — withdrawAll'd on 2026-04-28 before earlier redeploy (added ownership fan-out, MIN_MESSAGE_DONATION bump, 30/30/60 timing, cbETH-on-Chainlink, dropped frozen Aave V3 WETH; image bumped to costanza-tdx-prover-v1)
 - Contract: `0xE1Ff438B1C0Bf0C61d6EfF439C2A9eB1dDcb71e5` — withdrawAll'd on 2026-04-14 (epoch 1 forfeited due to epochDuration drift; fixed in EpochSnapshot)
 - Contract: `0x908cf9974fd2EcE9D3a50644EDcAF90c88E57C10` — first mainnet v2, withdrawAll'd on 2026-04-14
 - Image: `humanfund-dmverity-hardened-v11`, key: `0xf23661d5f5a506472feb7c5fff267eb0b0d80caf5a87c0c831292e1f4809d614` (paired with the 0xeE98b474… contract)
