@@ -26,9 +26,9 @@ The prover client runs on **any Linux machine** — it only needs Python, a clou
 | **AuctionManager** | [`0x5bafaAfF78EB2cc99925d8feEC692a87F5b1632c`](https://basescan.org/address/0x5bafaAfF78EB2cc99925d8feEC692a87F5b1632c) |
 | **Chain** | Base Mainnet (8453) |
 | **RPC** | `https://mainnet.base.org` |
-| **Production image** | `costanza-tdx-prover-v1` (build from source — see below) |
+| **Production image** | Published to public R2 — `https://images.thehumanfund.com/<image-name>/disk.tar.gz` (see step 2) |
 
-To run as a prover, you can build the image yourself (see below). Both builds produce the same platform key because dm-verity ensures byte-identical rootfs hashes.
+To run as a prover, import the published image into your own GCP project and verify on-chain that its measurements match the registered platform key. Building from source is not currently a supported verification path: OS-level non-determinism (timestamps, package mirrors, kernel module signing) drifts the rootfs hash even with identical inputs, so a from-source build is not guaranteed to produce a byte-identical platform key. The trust path is on-chain measurement match, not build reproducibility.
 
 ### TEE Platform Support
 
@@ -83,43 +83,35 @@ pip install web3 pycryptodome eth_abi requests
 forge build  # Generate ABIs
 ```
 
-### 2. Build the dm-verity Image
+### 2. Import the dm-verity Image
 
-The inference VM boots from a dm-verity sealed disk image containing the inference server, model weights, and enclave code. **The build is reproducible** — any prover who builds from the same git tag gets a byte-identical rootfs, which means the same platform key (`sha256(MRTD || RTMR[1] || RTMR[2])`). You don't need a copy of the fund owner's image; just build from source and the existing on-chain key will match.
-
-```bash
-# Build base image (once — installs NVIDIA drivers, llama-server, Hermes 4 70B Q6_K weights ~58GB)
-# Takes ~15 minutes. Only redo when llama.cpp, NVIDIA driver, or Ubuntu changes.
-bash prover/scripts/gcp/build_base_image.sh
-
-# Build dm-verity sealed image from the base (~30-40 minutes)
-bash prover/scripts/gcp/build_full_dmverity_image.sh \
-  --base-image humanfund-base-gpu-llama-b5270-hermes \
-  --name costanza-tdx-prover-vN
-```
-
-After building, verify your image matches the registered on-chain key before bidding (step 3 below).
-
-### 3. Register and Verify Measurements
-
-Register your image's platform key on-chain. This boots a temporary TDX VM, extracts RTMR measurements from the serial console (no SSH required), and registers the key:
+The inference VM boots from a dm-verity sealed disk image containing the inference server, model weights, and enclave code. The fund owner publishes each production image to a public Cloudflare R2 bucket; you import it into your own GCP project, verify the SHA256 against the published `metadata.json` sidecar in transit, then verify on-chain that the imported image's RTMR measurements match the registered platform key.
 
 ```bash
-python prover/scripts/gcp/register_image.py \
-  --image costanza-prover-tdx-h100-cc \
-  --verifier <TdxVerifier-address>
+export GCP_PROJECT=your-gcp-project
+export GCP_STAGING_BUCKET=gs://your-staging-bucket   # must already exist
+
+bash prover/scripts/gcp/import_image.sh costanza-tdx-prover-v2
 ```
 
-To verify an image matches what's already registered:
+The script downloads the tarball from R2 (free egress), verifies its SHA256 against the published `metadata.json`, uploads to your GCS staging bucket, creates the GCP image, and prints the next-step verification command. Allow ~15-30 min depending on your network.
+
+The published image's `metadata.json` lives at `<PUBLIC_BASE>/<image-name>/metadata.json` and contains the SHA256, byte size, and export timestamp. The default `PUBLIC_BASE` baked into the import script is `https://images.thehumanfund.com`.
+
+### 3. Verify Measurements On-Chain
+
+This is the actual trust boundary — SHA256 only catches transit corruption. The on-chain check boots a temporary TDX VM, reads RTMRs from the serial console (no SSH required), computes `sha256(MRTD || RTMR[1] || RTMR[2])`, and asks the `TdxVerifier` contract whether that platform key is approved:
 
 ```bash
 python prover/scripts/gcp/verify_measurements.py \
-  --image costanza-prover-tdx-h100-cc \
+  --image costanza-tdx-prover-v2 \
   --verifier <TdxVerifier-address> \
-  --rpc-url <rpc-url>
+  --rpc-url https://mainnet.base.org
 ```
 
-Both scripts work with hardened dm-verity images (SSH disabled) by reading measurements from the serial console. The enclave emits RTMR values at boot between `===HUMANFUND_MEASUREMENTS_START===` and `===HUMANFUND_MEASUREMENTS_END===` markers.
+A green check means the imported image matches what's registered on-chain and you can run as a prover with it. A mismatch means the publisher rotated images — re-import the current one (check the project for the latest version) or open an issue if `metadata.json` references a version that's no longer registered.
+
+The script works with hardened dm-verity images (SSH disabled) by reading measurements between `===HUMANFUND_MEASUREMENTS_START===` and `===HUMANFUND_MEASUREMENTS_END===` markers on the serial console.
 
 ### 4. Configure
 
@@ -245,14 +237,11 @@ Spot instances can reduce VM costs by 60-90%, but risk preemption mid-inference.
 
 ### Image Key Mismatch
 
-If `verify_measurements.py` shows a mismatch, either:
-- You built the image from different code than what's registered
-- The cloud provider updated firmware (changes MRTD)
+If `verify_measurements.py` shows a mismatch, the image you imported isn't the one currently approved on-chain. Possible causes:
+- The publisher rotated the image and you imported an older version — check the project for the latest version name and re-run `import_image.sh` with that name.
+- The cloud provider updated firmware (changes MRTD) — wait for the publisher to re-register against the new firmware level, or open an issue.
 
-The fund owner registers new images via:
-```bash
-python prover/scripts/gcp/register_image.py --image <image-name> --verifier <addr>
-```
+Image registration is a publisher-only operation (`register_image.py`). Running it from a non-owner key on the `TdxVerifier` will revert.
 
 ### Bond Forfeiture
 

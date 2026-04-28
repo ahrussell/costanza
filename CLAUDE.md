@@ -248,6 +248,8 @@ thehumanfund/
 │           ├── build_full_dmverity_image.sh  # Build production dm-verity image (uses base)
 │           ├── vm_build_all.sh          # Runs on VM: squashfs → verity → initramfs → GRUB
 │           ├── vm_install.sh            # Install dependencies on VM for base image build
+│           ├── publish_image.sh         # Export image and upload to public R2 bucket (publisher)
+│           ├── import_image.sh          # Pull image from R2 into your own GCP project (consumer)
 │           ├── e2e_test.py              # Full e2e test on Base Sepolia
 │           ├── register_image.py        # Register platform key on-chain
 │           └── verify_measurements.py   # Verify RTMR values match registered key
@@ -335,6 +337,18 @@ See [prover/README.md](prover/README.md) for full setup instructions.
 - **Output**: Result JSON to serial console (`/dev/ttyS0`, between `===HUMANFUND_OUTPUT_START===` / `===HUMANFUND_OUTPUT_END===` delimiters)
 
 See [WHITEPAPER.md](WHITEPAPER.md) Section 6 for boot flow, disk layout, and build process.
+
+### Image Distribution
+
+Production dm-verity images are published to a public Cloudflare R2 bucket so external provers can run without rebuilding (OS-level non-determinism currently prevents bit-exact reproducible builds — see [feedback_preserve_experiment_images.md](memory) and `claude/reproducible-rootfs` branch). The publish/import flow is split across two scripts and one cloud:
+
+- **Publisher** (`prover/scripts/gcp/publish_image.sh`): Spins up a temporary `e2-standard-4` GCE worker, exports the GCP image to a private GCS staging bucket, downloads it on the worker, computes SHA256, uploads to R2 (free ingress), writes a `metadata.json` sidecar (sha256, size, exported_at), verifies the upload, and tears down. Costs ~$7 in GCE→R2 internet egress per image, one-time. Credentials come from `.env.publish` (gitignored; see `.env.publish.example`).
+- **R2 bucket** (`costanza-public-images`, public, `https://images.thehumanfund.com`): Holds `<image>/disk.tar.gz` + `<image>/metadata.json`. R2 egress is $0/GB so consumers pull free.
+- **Consumer** (`prover/scripts/gcp/import_image.sh`): Downloads the tarball + metadata from R2, verifies SHA256 in transit, uploads to the consumer's own GCS staging bucket, calls `gcloud compute images create` with `UEFI_COMPATIBLE`, prints the next-step `verify_measurements.py` command.
+
+`verify_measurements.py` is the actual trust boundary, not the SHA256 — it boots a temporary TDX VM, reads RTMRs from the serial console, computes `sha256(MRTD || RTMR[1] || RTMR[2])`, and asks the on-chain `TdxVerifier` whether that platform key is approved. SHA256 just catches transit corruption; on-chain match is what authorizes the prover to bid.
+
+When publishing a new image: run `publish_image.sh costanza-tdx-prover-vN`, then `register_image.py` to add the new platform key on-chain (image key is `sha256(MRTD || RTMR[1] || RTMR[2])`), then update the Hetzner runner's `GCP_IMAGE` env. Old images stay registered until explicitly revoked, so multiple versions can run concurrently during a rollout.
 
 ## Frontend
 
