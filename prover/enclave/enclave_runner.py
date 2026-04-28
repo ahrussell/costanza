@@ -172,44 +172,88 @@ def write_error(error: str):
 
 # ─── llama-server management ───────────────────────────────────────────
 
-def require_nvidia_cc():
+def require_nvidia_cc(timeout_seconds: int = 60, poll_interval: float = 2.0):
     """Abort if NVIDIA Confidential Compute mode is not engaged on the GPU.
 
-    `humanfund-gpu-cc.service` attempts to enable CC mode on boot, but it's
-    best-effort (3 retries then shrug). Without this gate the enclave would
-    silently run inference with CC disabled. Hard-fail here so the TDX
-    quote is never produced — the prover client then times out and the
-    epoch forfeits cleanly instead of producing unattested output.
+    `humanfund-gpu-cc.service` attempts to enable CC mode on boot, but the
+    transition is asynchronous: `nvidia-smi conf-compute -srs 1` can return
+    success while the GPU's "CC GPUs Ready State" hasn't yet flipped from
+    "Not Ready" to "Ready". A purely-instantaneous check (the prior
+    behaviour) loses that race intermittently — observed on Base mainnet
+    redeploy 2026-04-28 where the systemd unit's 9-second window expired
+    before the GPU was Ready.
+
+    This loop:
+      1. Polls `-q` and returns success the moment we see Ready.
+      2. If we see "CC On" but "Not Ready", calls `-srs 1` ourselves once
+         (idempotent if already requested) to recover from a systemd unit
+         that finished too early.
+      3. Continues polling for up to `timeout_seconds` (default 60s).
+      4. Hard-fails if still Not Ready, so the TDX quote is never produced
+         and the prover client forfeits cleanly instead of running
+         inference with CC disabled.
+
+    Adds at most `timeout_seconds` to enclave runtime when CC is slow to
+    initialize; near-zero overhead on the happy path (returns on the first
+    poll once the systemd unit succeeds).
     """
-    # Use `-q` (full query) — driver 580 prints `-f` as just `CC status: ON`
-    # with no readiness info, so the older "-f" + parse approach silently
-    # rejects every healthy boot. `-q` reports both:
-    #   CC State                   : ON
-    #   CC GPUs Ready State        : Ready
-    try:
-        result = subprocess.run(
-            ["nvidia-smi", "conf-compute", "-q"],
-            capture_output=True, text=True, timeout=10
-        )
-    except FileNotFoundError:
-        raise RuntimeError("nvidia-smi not found — cannot verify CC mode")
-    except subprocess.TimeoutExpired:
-        raise RuntimeError("nvidia-smi conf-compute -q timed out")
+    deadline = time.time() + timeout_seconds
+    srs1_attempted = False
+    last_output = ""
+    poll_count = 0
 
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"nvidia-smi conf-compute -q failed (rc={result.returncode}): "
-            f"{result.stderr.strip()}"
-        )
+    while True:
+        try:
+            result = subprocess.run(
+                ["nvidia-smi", "conf-compute", "-q"],
+                capture_output=True, text=True, timeout=10
+            )
+        except FileNotFoundError:
+            raise RuntimeError("nvidia-smi not found — cannot verify CC mode")
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("nvidia-smi conf-compute -q timed out")
 
-    output = result.stdout
-    cc_on = re.search(r"CC State\s*:\s*ON", output) is not None
-    ready = re.search(r"CC GPUs Ready State\s*:\s*Ready", output) is not None
-    if not (cc_on and ready):
-        raise RuntimeError(
-            "NVIDIA CC not engaged. nvidia-smi conf-compute -q output:\n" + output
-        )
-    log("  NVIDIA CC: ON, GPUs Ready State: Ready")
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"nvidia-smi conf-compute -q failed (rc={result.returncode}): "
+                f"{result.stderr.strip()}"
+            )
+
+        last_output = result.stdout
+        poll_count += 1
+        cc_on = re.search(r"CC State\s*:\s*ON", last_output) is not None
+        ready = re.search(r"CC GPUs Ready State\s*:\s*Ready", last_output) is not None
+
+        if cc_on and ready:
+            if poll_count == 1:
+                log("  NVIDIA CC: ON, GPUs Ready State: Ready")
+            else:
+                log(f"  NVIDIA CC: ON, GPUs Ready State: Ready (after {poll_count} polls)")
+            return
+
+        # Recovery: if the boot-time systemd unit finished without flipping
+        # Ready, run `-srs 1` ourselves. Once-per-call (no point spamming).
+        if cc_on and not ready and not srs1_attempted:
+            log("  NVIDIA CC: ON but Not Ready — attempting `-srs 1` recovery")
+            try:
+                subprocess.run(
+                    ["nvidia-smi", "conf-compute", "-srs", "1"],
+                    capture_output=True, text=True, timeout=10, check=False,
+                )
+            except Exception:
+                # Failure here isn't fatal — keep polling; the boot service
+                # may still complete. Hard-fail comes from the timeout below.
+                pass
+            srs1_attempted = True
+
+        if time.time() >= deadline:
+            raise RuntimeError(
+                f"NVIDIA CC not engaged after {timeout_seconds}s "
+                f"({poll_count} polls). nvidia-smi conf-compute -q output:\n"
+                + last_output
+            )
+
+        time.sleep(poll_interval)
 
 
 def start_llama_server() -> subprocess.Popen:

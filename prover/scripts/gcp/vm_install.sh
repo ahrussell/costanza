@@ -130,14 +130,21 @@ log ""
 log "─── Step 6: Systemd services ───"
 
 if [ "$USE_GPU" = "true" ]; then
+    # See build_full_dmverity_image.sh for the full rationale; in short:
+    # the prior unit fired too early (no Wants=nvidia-persistenced) and
+    # trusted `-srs 1`'s exit code (which can return non-zero before the
+    # GPU is ready, then 0 once the trailing `sleep 3` runs, hiding the
+    # real failure). New unit polls for actual "Ready State : Ready"
+    # and fails if not reached within 60s.
     cat > /etc/systemd/system/humanfund-gpu-cc.service << 'EOF'
 [Unit]
-Description=Activate NVIDIA CC GPU Ready State
+Description=NVIDIA CC GPU Ready State
 After=nvidia-persistenced.service
+Wants=nvidia-persistenced.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/bin/bash -c "for i in 1 2 3; do nvidia-smi conf-compute -srs 1 2>/dev/null && break; sleep 3; done"
+ExecStart=/bin/bash -c "for i in $(seq 1 30); do nvidia-smi conf-compute -srs 1 || true; if nvidia-smi conf-compute -q | grep -q \"Ready State.*: Ready\"; then exit 0; fi; sleep 2; done; echo \"ERROR: CC GPU not Ready after 60s\" >&2; nvidia-smi conf-compute -q >&2; exit 1"
 [Install]
 WantedBy=multi-user.target
 EOF

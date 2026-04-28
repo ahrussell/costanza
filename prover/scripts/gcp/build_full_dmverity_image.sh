@@ -148,13 +148,27 @@ if $ENABLE_SSH; then
 fi
 
 # Systemd services
+#
+# humanfund-gpu-cc.service: drives the GPU into Confidential Compute "Ready"
+# state. Diagnosis 2026-04-28 from 10 consecutive enclave failures: the prior
+# unit lacked After=nvidia-persistenced.service, fired before the daemon was
+# ready, `nvidia-smi -srs 1` returned non-zero on every retry, but the loop
+# trailed sleep 3 (exit 0) so systemd marked the unit successful and the
+# enclave proceeded against a Not-Ready GPU. Fixed by:
+#   - Adding After=/Wants=nvidia-persistenced.service ordering.
+#   - Polling for "Ready State : Ready" (the actual condition we need)
+#     instead of trusting -srs 1's exit code.
+#   - Removing 2>/dev/null so the journal shows real failures.
+#   - exit 1 if Ready never arrives, so systemd marks the unit failed.
 $USE_GPU && vm_run 'sudo tee /etc/systemd/system/humanfund-gpu-cc.service > /dev/null << "EOF"
 [Unit]
-Description=CC GPU
+Description=NVIDIA CC GPU Ready State
+After=nvidia-persistenced.service
+Wants=nvidia-persistenced.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/bin/bash -c "for i in 1 2 3; do nvidia-smi conf-compute -srs 1 2>/dev/null && break; sleep 3; done"
+ExecStart=/bin/bash -c "for i in $(seq 1 30); do nvidia-smi conf-compute -srs 1 || true; if nvidia-smi conf-compute -q | grep -q \"Ready State.*: Ready\"; then exit 0; fi; sleep 2; done; echo \"ERROR: CC GPU not Ready after 60s\" >&2; nvidia-smi conf-compute -q >&2; exit 1"
 [Install]
 WantedBy=multi-user.target
 EOF' && vm_run "sudo systemctl daemon-reload && sudo systemctl enable humanfund-gpu-cc"
