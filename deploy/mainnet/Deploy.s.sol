@@ -17,8 +17,21 @@ import "../../src/adapters/MorphoWETHAdapter.sol";
 /// @title Deploy
 /// @notice Deploys the full Human Fund system: core contracts, adapters, and links everything.
 ///
-/// Required env vars:
-///   PRIVATE_KEY          — deployer wallet
+/// Two signing modes — pick one:
+///
+/// 1. Keystore (mainnet, recommended): use a Foundry encrypted keystore.
+///    The deployer key is never in env or shell history.
+///        forge script deploy/mainnet/Deploy.s.sol:Deploy \
+///          --account <name> --sender 0x<deployer-address> \
+///          --rpc-url $RPC_URL --broadcast --verify
+///    Forge will prompt once for the keystore passphrase.
+///
+/// 2. Env private key (testnet/local convenience): set PRIVATE_KEY.
+///        export PRIVATE_KEY=0x...
+///        forge script deploy/mainnet/Deploy.s.sol:Deploy \
+///          --rpc-url $RPC_URL --broadcast
+///
+/// Other env vars:
 ///   SEED_AMOUNT          — initial treasury ETH (default 0.01 ETH)
 ///
 /// Base Mainnet DeFi addresses (required for adapter deployment):
@@ -34,10 +47,13 @@ import "../../src/adapters/MorphoWETHAdapter.sol";
 ///   COMPOUND_COMET       — Compound V3 Comet (USDC market)
 contract Deploy is Script {
     function run() external {
-        uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
         uint256 seedAmount = vm.envOr("SEED_AMOUNT", uint256(0.01 ether));
 
-        address deployer = vm.addr(deployerPrivateKey);
+        // Two-mode deploy: env-key (PRIVATE_KEY set) or keystore (--account/--sender).
+        // The two paths produce identical on-chain effects; only the signing
+        // source differs.
+        uint256 deployerPrivateKey = vm.envOr("PRIVATE_KEY", uint256(0));
+        address deployer;
 
         // Endaoment + DeFi addresses (Base mainnet defaults, overridable for testnet)
         address endaomentFactory = vm.envOr("ENDAOMENT_FACTORY", address(0x10fD9348136dCea154F752fe0B6dB45Fc298A589));
@@ -45,7 +61,15 @@ contract Deploy is Script {
         address usdcAddr = vm.envOr("USDC", address(0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913));
         address swapRouterAddr = vm.envOr("SWAP_ROUTER", address(0x2626664c2603336E57B271c5C0b26F421741e481));
 
-        vm.startBroadcast(deployerPrivateKey);
+        if (deployerPrivateKey != 0) {
+            deployer = vm.addr(deployerPrivateKey);
+            vm.startBroadcast(deployerPrivateKey);
+        } else {
+            // Keystore mode: forge fills msg.sender from --sender, and the
+            // wallet for --account signs every broadcast tx.
+            deployer = msg.sender;
+            vm.startBroadcast();
+        }
 
         // ─── 1. Core contracts ──────────────────────────────────────────
 
