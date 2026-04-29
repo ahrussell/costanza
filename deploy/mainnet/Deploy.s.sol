@@ -127,8 +127,8 @@ contract Deploy is Script {
         // piece of state visible to the TEE must be wired here.
 
         AuctionManager am = new AuctionManager(address(fund));
-        // Production timing: 30m commit / 30m reveal / 60m exec = 120m epoch
-        fund.setAuctionManager(address(am), 30 minutes, 30 minutes, 60 minutes);
+        // Production timing: 1h commit / 1h reveal / 2h exec = 4h epoch
+        fund.setAuctionManager(address(am), 1 hours, 1 hours, 2 hours);
 
         vm.stopBroadcast();
 
