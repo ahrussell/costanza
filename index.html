@@ -3504,6 +3504,7 @@ async function loadEvents() {
 // ═══════════════════════════════════════════════════════
 
 let lastUpdatedAt = null;
+let lastUpdatedFromCache = false;
 
 function formatRelativeTime(ts) {
   if (!ts) return '';
@@ -3520,6 +3521,34 @@ function updateLastUpdatedDisplay() {
   el.textContent = lastUpdatedAt ? `· ${formatRelativeTime(lastUpdatedAt)}` : '';
 }
 
+// Probe the RPC cache for its current data age. Sends a tiny eth_blockNumber
+// JSON-RPC request directly (not via ethers) so we can read the
+// X-Cache-Age response header. Cache age is in seconds; 0 means the cache
+// just refreshed from upstream Alchemy. Falls back to "now" if the worker
+// hasn't been redeployed with the X-Cache-Age header yet.
+async function probeDataFreshness() {
+  try {
+    const resp = await fetch(RPC_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_blockNumber', params: [] }),
+    });
+    const ageHeader = resp.headers.get('X-Cache-Age');
+    if (ageHeader != null) {
+      const ageSec = parseInt(ageHeader, 10);
+      lastUpdatedAt = Date.now() - (isNaN(ageSec) ? 0 : ageSec * 1000);
+      lastUpdatedFromCache = ageSec > 0;
+      return;
+    }
+  } catch (e) {
+    // network error — fall through
+  }
+  // Fallback: stamp "now". Worker either isn't deployed with the new header
+  // yet or we couldn't read it. Better than nothing.
+  lastUpdatedAt = Date.now();
+  lastUpdatedFromCache = false;
+}
+
 async function refresh() {
   const status = document.getElementById('nav-status');
   const statusText = document.getElementById('status-text');
@@ -3529,7 +3558,7 @@ async function refresh() {
     await loadAll();
     status.className = 'nav-status connected';
     statusText.textContent = 'connected';
-    lastUpdatedAt = Date.now();
+    await probeDataFreshness();
     updateLastUpdatedDisplay();
   } catch (err) {
     console.error('Refresh error:', err);
