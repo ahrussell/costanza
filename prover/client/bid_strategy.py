@@ -37,7 +37,7 @@ CPU_INFERENCE_MINUTES = 25  # ~22 min inference + overhead (not used in prod)
 
 
 def estimate_bid(gas_price_wei, machine_type="a3-highgpu-1g", eth_usd_price=2000.0,
-                 margin=1.0, observed_costs=None):
+                 margin=1.5, observed_costs=None):
     """Estimate the minimum profitable bid.
 
     If observed_costs is provided (from cost_tracker.get_average_costs()),
@@ -47,7 +47,7 @@ def estimate_bid(gas_price_wei, machine_type="a3-highgpu-1g", eth_usd_price=2000
         gas_price_wei: Current gas price in wei.
         machine_type: GCP machine type (determines hourly rate and timing).
         eth_usd_price: Current ETH/USD price for converting compute costs.
-        margin: Multiplier over estimated cost (default 1.0x — bid at cost).
+        margin: Multiplier over estimated cost (default 1.5x).
         observed_costs: Optional dict with avg_gas_used, avg_vm_minutes from
             the rolling cost tracker. If provided and sufficient, overrides
             hardcoded estimates.
