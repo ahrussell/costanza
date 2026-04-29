@@ -341,7 +341,9 @@
   }
 
   .hero-diary-body.collapsed {
-    max-height: 3.4em;
+    /* line-height 1.7 × ~5 lines = ~8.5em. Shows enough of the entry to
+       give the reader the gist before they choose to expand. */
+    max-height: 8.5em;
     overflow: hidden;
     position: relative;
   }
@@ -1212,7 +1214,7 @@
       <div class="card" id="memory-card" style="cursor:pointer;" onclick="openModal('memory')">
         <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0;">
           <span>Memory <span class="badge badge-dim" id="memory-badge" style="margin-left:6px;">10 slots</span></span>
-          <button class="hero-diary-toggle wc-toggle" onclick="event.stopPropagation();openModal('memory')">↗</button>
+          <a href="#" onclick="event.stopPropagation();openModal('memory');return false;" style="font-size:11px;font-weight:400;text-transform:none;letter-spacing:0;">View all &rarr;</a>
         </div>
         <div id="memory-preview" style="margin-top:12px;">
           <div class="loading">Loading</div>
@@ -3185,7 +3187,7 @@ async function loadAll() {
       if (active.length > 0) {
         const pick = active[Math.floor(Math.random() * active.length)];
         previewHtml += `
-          <div style="font-size:11px;color:var(--text-dim);margin-bottom:4px;">[${pick.idx}] ${escapeHtml(pick.title || '(untitled)')}</div>
+          <div style="font-size:11px;color:var(--text-dim);margin-bottom:4px;">Memory Slot ${pick.idx}</div>
           <div style="font-size:12px;color:var(--text-secondary);line-height:1.5;font-style:italic;">${escapeHtml(pick.body || '(empty body)')}</div>
         `;
       }
