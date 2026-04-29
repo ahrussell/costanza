@@ -13,15 +13,15 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 ## Current Status
 
 ### Base Mainnet
-- **Contract**: [`0x04E5cD3269Af275EA4247597254104B85E1eE282`](https://basescan.org/address/0x04E5cD3269Af275EA4247597254104B85E1eE282) (deployed 2026-04-29, block 45314709)
-- **AuctionManager**: [`0xEfb507fF3Fff827e18c06D27b09321c61E8C8b72`](https://basescan.org/address/0xEfb507fF3Fff827e18c06D27b09321c61E8C8b72)
-- **TdxVerifier**: [`0xB0FC78F46f62CaD11aDc909C01b2A90018a03135`](https://basescan.org/address/0xB0FC78F46f62CaD11aDc909C01b2A90018a03135)
-- **InvestmentManager**: [`0x50E4e51315243bB5da449F542CcC7ea492F04Ca8`](https://basescan.org/address/0x50E4e51315243bB5da449F542CcC7ea492F04Ca8)
-- **AgentMemory**: [`0x254f23BcC9Ca19e1D73B263a1Bdc06Ef1Ada2957`](https://basescan.org/address/0x254f23BcC9Ca19e1D73B263a1Bdc06Ef1Ada2957)
-- **DonationExecutor**: [`0x2aA22Da587894e96cd0a448273d0BBDCC1b2e45B`](https://basescan.org/address/0x2aA22Da587894e96cd0a448273d0BBDCC1b2e45B)
+- **Contract**: [`0x678dC1756b123168f23a698374C000019e38318c`](https://basescan.org/address/0x678dC1756b123168f23a698374C000019e38318c) (deployed 2026-04-29, block 45330578)
+- **AuctionManager**: [`0x976AeAfe1F708e1Ef0d0C0d26203CC4D7503f6EC`](https://basescan.org/address/0x976AeAfe1F708e1Ef0d0C0d26203CC4D7503f6EC)
+- **TdxVerifier**: [`0xfE45dF36FA94f9d119332456E3925cD93B963c93`](https://basescan.org/address/0xfE45dF36FA94f9d119332456E3925cD93B963c93)
+- **InvestmentManager**: [`0x2fab8aE91B9EB3BaB18531594B20e0e086661892`](https://basescan.org/address/0x2fab8aE91B9EB3BaB18531594B20e0e086661892)
+- **AgentMemory**: [`0x8de1BbFA2200A9104e3C08a00F96C2c8Ee073346`](https://basescan.org/address/0x8de1BbFA2200A9104e3C08a00F96C2c8Ee073346)
+- **DonationExecutor**: [`0x28DF01FBc55341Db43CE4589c6871f7a769730d5`](https://basescan.org/address/0x28DF01FBc55341Db43CE4589c6871f7a769730d5)
 - **Owner**: `0x2e61a91EbeD1B557199f42d3E843c06Afb445004` (single-use deploy EOA, will transfer to Safe `0x6dF6f527E193fAf1334c26A6d811fAd62E79E5Db`)
 - **Initial treasury**: 0.1 ETH (seedAmount)
-- **Epoch timing**: 120-min epochs (30m commit, 30m reveal, 60m execution)
+- **Epoch timing**: 240-min epochs (1h commit, 1h reveal, 2h execution)
 - **BASE_BOND**: 0.01 ETH; effectiveMaxBid at openAuction: 0.01 ETH (capped by min(maxBid, 10%×treasury))
 - **404 forge tests + 100 Python tests pass** (392 non-fork + 12 mainnet-fork; core + auction + TDX verifier + investment + memory + messages + cross-stack + system invariants + ownership fan-out + enclave inference + voice anchors)
 - GPU image: `costanza-tdx-prover-v1`, key: `0x1ff34454c9d46ea9f1cd400d490df0cffaa183f2c6bf6afc69d9749c60e34685` (NVIDIA CC GPU readiness fix; see [v1_measurements.txt](prover/scripts/gcp/costanza-tdx-prover-v1-measurements.txt))
@@ -32,6 +32,7 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 - 5 DeFi adapters registered (Aave V3 USDC, Lido wstETH, Coinbase cbETH, Compound V3 USDC, Morpho Gauntlet WETH Core). Aave V3 WETH skipped — reserve currently frozen on Base.
 
 ### Base Mainnet (previous)
+- Contract: `0x04E5cD3269Af275EA4247597254104B85E1eE282` — withdrawAll'd on 2026-04-29 because referral code 1 was minted from a hot wallet (`0x495fB7…`) whose key got exposed. Redeploy bumps epoch timing 30/30/60→1h/1h/2h and lets us mint referral 1 from a clean wallet.
 - Contract: `0xa3D0887A8ac8CCFAE41EA500E9Aa3f7993F1FB18` — withdrawAll'd on 2026-04-29, ~1 hour after deploy. Hit a latent deploy-ordering bug: `setAuctionManager` was called before `setInvestmentManager`/`setAgentMemory`/`_seedMemory`, so epoch 1's snapshot froze with `memoryHash=0` + `investmentsHash=0` while live state had the seeded entries + 5 adapters. The TEE's input hash diverged from the contract's, and epoch 1's `submitAuctionResult` always reverted with `ProofFailed`. Earlier deploys never fired this because none of them had a successful submission in epoch 1 (always epoch 2+, which freezes a clean snapshot at the boundary). Fixed in PR #38; redeploy at 0x04E5cD32… uses the corrected ordering.
 - Contract: `0xb64a5248EaC621f430462Cd817b8F536dc5daa34` — withdrawAll'd on 2026-04-29 before clean redeploy (epoch 4 was the first successful epoch after the GPU CC fix landed; ten prior epochs forfeited bonds because `humanfund-gpu-cc.service` fired before `nvidia-persistenced` was up and `2>/dev/null` swallowed the failure). Redeploy was for visual cleanliness — fresh epoch 1 with the same code.
 - Contract: `0x44274f447f928D3C4900986031D7a8bbb7abcfA0` — withdrawAll'd on 2026-04-28, ~3 hours after deploy (BASE_BOND was 0.001 ETH and seedAmount was 0.01 ETH, which made the openAuction-snapshotted effectiveMaxBid 0.001 ETH — too low for realistic prover bids. Redeploy bumped both: BASE_BOND→0.01, seedAmount→0.1, plus prover client now reads am.maxBid snapshot instead of fund.effectiveMaxBid live)
