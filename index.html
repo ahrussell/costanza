@@ -7,6 +7,8 @@
 <link rel="icon" type="image/x-icon" href="favicon.ico">
 <link rel="icon" type="image/png" sizes="32x32" href="favicon.png">
 <script src="https://cdn.jsdelivr.net/npm/ethers@6.13.4/dist/ethers.umd.min.js"></script>
+<!-- Coinbase Smart Wallet SDK (popup + passkey, no extension required) -->
+<script src="https://unpkg.com/@base-org/account@1.1.4/dist/base-account.min.js" defer></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
@@ -108,6 +110,63 @@
   }
   .nav-status.connected .dot { background: var(--green); }
   .nav-status.error .dot { background: var(--red); }
+  .nav-status .last-updated {
+    color: var(--text-dim); margin-left: 4px;
+  }
+
+  /* Header connect-wallet button */
+  .connect-btn {
+    background: var(--accent); color: #fff;
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-xs);
+    padding: 6px 12px;
+    font-family: var(--mono); font-size: 11px;
+    cursor: pointer; outline: none;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .connect-btn:hover { opacity: 0.9; }
+  .connect-btn.connected {
+    background: var(--surface2);
+    color: var(--text-secondary);
+    border-color: var(--border);
+  }
+  .connect-btn .pill-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--green); display: inline-block;
+  }
+
+  /* Wallet picker list */
+  .wallet-picker-list {
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .wallet-picker-btn {
+    display: flex; align-items: center; gap: 12px;
+    padding: 12px 16px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    cursor: pointer; text-align: left; width: 100%;
+    font-family: inherit; color: var(--text);
+    font-size: 14px; transition: var(--transition);
+  }
+  .wallet-picker-btn:hover { background: var(--surface3); }
+  .wallet-picker-btn .wallet-icon {
+    width: 28px; height: 28px; border-radius: 6px;
+    flex-shrink: 0; background: var(--surface3);
+    display: flex; align-items: center; justify-content: center;
+    overflow: hidden;
+  }
+  .wallet-picker-btn .wallet-icon img,
+  .wallet-picker-btn .wallet-icon svg {
+    width: 100%; height: 100%; object-fit: contain;
+  }
+  .wallet-picker-btn .wallet-name {
+    flex: 1; font-weight: 500;
+  }
+  .wallet-picker-btn .wallet-meta {
+    font-size: 11px; color: var(--text-dim);
+    font-family: var(--mono);
+  }
 
   @media (max-width: 768px) {
     nav .container { padding: 0 16px; }
@@ -116,7 +175,9 @@
     #contract-link { display: none; }
     .nav-controls a[href*="github"] { display: none !important; }
     .nav-status #status-text { display: none; }
+    .nav-status .last-updated { display: none; }
     .nav-controls { gap: 8px; }
+    .connect-btn { padding: 6px 8px; }
   }
 
   /* ── Sections ─────────────────────────────────────── */
@@ -878,9 +939,11 @@
         </svg>
       </a>
       <a id="contract-link" class="nav-select" style="text-decoration:none;" href="#" target="_blank"></a>
+      <button class="connect-btn" id="header-connect-btn" onclick="handleHeaderConnectClick()">Connect Wallet</button>
       <div class="nav-status" id="nav-status">
         <span class="dot"></span>
         <span id="status-text">connecting...</span>
+        <span class="last-updated" id="last-updated"></span>
       </div>
     </div>
   </div>
@@ -1023,6 +1086,20 @@
     </div>
     <button class="wallet-btn" id="earn-btn" onclick="handleMintReferral()">Connect wallet to mint code</button>
     <div class="form-status" id="earn-status"></div>
+  </div>
+</div>
+
+<!-- WALLET PICKER -->
+<div class="modal-overlay" id="modal-wallet-picker" onclick="closeModal(event, 'wallet-picker')">
+  <div class="modal" onclick="event.stopPropagation()" style="max-width:400px;">
+    <button class="modal-close" onclick="closeWalletPicker()">&times;</button>
+    <h3 id="wallet-picker-title">Connect a wallet</h3>
+    <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px;">Pick a wallet to connect to Base mainnet.</p>
+    <div id="wallet-picker-list" class="wallet-picker-list"></div>
+    <div id="wallet-picker-disconnect" style="display:none;margin-top:16px;padding-top:16px;border-top:1px solid var(--border);">
+      <button class="wallet-btn secondary" onclick="disconnectWallet(); closeWalletPicker();">Disconnect</button>
+    </div>
+    <div class="form-status" id="wallet-picker-status" style="margin-top:12px;"></div>
   </div>
 </div>
 
@@ -1603,10 +1680,44 @@ let allEvents = [];
 let walletProvider = null; // ethers BrowserProvider
 let walletSigner = null;
 let walletAddress = null;
+let walletRawProvider = null; // EIP-1193 provider underlying walletProvider
 let currentCommissionPct = '10'; // updated from contract each refresh
 let lastEthUsdPrice = 0n; // updated from contract each refresh
 
 const BASE_CHAIN_ID = 8453; // Base Mainnet
+const WALLET_STORAGE_KEY = 'costanza-wallet-uuid';
+const SMART_WALLET_UUID = '__smart-wallet__';
+
+// EIP-6963 wallet registry. Wallets announce themselves on a custom event;
+// dispatching `eip6963:requestProvider` causes them to (re-)announce.
+const detectedWallets = new Map(); // uuid -> { info: {uuid,name,icon,rdns}, provider }
+window.addEventListener('eip6963:announceProvider', (e) => {
+  detectedWallets.set(e.detail.info.uuid, e.detail);
+  // If picker modal is open, refresh the list so newly-arrived wallets show up.
+  if (document.getElementById('modal-wallet-picker')?.classList.contains('open')) {
+    renderWalletPickerList();
+  }
+});
+window.dispatchEvent(new Event('eip6963:requestProvider'));
+
+// Coinbase Smart Wallet (popup + passkey, no extension). Lazy because the
+// SDK script is `defer`-loaded and may not be ready when this module runs.
+let smartWalletSdk = null;
+function getSmartWalletProvider() {
+  if (!smartWalletSdk) {
+    if (typeof window.createBaseAccountSDK !== 'function') {
+      throw new Error('Coinbase Smart Wallet SDK not loaded yet — refresh and try again.');
+    }
+    smartWalletSdk = window.createBaseAccountSDK({
+      appName: 'The Human Fund',
+      appLogoUrl: window.location.origin + '/favicon.ico',
+      appChainIds: [BASE_CHAIN_ID],
+    });
+  }
+  return smartWalletSdk.getProvider();
+}
+
+const SMART_WALLET_ICON = `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><circle cx="16" cy="16" r="16" fill="%230052FF"/><path d="M16 8a8 8 0 100 16 8 8 0 000-16zm0 12a4 4 0 110-8 4 4 0 010 8z" fill="%23fff"/></svg>`;
 
 function walletShortAddr() {
   return walletAddress ? fmtAddr(walletAddress) : null;
@@ -1639,59 +1750,210 @@ function updateWalletRows() {
     if (donateBtn) donateBtn.textContent = 'Connect wallet to donate';
     if (earnBtn) earnBtn.textContent = 'Connect wallet to mint code';
   }
+
+  // Header connect button
+  const headerBtn = document.getElementById('header-connect-btn');
+  if (headerBtn) {
+    if (walletAddress) {
+      headerBtn.classList.add('connected');
+      headerBtn.innerHTML = `<span class="pill-dot"></span>${walletShortAddr()}`;
+      headerBtn.title = 'Click to switch or disconnect';
+    } else {
+      headerBtn.classList.remove('connected');
+      headerBtn.textContent = 'Connect Wallet';
+      headerBtn.title = 'Connect a wallet to donate or mint a referral';
+    }
+  }
+}
+
+async function _switchToBase(provider) {
+  // Smart Wallet locks chain via appChainIds and may reject this — that's
+  // fine, ignore. Injected wallets need an explicit switch.
+  try {
+    await provider.request({
+      method: 'wallet_switchEthereumChain',
+      params: [{ chainId: '0x' + BASE_CHAIN_ID.toString(16) }],
+    });
+  } catch (err) {
+    if (err && err.code === 4902) {
+      await provider.request({
+        method: 'wallet_addEthereumChain',
+        params: [{
+          chainId: '0x' + BASE_CHAIN_ID.toString(16),
+          chainName: 'Base',
+          nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },
+          rpcUrls: ['https://mainnet.base.org'],
+          blockExplorerUrls: ['https://basescan.org'],
+        }],
+      });
+    }
+    // else: swallow — Smart Wallet ignores switch requests.
+  }
+}
+
+async function _wireProvider(provider, uuid) {
+  // Detach any previous event listeners by replacing the variable; the GC
+  // will clean up the old provider's references after handlers fire once.
+  walletRawProvider = provider;
+  walletProvider = new ethers.BrowserProvider(provider);
+  walletSigner = await walletProvider.getSigner();
+  walletAddress = await walletSigner.getAddress();
+  localStorage.setItem(WALLET_STORAGE_KEY, uuid);
+
+  // Listen for account/chain changes so the UI stays consistent if the
+  // user switches accounts inside their wallet.
+  if (typeof provider.on === 'function') {
+    provider.on('accountsChanged', (accounts) => {
+      if (!accounts || accounts.length === 0) {
+        disconnectWallet();
+      } else {
+        walletAddress = ethers.getAddress(accounts[0]);
+        updateWalletRows();
+      }
+    });
+    provider.on('chainChanged', () => {
+      // Rebuild ethers provider so it picks up the new chainId.
+      walletProvider = new ethers.BrowserProvider(provider);
+      walletProvider.getSigner().then(s => { walletSigner = s; });
+    });
+  }
+
+  updateWalletRows();
+}
+
+async function connectWalletByUuid(uuid) {
+  let provider;
+  if (uuid === SMART_WALLET_UUID) {
+    provider = getSmartWalletProvider();
+  } else {
+    const w = detectedWallets.get(uuid);
+    if (!w) throw new Error('Wallet not found — try refreshing.');
+    provider = w.provider;
+  }
+  await provider.request({ method: 'eth_requestAccounts' });
+  await _switchToBase(provider);
+  await _wireProvider(provider, uuid);
+}
+
+function disconnectWallet() {
+  walletProvider = null;
+  walletSigner = null;
+  walletAddress = null;
+  walletRawProvider = null;
+  localStorage.removeItem(WALLET_STORAGE_KEY);
+  updateWalletRows();
+}
+
+let _walletPickerResolve = null; // resolves to true on connect, false on cancel
+
+function renderWalletPickerList() {
+  const container = document.getElementById('wallet-picker-list');
+  if (!container) return;
+  const entries = [];
+  for (const w of detectedWallets.values()) {
+    entries.push({
+      uuid: w.info.uuid,
+      name: w.info.name,
+      icon: w.info.icon,
+      meta: w.info.rdns || '',
+      connect: () => connectWalletByUuid(w.info.uuid),
+    });
+  }
+  // Always offer Smart Wallet (it works without an extension).
+  entries.push({
+    uuid: SMART_WALLET_UUID,
+    name: 'Coinbase Smart Wallet',
+    icon: SMART_WALLET_ICON,
+    meta: 'passkey · no extension',
+    connect: () => connectWalletByUuid(SMART_WALLET_UUID),
+  });
+
+  container.innerHTML = entries.map((e, i) => `
+    <button class="wallet-picker-btn" data-idx="${i}">
+      <div class="wallet-icon">${e.icon ? `<img src="${e.icon}" alt="">` : ''}</div>
+      <div style="flex:1;display:flex;flex-direction:column;gap:2px;">
+        <span class="wallet-name">${e.name}${e.uuid === walletStoredUuid() ? ' <span style="color:var(--green);font-size:10px;">· last used</span>' : ''}</span>
+        ${e.meta ? `<span class="wallet-meta">${e.meta}</span>` : ''}
+      </div>
+    </button>
+  `).join('');
+
+  Array.from(container.children).forEach((el, i) => {
+    el.onclick = async () => {
+      try {
+        setStatus('wallet-picker-status', 'Connecting…', 'info');
+        await entries[i].connect();
+        setStatus('wallet-picker-status', '', 'info');
+        document.getElementById('modal-wallet-picker').classList.remove('open');
+        if (_walletPickerResolve) { _walletPickerResolve(true); _walletPickerResolve = null; }
+      } catch (err) {
+        const msg = err && err.code === 4001 ? 'Connection rejected.' : (err.message || 'Connection failed');
+        setStatus('wallet-picker-status', msg, 'error');
+      }
+    };
+  });
+}
+
+function walletStoredUuid() {
+  try { return localStorage.getItem(WALLET_STORAGE_KEY); } catch { return null; }
+}
+
+function showWalletPicker() {
+  return new Promise((resolve) => {
+    _walletPickerResolve = resolve;
+    setStatus('wallet-picker-status', '', 'info');
+    document.getElementById('wallet-picker-title').textContent =
+      walletAddress ? 'Switch wallet' : 'Connect a wallet';
+    document.getElementById('wallet-picker-disconnect').style.display =
+      walletAddress ? 'block' : 'none';
+    // Re-request announcements in case wallets were installed mid-session.
+    window.dispatchEvent(new Event('eip6963:requestProvider'));
+    renderWalletPickerList();
+    document.getElementById('modal-wallet-picker').classList.add('open');
+  });
+}
+
+function closeWalletPicker() {
+  document.getElementById('modal-wallet-picker').classList.remove('open');
+  if (_walletPickerResolve) { _walletPickerResolve(false); _walletPickerResolve = null; }
+}
+
+function handleHeaderConnectClick() {
+  showWalletPicker();
 }
 
 async function ensureWallet() {
   if (walletAddress) return true;
+  const picked = await showWalletPicker();
+  if (!picked) throw new Error('Wallet selection cancelled');
+  return true;
+}
 
-  if (!window.ethereum) {
-    return null; // signal: no wallet detected
+// Silent auto-reconnect on page load — only succeeds if the previously
+// chosen injected wallet still has authorized accounts. Smart Wallet
+// sessions don't persist across reloads (passkey re-prompt), so we skip
+// it here; the user can re-pick from the header.
+async function attemptAutoReconnect() {
+  const uuid = walletStoredUuid();
+  if (!uuid || uuid === SMART_WALLET_UUID) return;
+  // Wait briefly so EIP-6963 announcements arrive.
+  for (let i = 0; i < 10 && !detectedWallets.has(uuid); i++) {
+    await new Promise(r => setTimeout(r, 50));
   }
-
+  const w = detectedWallets.get(uuid);
+  if (!w) return;
   try {
-    walletProvider = new ethers.BrowserProvider(window.ethereum);
-    await walletProvider.send('eth_requestAccounts', []);
-
-    // Check network
-    const network = await walletProvider.getNetwork();
-    if (Number(network.chainId) !== BASE_CHAIN_ID) {
-      try {
-        await walletProvider.send('wallet_switchEthereumChain', [
-          { chainId: '0x' + BASE_CHAIN_ID.toString(16) }
-        ]);
-      } catch (switchErr) {
-        if (switchErr.code === 4902) {
-          await walletProvider.send('wallet_addEthereumChain', [{
-            chainId: '0x' + BASE_CHAIN_ID.toString(16),
-            chainName: 'Base',
-            nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },
-            rpcUrls: ['https://mainnet.base.org'],
-            blockExplorerUrls: ['https://basescan.org'],
-          }]);
-        } else {
-          throw switchErr;
-        }
-      }
-      walletProvider = new ethers.BrowserProvider(window.ethereum);
+    const accounts = await w.provider.request({ method: 'eth_accounts' });
+    if (accounts && accounts.length > 0) {
+      await _wireProvider(w.provider, uuid);
     }
-
-    walletSigner = await walletProvider.getSigner();
-    walletAddress = await walletSigner.getAddress();
-    updateWalletRows();
-    return true;
   } catch (err) {
-    if (err.code === 4001) throw new Error('Wallet connection rejected.');
-    throw err;
+    console.log('auto-reconnect skipped:', err && err.message);
   }
 }
 
 function noWalletHtml() {
-  const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-  if (isMobile) {
-    return `Open this page inside a wallet app browser:<br>
-      <a href="https://metamask.app.link/dapp/${window.location.host}${window.location.pathname}" style="color:var(--accent);">Open in MetaMask</a>`;
-  }
-  return 'No wallet detected. Install <a href="https://metamask.io" target="_blank" style="color:var(--accent);">MetaMask</a>.';
+  return 'Click <strong>Connect Wallet</strong> in the header to pick a wallet (MetaMask, Coinbase Wallet, or Coinbase Smart Wallet).';
 }
 
 function setStatusHtml(id, html, type) {
@@ -1749,10 +2011,6 @@ function updateMessageByteCount() {
 async function handleSubmitDonation() {
   const statusId = 'donate-status';
   try {
-    if (!window.ethereum) {
-      setStatusHtml(statusId, noWalletHtml(), 'error');
-      return;
-    }
     setStatus(statusId, 'Connecting wallet...', 'info');
     await ensureWallet();
     updateWalletRows();
@@ -1808,10 +2066,6 @@ async function handleSubmitDonation() {
 async function handleMintReferral() {
   const statusId = 'earn-status';
   try {
-    if (!window.ethereum) {
-      setStatusHtml(statusId, noWalletHtml(), 'error');
-      return;
-    }
     setStatus(statusId, 'Connecting wallet...', 'info');
     await ensureWallet();
     updateWalletRows();
@@ -3249,6 +3503,52 @@ async function loadEvents() {
 // INIT
 // ═══════════════════════════════════════════════════════
 
+let lastUpdatedAt = null;
+let lastUpdatedFromCache = false;
+
+function formatRelativeTime(ts) {
+  if (!ts) return '';
+  const sec = Math.floor((Date.now() - ts) / 1000);
+  if (sec < 5) return 'just now';
+  if (sec < 60) return `${sec}s ago`;
+  if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
+  return `${Math.floor(sec / 3600)}h ago`;
+}
+
+function updateLastUpdatedDisplay() {
+  const el = document.getElementById('last-updated');
+  if (!el) return;
+  el.textContent = lastUpdatedAt ? `· ${formatRelativeTime(lastUpdatedAt)}` : '';
+}
+
+// Probe the RPC cache for its current data age. Sends a tiny eth_blockNumber
+// JSON-RPC request directly (not via ethers) so we can read the
+// X-Cache-Age response header. Cache age is in seconds; 0 means the cache
+// just refreshed from upstream Alchemy. Falls back to "now" if the worker
+// hasn't been redeployed with the X-Cache-Age header yet.
+async function probeDataFreshness() {
+  try {
+    const resp = await fetch(RPC_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_blockNumber', params: [] }),
+    });
+    const ageHeader = resp.headers.get('X-Cache-Age');
+    if (ageHeader != null) {
+      const ageSec = parseInt(ageHeader, 10);
+      lastUpdatedAt = Date.now() - (isNaN(ageSec) ? 0 : ageSec * 1000);
+      lastUpdatedFromCache = ageSec > 0;
+      return;
+    }
+  } catch (e) {
+    // network error — fall through
+  }
+  // Fallback: stamp "now". Worker either isn't deployed with the new header
+  // yet or we couldn't read it. Better than nothing.
+  lastUpdatedAt = Date.now();
+  lastUpdatedFromCache = false;
+}
+
 async function refresh() {
   const status = document.getElementById('nav-status');
   const statusText = document.getElementById('status-text');
@@ -3258,12 +3558,17 @@ async function refresh() {
     await loadAll();
     status.className = 'nav-status connected';
     statusText.textContent = 'connected';
+    await probeDataFreshness();
+    updateLastUpdatedDisplay();
   } catch (err) {
     console.error('Refresh error:', err);
     status.className = 'nav-status error';
     statusText.textContent = err.message.slice(0, 40);
   }
 }
+
+// Tick the relative-time label every second so users see it freshen.
+setInterval(updateLastUpdatedDisplay, 1000);
 
 async function init() {
   try {
@@ -3296,6 +3601,10 @@ async function init() {
     document.getElementById('contract-link').href = `${EXPLORER}/address/${CONTRACT_ADDRESS}`;
     document.getElementById('footer-contract').textContent = CONTRACT_ADDRESS;
     document.getElementById('footer-contract').href = `${EXPLORER}/address/${CONTRACT_ADDRESS}`;
+    updateWalletRows(); // initialize header connect button
+
+    // Silent auto-reconnect for returning users (injected wallets only).
+    attemptAutoReconnect().catch(() => {/* surfaced in console */});
 
     await refresh();
 

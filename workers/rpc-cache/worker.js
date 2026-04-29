@@ -8,6 +8,10 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type",
+  // Browsers hide custom response headers from JS by default — expose ours
+  // so the frontend can read X-Cache-Age and surface real data freshness
+  // (cache age, not page-fetch age).
+  "Access-Control-Expose-Headers": "X-Cache, X-Cache-Age",
 };
 
 // Build a stable cache key by stripping volatile fields (block numbers, request id).
@@ -93,7 +97,16 @@ export default {
       // Reconstruct JSON-RPC envelope with the caller's request id
       const envelope = JSON.parse(cachedPayload);
       envelope.id = requestId;
-      return jsonResp(JSON.stringify(envelope), { "X-Cache": "HIT" });
+      // Compute cache age from the stored Date header so the frontend can
+      // surface real data freshness (not page-fetch freshness).
+      const cachedDate = cached.headers.get("date");
+      const ageSec = cachedDate
+        ? Math.max(0, Math.floor((Date.now() - new Date(cachedDate).getTime()) / 1000))
+        : 0;
+      return jsonResp(JSON.stringify(envelope), {
+        "X-Cache": "HIT",
+        "X-Cache-Age": String(ageSec),
+      });
     }
 
     // Cache miss — forward to Alchemy
@@ -105,7 +118,8 @@ export default {
 
     const data = await resp.text();
 
-    // Cache successful responses (strip the id before caching)
+    // Cache successful responses (strip the id before caching). Store with
+    // an explicit Date header so cache hits can compute their age cleanly.
     if (resp.ok) {
       try {
         const rpcResp = JSON.parse(data);
@@ -114,7 +128,11 @@ export default {
           rpcResp.id = 0;
           const toCache = JSON.stringify(rpcResp);
           await cache.put(cacheKey, new Response(toCache, {
-            headers: { "Content-Type": "application/json", "Cache-Control": `public, max-age=${CACHE_TTL}` },
+            headers: {
+              "Content-Type": "application/json",
+              "Cache-Control": `public, max-age=${CACHE_TTL}`,
+              "Date": new Date().toUTCString(),
+            },
           }));
         }
       } catch {
@@ -122,6 +140,6 @@ export default {
       }
     }
 
-    return jsonResp(data, { "X-Cache": "MISS" });
+    return jsonResp(data, { "X-Cache": "MISS", "X-Cache-Age": "0" });
   },
 };
