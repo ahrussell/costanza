@@ -2922,6 +2922,8 @@ async function loadAll() {
     document.getElementById('hero-diary-body').innerHTML =
       `<div>${escapeHtml(latest.reasoning)}</div>
        <div class="hero-diary-detail">${latest.action.detail}</div>`;
+    // Restore the open-diary button if a previous refresh had hidden it.
+    document.getElementById('hero-diary-toggle').style.display = '';
   } else {
     document.getElementById('hero-diary-body').innerHTML = '<div style="color:var(--text-dim);">No diary entries yet. The first epoch is in progress.</div>';
     document.getElementById('hero-diary-toggle').style.display = 'none';
