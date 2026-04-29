@@ -1720,7 +1720,20 @@ function getSmartWalletProvider() {
   return smartWalletSdk.getProvider();
 }
 
-const SMART_WALLET_ICON = `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><circle cx="16" cy="16" r="16" fill="%230052FF"/><path d="M16 8a8 8 0 100 16 8 8 0 000-16zm0 12a4 4 0 110-8 4 4 0 010 8z" fill="%23fff"/></svg>`;
+// Smart Wallet icon — rendered as inline <svg> rather than a data URI to
+// avoid the unescaped-quote problem that an SVG data URI has when dropped
+// into `<img src="...">`. The browser's HTML parser sees the inner " and
+// closes the attribute prematurely, mangling the rest of the markup.
+const SMART_WALLET_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="100%" height="100%" aria-hidden="true"><circle cx="16" cy="16" r="16" fill="#0052FF"/><rect x="11" y="11" width="10" height="10" rx="2" fill="#fff"/></svg>`;
+
+function iconHtmlFor(entry) {
+  if (entry.uuid === SMART_WALLET_UUID) return SMART_WALLET_ICON_SVG;
+  if (!entry.icon) return '';
+  // EIP-6963 wallets typically send a data URI — pass through, but encode
+  // any stray characters (defense against a malformed announce).
+  const safe = entry.icon.replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  return `<img src="${safe}" alt="">`;
+}
 
 function walletShortAddr() {
   return walletAddress ? fmtAddr(walletAddress) : null;
@@ -1866,17 +1879,16 @@ function renderWalletPickerList() {
   entries.push({
     uuid: SMART_WALLET_UUID,
     name: 'Coinbase Smart Wallet',
-    icon: SMART_WALLET_ICON,
     meta: 'passkey · no extension',
     connect: () => connectWalletByUuid(SMART_WALLET_UUID),
   });
 
   container.innerHTML = entries.map((e, i) => `
     <button class="wallet-picker-btn" data-idx="${i}">
-      <div class="wallet-icon">${e.icon ? `<img src="${e.icon}" alt="">` : ''}</div>
-      <div style="flex:1;display:flex;flex-direction:column;gap:2px;">
-        <span class="wallet-name">${e.name}${e.uuid === walletStoredUuid() ? ' <span style="color:var(--green);font-size:10px;">· last used</span>' : ''}</span>
-        ${e.meta ? `<span class="wallet-meta">${e.meta}</span>` : ''}
+      <div class="wallet-icon">${iconHtmlFor(e)}</div>
+      <div style="flex:1;display:flex;flex-direction:column;gap:2px;min-width:0;">
+        <span class="wallet-name">${escapeHtml(e.name)}${e.uuid === walletStoredUuid() ? ' <span style="color:var(--green);font-size:10px;">· last used</span>' : ''}</span>
+        ${e.meta ? `<span class="wallet-meta">${escapeHtml(e.meta)}</span>` : ''}
       </div>
     </button>
   `).join('');
