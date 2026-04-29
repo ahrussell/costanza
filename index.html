@@ -3388,14 +3388,20 @@ async function loadAll() {
   // Current bond (projected — reflects post-sync counter state)
   document.getElementById('tl-bond').textContent = fmtEth(projectedBond);
 
-  // Latest bids — queries target the in-flight auction (AM's current).
-  // Projected epoch may be ahead of AM's current if we've projected past
-  // a rollover that hasn't been materialized on-chain yet; in that case
-  // the AM's current-auction views still reflect the most recent auction
-  // whose bids are worth displaying.
+  // Latest bids — only show when AM's in-flight auction matches the fund's
+  // current epoch AND that auction hasn't terminated. Otherwise the
+  // committers list represents a previous epoch's auction (e.g. AM in
+  // SETTLED post-execution, awaiting the next openAuction), which is
+  // misleading on a card labeled "Latest Bids".
   if (auctionOn && auctionMgr) {
     try {
-      const committers = await auctionMgr.getCommitters();
+      const [amEpoch, amPhase] = await Promise.all([
+        auctionMgr.currentEpoch().then(n => Number(n)).catch(() => null),
+        auctionMgr.phase().then(p => Number(p)).catch(() => null),
+      ]);
+      const SETTLED = 3;
+      const isCurrentEpochAuction = amEpoch === currentEpochNum && amPhase !== null && amPhase !== SETTLED;
+      const committers = isCurrentEpochAuction ? await auctionMgr.getCommitters() : [];
       const bidCount = committers.length;
       if (bidCount === 0) {
         document.getElementById('tl-bids').innerHTML = '<div style="font-family:var(--mono);font-size:20px;font-weight:600;">0</div><div style="font-size:11px;color:var(--text-dim);">No bids this epoch</div>';
