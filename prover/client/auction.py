@@ -34,8 +34,10 @@ PHASE_NAMES = {
 }
 
 # Gas limits for auction transactions
-GAS_SYNC_PHASE = 1_500_000     # syncPhase may chain through multiple transitions + Chainlink snapshot
-GAS_COMMIT = 1_500_000         # commit auto-syncs (may open auction + Chainlink snapshot)
+GAS_SYNC_PHASE = 3_000_000     # syncPhase may chain transitions + freeze snapshot. Snapshot freeze
+                                # iterates Morpho/IM/AgentMemory views — observed ~1.6M on epoch rollover
+                                # at 5 adapters; growing donations/messages/history push it further.
+GAS_COMMIT = 3_000_000         # commit auto-syncs (may open auction + freeze snapshot — same upper bound)
 GAS_REVEAL = 500_000           # reveal auto-syncs (may close commit)
 GAS_SUBMIT_RESULT = 15_000_000 # DCAP verification is expensive; auto-syncs (may close reveal)
 GAS_CLAIM_BOND = 100_000
