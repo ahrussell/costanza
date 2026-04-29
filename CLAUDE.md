@@ -27,7 +27,7 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 - GPU image: `costanza-tdx-prover-v1`, key: `0x1ff34454c9d46ea9f1cd400d490df0cffaa183f2c6bf6afc69d9749c60e34685` (NVIDIA CC GPU readiness fix; see [v1_measurements.txt](prover/scripts/gcp/costanza-tdx-prover-v1-measurements.txt))
 - GCP TDX FMSPC `00806f050000` registered in Automata DCAP Dashboard
 - H100 on-demand quota is 0; all GPU VMs use `--provisioning-model=SPOT`
-- **Frontend RPC**: Cloudflare Worker at `humanfund-rpc-cache.thehumanfund.workers.dev` (proxies to Alchemy, 5-min cache)
+- **Frontend RPC**: Cloudflare Worker at `humanfund-rpc-cache.thehumanfund.workers.dev` (proxies to Alchemy, 15-min cache)
 - **Prover RPC**: Alchemy direct
 - 5 DeFi adapters registered (Aave V3 USDC, Lido wstETH, Coinbase cbETH, Compound V3 USDC, Morpho Gauntlet WETH Core). Aave V3 WETH skipped — reserve currently frozen on Base.
 

@@ -2,7 +2,7 @@
 // Proxies JSON-RPC to Alchemy, caches responses with normalized keys.
 // Deploy: cd workers/rpc-cache && wrangler deploy
 
-const CACHE_TTL = 300; // 5 minutes
+const CACHE_TTL = 900; // 15 minutes
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
