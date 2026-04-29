@@ -2983,6 +2983,13 @@ async function loadAll() {
       if (cached !== null) return cached;
       try {
         const snap = await fund.getEpochSnapshot(nextEpoch);
+        // Sentinel: an unfrozen snapshot returns the default struct with
+        // epoch=0. If we got that back (page loaded mid-rollover, before
+        // _freezeEpochSnapshot ran), don't cache the zero — fall back to
+        // live invested so the chart isn't stuck on a stale 0.
+        if (Number(snap.epoch) !== nextEpoch) {
+          return parseFloat(ethers.formatEther(totalInvested));
+        }
         const pCount = Number(snap.investmentProtocolCount);
         let sum = 0n;
         for (let i = 1; i <= pCount; i++) {
@@ -2996,12 +3003,16 @@ async function loadAll() {
       }
     }));
 
-    // Same live-truth correction as the inflows fix: if the latest entry
-    // is the current live epoch, replace its liquid value with live
-    // treasuryBalance so post-settle donations show.
+    // Live-truth correction for the rightmost datapoint. The latest
+    // diary entry's "next epoch snapshot" may have been written stale
+    // (mid-rollover read of zeros, or pre-invest-action), and even when
+    // it's correct it's still the snapshot at the start of the current
+    // epoch — yields/withdrawals during this epoch aren't reflected.
+    // Override with live values from this refresh.
     const last = chartData[chartData.length - 1];
     if (last && last.epoch === currentEpochNum) {
       liquidValues[liquidValues.length - 1] = parseFloat(ethers.formatEther(treasury));
+      investedValues[investedValues.length - 1] = parseFloat(ethers.formatEther(totalInvested));
     }
 
     if (treasuryChart) treasuryChart.destroy();
