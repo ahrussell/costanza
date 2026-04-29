@@ -3187,7 +3187,7 @@ async function loadAll() {
       if (active.length > 0) {
         const pick = active[Math.floor(Math.random() * active.length)];
         previewHtml += `
-          <div style="font-size:11px;color:var(--text-dim);margin-bottom:4px;">Memory Slot ${pick.idx}</div>
+          <div style="font-size:11px;color:var(--text-dim);margin-bottom:4px;">[Memory Slot ${pick.idx}] ${escapeHtml(pick.title || '(untitled)')}</div>
           <div style="font-size:12px;color:var(--text-secondary);line-height:1.5;font-style:italic;">${escapeHtml(pick.body || '(empty body)')}</div>
         `;
       }
