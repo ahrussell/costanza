@@ -17,10 +17,11 @@ const CORS_HEADERS = {
 // Cache-key version. Bump this any time the cache-payload schema changes
 // (e.g. adding stamped headers like X-Cached-At) to force eviction of all
 // stale entries that won't carry the new metadata. Otherwise serves limp
-// across deploys until the 5-min TTL expires per entry.
-const CACHE_KEY_VERSION = "v2";
+// across deploys until the 15-min TTL expires per entry.
+const CACHE_KEY_VERSION = "v3";
 
-// Build a stable cache key by stripping volatile fields (block numbers, request id).
+// Build a stable cache key by stripping volatile fields (request id, but
+// NOT block ranges — those affect the response set and must be in the key).
 function buildCacheKey(parsed) {
   const method = parsed.method;
   let key = null;
@@ -30,10 +31,17 @@ function buildCacheKey(parsed) {
   } else if (method === "eth_call") {
     const p = parsed.params || [];
     const call = p[0] || {};
+    // eth_call's block tag is ignored (defaults to "latest"); per-block
+    // pinning isn't used by the frontend and inflating the key with it
+    // would tank cache hit rate.
     key = `eth_call:${(call.to || "").toLowerCase()}:${(call.data || "").toLowerCase()}`;
   } else if (method === "eth_getLogs") {
     const p = (parsed.params || [])[0] || {};
-    key = `eth_getLogs:${(p.address || "").toLowerCase()}:${JSON.stringify(p.topics || [])}`;
+    // fromBlock/toBlock MUST be in the key — different ranges return
+    // different log sets. Without this every chunked queryFilter() call
+    // returned the first chunk's events, duplicating data on the chart
+    // and dropping events from later chunks.
+    key = `eth_getLogs:${(p.address || "").toLowerCase()}:${p.fromBlock || ""}:${p.toBlock || ""}:${JSON.stringify(p.topics || [])}`;
   }
 
   return key ? `${CACHE_KEY_VERSION}:${key}` : null;
