@@ -103,16 +103,18 @@
   .nav-status {
     font-family: var(--mono); font-size: 11px;
     display: flex; align-items: center; gap: 6px;
+    /* Fixed width so the page doesn't reflow when the label switches
+       between "not connected" / "refreshing" / "refreshed Xm ago" —
+       sized to fit the longest realistic label. */
+    min-width: 144px;
   }
   .nav-status .dot {
     width: 6px; height: 6px; border-radius: 50%;
-    background: var(--text-dim);
+    background: var(--text-dim); flex-shrink: 0;
   }
   .nav-status.connected .dot { background: var(--green); }
+  .nav-status.refreshing .dot { background: var(--orange); }
   .nav-status.error .dot { background: var(--red); }
-  .nav-status .last-updated {
-    color: var(--text-dim); margin-left: 4px;
-  }
 
   /* Header connect-wallet button */
   .connect-btn {
@@ -175,7 +177,7 @@
     #contract-link { display: none; }
     .nav-controls a[href*="github"] { display: none !important; }
     .nav-status #status-text { display: none; }
-    .nav-status .last-updated { display: none; }
+    .nav-status { min-width: 0; }
     .nav-controls { gap: 8px; }
     .connect-btn { padding: 6px 8px; }
   }
@@ -942,8 +944,7 @@
       <button class="connect-btn" id="header-connect-btn" onclick="handleHeaderConnectClick()">Connect Wallet</button>
       <div class="nav-status" id="nav-status">
         <span class="dot"></span>
-        <span id="status-text">connecting...</span>
-        <span class="last-updated" id="last-updated"></span>
+        <span id="status-text">not connected</span>
       </div>
     </div>
   </div>
@@ -3504,21 +3505,36 @@ async function loadEvents() {
 // ═══════════════════════════════════════════════════════
 
 let lastUpdatedAt = null;
-let lastUpdatedFromCache = false;
+let connectionState = 'idle'; // 'idle' | 'refreshing' | 'connected' | 'error'
 
-function formatRelativeTime(ts) {
-  if (!ts) return '';
+function formatAgeMinutes(ts) {
+  // Floor to minutes: 30s → "0m", 1m30s → "1m". Cap is implicit since the
+  // worker refreshes every 5 min, so the max stable value is ~5m before
+  // it resets. Hours (>=60m) shouldn't normally happen but format anyway.
+  if (!ts) return '0m';
   const sec = Math.floor((Date.now() - ts) / 1000);
-  if (sec < 5) return 'just now';
-  if (sec < 60) return `${sec}s ago`;
-  if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
-  return `${Math.floor(sec / 3600)}h ago`;
+  const minutes = Math.floor(sec / 60);
+  if (minutes < 60) return `${minutes}m`;
+  return `${Math.floor(minutes / 60)}h`;
 }
 
-function updateLastUpdatedDisplay() {
-  const el = document.getElementById('last-updated');
-  if (!el) return;
-  el.textContent = lastUpdatedAt ? `· ${formatRelativeTime(lastUpdatedAt)}` : '';
+function renderStatus() {
+  const status = document.getElementById('nav-status');
+  const statusText = document.getElementById('status-text');
+  if (!status || !statusText) return;
+  if (connectionState === 'refreshing') {
+    status.className = 'nav-status refreshing';
+    statusText.textContent = 'refreshing';
+  } else if (connectionState === 'connected') {
+    status.className = 'nav-status connected';
+    statusText.textContent = `refreshed ${formatAgeMinutes(lastUpdatedAt)} ago`;
+  } else if (connectionState === 'error') {
+    status.className = 'nav-status error';
+    statusText.textContent = 'not connected';
+  } else {
+    status.className = 'nav-status';
+    statusText.textContent = 'not connected';
+  }
 }
 
 // Probe the RPC cache for its current data age. Sends a tiny eth_blockNumber
@@ -3537,7 +3553,6 @@ async function probeDataFreshness() {
     if (ageHeader != null) {
       const ageSec = parseInt(ageHeader, 10);
       lastUpdatedAt = Date.now() - (isNaN(ageSec) ? 0 : ageSec * 1000);
-      lastUpdatedFromCache = ageSec > 0;
       return;
     }
   } catch (e) {
@@ -3546,29 +3561,28 @@ async function probeDataFreshness() {
   // Fallback: stamp "now". Worker either isn't deployed with the new header
   // yet or we couldn't read it. Better than nothing.
   lastUpdatedAt = Date.now();
-  lastUpdatedFromCache = false;
 }
 
 async function refresh() {
-  const status = document.getElementById('nav-status');
-  const statusText = document.getElementById('status-text');
-  status.className = 'nav-status';
-  statusText.textContent = 'refreshing...';
+  connectionState = 'refreshing';
+  renderStatus();
   try {
     await loadAll();
-    status.className = 'nav-status connected';
-    statusText.textContent = 'connected';
     await probeDataFreshness();
-    updateLastUpdatedDisplay();
+    connectionState = 'connected';
+    renderStatus();
   } catch (err) {
     console.error('Refresh error:', err);
-    status.className = 'nav-status error';
-    statusText.textContent = err.message.slice(0, 40);
+    connectionState = 'error';
+    renderStatus();
   }
 }
 
-// Tick the relative-time label every second so users see it freshen.
-setInterval(updateLastUpdatedDisplay, 1000);
+// Tick the minute label every 30s so a "1m" label flips to "2m" within 30s
+// of the second minute starting (acceptable for a floor-minute display).
+setInterval(() => {
+  if (connectionState === 'connected') renderStatus();
+}, 30000);
 
 async function init() {
   try {
