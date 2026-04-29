@@ -32,8 +32,8 @@ Examples:
                         choices=["gcp-gpu", "gcp-cpu", "gcp-persistent"],
                         help="TEE client to use (default: gcp-gpu; use gcp-persistent for testnet)")
     parser.add_argument("--bid-margin", type=float,
-                        default=float(os.environ.get("BID_MARGIN", "1.5")),
-                        help="Bid multiplier over estimated cost (default: 1.5)")
+                        default=float(os.environ.get("BID_MARGIN", "1.0")),
+                        help="Bid multiplier over estimated cost (default: 1.0 — bid at cost)")
     parser.add_argument("--state-dir", type=Path,
                         default=Path(os.environ.get("STATE_DIR", os.path.expanduser("~/.humanfund"))),
                         help="Directory for persistent state (default: ~/.humanfund)")
