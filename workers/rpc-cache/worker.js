@@ -14,26 +14,29 @@ const CORS_HEADERS = {
   "Access-Control-Expose-Headers": "X-Cache, X-Cache-Age",
 };
 
+// Cache-key version. Bump this any time the cache-payload schema changes
+// (e.g. adding stamped headers like X-Cached-At) to force eviction of all
+// stale entries that won't carry the new metadata. Otherwise serves limp
+// across deploys until the 5-min TTL expires per entry.
+const CACHE_KEY_VERSION = "v2";
+
 // Build a stable cache key by stripping volatile fields (block numbers, request id).
 function buildCacheKey(parsed) {
   const method = parsed.method;
+  let key = null;
 
-  if (method === "eth_getBlockNumber") {
-    return "eth_getBlockNumber";
-  }
-
-  if (method === "eth_call") {
+  if (method === "eth_blockNumber") {
+    key = "eth_blockNumber";
+  } else if (method === "eth_call") {
     const p = parsed.params || [];
     const call = p[0] || {};
-    return `eth_call:${(call.to || "").toLowerCase()}:${(call.data || "").toLowerCase()}`;
-  }
-
-  if (method === "eth_getLogs") {
+    key = `eth_call:${(call.to || "").toLowerCase()}:${(call.data || "").toLowerCase()}`;
+  } else if (method === "eth_getLogs") {
     const p = (parsed.params || [])[0] || {};
-    return `eth_getLogs:${(p.address || "").toLowerCase()}:${JSON.stringify(p.topics || [])}`;
+    key = `eth_getLogs:${(p.address || "").toLowerCase()}:${JSON.stringify(p.topics || [])}`;
   }
 
-  return null;
+  return key ? `${CACHE_KEY_VERSION}:${key}` : null;
 }
 
 async function sha256(text) {
@@ -97,11 +100,12 @@ export default {
       // Reconstruct JSON-RPC envelope with the caller's request id
       const envelope = JSON.parse(cachedPayload);
       envelope.id = requestId;
-      // Compute cache age from the stored Date header so the frontend can
-      // surface real data freshness (not page-fetch freshness).
-      const cachedDate = cached.headers.get("date");
-      const ageSec = cachedDate
-        ? Math.max(0, Math.floor((Date.now() - new Date(cachedDate).getTime()) / 1000))
+      // Compute cache age from the X-Cached-At header we stored on put.
+      // (Don't use the standard Date header — Cloudflare's edge cache
+      // overrides/strips it.)
+      const cachedAtMs = parseInt(cached.headers.get("x-cached-at") || "0", 10);
+      const ageSec = cachedAtMs
+        ? Math.max(0, Math.floor((Date.now() - cachedAtMs) / 1000))
         : 0;
       return jsonResp(JSON.stringify(envelope), {
         "X-Cache": "HIT",
@@ -118,8 +122,8 @@ export default {
 
     const data = await resp.text();
 
-    // Cache successful responses (strip the id before caching). Store with
-    // an explicit Date header so cache hits can compute their age cleanly.
+    // Cache successful responses (strip the id before caching). Stamp an
+    // X-Cached-At header so cache hits can compute their age cleanly.
     if (resp.ok) {
       try {
         const rpcResp = JSON.parse(data);
@@ -131,7 +135,7 @@ export default {
             headers: {
               "Content-Type": "application/json",
               "Cache-Control": `public, max-age=${CACHE_TTL}`,
-              "Date": new Date().toUTCString(),
+              "X-Cached-At": String(Date.now()),
             },
           }));
         }
