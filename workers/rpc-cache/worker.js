@@ -229,12 +229,17 @@ async function handleOnrampToken(request, env) {
     const body = await request.json().catch(() => ({}));
     const requestedAddress = (body.address || "").toLowerCase();
     const chain = body.chain || "base";
-    // Pin destination — only the fund contract is allowed. Even if a
-    // request specifies a different address, we reject. This prevents
-    // anyone from using our endpoint as a free token mint for arbitrary
-    // wallets and keeps quota bound to actual donations.
-    if (requestedAddress && requestedAddress !== FUND_ADDRESS) {
-      return jsonResp(JSON.stringify({ error: "Forbidden destination — only the fund contract is allowed" }), { status: 403 });
+    // Two destination paths:
+    //   - FUND_ADDRESS                — anonymous direct-to-contract donations
+    //   - throwaway EOA (any address) — for the donate-with-message flow,
+    //     where the donor's frontend generates a one-shot key, Coinbase
+    //     delivers ETH to it, and JS auto-signs donateWithMessage() to
+    //     forward to the contract. Authentication for non-fund
+    //     destinations rests on Turnstile (above) + the donor paying
+    //     their own card. They can't drain our quota for free because
+    //     they have to actually complete the card payment.
+    if (!/^0x[a-f0-9]{40}$/.test(requestedAddress)) {
+      return jsonResp(JSON.stringify({ error: "invalid destination address" }), { status: 400 });
     }
     if (chain !== "base") {
       return jsonResp(JSON.stringify({ error: "Forbidden chain — only base is allowed" }), { status: 403 });
@@ -250,7 +255,7 @@ async function handleOnrampToken(request, env) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        addresses: [{ address: FUND_ADDRESS, blockchains: ["base"] }],
+        addresses: [{ address: requestedAddress, blockchains: ["base"] }],
         assets: ["ETH"],
       }),
     });

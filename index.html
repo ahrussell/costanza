@@ -1128,6 +1128,10 @@
 </head>
 <body>
 
+<!-- Pending donation recovery banner — surfaced when localStorage holds
+     a throwaway-wallet entry whose address still has unforwarded ETH. -->
+<div id="pending-donations-banner" style="display:none;align-items:center;gap:12px;padding:10px 20px;background:var(--orange-dim);border-bottom:1px solid var(--orange);color:var(--text);font-size:13px;line-height:1.4;"></div>
+
 <!-- NAV -->
 <nav>
   <div class="container">
@@ -1308,6 +1312,7 @@
       </button>
       <p id="donate-card-range-note" style="display:none;font-size:11px;color:var(--text-dim);text-align:center;margin:0;line-height:1.5;">Debit card payments are limited to $5&ndash;$500 per donation.</p>
       <p id="donate-card-region-note" style="display:none;font-size:11px;color:var(--text-dim);text-align:center;margin:0;line-height:1.5;">Outside the US? You&rsquo;ll need a Coinbase account to pay with a debit card.</p>
+      <p id="donate-card-message-note" style="display:none;font-size:11px;color:var(--red);text-align:center;margin:0;line-height:1.5;">Messages aren&rsquo;t included with debit card donations &mdash; switch to <strong>Donate with ETH</strong> to send your message, or clear the message field to use a card.</p>
     </div>
 
     <div class="form-status" id="donate-status"></div>
@@ -1676,6 +1681,18 @@ const REFERRAL_CODE = '1'; // creator referral code (default when no code entere
 // $500/week instead of the trial-mode $5/tx.
 const COINBASE_CDP_PROJECT_ID = '7a0579be-19c8-4317-bdf6-2968bfdad3f8';
 const CARDPAY_ENABLED = true;
+
+// Throwaway-wallet flow for "card payment + message" donations. Behind
+// ?cardpaymsg=1 until verified end-to-end. When ON: the card button
+// stays enabled when a message is typed; the page generates a one-shot
+// EOA in JS, Coinbase delivers to it, and we auto-sign donateWithMessage
+// from the throwaway. When OFF: the card button is disabled when a
+// message is typed (the conservative fallback — donor must clear the
+// message or use the ETH path).
+const CARDPAY_WITH_MESSAGE_ENABLED = (() => {
+  try { return new URLSearchParams(location.search).has('cardpaymsg'); }
+  catch { return false; }
+})();
 
 // Cloudflare Turnstile — site key (public). Worker has the matching
 // secret as a Wrangler secret. Per-click invisible challenge gates the
@@ -2504,21 +2521,33 @@ function updateDonateButtons() {
     }
   }
 
-  // Card button only enabled with USD between Coinbase guest min/max.
+  // Card button enabled when amount is in Coinbase's range AND either
+  // (a) no message typed OR (b) the throwaway-wallet flow is enabled
+  // for card+message donations.
   const cardBtn = document.getElementById('donate-card-btn');
   const cardRangeNote = document.getElementById('donate-card-range-note');
+  const cardMessageNote = document.getElementById('donate-card-message-note');
+  const ta = document.getElementById('message-text');
+  const hasMessage = !!(ta && ta.value.trim().length > 0);
   if (cardBtn && CARDPAY_ENABLED) {
     const usd = _donateUsd;
-    const ok = usd && usd >= COINBASE_GUEST_USD_MIN && usd <= COINBASE_GUEST_USD_MAX;
-    cardBtn.disabled = !ok;
-    cardBtn.title = ok ? '' : `Card payments are $${COINBASE_GUEST_USD_MIN}–$${COINBASE_GUEST_USD_MAX}`;
-    // Surface the explainer note when an amount IS set but is out of range.
-    // Don't show it when no amount is selected (no need to scold).
+    const amountOk = usd && usd >= COINBASE_GUEST_USD_MIN && usd <= COINBASE_GUEST_USD_MAX;
+    const messageOk = !hasMessage || CARDPAY_WITH_MESSAGE_ENABLED;
+    cardBtn.disabled = !(amountOk && messageOk);
+    cardBtn.title = !messageOk
+      ? "Messages aren't included with card donations — clear the message or use 'Donate with ETH'"
+      : (amountOk ? '' : `Card payments are $${COINBASE_GUEST_USD_MIN}–$${COINBASE_GUEST_USD_MAX}`);
     if (cardRangeNote) {
-      cardRangeNote.style.display = (usd && !ok) ? 'block' : 'none';
+      cardRangeNote.style.display = (usd && !amountOk) ? 'block' : 'none';
     }
-  } else if (cardRangeNote) {
-    cardRangeNote.style.display = 'none';
+    if (cardMessageNote) {
+      // Only surface the "messages aren't included" note when the
+      // throwaway path is OFF — when ON, messages WILL be included.
+      cardMessageNote.style.display = (hasMessage && !CARDPAY_WITH_MESSAGE_ENABLED) ? 'block' : 'none';
+    }
+  } else {
+    if (cardRangeNote) cardRangeNote.style.display = 'none';
+    if (cardMessageNote) cardMessageNote.style.display = 'none';
   }
 
   // ETH button enabled when an amount is set
@@ -2616,6 +2645,156 @@ async function loadDonorCountry() {
   } catch {/* fall through — note stays defaulted */}
 }
 
+// ─── Throwaway-wallet helpers (card-with-message flow) ─────────────
+// We generate a one-shot ECDSA keypair in the browser, target Coinbase
+// Onramp at it, then use it once to sign donateWithMessage() before
+// discarding. Persisted to localStorage during flight so a closed tab
+// or browser crash doesn't strand the donor's funds — they'll see a
+// "pending donation" banner on next visit and can resume.
+
+const PENDING_KEY_PREFIX = 'costanza-pending-donation-';
+const PENDING_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days, then auto-purge
+const PENDING_EMPTY_TTL_MS = 24 * 60 * 60 * 1000; // 24h for never-funded entries
+
+function savePendingDonation(record) {
+  try {
+    localStorage.setItem(PENDING_KEY_PREFIX + record.sessionId, JSON.stringify(record));
+  } catch (e) { console.warn('localStorage save failed:', e); }
+}
+
+function removePendingDonation(sessionId) {
+  try { localStorage.removeItem(PENDING_KEY_PREFIX + sessionId); } catch {}
+}
+
+function readAllPendingDonations() {
+  const out = [];
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (!key?.startsWith(PENDING_KEY_PREFIX)) continue;
+      try {
+        const r = JSON.parse(localStorage.getItem(key));
+        if (r && r.privateKey && r.address) out.push(r);
+      } catch {/* malformed — leave it; cleanup below if old */}
+    }
+  } catch {}
+  return out;
+}
+
+// On init, scan localStorage for any pending donations. If their
+// throwaway address has a non-zero balance, auto-forward in the
+// background — the donor expressed intent earlier, we honor it on
+// the next page visit. Banner provides feedback while it runs.
+//
+// Old entries with no funds get cleaned up:
+//   - >30 days regardless of state → purged
+//   - >24 hours and never funded → purged (donor bailed during card payment)
+async function reconcilePendingDonations() {
+  const all = readAllPendingDonations();
+  if (all.length === 0) return;
+  const now = Date.now();
+  const recoverable = [];
+  for (const r of all) {
+    const age = now - (r.createdAt || 0);
+    if (age > PENDING_TTL_MS) {
+      removePendingDonation(r.sessionId);
+      continue;
+    }
+    // Already-spent guard: if the throwaway has broadcast a tx, the
+    // donation already went through (or is pending in mempool). Don't
+    // surface a banner; just clean up.
+    let nonce = 0;
+    try { nonce = await provider.getTransactionCount(r.address, 'latest'); } catch {}
+    if (nonce > 0) {
+      removePendingDonation(r.sessionId);
+      continue;
+    }
+    let balance = 0n;
+    try { balance = await provider.getBalance(r.address); } catch {/* RPC blip */}
+    if (balance > 0n) {
+      recoverable.push({ ...r, balance });
+    } else if (age > PENDING_EMPTY_TTL_MS) {
+      removePendingDonation(r.sessionId);
+    }
+  }
+  if (recoverable.length > 0) await autoForwardPendingDonations(recoverable);
+}
+
+async function autoForwardPendingDonations(records) {
+  const banner = document.getElementById('pending-donations-banner');
+  if (!banner) return;
+  const totalUsd = records.reduce((sum, r) => sum + (r.usd || 0), 0);
+  const usdText = totalUsd > 0 ? ` (~$${formatUsdShort(totalUsd)})` : '';
+  banner.innerHTML = `<span>Completing your pending donation${records.length > 1 ? 's' : ''}${usdText} from a previous session…</span>`;
+  banner.style.display = 'flex';
+
+  const results = [];
+  for (const r of records) {
+    try {
+      await forwardThrowawayDonation(r);
+      results.push({ ok: true, record: r });
+    } catch (err) {
+      console.warn('Auto-recover failed for', r.sessionId, err);
+      results.push({ ok: false, record: r, error: err });
+    }
+  }
+  const succeeded = results.filter(x => x.ok).length;
+  if (succeeded === records.length) {
+    banner.innerHTML = `<span>Your previous donation${succeeded > 1 ? 's were' : ' was'} just completed${usdText}. Costanza will see ${succeeded > 1 ? 'them' : 'it'} next epoch.</span>
+      <button onclick="document.getElementById('pending-donations-banner').style.display='none'" style="margin-left:auto;padding:4px 10px;background:transparent;color:var(--text-secondary);border:1px solid var(--border);border-radius:var(--radius-xs);font-size:12px;cursor:pointer;">Dismiss</button>`;
+    setTimeout(() => { banner.style.display = 'none'; }, 12000);
+  } else {
+    const partial = succeeded > 0 ? `${succeeded} of ${records.length} ` : '';
+    banner.innerHTML = `<span>${partial}Pending donation recovery hit an error. Reload to retry, or reach out and we'll help recover the funds.</span>
+      <button onclick="document.getElementById('pending-donations-banner').style.display='none'" style="margin-left:auto;padding:4px 10px;background:transparent;color:var(--text-secondary);border:1px solid var(--border);border-radius:var(--radius-xs);font-size:12px;cursor:pointer;">Dismiss</button>`;
+  }
+}
+
+// Forward a pending throwaway donation to the contract via
+// donateWithMessage. Each call is one-shot — the throwaway is per-tx
+// (generated fresh in handlePayWithCardThrowaway), never reused.
+//
+// Idempotency: if the throwaway has already broadcast a tx in a
+// previous session (nonce > 0), we treat the donation as complete and
+// just clean up the localStorage entry — re-broadcasting would create
+// a nonce conflict and waste gas. This handles the close-tab-mid-tx
+// race where the donateWithMessage tx made it to mempool but the
+// donor closed the tab before tx.wait() could clean up.
+async function forwardThrowawayDonation(record) {
+  const wallet = new ethers.Wallet(record.privateKey, provider);
+
+  // Already-spent guard.
+  const minedNonce = await provider.getTransactionCount(wallet.address, 'latest');
+  if (minedNonce > 0) {
+    removePendingDonation(record.sessionId);
+    return;
+  }
+
+  const balance = await provider.getBalance(wallet.address);
+  if (balance === 0n) {
+    // Never funded (donor abandoned card payment) — clean up.
+    removePendingDonation(record.sessionId);
+    return;
+  }
+  // Reserve a tiny float for gas (Base is cheap; ~0.0001 ETH covers most cases).
+  const gasReserve = ethers.parseEther('0.0001');
+  if (balance <= gasReserve) {
+    throw new Error(`Pending donation has too little ETH (${ethers.formatEther(balance)}) to cover gas.`);
+  }
+  const value = balance - gasReserve;
+  const fund = new ethers.Contract(CONTRACT_ADDRESS, FUND_ABI, wallet);
+  const refCode = BigInt(record.refCode || 0);
+  const message = record.message || '';
+  let tx;
+  if (message) {
+    tx = await fund.donateWithMessage(refCode, message, { value });
+  } else {
+    tx = await fund.donate(refCode, { value });
+  }
+  await tx.wait(1);
+  removePendingDonation(record.sessionId);
+}
+
 // ─── Turnstile ───────────────────────────────────────────────────────
 // Render an invisible widget once api.js is loaded; widgetId is captured
 // for later turnstile.execute() calls. Each card-pay click runs a fresh
@@ -2701,6 +2880,14 @@ async function handlePayWithCard() {
       return;
     }
     setStatus(statusId, '', 'info');
+
+    // Branch: if a message is typed AND throwaway flow is enabled,
+    // route through the throwaway-wallet path so the message is
+    // attached on-chain via donateWithMessage().
+    const messageText = (document.getElementById('message-text')?.value || '').trim();
+    if (CARDPAY_WITH_MESSAGE_ENABLED && messageText.length > 0) {
+      return handlePayWithCardThrowaway(usd, messageText);
+    }
 
     showStepper();
     setStep('step-card', 'active');
@@ -2805,6 +2992,137 @@ async function handlePayWithCard() {
     setStatus(statusId, "Donation sent! Costanza will see it next epoch. You'll see it reflected on this page within a few minutes.", 'success');
   } catch (err) {
     setStatus(statusId, err.message || 'Could not start card payment.', 'error');
+    hideStepper();
+  }
+}
+
+// Card-pay flow with an attached message — uses a JS-generated
+// throwaway EOA as the Coinbase destination, then auto-signs
+// donateWithMessage() to forward the funds to the contract.
+async function handlePayWithCardThrowaway(usd, messageText) {
+  const statusId = 'donate-status';
+  showStepper();
+  setStep('step-card', 'active');
+
+  // 1. Pre-flight: ETH price for arrival detection.
+  const ethUsd = await getEthUsd();
+  if (!ethUsd || ethUsd <= 0) {
+    setStatus(statusId, 'ETH price unavailable; refresh and try again.', 'error');
+    hideStepper();
+    return;
+  }
+  const targetEth = usd / ethUsd;
+
+  // 2. Generate a one-shot throwaway wallet — fresh per donation.
+  // ethers.Wallet.createRandom() pulls from the platform CSPRNG, so
+  // every call yields an independent keypair. No state crosses
+  // between donations: each Onramp session targets its own throwaway
+  // address, and each forward-tx is signed by its own private key.
+  // The private key lives in localStorage during the flight so a
+  // closed tab is recoverable.
+  const throwaway = ethers.Wallet.createRandom();
+  const sessionId = (crypto.randomUUID && crypto.randomUUID())
+    || Math.random().toString(36).slice(2) + Date.now().toString(36);
+  const refCode = getActiveReferralCode();
+  const pending = {
+    sessionId,
+    privateKey: throwaway.privateKey,
+    address: throwaway.address.toLowerCase(),
+    message: messageText,
+    refCode: String(refCode),
+    usd,
+    expectedEth: targetEth,
+    createdAt: Date.now(),
+  };
+  savePendingDonation(pending);
+
+  // 3. Turnstile challenge.
+  let turnstileToken;
+  try {
+    turnstileToken = await getTurnstileToken();
+  } catch (err) {
+    setStatus(statusId, `Could not verify human session: ${err.message}`, 'error');
+    hideStepper();
+    return;
+  }
+
+  // 4. Mint Coinbase session token with destination = throwaway address.
+  let sessionToken;
+  try {
+    const resp = await fetch(ONRAMP_TOKEN_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${turnstileToken}` },
+      body: JSON.stringify({ address: throwaway.address, chain: 'base' }),
+    });
+    const data = await resp.json();
+    if (!resp.ok || !data.token) throw new Error(data.error || 'token mint failed');
+    sessionToken = data.token;
+  } catch (err) {
+    setStatus(statusId, `Could not start card payment: ${err.message}`, 'error');
+    hideStepper();
+    removePendingDonation(sessionId);
+    return;
+  }
+
+  // 5. Open Coinbase popup.
+  const onrampUrl = new URL('https://pay.coinbase.com/buy/select-asset');
+  onrampUrl.searchParams.set('sessionToken', sessionToken);
+  onrampUrl.searchParams.set('presetFiatAmount', String(usd));
+  onrampUrl.searchParams.set('fiatCurrency', 'USD');
+  onrampUrl.searchParams.set('defaultAsset', 'ETH');
+  onrampUrl.searchParams.set('defaultNetwork', 'base');
+  onrampUrl.searchParams.set('defaultPaymentMethod', 'CARD');
+  onrampUrl.searchParams.set('redirectUrl', `${window.location.origin}${window.location.pathname}?onramp=success`);
+  const popup = window.open(onrampUrl.toString(), 'cbOnramp',
+    'width=460,height=720,menubar=no,toolbar=no,location=no,status=no');
+  if (!popup) {
+    setStatus(statusId, 'Browser blocked the popup. Allow popups for this site and try again.', 'error');
+    hideStepper();
+    removePendingDonation(sessionId);
+    return;
+  }
+  setStatus(statusId, 'Pay with your card in the Coinbase window. Your message will be attached when the donation lands.', 'info');
+
+  // 6. Race popup-closed vs deposit-arrived.
+  const popupClosedPromise = new Promise(res => {
+    const t = setInterval(() => { if (popup.closed) { clearInterval(t); res('closed'); } }, 800);
+  });
+  const depositPromise = pollWalletForDeposit(throwaway.address, 0n, targetEth);
+  let outcome;
+  try {
+    outcome = await Promise.race([popupClosedPromise, depositPromise]);
+  } catch (err) {
+    try { popup.close(); } catch {}
+    setStatus(statusId, err.message || 'Onramp timed out.', 'error');
+    hideStepper();
+    return; // record stays in localStorage — recovery banner picks it up later
+  }
+  if (outcome === 'closed') {
+    // Brief grace period — Coinbase sometimes closes the window before
+    // the actual settlement tx confirms.
+    try {
+      await pollWalletForDeposit(throwaway.address, 0n, targetEth, 30 * 1000);
+    } catch {
+      setStatus(statusId, 'Onramp window closed before payment completed. If you completed the payment, the donation will arrive shortly.', 'error');
+      hideStepper();
+      return; // recovery banner will surface this on next visit
+    }
+  } else {
+    try { popup.close(); } catch {}
+  }
+
+  // 7. Forward via donateWithMessage from the throwaway. This is the
+  // step the recovery banner ALSO runs — keep it in a single helper
+  // so re-entry from either path looks identical.
+  setStep('step-card', 'done');
+  setStep('step-deposit', 'active');
+  try {
+    await forwardThrowawayDonation(pending);
+    setStep('step-deposit', 'done');
+    setStatus(statusId, "Donation sent and your message attached! Costanza will read it next epoch. You'll see it reflected on this page within a few minutes.", 'success');
+  } catch (err) {
+    setStatus(statusId, `Card payment landed but the donation tx failed: ${err.message || 'unknown'}. Reload the page — the "pending donation" banner will let you retry.`, 'error');
+    // Don't remove the pending record — recovery banner needs it.
     hideStepper();
   }
 }
@@ -4502,6 +4820,7 @@ async function init() {
     updateWalletRows(); // initialize header connect button
     applyCardpayFeatureFlag(); // toggles donate modal layout based on ?cardpay=1
     loadDonorCountry();        // hides "Outside the US?" note for US donors
+    reconcilePendingDonations().catch(err => console.warn('reconcile failed:', err));
 
     // Silent auto-reconnect for returning users (injected wallets only).
     attemptAutoReconnect().catch(() => {/* surfaced in console */});
