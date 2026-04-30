@@ -227,7 +227,7 @@ async function handleOnrampToken(request, env) {
 
     // ── Validate request ───────────────────────────────────────────────
     const body = await request.json().catch(() => ({}));
-    const requestedAddress = (body.address || "").toLowerCase();
+    const rawAddress = (body.address || "").trim();
     const chain = body.chain || "base";
     // Two destination paths:
     //   - FUND_ADDRESS                — anonymous direct-to-contract donations
@@ -238,7 +238,11 @@ async function handleOnrampToken(request, env) {
     //     destinations rests on Turnstile (above) + the donor paying
     //     their own card. They can't drain our quota for free because
     //     they have to actually complete the card payment.
-    if (!/^0x[a-f0-9]{40}$/.test(requestedAddress)) {
+    // Validate case-insensitively but pass the original casing through to
+    // Coinbase. Some Ethereum APIs reject lowercase addresses that aren't
+    // EIP-55 checksum-valid; passing the donor's original (checksummed)
+    // address avoids ambiguity.
+    if (!/^0x[a-fA-F0-9]{40}$/.test(rawAddress)) {
       return jsonResp(JSON.stringify({ error: "invalid destination address" }), { status: 400 });
     }
     if (chain !== "base") {
@@ -255,7 +259,7 @@ async function handleOnrampToken(request, env) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        addresses: [{ address: requestedAddress, blockchains: ["base"] }],
+        addresses: [{ address: rawAddress, blockchains: ["base"] }],
         assets: ["ETH"],
       }),
     });
