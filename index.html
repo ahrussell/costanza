@@ -275,6 +275,12 @@
     font-family: var(--mono);
   }
 
+  /* Message-min note turns red when amount is below the message threshold */
+  #message-min-note.warn {
+    color: var(--red);
+    font-weight: 500;
+  }
+
   /* Primary card-payment CTA — bigger, more prominent than wallet-btn */
   .card-pay-btn {
     display: flex; align-items: center; justify-content: center; gap: 10px;
@@ -1236,10 +1242,6 @@
 
     <!-- Quick-amount buttons (always shown) -->
     <div id="donate-quick-amounts" class="quick-amounts">
-      <button class="quick-amount-btn" data-usd="5" onclick="selectQuickAmount(5)">
-        <span class="qa-usd">$5</span>
-        <span class="qa-eth" data-eth-for="5">— ETH</span>
-      </button>
       <button class="quick-amount-btn" data-usd="20" onclick="selectQuickAmount(20)">
         <span class="qa-usd">$20</span>
         <span class="qa-eth" data-eth-for="20">— ETH</span>
@@ -1247,6 +1249,10 @@
       <button class="quick-amount-btn" data-usd="50" onclick="selectQuickAmount(50)">
         <span class="qa-usd">$50</span>
         <span class="qa-eth" data-eth-for="50">— ETH</span>
+      </button>
+      <button class="quick-amount-btn" data-usd="100" onclick="selectQuickAmount(100)">
+        <span class="qa-usd">$100</span>
+        <span class="qa-eth" data-eth-for="100">— ETH</span>
       </button>
       <button class="quick-amount-btn custom" data-usd="" onclick="selectCustomAmount()">
         <span class="qa-usd">Custom</span>
@@ -1300,6 +1306,7 @@
         <span id="donate-btn-label">Donate with ETH</span>
         <span class="donate-eth-sub">on Base</span>
       </button>
+      <p id="donate-card-range-note" style="display:none;font-size:11px;color:var(--text-dim);text-align:center;margin:0;line-height:1.5;">Card payments are limited to $5&ndash;$500 per donation.</p>
     </div>
 
     <div class="form-status" id="donate-status"></div>
@@ -1346,6 +1353,10 @@
     <h3 id="wallet-picker-title">Connect a wallet</h3>
     <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px;">Pick a wallet to connect to Base mainnet.</p>
     <div id="wallet-picker-list" class="wallet-picker-list"></div>
+    <p style="font-size:11px;color:var(--text-dim);margin-top:14px;line-height:1.5;">
+      Don't see your wallet? This page auto-detects installed wallets &mdash;
+      check that yours is set up properly, then refresh.
+    </p>
     <div id="wallet-picker-disconnect" style="display:none;margin-top:16px;padding-top:16px;border-top:1px solid var(--border);">
       <button class="wallet-btn secondary" onclick="disconnectWallet(); closeWalletPicker();">Disconnect</button>
     </div>
@@ -2282,6 +2293,9 @@ function updateMessageByteCount() {
   const over = bytes > 280;
   hint.textContent = `${bytes} / 280 bytes. Emoji and non-ASCII characters count as multiple bytes. Stored on-chain forever.`;
   hint.style.color = over ? '#c00' : '';
+  // Re-evaluate the message-min note highlight whenever the message field
+  // changes — so typing crosses the empty/non-empty boundary correctly.
+  if (typeof refreshMessageMinHighlight === 'function') refreshMessageMinHighlight();
 }
 
 // ═══════════════════════════════════════════════════════
@@ -2466,14 +2480,38 @@ function updateDonateButtons() {
 
   // Card button only enabled with USD between Coinbase guest min/max.
   const cardBtn = document.getElementById('donate-card-btn');
+  const cardRangeNote = document.getElementById('donate-card-range-note');
   if (cardBtn && CARDPAY_ENABLED) {
-    const ok = _donateUsd && _donateUsd >= COINBASE_GUEST_USD_MIN && _donateUsd <= COINBASE_GUEST_USD_MAX;
+    const usd = _donateUsd;
+    const ok = usd && usd >= COINBASE_GUEST_USD_MIN && usd <= COINBASE_GUEST_USD_MAX;
     cardBtn.disabled = !ok;
     cardBtn.title = ok ? '' : `Card payments are $${COINBASE_GUEST_USD_MIN}–$${COINBASE_GUEST_USD_MAX}`;
+    // Surface the explainer note when an amount IS set but is out of range.
+    // Don't show it when no amount is selected (no need to scold).
+    if (cardRangeNote) {
+      cardRangeNote.style.display = (usd && !ok) ? 'block' : 'none';
+    }
+  } else if (cardRangeNote) {
+    cardRangeNote.style.display = 'none';
   }
 
   // ETH button enabled when an amount is set
   if (ethBtn) ethBtn.disabled = !_donateEth || _donateEth <= 0;
+
+  // Message-min note: red when a message is being typed AND the chosen
+  // amount is below MIN_MESSAGE_DONATION (0.005 ETH).
+  refreshMessageMinHighlight();
+}
+
+const MIN_MESSAGE_ETH = 0.005;
+
+function refreshMessageMinHighlight() {
+  const note = document.getElementById('message-min-note');
+  const ta = document.getElementById('message-text');
+  if (!note || !ta) return;
+  const hasMessage = ta.value.trim().length > 0;
+  const belowMin = _donateEth != null && _donateEth < MIN_MESSAGE_ETH;
+  note.classList.toggle('warn', hasMessage && belowMin);
 }
 
 function formatUsdShort(usd) {
@@ -2628,7 +2666,7 @@ async function handlePayWithCard() {
 
     setStep('step-card', 'done');
     setStep('step-deposit', 'done');
-    setStatus(statusId, 'Donation sent! Costanza will see it next epoch.', 'success');
+    setStatus(statusId, "Donation sent! Costanza will see it next epoch. You'll see it reflected on this page within a few minutes.", 'success');
   } catch (err) {
     setStatus(statusId, err.message || 'Could not start card payment.', 'error');
     hideStepper();
@@ -2697,8 +2735,8 @@ async function handleSubmitDonation() {
     setStatus(statusId, 'Transaction submitted. Waiting for confirmation...', 'info');
     await tx.wait();
     const successMsg = msgText
-      ? 'Message sent! Costanza will read it in the next epoch.'
-      : `Donation confirmed! Thank you for supporting The Human Fund. Tx: ${tx.hash.slice(0, 10)}...`;
+      ? "Message sent! Costanza will read it in the next epoch. You'll see it reflected on this page within a few minutes."
+      : "Donation confirmed! Thank you for supporting The Human Fund. You'll see it reflected on this page within a few minutes.";
     setStatus(statusId, successMsg, 'success');
     // Clear amount state on success.
     _donateUsd = null;
@@ -2712,8 +2750,34 @@ async function handleSubmitDonation() {
     updateMessageByteCount();
     updateDonateButtons();
   } catch (err) {
-    setStatus(statusId, err.reason || err.message || 'Transaction failed.', 'error');
+    setStatus(statusId, friendlyTxError(err), 'error');
   }
+}
+
+// Translate ethers / wallet errors into something a normal donor can read.
+// Falls back to the original message if we don't recognize the shape.
+function friendlyTxError(err) {
+  const code = err?.code;
+  const reason = err?.reason || '';
+  const raw = err?.message || err?.shortMessage || '';
+  const lower = (raw + ' ' + reason).toLowerCase();
+
+  if (code === 'INSUFFICIENT_FUNDS' || lower.includes('insufficient funds')) {
+    return "Your wallet doesn't have enough ETH to cover this donation plus gas. Top up and try again.";
+  }
+  if (code === 'ACTION_REJECTED' || code === 4001 || lower.includes('user rejected') || lower.includes('user denied')) {
+    return 'Transaction cancelled.';
+  }
+  if (lower.includes('replacement transaction underpriced')) {
+    return 'A previous transaction is still pending in your wallet. Wait for it to clear, then try again.';
+  }
+  if (lower.includes('nonce too low')) {
+    return "Wallet nonce is out of sync — usually fixed by reloading and reconnecting.";
+  }
+  if (reason) return `Transaction failed: ${reason}`;
+  // Last-resort: surface only the short error, not the entire ethers stack dump.
+  if (err?.shortMessage) return `Transaction failed: ${err.shortMessage}`;
+  return 'Transaction failed. Try again or use a different wallet.';
 }
 
 async function handleMintReferral() {
