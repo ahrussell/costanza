@@ -1177,7 +1177,7 @@
             You can read more about how he was made in the <a href="https://ahrussell.com/writing/costanza/" target="_blank" style="color:var(--accent);">announcement blog</a> or in the <a href="https://github.com/ahrussell/costanza/blob/main/WHITEPAPER.md" target="_blank" style="color:var(--accent);">whitepaper</a>.
           </p>
           <p class="hero-desc">
-            Donate to The Human Fund below. You can also send him a message to influence his thinking or make requests. You might get a shoutout in his diary!
+            <strong id="hero-donate-cta">Donate to The Human Fund below.</strong> You can also send him a message to influence his thinking or make requests. You might get a shoutout in his diary!
           </p>
         </div>
 
@@ -2372,6 +2372,13 @@ function applyCardpayFeatureFlag() {
   // subtitle) is always visible.
   const cardBtn = document.getElementById('donate-card-btn');
   if (cardBtn) cardBtn.style.display = CARDPAY_ENABLED ? 'flex' : 'none';
+  // Hero CTA copy changes to mention card payments when the flag is on.
+  const heroCta = document.getElementById('hero-donate-cta');
+  if (heroCta) {
+    heroCta.textContent = CARDPAY_ENABLED
+      ? 'Donate to The Human Fund in USD or ETH below!'
+      : 'Donate to The Human Fund below.';
+  }
   updateDonateButtons();
   refreshQuickAmountEthLabels();
   refreshMessageMinNote();
