@@ -1678,11 +1678,15 @@ const DEPLOY_BLOCK = 45330578;
 const REFERRAL_CODE = '1'; // creator referral code (default when no code entered)
 
 // Coinbase Onramp — project ID from portal.cdp.coinbase.com.
-// Production access approved 2026-04-30; flag now defaults to ON for all
-// donors. Per-tx cap is now Coinbase's standard guest-checkout cap of
-// $500/week instead of the trial-mode $5/tx.
+// Production access approved 2026-04-30; gated behind ?cardpay=1 again
+// (2026-05-01) while we work through Coinbase's per-phone-number
+// rate-limit on test attempts. Flip to `true` to re-open for all donors.
+// Per-tx cap is Coinbase's standard guest-checkout cap of $500/week.
 const COINBASE_CDP_PROJECT_ID = '7a0579be-19c8-4317-bdf6-2968bfdad3f8';
-const CARDPAY_ENABLED = true;
+const CARDPAY_ENABLED = (() => {
+  try { return new URLSearchParams(location.search).has('cardpay'); }
+  catch { return false; }
+})();
 
 // Throwaway-wallet flow for "card payment + message" donations. Behind
 // ?cardpaymsg=1 until verified end-to-end. When ON: the card button
@@ -1693,6 +1697,20 @@ const CARDPAY_ENABLED = true;
 // message or use the ETH path).
 const CARDPAY_WITH_MESSAGE_ENABLED = (() => {
   try { return new URLSearchParams(location.search).has('cardpaymsg'); }
+  catch { return false; }
+})();
+
+// Smart-Wallet flow for "card payment + message" donations. Behind
+// ?cardpaysmart=1 until verified end-to-end. When ON: the card button
+// stays enabled when a message is typed; the page asks the donor to
+// authenticate a Coinbase Smart Wallet (passkey, no extension), targets
+// Coinbase Onramp at that smart wallet's address, then signs
+// donateWithMessage from the same smart wallet to forward funds. Two
+// passkey prompts total (one to create/connect, one to send). When BOTH
+// flags are on, smart-wallet wins — it has the better trust + recovery
+// story (deterministic per-passkey address, no key-in-localStorage).
+const CARDPAY_SMART_WALLET_ENABLED = (() => {
+  try { return new URLSearchParams(location.search).has('cardpaysmart'); }
   catch { return false; }
 })();
 
@@ -2524,17 +2542,18 @@ function updateDonateButtons() {
   }
 
   // Card button enabled when amount is in Coinbase's range AND either
-  // (a) no message typed OR (b) the throwaway-wallet flow is enabled
-  // for card+message donations.
+  // (a) no message typed OR (b) a card+message flow is enabled (either
+  // throwaway-wallet or smart-wallet path).
   const cardBtn = document.getElementById('donate-card-btn');
   const cardRangeNote = document.getElementById('donate-card-range-note');
   const cardMessageNote = document.getElementById('donate-card-message-note');
   const ta = document.getElementById('message-text');
   const hasMessage = !!(ta && ta.value.trim().length > 0);
+  const cardWithMessageOk = CARDPAY_WITH_MESSAGE_ENABLED || CARDPAY_SMART_WALLET_ENABLED;
   if (cardBtn && CARDPAY_ENABLED) {
     const usd = _donateUsd;
     const amountOk = usd && usd >= COINBASE_GUEST_USD_MIN && usd <= COINBASE_GUEST_USD_MAX;
-    const messageOk = !hasMessage || CARDPAY_WITH_MESSAGE_ENABLED;
+    const messageOk = !hasMessage || cardWithMessageOk;
     cardBtn.disabled = !(amountOk && messageOk);
     cardBtn.title = !messageOk
       ? "Messages aren't included with card donations — clear the message or use 'Donate with ETH'"
@@ -2543,9 +2562,10 @@ function updateDonateButtons() {
       cardRangeNote.style.display = (usd && !amountOk) ? 'block' : 'none';
     }
     if (cardMessageNote) {
-      // Only surface the "messages aren't included" note when the
-      // throwaway path is OFF — when ON, messages WILL be included.
-      cardMessageNote.style.display = (hasMessage && !CARDPAY_WITH_MESSAGE_ENABLED) ? 'block' : 'none';
+      // Only surface the "messages aren't included" note when no
+      // card+message path is enabled — otherwise messages WILL be
+      // included (via throwaway or smart wallet).
+      cardMessageNote.style.display = (hasMessage && !cardWithMessageOk) ? 'block' : 'none';
     }
   } else {
     if (cardRangeNote) cardRangeNote.style.display = 'none';
@@ -2798,45 +2818,38 @@ async function forwardThrowawayDonation(record) {
 }
 
 // ─── Turnstile ───────────────────────────────────────────────────────
-// Render an invisible widget once api.js is loaded; widgetId is captured
-// for later turnstile.execute() calls. Each card-pay click runs a fresh
-// challenge (turnstile.reset → execute) and returns the resulting token.
-let _turnstileWidgetId = null;
-let _turnstileTokenWaiter = null; // { resolve, reject } during execute()
+// Each card-pay click renders a FRESH invisible widget, runs the
+// challenge, and removes the widget afterward. Reusing one widget
+// instance across clicks left it stuck in error state on Firefox after
+// a timeout (the SDK's reset() doesn't fully recover on every browser),
+// blocking subsequent attempts. error-callback receives Cloudflare's
+// numeric error code, which we map through turnstileErrorMessage() so
+// donors (and the operator reading logs) can tell apart transient
+// (200xxx network) from persistent (300030 = browser flagged for
+// invisible challenges → flip the dashboard widget to Managed mode).
+let _turnstileTokenWaiter = null; // single-flight sentinel; null means free
 
-function onTurnstileReady() {
-  if (typeof window.turnstile === 'undefined') return;
-  try {
-    _turnstileWidgetId = window.turnstile.render('#turnstile-container', {
-      sitekey: TURNSTILE_SITE_KEY,
-      size: 'invisible',
-      callback: (token) => {
-        if (_turnstileTokenWaiter) {
-          _turnstileTokenWaiter.resolve(token);
-          _turnstileTokenWaiter = null;
-        }
-      },
-      'error-callback': () => {
-        if (_turnstileTokenWaiter) {
-          _turnstileTokenWaiter.reject(new Error('Turnstile challenge failed'));
-          _turnstileTokenWaiter = null;
-        }
-      },
-      'timeout-callback': () => {
-        if (_turnstileTokenWaiter) {
-          _turnstileTokenWaiter.reject(new Error('Turnstile timed out'));
-          _turnstileTokenWaiter = null;
-        }
-      },
-    });
-  } catch (err) {
-    console.warn('Turnstile render failed:', err);
-  }
+// Stub kept because the api.js URL passes ?onload=onTurnstileReady. We
+// no longer pre-render the widget — render-on-demand only — so this is
+// just a notification we can ignore.
+function onTurnstileReady() {}
+
+// Map common Cloudflare Turnstile error codes to actionable messages.
+// Reference: https://developers.cloudflare.com/turnstile/troubleshooting/client-side-errors/error-codes/
+function turnstileErrorMessage(code) {
+  const c = String(code || '');
+  if (c === '300030') return `This browser can't solve the invisible Turnstile challenge (${c}). Try Chrome or Safari, or disable Enhanced Tracking Protection for this site.`;
+  if (c === '300020') return `Browser fingerprint flagged by Turnstile (${c}). Try a different browser or turn off your VPN.`;
+  if (c.startsWith('600'))  return `Cloudflare flagged this visitor (${c}). Try a different network or wait a few hours.`;
+  if (c.startsWith('200'))  return `Network error reaching Cloudflare (${c}). Check your connection and retry.`;
+  if (c.startsWith('300'))  return `Turnstile challenge failed (${c}). Try refreshing or switching browsers.`;
+  if (c.startsWith('110') || c.startsWith('100')) return `Turnstile is misconfigured (${c}). This is on us — please reach out.`;
+  return c ? `Turnstile error ${c}` : 'Turnstile challenge failed';
 }
 
 function getTurnstileToken() {
   return new Promise((resolve, reject) => {
-    if (typeof window.turnstile === 'undefined' || _turnstileWidgetId == null) {
+    if (typeof window.turnstile === 'undefined') {
       reject(new Error('Turnstile not ready — refresh the page and try again.'));
       return;
     }
@@ -2844,20 +2857,51 @@ function getTurnstileToken() {
       reject(new Error('Another verification is already in progress.'));
       return;
     }
-    _turnstileTokenWaiter = { resolve, reject };
-    try {
-      window.turnstile.reset(_turnstileWidgetId);
-      window.turnstile.execute(_turnstileWidgetId);
-    } catch (err) {
-      _turnstileTokenWaiter = null;
-      reject(err);
-    }
-    // Safety net — explicitly time out if Turnstile never calls back.
-    setTimeout(() => {
-      if (_turnstileTokenWaiter) {
-        _turnstileTokenWaiter.reject(new Error('Turnstile verification timed out'));
-        _turnstileTokenWaiter = null;
+
+    // Idempotent teardown — runs at most once per challenge regardless
+    // of which callback (success / error / timeout / safety-net) wins.
+    let widgetId = null;
+    let safetyTimer = null;
+    let done = false;
+    const finish = (action) => {
+      if (done) return;
+      done = true;
+      if (safetyTimer != null) { clearTimeout(safetyTimer); safetyTimer = null; }
+      if (widgetId != null) {
+        try { window.turnstile.remove(widgetId); } catch {}
+        widgetId = null;
       }
+      _turnstileTokenWaiter = null;
+      action();
+    };
+
+    _turnstileTokenWaiter = { resolve, reject }; // single-flight guard
+
+    try {
+      widgetId = window.turnstile.render('#turnstile-container', {
+        sitekey: TURNSTILE_SITE_KEY,
+        size: 'invisible',
+        callback: (token) => finish(() => resolve(token)),
+        'error-callback': (errorCode) => {
+          // Returning truthy tells Turnstile we've handled the error
+          // and don't want it to auto-retry on this widget — we'll
+          // render a fresh one on the next click.
+          console.warn('[turnstile] error-callback code=', errorCode);
+          finish(() => reject(new Error(turnstileErrorMessage(errorCode))));
+          return true;
+        },
+        'timeout-callback': () => finish(() => reject(new Error('Turnstile verification timed out (challenge expired before completion).'))),
+      });
+      window.turnstile.execute(widgetId);
+    } catch (err) {
+      finish(() => reject(err instanceof Error ? err : new Error(String(err))));
+      return;
+    }
+
+    // Safety net — bail if Turnstile never calls any callback. Cleanup
+    // is idempotent so it's fine if a real callback fires concurrently.
+    safetyTimer = setTimeout(() => {
+      finish(() => reject(new Error('Turnstile verification timed out (no response after 30s).')));
     }, 30 * 1000);
   });
 }
@@ -2883,12 +2927,19 @@ async function handlePayWithCard() {
     }
     setStatus(statusId, '', 'info');
 
-    // Branch: if a message is typed AND throwaway flow is enabled,
-    // route through the throwaway-wallet path so the message is
-    // attached on-chain via donateWithMessage().
+    // Branch: if a message is typed AND a card+message flow is enabled,
+    // route through that path so the message is attached on-chain via
+    // donateWithMessage(). Smart-wallet wins over throwaway when both
+    // flags are on (better trust story — no plaintext key in local
+    // storage, deterministic recovery via passkey).
     const messageText = (document.getElementById('message-text')?.value || '').trim();
-    if (CARDPAY_WITH_MESSAGE_ENABLED && messageText.length > 0) {
-      return handlePayWithCardThrowaway(usd, messageText);
+    if (messageText.length > 0) {
+      if (CARDPAY_SMART_WALLET_ENABLED) {
+        return handlePayWithCardSmartWallet(usd, messageText);
+      }
+      if (CARDPAY_WITH_MESSAGE_ENABLED) {
+        return handlePayWithCardThrowaway(usd, messageText);
+      }
     }
 
     showStepper();
@@ -3125,6 +3176,157 @@ async function handlePayWithCardThrowaway(usd, messageText) {
   } catch (err) {
     setStatus(statusId, `Card payment landed but the donation tx failed: ${err.message || 'unknown'}. Reload the page — the "pending donation" banner will let you retry.`, 'error');
     // Don't remove the pending record — recovery banner needs it.
+    hideStepper();
+  }
+}
+
+// Card-pay flow with an attached message — Smart Wallet variant.
+// Uses a Coinbase Smart Wallet (passkey-based, no extension) as the
+// Coinbase Onramp destination, then signs donateWithMessage() from the
+// same smart wallet to forward the funds. Two passkey prompts: one
+// when we connect/create the smart wallet, one when we sign the
+// forward tx after Coinbase delivers ETH.
+//
+// Compared to the throwaway path: no plaintext private key in
+// localStorage, deterministic recovery (same passkey → same address),
+// at the cost of the second Touch ID prompt. The Smart Wallet SDK is a
+// singleton, so connecting here uses the same instance the rest of the
+// page would use if the donor picked Smart Wallet from the wallet
+// picker — no isolation needed.
+async function handlePayWithCardSmartWallet(usd, messageText) {
+  const statusId = 'donate-status';
+  showStepper();
+  setStep('step-card', 'active');
+
+  // 1. Pre-flight: ETH price for arrival detection.
+  const ethUsd = await getEthUsd();
+  if (!ethUsd || ethUsd <= 0) {
+    setStatus(statusId, 'ETH price unavailable; refresh and try again.', 'error');
+    hideStepper();
+    return;
+  }
+  const targetEth = usd / ethUsd;
+
+  // 2. Connect (or create) the Smart Wallet — first passkey prompt.
+  // We route through connectWalletByUuid so the connection becomes the
+  // page's "active wallet" too (donor sees the pill in the header,
+  // matches what they'd see from the wallet picker). Address is
+  // deterministic per passkey + appName, so re-running this on
+  // a later visit yields the same wallet.
+  setStatus(statusId, 'Authenticate your Coinbase Smart Wallet to continue…', 'info');
+  let smartAddress;
+  try {
+    await connectWalletByUuid(SMART_WALLET_UUID);
+    if (!walletAddress || !walletSigner) {
+      throw new Error('Smart Wallet did not connect — try again.');
+    }
+    smartAddress = walletAddress;
+  } catch (err) {
+    const msg = err && err.code === 4001 ? 'Passkey prompt cancelled.' : (err.message || 'Smart Wallet connection failed.');
+    setStatus(statusId, msg, 'error');
+    hideStepper();
+    return;
+  }
+  const startBalance = await provider.getBalance(smartAddress);
+
+  // 3. Turnstile challenge.
+  let turnstileToken;
+  try {
+    turnstileToken = await getTurnstileToken();
+  } catch (err) {
+    setStatus(statusId, `Could not verify human session: ${err.message}`, 'error');
+    hideStepper();
+    return;
+  }
+
+  // 4. Mint Coinbase session token with destination = smart wallet address.
+  let sessionToken;
+  try {
+    const resp = await fetch(ONRAMP_TOKEN_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${turnstileToken}` },
+      body: JSON.stringify({ address: smartAddress, chain: 'base' }),
+    });
+    const data = await resp.json();
+    if (!resp.ok || !data.token) throw new Error(data.error || 'token mint failed');
+    sessionToken = data.token;
+  } catch (err) {
+    setStatus(statusId, `Could not start card payment: ${err.message}`, 'error');
+    hideStepper();
+    return;
+  }
+
+  // 5. Open Coinbase popup.
+  const onrampUrl = new URL('https://pay.coinbase.com/buy/select-asset');
+  onrampUrl.searchParams.set('sessionToken', sessionToken);
+  onrampUrl.searchParams.set('presetFiatAmount', String(usd));
+  onrampUrl.searchParams.set('fiatCurrency', 'USD');
+  onrampUrl.searchParams.set('defaultAsset', 'ETH');
+  onrampUrl.searchParams.set('defaultNetwork', 'base');
+  onrampUrl.searchParams.set('defaultPaymentMethod', 'CARD');
+  onrampUrl.searchParams.set('redirectUrl', `${window.location.origin}${window.location.pathname}?onramp=success`);
+  const popup = window.open(onrampUrl.toString(), 'cbOnramp',
+    'width=460,height=720,menubar=no,toolbar=no,location=no,status=no');
+  if (!popup) {
+    setStatus(statusId, 'Browser blocked the popup. Allow popups for this site and try again.', 'error');
+    hideStepper();
+    return;
+  }
+  setStatus(statusId, 'Pay with your card in the Coinbase window. Your message will be attached when the donation lands.', 'info');
+
+  // 6. Race popup-closed vs deposit-arrived.
+  const popupClosedPromise = new Promise(res => {
+    const t = setInterval(() => { if (popup.closed) { clearInterval(t); res('closed'); } }, 800);
+  });
+  const depositPromise = pollWalletForDeposit(smartAddress, startBalance, targetEth);
+  let outcome;
+  try {
+    outcome = await Promise.race([popupClosedPromise, depositPromise]);
+  } catch (err) {
+    try { popup.close(); } catch {}
+    setStatus(statusId, err.message || 'Onramp timed out.', 'error');
+    hideStepper();
+    return;
+  }
+  if (outcome === 'closed') {
+    // Brief grace period — Coinbase sometimes closes the window before
+    // the actual settlement tx confirms.
+    try {
+      await pollWalletForDeposit(smartAddress, startBalance, targetEth, 30 * 1000);
+    } catch {
+      setStatus(statusId, `Onramp window closed before payment completed. If you completed the payment, the funds will arrive at your Smart Wallet (${fmtAddr(smartAddress)}). Reload, reconnect, and we'll forward them.`, 'error');
+      hideStepper();
+      return;
+    }
+  } else {
+    try { popup.close(); } catch {}
+  }
+
+  // 7. Forward via donateWithMessage from the smart wallet — second
+  // passkey prompt. Smart Wallet auto-relays via bundler so we don't
+  // need to manage gas separately, but we DO need to leave a tiny
+  // buffer because the bundler still pulls fees from the wallet.
+  setStep('step-card', 'done');
+  setStep('step-deposit', 'active');
+  setStatus(statusId, 'Approve the donation in your Smart Wallet to attach your message…', 'info');
+  try {
+    const balance = await provider.getBalance(smartAddress);
+    if (balance === 0n) {
+      throw new Error('Smart Wallet balance is zero — payment may not have settled yet.');
+    }
+    // Reserve a small buffer for bundler/relay fees on Base. Smart
+    // Wallet abstracts gas but the userOp still consumes ETH.
+    const gasReserve = ethers.parseEther('0.0001');
+    const value = balance > gasReserve ? balance - gasReserve : balance;
+    const fund = new ethers.Contract(CONTRACT_ADDRESS, FUND_ABI, walletSigner);
+    const refCode = BigInt(getActiveReferralCode());
+    const tx = await fund.donateWithMessage(refCode, messageText, { value });
+    await tx.wait(1);
+    setStep('step-deposit', 'done');
+    setStatus(statusId, "Donation sent and your message attached! Costanza will read it next epoch. You'll see it reflected on this page within a few minutes.", 'success');
+  } catch (err) {
+    const friendly = friendlyTxError(err);
+    setStatus(statusId, `Card payment landed but the donation tx failed: ${friendly} Your funds are safe in your Smart Wallet (${fmtAddr(smartAddress)}); reconnect and try again, or reach out for help.`, 'error');
     hideStepper();
   }
 }
