@@ -1,6 +1,16 @@
-// Cloudflare Worker: RPC caching proxy for The Human Fund frontend.
-// Proxies JSON-RPC to Alchemy, caches responses with normalized keys.
+// Cloudflare Worker for The Human Fund frontend.
+//
+// Two routes:
+//   POST /                  → JSON-RPC caching proxy (default; Alchemy upstream)
+//   POST /onramp/token      → mint a Coinbase Onramp session token
+//
+// Onramp moved to mandatory session-token auth on 2025-07-31, so the
+// pure-client cbpay-js flow no longer works. We hold the Secret API
+// Key here, sign a CDP JWT, and forward to api.developer.coinbase.com.
+// The frontend then opens pay.coinbase.com/buy/select-asset?sessionToken=…
+//
 // Deploy: cd workers/rpc-cache && wrangler deploy
+// Secrets: COINBASE_CDP_KEY_NAME, COINBASE_CDP_KEY_SECRET (PEM)
 
 const CACHE_TTL = 900; // 15 minutes
 
@@ -8,9 +18,6 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type",
-  // Browsers hide custom response headers from JS by default — expose ours
-  // so the frontend can read X-Cache-Age and surface real data freshness
-  // (cache age, not page-fetch age).
   "Access-Control-Expose-Headers": "X-Cache, X-Cache-Age",
 };
 
@@ -62,6 +69,17 @@ export default {
       return new Response(null, { headers: CORS_HEADERS });
     }
 
+    const url = new URL(request.url);
+
+    // Onramp session-token endpoint
+    if (url.pathname === "/onramp/token") {
+      if (request.method !== "POST") {
+        return jsonResp(JSON.stringify({ error: "POST only" }), { status: 405 });
+      }
+      return handleOnrampToken(request, env);
+    }
+
+    // Default: JSON-RPC caching proxy (root path, used by ethers BrowserProvider)
     if (request.method !== "POST") {
       return jsonResp('"Method not allowed"', { "X-Cache": "SKIP" });
     }
@@ -155,3 +173,155 @@ export default {
     return jsonResp(data, { "X-Cache": "MISS", "X-Cache-Age": "0" });
   },
 };
+
+// ─── Coinbase Onramp session-token minting ────────────────────────────────
+
+const CDP_HOST = "api.developer.coinbase.com";
+const CDP_TOKEN_PATH = "/onramp/v1/token";
+
+async function handleOnrampToken(request, env) {
+  try {
+    if (!env.COINBASE_CDP_KEY_NAME || !env.COINBASE_CDP_KEY_SECRET) {
+      return jsonResp(JSON.stringify({ error: "CDP key not configured" }), { status: 500 });
+    }
+
+    const body = await request.json().catch(() => ({}));
+    const address = (body.address || "").toLowerCase();
+    const chain = body.chain || "base";
+    if (!/^0x[a-f0-9]{40}$/.test(address)) {
+      return jsonResp(JSON.stringify({ error: "invalid address" }), { status: 400 });
+    }
+
+    const jwt = await mintCdpJwt(env, "POST", CDP_HOST, CDP_TOKEN_PATH);
+
+    const resp = await fetch(`https://${CDP_HOST}${CDP_TOKEN_PATH}`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${jwt}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        addresses: [{ address, blockchains: [chain] }],
+        assets: ["ETH"],
+      }),
+    });
+
+    const text = await resp.text();
+    if (!resp.ok) {
+      return jsonResp(JSON.stringify({
+        error: "CDP token request failed",
+        status: resp.status,
+        upstream: text,
+      }), { status: 502 });
+    }
+    // Pass through the upstream JSON ({ token, channel_id }).
+    return jsonResp(text, { status: 200 });
+  } catch (err) {
+    return jsonResp(JSON.stringify({ error: err.message || "internal error" }), { status: 500 });
+  }
+}
+
+async function mintCdpJwt(env, method, host, path) {
+  const keyName = env.COINBASE_CDP_KEY_NAME;
+  const keyPem = env.COINBASE_CDP_KEY_SECRET;
+  const now = Math.floor(Date.now() / 1000);
+  const nonce = randomHex(16);
+
+  // Coinbase CDP keys can arrive in several shapes; try them in order:
+  //   1. PKCS8 PEM (Ed25519 or ECDSA P-256, BEGIN PRIVATE KEY headers)
+  //   2. Raw 32-byte Ed25519 private key (base64) — wrap in PKCS8
+  //   3. Raw 64-byte Ed25519 keypair (priv||pub, base64) — take first 32
+  //   4. PKCS8 PEM ECDSA P-256 (BEGIN EC PRIVATE KEY → SEC1, only sometimes
+  //      works as PKCS8 depending on the export tool)
+  const der = pemToDer(keyPem);
+  let cryptoKey, alg;
+  const errs = [];
+
+  async function tryEd25519Pkcs8(buf) {
+    return crypto.subtle.importKey("pkcs8", buf, { name: "Ed25519" }, false, ["sign"]);
+  }
+  async function tryEcdsaPkcs8(buf) {
+    return crypto.subtle.importKey("pkcs8", buf, { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]);
+  }
+
+  // 1. Try PKCS8 directly (whatever's in `der`).
+  try { cryptoKey = await tryEd25519Pkcs8(der); alg = "EdDSA"; }
+  catch (e) { errs.push(`pkcs8/ed25519: ${e.message}`); }
+  if (!cryptoKey) {
+    try { cryptoKey = await tryEcdsaPkcs8(der); alg = "ES256"; }
+    catch (e) { errs.push(`pkcs8/ecdsa: ${e.message}`); }
+  }
+
+  // 2. & 3. Raw Ed25519 — wrap in PKCS8 envelope.
+  if (!cryptoKey) {
+    const bytes = new Uint8Array(der);
+    let raw32 = null;
+    if (bytes.length === 32) raw32 = bytes;
+    else if (bytes.length === 64) raw32 = bytes.slice(0, 32);
+    if (raw32) {
+      // PKCS8 wrapper for Ed25519:
+      //   SEQUENCE { INTEGER 0, SEQUENCE { OID 1.3.101.112 }, OCTET STRING { OCTET STRING raw32 } }
+      const prefix = new Uint8Array([
+        0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06,
+        0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20,
+      ]);
+      const wrapped = new Uint8Array(prefix.length + raw32.length);
+      wrapped.set(prefix, 0);
+      wrapped.set(raw32, prefix.length);
+      try { cryptoKey = await tryEd25519Pkcs8(wrapped.buffer); alg = "EdDSA"; }
+      catch (e) { errs.push(`raw-ed25519/${bytes.length}: ${e.message}`); }
+    }
+  }
+
+  if (!cryptoKey) {
+    throw new Error(`Could not import CDP key (der length=${der.byteLength}): ${errs.join("; ")}`);
+  }
+
+  const header = { alg, kid: keyName, nonce, typ: "JWT" };
+  const payload = {
+    iss: "cdp",
+    nbf: now,
+    exp: now + 120,
+    sub: keyName,
+    uri: `${method} ${host}${path}`,
+  };
+
+  const enc = new TextEncoder();
+  const headerB64 = b64url(enc.encode(JSON.stringify(header)));
+  const payloadB64 = b64url(enc.encode(JSON.stringify(payload)));
+  const signingInput = `${headerB64}.${payloadB64}`;
+
+  const sigBuf = await crypto.subtle.sign(
+    alg === "EdDSA" ? { name: "Ed25519" } : { name: "ECDSA", hash: "SHA-256" },
+    cryptoKey,
+    enc.encode(signingInput),
+  );
+  return `${signingInput}.${b64url(new Uint8Array(sigBuf))}`;
+}
+
+function pemToDer(pem) {
+  // Accepts: PEM with BEGIN/END lines, or raw base64. Tolerates literal
+  // "\n" sequences (some secret-paste flows escape newlines).
+  const cleaned = pem
+    .replace(/\\n/g, "\n")
+    .replace(/-----BEGIN [^-]+-----/g, "")
+    .replace(/-----END [^-]+-----/g, "")
+    .replace(/\s+/g, "");
+  const bin = atob(cleaned);
+  const buf = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+  return buf.buffer;
+}
+
+function b64url(bytes) {
+  const arr = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  let s = "";
+  for (let i = 0; i < arr.length; i++) s += String.fromCharCode(arr[i]);
+  return btoa(s).replace(/=+$/, "").replace(/\+/g, "-").replace(/\//g, "_");
+}
+
+function randomHex(bytes) {
+  const arr = new Uint8Array(bytes);
+  crypto.getRandomValues(arr);
+  return [...arr].map(b => b.toString(16).padStart(2, "0")).join("");
+}
