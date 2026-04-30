@@ -118,25 +118,32 @@
   .nav-status.refreshing .dot { background: var(--orange); }
   .nav-status.error .dot { background: var(--red); }
 
-  /* Header connect-wallet button */
+  /* Header connect-wallet button — icon-only, low-key by default. */
   .connect-btn {
-    background: var(--accent); color: #fff;
-    border: 1px solid var(--accent);
+    background: var(--surface2);
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
     border-radius: var(--radius-xs);
-    padding: 6px 12px;
+    padding: 6px 8px;
     font-family: var(--mono); font-size: 11px;
     cursor: pointer; outline: none;
     display: flex; align-items: center; gap: 6px;
+    height: 28px;
+    transition: var(--transition);
   }
-  .connect-btn:hover { opacity: 0.9; }
-  .connect-btn.connected {
-    background: var(--surface2);
-    color: var(--text-secondary);
-    border-color: var(--border);
+  .connect-btn:hover { border-color: var(--accent-dim); color: var(--text); }
+  .connect-btn .wallet-svg-icon {
+    width: 14px; height: 14px;
+    flex-shrink: 0;
   }
+  .connect-btn.connected .wallet-svg-icon { display: none; }
   .connect-btn .pill-dot {
     width: 6px; height: 6px; border-radius: 50%;
     background: var(--green); display: inline-block;
+  }
+  /* When connected, show "● 0x1234…abcd" — no icon, dot replaces it. */
+  .connect-btn.connected {
+    padding: 6px 10px;
   }
 
   /* Wallet picker list */
@@ -172,7 +179,7 @@
     font-family: var(--mono);
   }
 
-  /* Quick-amount buttons in donate modal */
+  /* Quick-amount buttons in donate modal — big USD + small ETH below */
   .quick-amounts {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
@@ -180,16 +187,17 @@
     margin-bottom: 12px;
   }
   .quick-amount-btn {
-    padding: 14px 8px;
+    padding: 12px 6px 10px;
     background: var(--surface2);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     cursor: pointer;
-    font-family: var(--mono); font-size: 14px; font-weight: 600;
     color: var(--text-secondary);
     transition: var(--transition);
+    display: flex; flex-direction: column; align-items: center; gap: 2px;
+    min-height: 56px;
   }
-  .quick-amount-btn:hover {
+  .quick-amount-btn:hover:not(:disabled) {
     border-color: var(--accent-dim);
     color: var(--text);
   }
@@ -197,6 +205,68 @@
     background: var(--accent);
     border-color: var(--accent);
     color: #fff;
+  }
+  .quick-amount-btn.active .qa-eth { color: rgba(255,255,255,0.75); }
+  .qa-usd {
+    font-family: var(--mono); font-size: 16px; font-weight: 700;
+    line-height: 1.1;
+  }
+  .qa-eth {
+    font-family: var(--mono); font-size: 10px; font-weight: 400;
+    color: var(--text-dim);
+    line-height: 1;
+  }
+  .quick-amount-btn.custom .qa-usd { font-size: 13px; font-weight: 500; }
+
+  /* Custom amount: dual USD + ETH inputs with auto-conversion */
+  .custom-amount-row {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+  }
+  .custom-amount-field { position: relative; }
+  .custom-amount-field input {
+    width: 100%;
+    padding: 10px 12px 10px 26px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    font-family: var(--mono); font-size: 14px;
+    color: var(--text);
+  }
+  .custom-amount-field input:focus { outline: none; border-color: var(--accent-dim); }
+  .custom-amount-field .prefix {
+    position: absolute; left: 10px; top: 50%; transform: translateY(-50%);
+    color: var(--text-dim); font-family: var(--mono); font-size: 13px;
+    pointer-events: none;
+  }
+  .custom-amount-field .suffix {
+    position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+    color: var(--text-dim); font-family: var(--mono); font-size: 11px;
+    pointer-events: none;
+  }
+  .custom-amount-field input { padding-right: 40px; }
+
+  /* Donate-button stack (card + ETH) */
+  .donate-button-stack { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+  .donate-eth-btn {
+    display: flex; flex-direction: column; align-items: center; gap: 2px;
+    width: 100%;
+    padding: 12px 16px;
+    background: var(--surface);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    font-family: inherit; font-size: 15px; font-weight: 600;
+    cursor: pointer; transition: var(--transition);
+  }
+  .donate-eth-btn:hover:not(:disabled) {
+    border-color: var(--accent-dim);
+    background: var(--surface2);
+  }
+  .donate-eth-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .donate-eth-btn .donate-eth-sub {
+    font-size: 11px; font-weight: 400;
+    color: var(--text-dim);
+    font-family: var(--mono);
   }
 
   /* Primary card-payment CTA — bigger, more prominent than wallet-btn */
@@ -1062,7 +1132,11 @@
         </svg>
       </a>
       <a id="contract-link" class="nav-select" style="text-decoration:none;" href="#" target="_blank"></a>
-      <button class="connect-btn" id="header-connect-btn" onclick="handleHeaderConnectClick()">Connect Wallet</button>
+      <button class="connect-btn" id="header-connect-btn" onclick="handleHeaderConnectClick()" title="Connect wallet">
+        <svg class="wallet-svg-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4Z"/>
+        </svg>
+      </button>
       <div class="nav-status" id="nav-status">
         <span class="dot"></span>
         <span id="status-text">not connected</span>
@@ -1149,42 +1223,48 @@
   <div class="modal" onclick="event.stopPropagation()">
     <button class="modal-close" onclick="document.getElementById('modal-donate').classList.remove('open')">&times;</button>
     <h3>Donate to The Human Fund</h3>
-    <p id="donate-intro-eth" style="font-size:13px;color:var(--text-secondary);margin-bottom:12px;line-height:1.6;">
-      Send ETH on the <strong>Base blockchain</strong> to Costanza's treasury. You'll need a web wallet like
-      <a href="https://metamask.io" target="_blank" style="color:var(--accent);">MetaMask</a> with ETH on Base.
-      <a href="https://docs.base.org/docs/using-base/" target="_blank" style="color:var(--accent);">Learn how to set one up.</a>
-    </p>
-    <p id="donate-intro-card" style="display:none;font-size:13px;color:var(--text-secondary);margin-bottom:12px;line-height:1.6;">
-      Tip Costanza directly with your debit card. The donation will land in his treasury and he'll deliberate on it next epoch. <strong>Donations are not tax-deductible.</strong>
+    <p style="font-size:13px;color:var(--text-secondary);margin-bottom:12px;line-height:1.6;">
+      Tip Costanza directly. The donation lands in his treasury and he deliberates on it next epoch. <strong>Donations are not tax-deductible.</strong>
     </p>
     <div id="donate-wallet-row"></div>
 
-    <!-- Quick-amount buttons (card-pay flow) -->
-    <div id="donate-quick-amounts" class="quick-amounts" style="display:none;">
-      <button class="quick-amount-btn" data-usd="5" onclick="selectQuickAmount(5)">$5</button>
-      <button class="quick-amount-btn" data-usd="20" onclick="selectQuickAmount(20)">$20</button>
-      <button class="quick-amount-btn" data-usd="50" onclick="selectQuickAmount(50)">$50</button>
-      <button class="quick-amount-btn" data-usd="" onclick="selectCustomAmount()">Custom</button>
+    <!-- Quick-amount buttons (always shown) -->
+    <div id="donate-quick-amounts" class="quick-amounts">
+      <button class="quick-amount-btn" data-usd="5" onclick="selectQuickAmount(5)">
+        <span class="qa-usd">$5</span>
+        <span class="qa-eth" data-eth-for="5">— ETH</span>
+      </button>
+      <button class="quick-amount-btn" data-usd="20" onclick="selectQuickAmount(20)">
+        <span class="qa-usd">$20</span>
+        <span class="qa-eth" data-eth-for="20">— ETH</span>
+      </button>
+      <button class="quick-amount-btn" data-usd="50" onclick="selectQuickAmount(50)">
+        <span class="qa-usd">$50</span>
+        <span class="qa-eth" data-eth-for="50">— ETH</span>
+      </button>
+      <button class="quick-amount-btn custom" data-usd="" onclick="selectCustomAmount()">
+        <span class="qa-usd">Custom</span>
+        <span class="qa-eth">USD or ETH</span>
+      </button>
     </div>
 
-    <!-- Donation amount -->
-    <div class="form-group" id="donate-amount-group">
-      <label class="form-label" id="donate-amount-label">Amount (ETH)</label>
-      <input class="form-input" id="donate-amount" type="number" min="0.0001" step="0.001" placeholder="0.01" oninput="updateDonateUsd()">
-      <div id="donate-usd-estimate" style="font-size:12px;color:var(--text-dim);margin-top:4px;min-height:16px;"></div>
+    <!-- Custom amount: dual USD + ETH inputs (hidden until Custom is selected) -->
+    <div id="donate-custom-amount" class="custom-amount-row" style="display:none;margin-bottom:12px;">
+      <div class="custom-amount-field">
+        <span class="prefix">$</span>
+        <input type="number" id="custom-amount-usd" placeholder="20" min="0" step="0.01" oninput="onCustomUsdInput()">
+        <span class="suffix">USD</span>
+      </div>
+      <div class="custom-amount-field">
+        <input type="number" id="custom-amount-eth" placeholder="0.01" min="0" step="0.0001" oninput="onCustomEthInput()">
+        <span class="suffix">ETH</span>
+      </div>
     </div>
-
-    <!-- Referral code -->
-    <div class="form-group">
-      <label class="form-label">Referral Code <span style="font-weight:400;color:var(--text-dim);">(optional)</span></label>
-      <input class="form-input" id="donate-referral-code" type="text" placeholder="e.g. 42" oninput="updateReferralNote()">
-    </div>
-    <p id="donate-referral-note" style="font-size:11px;color:var(--text-secondary);margin-top:-8px;margin-bottom:16px;line-height:1.5;"></p>
 
     <!-- Optional message -->
     <div style="padding-top:14px;border-top:1px solid var(--border);margin-top:4px;">
       <div style="font-size:13px;font-weight:500;margin-bottom:6px;">Message Costanza <span style="font-weight:400;color:var(--text-dim);font-size:12px;">(optional)</span></div>
-      <p style="font-size:12px;color:var(--text-secondary);margin-bottom:10px;line-height:1.5;">Leave a message that Costanza can read — it can influence his decisions. Messages are queued on-chain and Costanza reads up to 3 per epoch, in order. Requires a minimum donation of 0.005 ETH.</p>
+      <p style="font-size:12px;color:var(--text-secondary);margin-bottom:10px;line-height:1.5;">Leave a message that Costanza can read — it can influence his decisions. Messages are queued on-chain and Costanza reads up to 3 per epoch, in order. <span id="message-min-note">Requires a minimum donation of 0.005 ETH.</span></p>
       <div class="form-group">
         <textarea class="form-input" id="message-text" placeholder="Write something to Costanza..." oninput="updateMessageByteCount()" style="min-height:80px;resize:vertical;"></textarea>
         <div class="form-hint" id="message-hint">0 / 280 bytes. Emoji and non-ASCII characters count as multiple bytes.</div>
@@ -1212,20 +1292,26 @@
       </div>
     </div>
 
-    <!-- Card payment CTA (primary, shown when feature flag is on) -->
-    <button id="donate-card-btn" class="card-pay-btn" style="display:none;" onclick="handlePayWithCard()">
-      <svg class="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>
-      <span id="donate-card-btn-label">Donate with card</span>
-    </button>
-
-    <!-- Crypto fallback divider (shown only with card flow) -->
-    <div id="donate-crypto-fallback" class="crypto-fallback" style="display:none;">
-      <button class="crypto-fallback-link" onclick="showEthPath()">Already have ETH? Send directly</button>
+    <!-- Donate buttons (both visible) -->
+    <div class="donate-button-stack">
+      <button id="donate-card-btn" class="card-pay-btn" style="display:none;" onclick="handlePayWithCard()">
+        <svg class="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>
+        <span id="donate-card-btn-label">Donate with card</span>
+      </button>
+      <button class="donate-eth-btn" id="donate-btn" onclick="handleSubmitDonation()">
+        <span id="donate-btn-label">Donate with ETH</span>
+        <span class="donate-eth-sub">on Base</span>
+      </button>
     </div>
 
-    <!-- Existing wallet-based CTA -->
-    <button class="wallet-btn" id="donate-btn" onclick="handleSubmitDonation()">Connect wallet to donate</button>
     <div class="form-status" id="donate-status"></div>
+
+    <!-- Referral code (moved below the donate buttons) -->
+    <div class="form-group" style="margin-top:18px;padding-top:14px;border-top:1px solid var(--border);">
+      <label class="form-label" style="font-size:12px;">Referral Code <span style="font-weight:400;color:var(--text-dim);">(optional)</span></label>
+      <input class="form-input" id="donate-referral-code" type="text" placeholder="e.g. 42" oninput="updateReferralNote()">
+      <p id="donate-referral-note" style="font-size:11px;color:var(--text-secondary);margin-top:6px;line-height:1.5;"></p>
+    </div>
   </div>
 </div>
 
@@ -1938,7 +2024,7 @@ function updateWalletRows() {
     if (earnBtn) earnBtn.textContent = 'Connect wallet to mint code';
   }
 
-  // Header connect button
+  // Header connect button — icon when idle, addr pill when connected
   const headerBtn = document.getElementById('header-connect-btn');
   if (headerBtn) {
     if (walletAddress) {
@@ -1947,8 +2033,12 @@ function updateWalletRows() {
       headerBtn.title = 'Click to switch or disconnect';
     } else {
       headerBtn.classList.remove('connected');
-      headerBtn.textContent = 'Connect Wallet';
-      headerBtn.title = 'Connect a wallet to donate or mint a referral';
+      headerBtn.innerHTML = `
+        <svg class="wallet-svg-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4Z"/>
+        </svg>
+      `;
+      headerBtn.title = 'Connect wallet';
     }
   }
 }
@@ -2168,18 +2258,8 @@ function updateReferralNote() {
   }
 }
 
-function updateDonateUsd() {
-  const input = document.getElementById('donate-amount');
-  const el = document.getElementById('donate-usd-estimate');
-  if (!el) return;
-  const val = parseFloat(input ? input.value : '');
-  if (isNaN(val) || val <= 0 || !lastEthUsdPrice) { el.textContent = ''; return; }
-  try {
-    const weiAmt = ethers.parseEther(val.toString());
-    const usd = fmtUsdFromPrice(weiAmt, lastEthUsdPrice);
-    el.textContent = usd ? `≈ ${usd}` : '';
-  } catch { el.textContent = ''; }
-}
+// updateDonateUsd: removed — replaced by the dual-input custom amount
+// (USD and ETH boxes that auto-convert via onCustomUsdInput / onCustomEthInput).
 
 // Contract enforces MAX_MESSAGE_LENGTH = 280 BYTES (UTF-8 encoded), not
 // characters — emoji and non-ASCII codepoints take multiple bytes each.
@@ -2195,6 +2275,53 @@ function updateMessageByteCount() {
 }
 
 // ═══════════════════════════════════════════════════════
+// LIVE ETH/USD PRICE (Coinbase spot API)
+// ═══════════════════════════════════════════════════════
+//
+// Quick-amount buttons need an up-to-date USD↔ETH conversion. The
+// contract's epochEthUsdPrice is updated only at epoch open (≤ 4 hours
+// stale), so we fetch live spot from Coinbase's public API. Caches 60s
+// so we don't hammer per-button-render. Falls back to lastEthUsdPrice
+// from chain if the API fails.
+
+let _liveEthUsd = null;          // USD per ETH, number
+let _liveEthUsdAt = 0;           // ms epoch
+const LIVE_ETH_USD_TTL_MS = 60 * 1000;
+
+async function getEthUsd() {
+  const now = Date.now();
+  if (_liveEthUsd && now - _liveEthUsdAt < LIVE_ETH_USD_TTL_MS) {
+    return _liveEthUsd;
+  }
+  try {
+    const resp = await fetch('https://api.coinbase.com/v2/prices/ETH-USD/spot', {
+      headers: { 'Accept': 'application/json' },
+    });
+    if (resp.ok) {
+      const data = await resp.json();
+      const px = parseFloat(data?.data?.amount);
+      if (px > 0) {
+        _liveEthUsd = px;
+        _liveEthUsdAt = now;
+        return px;
+      }
+    }
+  } catch {/* fall through */}
+  // Fallback: contract snapshot (Chainlink, 8 decimals)
+  if (lastEthUsdPrice) return Number(lastEthUsdPrice) / 1e8;
+  return 0;
+}
+
+function ethToUsd(ethAmount, ethUsd) {
+  if (!ethUsd || !isFinite(ethAmount)) return 0;
+  return ethAmount * ethUsd;
+}
+function usdToEth(usdAmount, ethUsd) {
+  if (!ethUsd || !isFinite(usdAmount)) return 0;
+  return usdAmount / ethUsd;
+}
+
+// ═══════════════════════════════════════════════════════
 // CARD-PAY FLOW (Coinbase Onramp + auto-donate)
 // ═══════════════════════════════════════════════════════
 //
@@ -2207,113 +2334,156 @@ const COINBASE_GUEST_USD_MAX = 500;   // weekly cap per donor across all Onramp 
 const ONRAMP_POLL_INTERVAL_MS = 4000;
 const ONRAMP_POLL_TIMEOUT_MS = 10 * 60 * 1000; // 10 min — generous; Coinbase usually settles in 1-3
 
-let _selectedQuickAmount = null; // last-clicked quick-amount button (USD, integer)
+// Donation amount state. The donate modal stores the donor's intent in
+// USD (preferred) or ETH and the source-of-truth flips depending on
+// which input the donor last touched. Quick-amount buttons set USD.
+let _donateUsd = null;   // number, USD
+let _donateEth = null;   // number, ETH
+let _donateLastEdited = 'usd'; // 'usd' | 'eth'
 
 function applyCardpayFeatureFlag() {
-  // Idempotent — safe to call after page load whether the flag is on or off.
-  const introEth = document.getElementById('donate-intro-eth');
-  const introCard = document.getElementById('donate-intro-card');
-  const quickAmts = document.getElementById('donate-quick-amounts');
+  // Card button is the only thing gated; the rest of the new layout
+  // (quick amounts, dual donate buttons in their stack, ETH-on-Base
+  // subtitle) is always visible.
   const cardBtn = document.getElementById('donate-card-btn');
-  const cryptoFallback = document.getElementById('donate-crypto-fallback');
-  const walletBtn = document.getElementById('donate-btn');
-  const amountGroup = document.getElementById('donate-amount-group');
-  const amountLabel = document.getElementById('donate-amount-label');
-  const amountInput = document.getElementById('donate-amount');
-
-  if (!CARDPAY_ENABLED) {
-    // Default state — card UI hidden, existing flow visible.
-    if (introEth) introEth.style.display = '';
-    if (introCard) introCard.style.display = 'none';
-    if (quickAmts) quickAmts.style.display = 'none';
-    if (cardBtn) cardBtn.style.display = 'none';
-    if (cryptoFallback) cryptoFallback.style.display = 'none';
-    if (walletBtn) walletBtn.style.display = '';
-    if (amountLabel) amountLabel.textContent = 'Amount (ETH)';
-    if (amountInput) {
-      amountInput.placeholder = '0.01';
-      amountInput.step = '0.001';
-    }
-    return;
-  }
-
-  // Card-pay UI on
-  if (introEth) introEth.style.display = 'none';
-  if (introCard) introCard.style.display = '';
-  if (quickAmts) quickAmts.style.display = 'grid';
-  if (cardBtn) cardBtn.style.display = 'flex';
-  if (cryptoFallback) cryptoFallback.style.display = 'flex';
-  // Existing wallet button hidden by default in card mode; revealed by showEthPath()
-  if (walletBtn) walletBtn.style.display = 'none';
-  // Reframe amount input as USD-first (custom amount path).
-  if (amountLabel) amountLabel.textContent = 'Custom amount (USD)';
-  if (amountInput) {
-    amountInput.placeholder = '20';
-    amountInput.step = '1';
-    amountInput.style.display = 'none'; // hide until "Custom" picked
-  }
-  if (amountGroup) amountGroup.style.display = 'none';
-  updateCardBtnLabel();
+  if (cardBtn) cardBtn.style.display = CARDPAY_ENABLED ? 'flex' : 'none';
+  updateDonateButtons();
+  refreshQuickAmountEthLabels();
+  refreshMessageMinNote();
 }
 
-function selectQuickAmount(usd) {
-  _selectedQuickAmount = usd;
+// Fill in the small "≈ 0.0024 ETH" subtitle on each quick button.
+async function refreshQuickAmountEthLabels() {
+  const ethUsd = await getEthUsd();
+  document.querySelectorAll('.qa-eth[data-eth-for]').forEach(el => {
+    const usd = parseFloat(el.dataset.ethFor);
+    if (!ethUsd || !usd) { el.textContent = '— ETH'; return; }
+    const eth = usd / ethUsd;
+    el.textContent = `${formatEthShort(eth)} ETH`;
+  });
+}
+
+function formatEthShort(eth) {
+  if (eth >= 0.1) return eth.toFixed(3);
+  if (eth >= 0.01) return eth.toFixed(4);
+  if (eth >= 0.001) return eth.toFixed(5);
+  return eth.toFixed(6);
+}
+
+async function selectQuickAmount(usd) {
+  _donateUsd = usd;
+  _donateLastEdited = 'usd';
+  const ethUsd = await getEthUsd();
+  _donateEth = ethUsd ? usd / ethUsd : null;
   document.querySelectorAll('.quick-amount-btn').forEach(b => {
     b.classList.toggle('active', Number(b.dataset.usd) === usd);
   });
-  // Hide custom-amount input when a quick option is chosen.
-  const amountGroup = document.getElementById('donate-amount-group');
-  if (amountGroup) amountGroup.style.display = 'none';
-  updateCardBtnLabel();
+  document.getElementById('donate-custom-amount').style.display = 'none';
+  updateDonateButtons();
 }
 
 function selectCustomAmount() {
-  _selectedQuickAmount = null;
+  _donateUsd = null;
+  _donateEth = null;
   document.querySelectorAll('.quick-amount-btn').forEach(b => {
     b.classList.toggle('active', b.dataset.usd === '');
   });
-  const amountGroup = document.getElementById('donate-amount-group');
-  const amountInput = document.getElementById('donate-amount');
-  if (amountGroup) amountGroup.style.display = '';
-  if (amountInput) {
-    amountInput.style.display = '';
-    amountInput.focus();
+  document.getElementById('donate-custom-amount').style.display = 'grid';
+  const usdInput = document.getElementById('custom-amount-usd');
+  const ethInput = document.getElementById('custom-amount-eth');
+  if (usdInput) usdInput.value = '';
+  if (ethInput) ethInput.value = '';
+  setTimeout(() => usdInput?.focus(), 0);
+  updateDonateButtons();
+}
+
+async function onCustomUsdInput() {
+  const usdInput = document.getElementById('custom-amount-usd');
+  const ethInput = document.getElementById('custom-amount-eth');
+  const v = parseFloat(usdInput.value);
+  if (isNaN(v) || v <= 0) {
+    _donateUsd = null;
+    _donateEth = null;
+    if (ethInput) ethInput.value = '';
+  } else {
+    _donateUsd = v;
+    _donateLastEdited = 'usd';
+    const ethUsd = await getEthUsd();
+    _donateEth = ethUsd ? v / ethUsd : null;
+    if (ethInput && _donateEth != null) ethInput.value = _donateEth.toFixed(6);
   }
-  updateCardBtnLabel();
+  updateDonateButtons();
 }
 
-function getSelectedUsdAmount() {
-  if (_selectedQuickAmount) return _selectedQuickAmount;
-  const customInput = document.getElementById('donate-amount');
-  const v = parseFloat(customInput?.value || '');
-  return isNaN(v) ? null : v;
+async function onCustomEthInput() {
+  const usdInput = document.getElementById('custom-amount-usd');
+  const ethInput = document.getElementById('custom-amount-eth');
+  const v = parseFloat(ethInput.value);
+  if (isNaN(v) || v <= 0) {
+    _donateUsd = null;
+    _donateEth = null;
+    if (usdInput) usdInput.value = '';
+  } else {
+    _donateEth = v;
+    _donateLastEdited = 'eth';
+    const ethUsd = await getEthUsd();
+    _donateUsd = ethUsd ? v * ethUsd : null;
+    if (usdInput && _donateUsd != null) usdInput.value = _donateUsd.toFixed(2);
+  }
+  updateDonateButtons();
 }
 
-function updateCardBtnLabel() {
-  const label = document.getElementById('donate-card-btn-label');
-  if (!label) return;
-  const usd = getSelectedUsdAmount();
-  label.textContent = usd ? `Donate $${usd} with card` : 'Donate with card';
-}
+function getSelectedUsdAmount() { return _donateUsd; }
+function getSelectedEthAmount() { return _donateEth; }
 
-// "Already have ETH?" — reveal the existing wallet flow as an alternative.
-function showEthPath() {
-  const walletBtn = document.getElementById('donate-btn');
+function updateDonateButtons() {
+  const cardBtnLabel = document.getElementById('donate-card-btn-label');
+  const ethBtnLabel = document.getElementById('donate-btn-label');
+  const ethBtn = document.getElementById('donate-btn');
+
+  if (cardBtnLabel) {
+    const usd = _donateUsd;
+    cardBtnLabel.textContent = usd ? `Donate $${formatUsdShort(usd)} with card` : 'Donate with card';
+  }
+
+  if (ethBtnLabel) {
+    if (!walletAddress) {
+      ethBtnLabel.textContent = _donateEth ? `Connect wallet to donate ${formatEthShort(_donateEth)} ETH` : 'Connect wallet to donate';
+    } else {
+      ethBtnLabel.textContent = _donateEth ? `Donate ${formatEthShort(_donateEth)} ETH` : 'Donate with ETH';
+    }
+  }
+
+  // Card button only enabled with USD between Coinbase guest min/max.
   const cardBtn = document.getElementById('donate-card-btn');
-  const cryptoFallback = document.getElementById('donate-crypto-fallback');
-  const amountGroup = document.getElementById('donate-amount-group');
-  const amountLabel = document.getElementById('donate-amount-label');
-  const amountInput = document.getElementById('donate-amount');
-  if (walletBtn) walletBtn.style.display = '';
-  if (cardBtn) cardBtn.style.display = 'none';
-  if (cryptoFallback) cryptoFallback.style.display = 'none';
-  if (amountGroup) amountGroup.style.display = '';
-  if (amountInput) {
-    amountInput.style.display = '';
-    amountInput.placeholder = '0.01';
-    amountInput.step = '0.001';
+  if (cardBtn && CARDPAY_ENABLED) {
+    const ok = _donateUsd && _donateUsd >= COINBASE_GUEST_USD_MIN && _donateUsd <= COINBASE_GUEST_USD_MAX;
+    cardBtn.disabled = !ok;
+    cardBtn.title = ok ? '' : `Card payments are $${COINBASE_GUEST_USD_MIN}–$${COINBASE_GUEST_USD_MAX}`;
   }
-  if (amountLabel) amountLabel.textContent = 'Amount (ETH)';
+
+  // ETH button enabled when an amount is set
+  if (ethBtn) ethBtn.disabled = !_donateEth || _donateEth <= 0;
+}
+
+function formatUsdShort(usd) {
+  if (usd >= 100) return Math.round(usd).toString();
+  if (Number.isInteger(usd)) return usd.toString();
+  return usd.toFixed(2).replace(/\.00$/, '');
+}
+
+// Update the message-min note to show ETH + live USD equivalent.
+async function refreshMessageMinNote() {
+  const note = document.getElementById('message-min-note');
+  if (!note) return;
+  const minEth = 0.005; // mirrors src/TheHumanFund.sol MIN_MESSAGE_DONATION
+  const ethUsd = await getEthUsd();
+  if (!ethUsd) {
+    note.textContent = `Requires a minimum donation of ${minEth} ETH.`;
+    return;
+  }
+  const minUsd = minEth * ethUsd;
+  note.textContent = `Requires a minimum donation of ${minEth} ETH (~$${minUsd.toFixed(2)}).`;
 }
 
 // Stepper helpers
@@ -2327,11 +2497,15 @@ function setStep(id, state) {
 function showStepper() {
   document.getElementById('donate-stepper').style.display = '';
   // hide the buttons + amount inputs — stepper takes over
-  ['donate-card-btn','donate-crypto-fallback','donate-quick-amounts','donate-amount-group','donate-btn']
+  ['donate-card-btn','donate-quick-amounts','donate-custom-amount','donate-btn']
     .forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
 }
 function hideStepper() {
   document.getElementById('donate-stepper').style.display = 'none';
+  // Restore the donate-button stack and the appropriate amount selector.
+  document.getElementById('donate-quick-amounts').style.display = 'grid';
+  document.getElementById('donate-btn').style.display = 'flex';
+  if (CARDPAY_ENABLED) document.getElementById('donate-card-btn').style.display = 'flex';
 }
 
 async function handlePayWithCard() {
@@ -2358,7 +2532,7 @@ async function handlePayWithCard() {
     await ensureWallet();
 
     // Compute target ETH so we can pre-fill the Onramp widget and detect arrival.
-    const ethUsd = lastEthUsdPrice ? Number(lastEthUsdPrice) / 1e8 : 0;
+    const ethUsd = await getEthUsd();
     if (!ethUsd || ethUsd <= 0) {
       setStatus(statusId, 'ETH price unavailable; refresh and try again.', 'error');
       hideStepper();
@@ -2450,25 +2624,25 @@ async function fireDonationFromCardFlow(usd) {
 async function handleSubmitDonation() {
   const statusId = 'donate-status';
   try {
+    const ethAmount = getSelectedEthAmount();
+    if (!ethAmount || ethAmount <= 0) {
+      setStatus(statusId, 'Pick or enter an amount.', 'error');
+      return;
+    }
+
     setStatus(statusId, 'Connecting wallet...', 'info');
     await ensureWallet();
     updateWalletRows();
+    updateDonateButtons();
 
-    const amountStr = document.getElementById('donate-amount').value;
     const msgText = document.getElementById('message-text').value.trim();
     const refCode = getActiveReferralCode();
 
-    if (!amountStr || parseFloat(amountStr) <= 0) {
-      setStatus(statusId, 'Enter a valid ETH amount.', 'error');
-      return;
-    }
-    if (msgText && parseFloat(amountStr) < 0.005) {
+    if (msgText && ethAmount < 0.005) {
       setStatus(statusId, 'Minimum donation for messaging is 0.005 ETH.', 'error');
       return;
     }
     // Contract enforces MAX_MESSAGE_LENGTH = 280 BYTES (not characters).
-    // Check UTF-8 byte length so emoji / multibyte codepoints don't
-    // silently submit a tx that will revert on-chain.
     if (msgText) {
       const msgBytes = new TextEncoder().encode(msgText).length;
       if (msgBytes > 280) {
@@ -2479,7 +2653,9 @@ async function handleSubmitDonation() {
 
     setStatus(statusId, 'Confirm the transaction in your wallet...', 'info');
     const fundWrite = new ethers.Contract(CONTRACT_ADDRESS, FUND_ABI, walletSigner);
-    const value = ethers.parseEther(amountStr);
+    // ethers.parseEther wants a string; round to 18 decimals to avoid
+    // floating-point artifacts (e.g. 0.012999999999999...).
+    const value = ethers.parseEther(ethAmount.toFixed(18));
 
     let tx;
     if (msgText) {
@@ -2493,10 +2669,17 @@ async function handleSubmitDonation() {
       ? 'Message sent! Costanza will read it in the next epoch.'
       : `Donation confirmed! Thank you for supporting The Human Fund. Tx: ${tx.hash.slice(0, 10)}...`;
     setStatus(statusId, successMsg, 'success');
-    document.getElementById('donate-amount').value = '';
+    // Clear amount state on success.
+    _donateUsd = null;
+    _donateEth = null;
+    document.querySelectorAll('.quick-amount-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById('donate-custom-amount').style.display = 'none';
+    const ua = document.getElementById('custom-amount-usd');
+    const ea = document.getElementById('custom-amount-eth');
+    if (ua) ua.value = ''; if (ea) ea.value = '';
     document.getElementById('message-text').value = '';
-    document.getElementById('donate-usd-estimate').textContent = '';
     updateMessageByteCount();
+    updateDonateButtons();
   } catch (err) {
     setStatus(statusId, err.reason || err.message || 'Transaction failed.', 'error');
   }
