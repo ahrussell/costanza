@@ -2035,16 +2035,20 @@ function updateWalletRows() {
     if (el) el.innerHTML = pillHtml;
   });
 
-  const donateBtn = document.getElementById('donate-btn');
+  const donateBtnLabel = document.getElementById('donate-btn-label');
   const earnBtn = document.getElementById('earn-btn');
 
   if (walletAddress) {
-    if (donateBtn) donateBtn.textContent = 'Send donation';
+    if (donateBtnLabel) donateBtnLabel.textContent = 'Donate with ETH';
     if (earnBtn) earnBtn.textContent = 'Mint referral code';
   } else {
-    if (donateBtn) donateBtn.textContent = 'Connect wallet to donate';
+    if (donateBtnLabel) donateBtnLabel.textContent = 'Connect wallet to donate ETH';
     if (earnBtn) earnBtn.textContent = 'Connect wallet to mint code';
   }
+  // updateDonateButtons() owns the more-specific label that includes the
+  // selected amount (e.g. "Connect wallet to donate 0.0094 ETH"). Calling
+  // it here keeps the two views consistent after a connect/disconnect.
+  if (typeof updateDonateButtons === 'function') updateDonateButtons();
 
   // Header connect button — icon when idle, addr pill when connected
   const headerBtn = document.getElementById('header-connect-btn');
@@ -2500,7 +2504,7 @@ function updateDonateButtons() {
 
   if (ethBtnLabel) {
     if (!walletAddress) {
-      ethBtnLabel.textContent = _donateEth ? `Connect wallet to donate ${formatEthShort(_donateEth)} ETH` : 'Connect wallet to donate';
+      ethBtnLabel.textContent = _donateEth ? `Connect wallet to donate ${formatEthShort(_donateEth)} ETH` : 'Connect wallet to donate ETH';
     } else {
       ethBtnLabel.textContent = _donateEth ? `Donate ${formatEthShort(_donateEth)} ETH` : 'Donate with ETH';
     }
