@@ -7,8 +7,10 @@
 <link rel="icon" type="image/x-icon" href="favicon.ico">
 <link rel="icon" type="image/png" sizes="32x32" href="favicon.png">
 <script src="https://cdn.jsdelivr.net/npm/ethers@6.13.4/dist/ethers.umd.min.js"></script>
-<!-- Coinbase Smart Wallet SDK (popup + passkey, no extension required) -->
-<script src="https://unpkg.com/@base-org/account@1.1.4/dist/base-account.min.js" defer></script>
+<!-- Coinbase Smart Wallet SDK (popup + passkey, no extension required).
+     Pinned to the latest verified version — older 1.x didn't ship a UMD
+     at this path. -->
+<script src="https://unpkg.com/@base-org/account@2.5.5/dist/base-account.min.js" defer></script>
 <!--
   Coinbase Onramp uses a session-token auth model since 2025-07-31.
   No client SDK — the worker mints a token, the frontend opens
@@ -1281,18 +1283,10 @@
         <span class="donate-stepper-icon"></span>
         <span>Confirm card payment</span>
       </div>
-      <div class="donate-stepper-row" id="step-eth">
+      <div class="donate-stepper-row" id="step-deposit">
         <span class="donate-stepper-icon"></span>
-        <span>Buying ETH for your donation</span>
-        <span class="donate-stepper-meta">~30 sec</span>
-      </div>
-      <div class="donate-stepper-row" id="step-donate">
-        <span class="donate-stepper-icon"></span>
-        <span>Sending donation to Costanza</span>
-      </div>
-      <div class="donate-stepper-row" id="step-confirmed">
-        <span class="donate-stepper-icon"></span>
-        <span>Confirmed on-chain</span>
+        <span>Delivering ETH to Costanza's treasury</span>
+        <span class="donate-stepper-meta">~1 min</span>
       </div>
     </div>
 
@@ -2132,17 +2126,24 @@ function renderWalletPickerList() {
   if (!container) return;
   const entries = [];
   for (const w of detectedWallets.values()) {
-    // Some wallets announce a stub before they're fully initialized
-    // (no name, no icon, sometimes no provider). Skip those — otherwise
-    // they render as a blank grey row in the picker.
-    const name = (w.info?.name || '').trim();
-    if (!name || !w.provider) continue;
+    // Defensive: some wallet extensions announce a stub event before
+    // they're fully initialized — no name, no icon, sometimes no rdns,
+    // sometimes a placeholder uuid that gets overwritten later. Skip
+    // anything that doesn't have the four required EIP-6963 info fields.
+    const info = w.info || {};
+    const name = (info.name || '').trim();
+    const rdns = (info.rdns || '').trim();
+    const uuid = (info.uuid || '').trim();
+    if (!name || !rdns || !uuid || !w.provider) {
+      try { console.debug('[wallet-picker] skipped incomplete EIP-6963 entry:', info); } catch {}
+      continue;
+    }
     entries.push({
-      uuid: w.info.uuid,
+      uuid,
       name,
-      icon: w.info.icon,
-      meta: w.info.rdns || '',
-      connect: () => connectWalletByUuid(w.info.uuid),
+      icon: info.icon,
+      meta: rdns,
+      connect: () => connectWalletByUuid(uuid),
     });
   }
   // Always offer Smart Wallet (it works without an extension).
@@ -2521,6 +2522,13 @@ function hideStepper() {
 // existing RPC URL — we share the worker.
 const ONRAMP_TOKEN_URL = RPC_URL.replace(/\/$/, '') + '/onramp/token';
 
+// Card flow: deliver ETH directly to the fund contract.
+//
+// The contract has `receive() external payable` that adds incoming ETH to
+// totalInflows. So Coinbase Onramp can target CONTRACT_ADDRESS as the
+// destination — no donor wallet, no second tx, no passkey, no signing.
+// Trade-off: anonymous donation, no referral code, no message attached.
+// Donors who want those features use the ETH-from-wallet path.
 async function handlePayWithCard() {
   const statusId = 'donate-status';
   try {
@@ -2535,12 +2543,9 @@ async function handlePayWithCard() {
     }
     setStatus(statusId, '', 'info');
 
-    // Ensure wallet — auto-creates Smart Wallet via passkey if user has none.
-    setStep('step-card', 'active');
     showStepper();
-    await ensureWallet();
+    setStep('step-card', 'active');
 
-    // Compute target ETH so we can detect deposit arrival.
     const ethUsd = await getEthUsd();
     if (!ethUsd || ethUsd <= 0) {
       setStatus(statusId, 'ETH price unavailable; refresh and try again.', 'error');
@@ -2548,16 +2553,15 @@ async function handlePayWithCard() {
       return;
     }
     const targetEth = usd / ethUsd;
-    const startBalance = await provider.getBalance(walletAddress);
+    const startBalance = await provider.getBalance(CONTRACT_ADDRESS);
 
-    // Mint a session token via our Worker (holds the Secret API Key).
-    setStatus(statusId, 'Preparing card payment…', 'info');
+    // Mint a session token via our Worker — destination is the fund itself.
     let sessionToken;
     try {
       const resp = await fetch(ONRAMP_TOKEN_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ address: walletAddress, chain: 'base' }),
+        body: JSON.stringify({ address: CONTRACT_ADDRESS, chain: 'base' }),
       });
       const data = await resp.json();
       if (!resp.ok || !data.token) {
@@ -2570,9 +2574,7 @@ async function handlePayWithCard() {
       return;
     }
 
-    // Open the Coinbase-hosted Onramp page in a popup. presetFiatAmount
-    // and defaultAsset are query-params; sessionToken authenticates the
-    // session and pins destination to walletAddress.
+    // Open the Coinbase-hosted Onramp page in a popup, pre-filled.
     const onrampUrl = new URL('https://pay.coinbase.com/buy/select-asset');
     onrampUrl.searchParams.set('sessionToken', sessionToken);
     onrampUrl.searchParams.set('presetFiatAmount', String(usd));
@@ -2580,7 +2582,6 @@ async function handlePayWithCard() {
     onrampUrl.searchParams.set('defaultAsset', 'ETH');
     onrampUrl.searchParams.set('defaultNetwork', 'base');
     onrampUrl.searchParams.set('defaultPaymentMethod', 'CARD');
-    // After payment, Coinbase redirects to this URL inside the popup.
     onrampUrl.searchParams.set('redirectUrl', `${window.location.origin}${window.location.pathname}?onramp=success`);
 
     const popup = window.open(onrampUrl.toString(), 'cbOnramp',
@@ -2591,57 +2592,43 @@ async function handlePayWithCard() {
       return;
     }
 
-    // Watch for the popup to close OR for the wallet balance to land.
-    // Whichever happens first proceeds the flow; if the popup closes
-    // without a deposit, we surface a clean cancellation.
-    setStatus(statusId, 'Pay with your card in the Coinbase window. ETH lands in your wallet, then we send the donation.', 'info');
+    setStatus(statusId, 'Pay with your card in the Coinbase window. ETH lands directly in Costanza’s treasury.', 'info');
+
+    // Race popup-closed vs deposit-landed.
     const popupClosedPromise = new Promise(res => {
       const t = setInterval(() => {
         if (popup.closed) { clearInterval(t); res('closed'); }
       }, 800);
     });
-    const depositPromise = pollWalletForDeposit(walletAddress, startBalance, targetEth);
+    const depositPromise = pollWalletForDeposit(CONTRACT_ADDRESS, startBalance, targetEth);
 
     let outcome;
     try {
       outcome = await Promise.race([popupClosedPromise, depositPromise]);
     } catch (err) {
-      // Deposit polling threw (timeout) — but the popup may still be open.
       try { popup.close(); } catch {}
-      setStatus(statusId, err.message || 'Onramp timed out. Check your wallet manually.', 'error');
+      setStatus(statusId, err.message || 'Onramp timed out.', 'error');
       hideStepper();
       return;
     }
 
-    // Race won by deposit ('arrived' | undefined) or popup close ('closed').
     if (outcome === 'closed') {
-      // Did the deposit actually land before the popup closed? Give it a
-      // brief grace period since Coinbase sometimes closes the window
-      // moments before the on-chain tx settles.
+      // Coinbase sometimes closes the window moments before the deposit
+      // tx confirms. Give it a 30s grace.
       try {
-        await pollWalletForDeposit(walletAddress, startBalance, targetEth, 30 * 1000);
+        await pollWalletForDeposit(CONTRACT_ADDRESS, startBalance, targetEth, 30 * 1000);
       } catch {
-        setStatus(statusId, 'Onramp window closed before payment completed. Try again, or fund your wallet manually.', 'error');
+        setStatus(statusId, 'Onramp window closed before payment completed. If you completed the payment, the donation will arrive shortly.', 'error');
         hideStepper();
         return;
       }
     } else {
-      // Deposit landed — close the popup if Coinbase didn't already.
       try { popup.close(); } catch {}
     }
 
     setStep('step-card', 'done');
-    setStep('step-eth', 'done');
-    setStep('step-donate', 'active');
-    try {
-      await fireDonationFromCardFlow(usd);
-      setStep('step-donate', 'done');
-      setStep('step-confirmed', 'done');
-      setStatus(statusId, 'Donation sent! Costanza will see it next epoch.', 'success');
-    } catch (err) {
-      setStatus(statusId, err.message || 'Onramp completed but donation failed — your ETH is in your wallet; switch to "Donate with ETH" to retry.', 'error');
-      hideStepper();
-    }
+    setStep('step-deposit', 'done');
+    setStatus(statusId, 'Donation sent! Costanza will see it next epoch.', 'success');
   } catch (err) {
     setStatus(statusId, err.message || 'Could not start card payment.', 'error');
     hideStepper();
@@ -2663,27 +2650,6 @@ async function pollWalletForDeposit(addr, startBalance, expectedEth, timeoutMs) 
     } catch {/* transient — retry */}
   }
   throw new Error('ETH deposit timed out. Check your wallet manually.');
-}
-
-async function fireDonationFromCardFlow(usd) {
-  // Send all freshly-arrived ETH (minus a tiny gas reserve) as the donation.
-  // Donor expressed intent in fiat; we honor by sending the wallet's full
-  // ETH balance to the contract so no dust gets stranded.
-  const balance = await provider.getBalance(walletAddress);
-  const gasReserve = ethers.parseUnits('0.00005', 'ether'); // ~12k gas at 4 gwei, ample on Base
-  const amount = balance > gasReserve ? balance - gasReserve : balance;
-  if (amount === 0n) throw new Error('Wallet balance is zero — onramp failed.');
-  const fundWrite = new ethers.Contract(CONTRACT_ADDRESS, FUND_ABI, walletSigner);
-  const refCode = getActiveReferralCode();
-  const msgText = (document.getElementById('message-text')?.value || '').trim();
-  let tx;
-  if (msgText) {
-    const msgBytes = ethers.toUtf8Bytes(msgText);
-    tx = await fundWrite.donateWithMessage(refCode, msgBytes, { value: amount });
-  } else {
-    tx = await fundWrite.donate(refCode, { value: amount });
-  }
-  await tx.wait(1);
 }
 
 async function handleSubmitDonation() {
