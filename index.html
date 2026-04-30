@@ -16,7 +16,8 @@
   No client SDK — the worker mints a token, the frontend opens
   pay.coinbase.com/buy/select-asset?sessionToken=… in a popup.
 -->
-
+<!-- Cloudflare Turnstile (invisible CAPTCHA — gates the Onramp token-mint endpoint) -->
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js?onload=onTurnstileReady" defer></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
@@ -1677,6 +1678,12 @@ const CARDPAY_ENABLED = (() => {
   catch { return false; }
 })();
 
+// Cloudflare Turnstile — site key (public). Worker has the matching
+// secret as a Wrangler secret. Per-click invisible challenge gates the
+// /onramp/token endpoint (requested by Coinbase support — see auth
+// review thread, 2026-04-30).
+const TURNSTILE_SITE_KEY = '0x4AAAAAADGhH6ycTXYEubrr';
+
 // ═══════════════════════════════════════════════════════
 // ABI
 // ═══════════════════════════════════════════════════════
@@ -2568,6 +2575,71 @@ function hideStepper() {
 // existing RPC URL — we share the worker.
 const ONRAMP_TOKEN_URL = RPC_URL.replace(/\/$/, '') + '/onramp/token';
 
+// ─── Turnstile ───────────────────────────────────────────────────────
+// Render an invisible widget once api.js is loaded; widgetId is captured
+// for later turnstile.execute() calls. Each card-pay click runs a fresh
+// challenge (turnstile.reset → execute) and returns the resulting token.
+let _turnstileWidgetId = null;
+let _turnstileTokenWaiter = null; // { resolve, reject } during execute()
+
+function onTurnstileReady() {
+  if (typeof window.turnstile === 'undefined') return;
+  try {
+    _turnstileWidgetId = window.turnstile.render('#turnstile-container', {
+      sitekey: TURNSTILE_SITE_KEY,
+      size: 'invisible',
+      callback: (token) => {
+        if (_turnstileTokenWaiter) {
+          _turnstileTokenWaiter.resolve(token);
+          _turnstileTokenWaiter = null;
+        }
+      },
+      'error-callback': () => {
+        if (_turnstileTokenWaiter) {
+          _turnstileTokenWaiter.reject(new Error('Turnstile challenge failed'));
+          _turnstileTokenWaiter = null;
+        }
+      },
+      'timeout-callback': () => {
+        if (_turnstileTokenWaiter) {
+          _turnstileTokenWaiter.reject(new Error('Turnstile timed out'));
+          _turnstileTokenWaiter = null;
+        }
+      },
+    });
+  } catch (err) {
+    console.warn('Turnstile render failed:', err);
+  }
+}
+
+function getTurnstileToken() {
+  return new Promise((resolve, reject) => {
+    if (typeof window.turnstile === 'undefined' || _turnstileWidgetId == null) {
+      reject(new Error('Turnstile not ready — refresh the page and try again.'));
+      return;
+    }
+    if (_turnstileTokenWaiter) {
+      reject(new Error('Another verification is already in progress.'));
+      return;
+    }
+    _turnstileTokenWaiter = { resolve, reject };
+    try {
+      window.turnstile.reset(_turnstileWidgetId);
+      window.turnstile.execute(_turnstileWidgetId);
+    } catch (err) {
+      _turnstileTokenWaiter = null;
+      reject(err);
+    }
+    // Safety net — explicitly time out if Turnstile never calls back.
+    setTimeout(() => {
+      if (_turnstileTokenWaiter) {
+        _turnstileTokenWaiter.reject(new Error('Turnstile verification timed out'));
+        _turnstileTokenWaiter = null;
+      }
+    }, 30 * 1000);
+  });
+}
+
 // Card flow: deliver ETH directly to the fund contract.
 //
 // The contract has `receive() external payable` that adds incoming ETH to
@@ -2601,12 +2673,27 @@ async function handlePayWithCard() {
     const targetEth = usd / ethUsd;
     const startBalance = await provider.getBalance(CONTRACT_ADDRESS);
 
+    // Run an invisible Turnstile challenge before requesting the
+    // session token. Worker rejects /onramp/token without a valid
+    // Authorization: Bearer <turnstile-token>.
+    let turnstileToken;
+    try {
+      turnstileToken = await getTurnstileToken();
+    } catch (err) {
+      setStatus(statusId, `Could not verify human session: ${err.message}`, 'error');
+      hideStepper();
+      return;
+    }
+
     // Mint a session token via our Worker — destination is the fund itself.
     let sessionToken;
     try {
       const resp = await fetch(ONRAMP_TOKEN_URL, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${turnstileToken}`,
+        },
         body: JSON.stringify({ address: CONTRACT_ADDRESS, chain: 'base' }),
       });
       const data = await resp.json();
@@ -4390,5 +4477,8 @@ async function init() {
 
 init();
 </script>
+
+<!-- Turnstile invisible widget. Rendered via the api.js onload callback. -->
+<div id="turnstile-container" style="display:none;"></div>
 </body>
 </html>

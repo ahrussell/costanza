@@ -17,9 +17,14 @@ const CACHE_TTL = 900; // 15 minutes
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
   "Access-Control-Expose-Headers": "X-Cache, X-Cache-Age",
 };
+
+// The Human Fund contract on Base mainnet — the only valid Onramp
+// destination this worker mints tokens for. Server-pinned so a spoofed
+// request can't divert ETH to a third party.
+const FUND_ADDRESS = "0x678dc1756b123168f23a698374c000019e38318c";
 
 // Cache-key version. Bump this any time the cache-payload schema changes
 // (e.g. adding stamped headers like X-Cached-At) to force eviction of all
@@ -59,8 +64,16 @@ async function sha256(text) {
   return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, "0")).join("");
 }
 
-function jsonResp(body, headers) {
-  return new Response(body, { headers: { ...CORS_HEADERS, "Content-Type": "application/json", ...headers } });
+function jsonResp(body, init = {}) {
+  // Accept either { status: 401, "X-Custom": "foo" } or just a flat
+  // header bag { "X-Cache": "HIT" }. status defaults to 200. Earlier
+  // version treated init as headers-only, which silently downgraded
+  // every status:N error response to HTTP 200.
+  const { status, ...headers } = init;
+  return new Response(body, {
+    status: status || 200,
+    headers: { ...CORS_HEADERS, "Content-Type": "application/json", ...headers },
+  });
 }
 
 export default {
@@ -184,14 +197,42 @@ async function handleOnrampToken(request, env) {
     if (!env.COINBASE_CDP_KEY_NAME || !env.COINBASE_CDP_KEY_SECRET) {
       return jsonResp(JSON.stringify({ error: "CDP key not configured" }), { status: 500 });
     }
-
-    const body = await request.json().catch(() => ({}));
-    const address = (body.address || "").toLowerCase();
-    const chain = body.chain || "base";
-    if (!/^0x[a-f0-9]{40}$/.test(address)) {
-      return jsonResp(JSON.stringify({ error: "invalid address" }), { status: 400 });
+    if (!env.TURNSTILE_SECRET_KEY) {
+      return jsonResp(JSON.stringify({ error: "Turnstile not configured" }), { status: 500 });
     }
 
+    // ── Auth: verify Cloudflare Turnstile token ────────────────────────
+    // Frontend obtains an invisible-challenge token via the Turnstile
+    // widget on user click, sends it as Authorization: Bearer <token>.
+    // We verify with Cloudflare's siteverify endpoint before minting.
+    const auth = request.headers.get("Authorization") || "";
+    const m = auth.match(/^Bearer\s+(.+)$/i);
+    if (!m) {
+      return jsonResp(JSON.stringify({ error: "Unauthorized: missing bearer token" }), { status: 401 });
+    }
+    const turnstileToken = m[1];
+    const clientIp = request.headers.get("CF-Connecting-IP") || "";
+    const turnstileOk = await verifyTurnstile(turnstileToken, env.TURNSTILE_SECRET_KEY, clientIp);
+    if (!turnstileOk) {
+      return jsonResp(JSON.stringify({ error: "Unauthorized: Turnstile verification failed" }), { status: 401 });
+    }
+
+    // ── Validate request ───────────────────────────────────────────────
+    const body = await request.json().catch(() => ({}));
+    const requestedAddress = (body.address || "").toLowerCase();
+    const chain = body.chain || "base";
+    // Pin destination — only the fund contract is allowed. Even if a
+    // request specifies a different address, we reject. This prevents
+    // anyone from using our endpoint as a free token mint for arbitrary
+    // wallets and keeps quota bound to actual donations.
+    if (requestedAddress && requestedAddress !== FUND_ADDRESS) {
+      return jsonResp(JSON.stringify({ error: "Forbidden destination — only the fund contract is allowed" }), { status: 403 });
+    }
+    if (chain !== "base") {
+      return jsonResp(JSON.stringify({ error: "Forbidden chain — only base is allowed" }), { status: 403 });
+    }
+
+    // ── Mint the Onramp session token ──────────────────────────────────
     const jwt = await mintCdpJwt(env, "POST", CDP_HOST, CDP_TOKEN_PATH);
 
     const resp = await fetch(`https://${CDP_HOST}${CDP_TOKEN_PATH}`, {
@@ -201,7 +242,7 @@ async function handleOnrampToken(request, env) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        addresses: [{ address, blockchains: [chain] }],
+        addresses: [{ address: FUND_ADDRESS, blockchains: ["base"] }],
         assets: ["ETH"],
       }),
     });
@@ -214,10 +255,28 @@ async function handleOnrampToken(request, env) {
         upstream: text,
       }), { status: 502 });
     }
-    // Pass through the upstream JSON ({ token, channel_id }).
     return jsonResp(text, { status: 200 });
   } catch (err) {
     return jsonResp(JSON.stringify({ error: err.message || "internal error" }), { status: 500 });
+  }
+}
+
+async function verifyTurnstile(token, secret, clientIp) {
+  if (!token) return false;
+  const formData = new FormData();
+  formData.append("secret", secret);
+  formData.append("response", token);
+  if (clientIp) formData.append("remoteip", clientIp);
+  try {
+    const resp = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
+      method: "POST",
+      body: formData,
+    });
+    if (!resp.ok) return false;
+    const data = await resp.json();
+    return data?.success === true;
+  } catch {
+    return false;
   }
 }
 
