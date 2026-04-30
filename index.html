@@ -2128,9 +2128,14 @@ function renderWalletPickerList() {
   if (!container) return;
   const entries = [];
   for (const w of detectedWallets.values()) {
+    // Some wallets announce a stub before they're fully initialized
+    // (no name, no icon, sometimes no provider). Skip those — otherwise
+    // they render as a blank grey row in the picker.
+    const name = (w.info?.name || '').trim();
+    if (!name || !w.provider) continue;
     entries.push({
       uuid: w.info.uuid,
-      name: w.info.name,
+      name,
       icon: w.info.icon,
       meta: w.info.rdns || '',
       connect: () => connectWalletByUuid(w.info.uuid),
