@@ -4307,7 +4307,17 @@ async function probeDataFreshness() {
   lastUpdatedAt = Date.now();
 }
 
+// Re-entry guard. setInterval fires every 30s but loadAll() can run
+// longer than that when the worker cache is cold (chunked eth_getLogs
+// against Alchemy upstream). Without this guard, a second refresh
+// starts while the first is still mid-push into shared module-level
+// state (diaryEntries, eventByEpoch maps, etc.) and the two interleave,
+// duplicating events in the inflows/outflows chart.
+let _refreshInFlight = false;
+
 async function refresh() {
+  if (_refreshInFlight) return;
+  _refreshInFlight = true;
   connectionState = 'refreshing';
   renderStatus();
   try {
@@ -4319,6 +4329,8 @@ async function refresh() {
     console.error('Refresh error:', err);
     connectionState = 'error';
     renderStatus();
+  } finally {
+    _refreshInFlight = false;
   }
 }
 
