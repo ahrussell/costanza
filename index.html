@@ -9,6 +9,8 @@
 <script src="https://cdn.jsdelivr.net/npm/ethers@6.13.4/dist/ethers.umd.min.js"></script>
 <!-- Coinbase Smart Wallet SDK (popup + passkey, no extension required) -->
 <script src="https://unpkg.com/@base-org/account@1.1.4/dist/base-account.min.js" defer></script>
+<!-- Coinbase Onramp SDK (card → ETH directly to user's wallet) -->
+<script src="https://unpkg.com/@coinbase/cbpay-js@2.7.0/dist/cbpay.umd.min.js" defer></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
@@ -168,6 +170,123 @@
   .wallet-picker-btn .wallet-meta {
     font-size: 11px; color: var(--text-dim);
     font-family: var(--mono);
+  }
+
+  /* Quick-amount buttons in donate modal */
+  .quick-amounts {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+  .quick-amount-btn {
+    padding: 14px 8px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-family: var(--mono); font-size: 14px; font-weight: 600;
+    color: var(--text-secondary);
+    transition: var(--transition);
+  }
+  .quick-amount-btn:hover {
+    border-color: var(--accent-dim);
+    color: var(--text);
+  }
+  .quick-amount-btn.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+
+  /* Primary card-payment CTA — bigger, more prominent than wallet-btn */
+  .card-pay-btn {
+    display: flex; align-items: center; justify-content: center; gap: 10px;
+    width: 100%;
+    padding: 16px 20px;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: var(--radius);
+    font-family: inherit; font-size: 15px; font-weight: 600;
+    cursor: pointer;
+    transition: var(--transition);
+    margin-top: 12px;
+  }
+  .card-pay-btn:hover:not(:disabled) {
+    background: var(--accent-dim);
+  }
+  .card-pay-btn:disabled {
+    opacity: 0.6; cursor: not-allowed;
+  }
+  .card-pay-btn .card-icon {
+    width: 18px; height: 18px;
+  }
+
+  /* "Already have ETH?" link separator below card CTA */
+  .crypto-fallback {
+    display: flex; align-items: center; gap: 12px;
+    margin-top: 16px;
+    color: var(--text-dim);
+    font-size: 12px;
+  }
+  .crypto-fallback::before,
+  .crypto-fallback::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+  .crypto-fallback-link {
+    background: none; border: none;
+    color: var(--text-secondary);
+    font-family: inherit; font-size: 12px;
+    cursor: pointer;
+    text-decoration: underline; text-underline-offset: 2px;
+    padding: 0;
+  }
+  .crypto-fallback-link:hover { color: var(--accent); }
+
+  /* Donation status stepper (for card flow) */
+  .donate-stepper {
+    display: flex; flex-direction: column; gap: 10px;
+    padding: 16px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin: 16px 0;
+  }
+  .donate-stepper-row {
+    display: flex; align-items: center; gap: 10px;
+    font-size: 13px;
+    color: var(--text-dim);
+  }
+  .donate-stepper-row.active { color: var(--text); font-weight: 500; }
+  .donate-stepper-row.done { color: var(--green); }
+  .donate-stepper-icon {
+    width: 18px; height: 18px;
+    display: inline-flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+  .donate-stepper-row.active .donate-stepper-icon::before {
+    content: '';
+    width: 12px; height: 12px;
+    border: 2px solid var(--accent);
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+  }
+  .donate-stepper-row.done .donate-stepper-icon::before {
+    content: '✓'; font-weight: 700;
+  }
+  .donate-stepper-row:not(.active):not(.done) .donate-stepper-icon::before {
+    content: '○'; color: var(--text-dim);
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .donate-stepper-meta {
+    margin-left: auto;
+    font-family: var(--mono); font-size: 11px;
+    color: var(--text-dim);
   }
 
   @media (max-width: 768px) {
@@ -1030,16 +1149,27 @@
   <div class="modal" onclick="event.stopPropagation()">
     <button class="modal-close" onclick="document.getElementById('modal-donate').classList.remove('open')">&times;</button>
     <h3>Donate to The Human Fund</h3>
-    <p style="font-size:13px;color:var(--text-secondary);margin-bottom:12px;line-height:1.6;">
+    <p id="donate-intro-eth" style="font-size:13px;color:var(--text-secondary);margin-bottom:12px;line-height:1.6;">
       Send ETH on the <strong>Base blockchain</strong> to Costanza's treasury. You'll need a web wallet like
       <a href="https://metamask.io" target="_blank" style="color:var(--accent);">MetaMask</a> with ETH on Base.
       <a href="https://docs.base.org/docs/using-base/" target="_blank" style="color:var(--accent);">Learn how to set one up.</a>
     </p>
+    <p id="donate-intro-card" style="display:none;font-size:13px;color:var(--text-secondary);margin-bottom:12px;line-height:1.6;">
+      Tip Costanza directly with your debit card. The donation will land in his treasury and he'll deliberate on it next epoch. <strong>Donations are not tax-deductible.</strong>
+    </p>
     <div id="donate-wallet-row"></div>
 
+    <!-- Quick-amount buttons (card-pay flow) -->
+    <div id="donate-quick-amounts" class="quick-amounts" style="display:none;">
+      <button class="quick-amount-btn" data-usd="5" onclick="selectQuickAmount(5)">$5</button>
+      <button class="quick-amount-btn" data-usd="20" onclick="selectQuickAmount(20)">$20</button>
+      <button class="quick-amount-btn" data-usd="50" onclick="selectQuickAmount(50)">$50</button>
+      <button class="quick-amount-btn" data-usd="" onclick="selectCustomAmount()">Custom</button>
+    </div>
+
     <!-- Donation amount -->
-    <div class="form-group">
-      <label class="form-label">Amount (ETH)</label>
+    <div class="form-group" id="donate-amount-group">
+      <label class="form-label" id="donate-amount-label">Amount (ETH)</label>
       <input class="form-input" id="donate-amount" type="number" min="0.0001" step="0.001" placeholder="0.01" oninput="updateDonateUsd()">
       <div id="donate-usd-estimate" style="font-size:12px;color:var(--text-dim);margin-top:4px;min-height:16px;"></div>
     </div>
@@ -1061,6 +1191,39 @@
       </div>
     </div>
 
+    <!-- Stepper (shown during card-pay flow only) -->
+    <div id="donate-stepper" class="donate-stepper" style="display:none;">
+      <div class="donate-stepper-row" id="step-card">
+        <span class="donate-stepper-icon"></span>
+        <span>Confirm card payment</span>
+      </div>
+      <div class="donate-stepper-row" id="step-eth">
+        <span class="donate-stepper-icon"></span>
+        <span>Buying ETH for your donation</span>
+        <span class="donate-stepper-meta">~30 sec</span>
+      </div>
+      <div class="donate-stepper-row" id="step-donate">
+        <span class="donate-stepper-icon"></span>
+        <span>Sending donation to Costanza</span>
+      </div>
+      <div class="donate-stepper-row" id="step-confirmed">
+        <span class="donate-stepper-icon"></span>
+        <span>Confirmed on-chain</span>
+      </div>
+    </div>
+
+    <!-- Card payment CTA (primary, shown when feature flag is on) -->
+    <button id="donate-card-btn" class="card-pay-btn" style="display:none;" onclick="handlePayWithCard()">
+      <svg class="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>
+      <span id="donate-card-btn-label">Donate with card</span>
+    </button>
+
+    <!-- Crypto fallback divider (shown only with card flow) -->
+    <div id="donate-crypto-fallback" class="crypto-fallback" style="display:none;">
+      <button class="crypto-fallback-link" onclick="showEthPath()">Already have ETH? Send directly</button>
+    </div>
+
+    <!-- Existing wallet-based CTA -->
     <button class="wallet-btn" id="donate-btn" onclick="handleSubmitDonation()">Connect wallet to donate</button>
     <div class="form-status" id="donate-status"></div>
   </div>
@@ -1409,6 +1572,14 @@ const RPC_URL = 'https://humanfund-rpc-cache.thehumanfund.workers.dev'; // Cloud
 const EXPLORER = 'https://basescan.org';
 const DEPLOY_BLOCK = 45330578;
 const REFERRAL_CODE = '1'; // creator referral code (default when no code entered)
+
+// Coinbase Onramp — project ID from portal.cdp.coinbase.com.
+// Feature-flagged: card flow only enables with ?cardpay=1 in the URL.
+const COINBASE_CDP_PROJECT_ID = '7a0579be-19c8-4317-bdf6-2968bfdad3f8';
+const CARDPAY_ENABLED = (() => {
+  try { return new URLSearchParams(location.search).has('cardpay'); }
+  catch { return false; }
+})();
 
 // ═══════════════════════════════════════════════════════
 // ABI
@@ -2023,6 +2194,259 @@ function updateMessageByteCount() {
   hint.style.color = over ? '#c00' : '';
 }
 
+// ═══════════════════════════════════════════════════════
+// CARD-PAY FLOW (Coinbase Onramp + auto-donate)
+// ═══════════════════════════════════════════════════════
+//
+// Donor enters $20 → Onramp opens → card payment → ETH lands in
+// donor's wallet → page polls balance → auto-fires donate() from
+// donor's wallet. Behind ?cardpay=1 feature flag.
+
+const COINBASE_GUEST_USD_MIN = 5;     // Coinbase Onramp guest checkout floor
+const COINBASE_GUEST_USD_MAX = 500;   // weekly cap per donor across all Onramp apps
+const ONRAMP_POLL_INTERVAL_MS = 4000;
+const ONRAMP_POLL_TIMEOUT_MS = 10 * 60 * 1000; // 10 min — generous; Coinbase usually settles in 1-3
+
+let _selectedQuickAmount = null; // last-clicked quick-amount button (USD, integer)
+
+function applyCardpayFeatureFlag() {
+  // Idempotent — safe to call after page load whether the flag is on or off.
+  const introEth = document.getElementById('donate-intro-eth');
+  const introCard = document.getElementById('donate-intro-card');
+  const quickAmts = document.getElementById('donate-quick-amounts');
+  const cardBtn = document.getElementById('donate-card-btn');
+  const cryptoFallback = document.getElementById('donate-crypto-fallback');
+  const walletBtn = document.getElementById('donate-btn');
+  const amountGroup = document.getElementById('donate-amount-group');
+  const amountLabel = document.getElementById('donate-amount-label');
+  const amountInput = document.getElementById('donate-amount');
+
+  if (!CARDPAY_ENABLED) {
+    // Default state — card UI hidden, existing flow visible.
+    if (introEth) introEth.style.display = '';
+    if (introCard) introCard.style.display = 'none';
+    if (quickAmts) quickAmts.style.display = 'none';
+    if (cardBtn) cardBtn.style.display = 'none';
+    if (cryptoFallback) cryptoFallback.style.display = 'none';
+    if (walletBtn) walletBtn.style.display = '';
+    if (amountLabel) amountLabel.textContent = 'Amount (ETH)';
+    if (amountInput) {
+      amountInput.placeholder = '0.01';
+      amountInput.step = '0.001';
+    }
+    return;
+  }
+
+  // Card-pay UI on
+  if (introEth) introEth.style.display = 'none';
+  if (introCard) introCard.style.display = '';
+  if (quickAmts) quickAmts.style.display = 'grid';
+  if (cardBtn) cardBtn.style.display = 'flex';
+  if (cryptoFallback) cryptoFallback.style.display = 'flex';
+  // Existing wallet button hidden by default in card mode; revealed by showEthPath()
+  if (walletBtn) walletBtn.style.display = 'none';
+  // Reframe amount input as USD-first (custom amount path).
+  if (amountLabel) amountLabel.textContent = 'Custom amount (USD)';
+  if (amountInput) {
+    amountInput.placeholder = '20';
+    amountInput.step = '1';
+    amountInput.style.display = 'none'; // hide until "Custom" picked
+  }
+  if (amountGroup) amountGroup.style.display = 'none';
+  updateCardBtnLabel();
+}
+
+function selectQuickAmount(usd) {
+  _selectedQuickAmount = usd;
+  document.querySelectorAll('.quick-amount-btn').forEach(b => {
+    b.classList.toggle('active', Number(b.dataset.usd) === usd);
+  });
+  // Hide custom-amount input when a quick option is chosen.
+  const amountGroup = document.getElementById('donate-amount-group');
+  if (amountGroup) amountGroup.style.display = 'none';
+  updateCardBtnLabel();
+}
+
+function selectCustomAmount() {
+  _selectedQuickAmount = null;
+  document.querySelectorAll('.quick-amount-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.usd === '');
+  });
+  const amountGroup = document.getElementById('donate-amount-group');
+  const amountInput = document.getElementById('donate-amount');
+  if (amountGroup) amountGroup.style.display = '';
+  if (amountInput) {
+    amountInput.style.display = '';
+    amountInput.focus();
+  }
+  updateCardBtnLabel();
+}
+
+function getSelectedUsdAmount() {
+  if (_selectedQuickAmount) return _selectedQuickAmount;
+  const customInput = document.getElementById('donate-amount');
+  const v = parseFloat(customInput?.value || '');
+  return isNaN(v) ? null : v;
+}
+
+function updateCardBtnLabel() {
+  const label = document.getElementById('donate-card-btn-label');
+  if (!label) return;
+  const usd = getSelectedUsdAmount();
+  label.textContent = usd ? `Donate $${usd} with card` : 'Donate with card';
+}
+
+// "Already have ETH?" — reveal the existing wallet flow as an alternative.
+function showEthPath() {
+  const walletBtn = document.getElementById('donate-btn');
+  const cardBtn = document.getElementById('donate-card-btn');
+  const cryptoFallback = document.getElementById('donate-crypto-fallback');
+  const amountGroup = document.getElementById('donate-amount-group');
+  const amountLabel = document.getElementById('donate-amount-label');
+  const amountInput = document.getElementById('donate-amount');
+  if (walletBtn) walletBtn.style.display = '';
+  if (cardBtn) cardBtn.style.display = 'none';
+  if (cryptoFallback) cryptoFallback.style.display = 'none';
+  if (amountGroup) amountGroup.style.display = '';
+  if (amountInput) {
+    amountInput.style.display = '';
+    amountInput.placeholder = '0.01';
+    amountInput.step = '0.001';
+  }
+  if (amountLabel) amountLabel.textContent = 'Amount (ETH)';
+}
+
+// Stepper helpers
+function setStep(id, state) {
+  // state: '' | 'active' | 'done'
+  const row = document.getElementById(id);
+  if (!row) return;
+  row.classList.remove('active', 'done');
+  if (state) row.classList.add(state);
+}
+function showStepper() {
+  document.getElementById('donate-stepper').style.display = '';
+  // hide the buttons + amount inputs — stepper takes over
+  ['donate-card-btn','donate-crypto-fallback','donate-quick-amounts','donate-amount-group','donate-btn']
+    .forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
+}
+function hideStepper() {
+  document.getElementById('donate-stepper').style.display = 'none';
+}
+
+async function handlePayWithCard() {
+  const statusId = 'donate-status';
+  try {
+    const usd = getSelectedUsdAmount();
+    if (!usd || usd < COINBASE_GUEST_USD_MIN) {
+      setStatus(statusId, `Minimum donation is $${COINBASE_GUEST_USD_MIN}.`, 'error');
+      return;
+    }
+    if (usd > COINBASE_GUEST_USD_MAX) {
+      setStatus(statusId, `Coinbase Onramp guest checkout caps at $${COINBASE_GUEST_USD_MAX}/week. Pick a smaller amount or use the ETH path.`, 'error');
+      return;
+    }
+    if (typeof window.CBPay?.initOnRamp !== 'function') {
+      setStatus(statusId, 'Card payment SDK not loaded yet — refresh and try again.', 'error');
+      return;
+    }
+    setStatus(statusId, '', 'info');
+
+    // Ensure wallet — auto-creates Smart Wallet via passkey if user has none.
+    setStep('step-card', 'active');
+    showStepper();
+    await ensureWallet();
+
+    // Compute target ETH so we can pre-fill the Onramp widget and detect arrival.
+    const ethUsd = lastEthUsdPrice ? Number(lastEthUsdPrice) / 1e8 : 0;
+    if (!ethUsd || ethUsd <= 0) {
+      setStatus(statusId, 'ETH price unavailable; refresh and try again.', 'error');
+      hideStepper();
+      return;
+    }
+    const targetEth = usd / ethUsd;
+    const startBalance = await provider.getBalance(walletAddress);
+
+    // Open Coinbase Onramp.
+    const onramp = window.CBPay.initOnRamp({
+      appId: COINBASE_CDP_PROJECT_ID,
+      widgetParameters: {
+        destinationWallets: [{
+          address: walletAddress,
+          blockchains: ['base'],
+          assets: ['ETH'],
+        }],
+        presetFiatAmount: usd,
+        defaultExperience: 'buy',
+      },
+      onSuccess: async () => {
+        // Card confirmed — ETH should arrive within ~1-3 min. Poll balance.
+        setStep('step-card', 'done');
+        setStep('step-eth', 'active');
+        try {
+          await pollWalletForDeposit(walletAddress, startBalance, targetEth);
+          setStep('step-eth', 'done');
+          setStep('step-donate', 'active');
+          await fireDonationFromCardFlow(usd);
+          setStep('step-donate', 'done');
+          setStep('step-confirmed', 'done');
+          setStatus(statusId, 'Donation sent! Costanza will see it next epoch.', 'success');
+        } catch (err) {
+          setStatus(statusId, err.message || 'Onramp completed but donation failed — your ETH is in your wallet; click "Already have ETH?" to retry.', 'error');
+          hideStepper();
+        }
+      },
+      onExit: () => {
+        // User closed the Onramp widget without completing.
+        hideStepper();
+        setStatus(statusId, '', 'info');
+      },
+    });
+    onramp.open();
+  } catch (err) {
+    setStatus(statusId, err.message || 'Could not start card payment.', 'error');
+    hideStepper();
+  }
+}
+
+async function pollWalletForDeposit(addr, startBalance, expectedEth) {
+  const expectedWei = ethers.parseEther(expectedEth.toFixed(18));
+  // 70% threshold: Coinbase quotes can drift slightly; we want to fire as
+  // soon as a clearly-our-deposit lands without waiting for exact precision.
+  const thresholdWei = expectedWei * 70n / 100n;
+  const deadline = Date.now() + ONRAMP_POLL_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, ONRAMP_POLL_INTERVAL_MS));
+    try {
+      const current = await provider.getBalance(addr);
+      const delta = current - startBalance;
+      if (delta >= thresholdWei) return;
+    } catch {/* transient — retry */}
+  }
+  throw new Error('ETH deposit timed out. Check your wallet manually.');
+}
+
+async function fireDonationFromCardFlow(usd) {
+  // Send all freshly-arrived ETH (minus a tiny gas reserve) as the donation.
+  // Donor expressed intent in fiat; we honor by sending the wallet's full
+  // ETH balance to the contract so no dust gets stranded.
+  const balance = await provider.getBalance(walletAddress);
+  const gasReserve = ethers.parseUnits('0.00005', 'ether'); // ~12k gas at 4 gwei, ample on Base
+  const amount = balance > gasReserve ? balance - gasReserve : balance;
+  if (amount === 0n) throw new Error('Wallet balance is zero — onramp failed.');
+  const fundWrite = new ethers.Contract(CONTRACT_ADDRESS, FUND_ABI, walletSigner);
+  const refCode = getActiveReferralCode();
+  const msgText = (document.getElementById('message-text')?.value || '').trim();
+  let tx;
+  if (msgText) {
+    const msgBytes = ethers.toUtf8Bytes(msgText);
+    tx = await fundWrite.donateWithMessage(refCode, msgBytes, { value: amount });
+  } else {
+    tx = await fundWrite.donate(refCode, { value: amount });
+  }
+  await tx.wait(1);
+}
+
 async function handleSubmitDonation() {
   const statusId = 'donate-status';
   try {
@@ -2392,6 +2816,7 @@ function openModal(id, opts = {}) {
   document.getElementById('modal-' + id).classList.add('open');
   updateWalletRows();
   if (id === 'donate') {
+    applyCardpayFeatureFlag();
     updateReferralNote();
     if (opts.focusMessage) {
       setTimeout(() => {
@@ -3649,6 +4074,7 @@ async function init() {
     document.getElementById('footer-contract').textContent = CONTRACT_ADDRESS;
     document.getElementById('footer-contract').href = `${EXPLORER}/address/${CONTRACT_ADDRESS}`;
     updateWalletRows(); // initialize header connect button
+    applyCardpayFeatureFlag(); // toggles donate modal layout based on ?cardpay=1
 
     // Silent auto-reconnect for returning users (injected wallets only).
     attemptAutoReconnect().catch(() => {/* surfaced in console */});
