@@ -627,6 +627,39 @@
     overscroll-behavior: contain;
   }
 
+  /* Turnstile (Cloudflare) overlay. With the widget set to "Managed"
+     mode in the Cloudflare dashboard, Cloudflare picks between an
+     invisible challenge (resolves in <1s, overlay flashes briefly) and
+     a click-to-verify checkbox (user clicks, then resolves). Same
+     wrapper either way so the UX is predictable. z-index sits above
+     the donate modal (1000) so the challenge always wins focus. */
+  #turnstile-overlay {
+    display: none;
+    position: fixed; inset: 0;
+    background: var(--modal-overlay);
+    backdrop-filter: blur(4px);
+    z-index: 2000;
+    align-items: center; justify-content: center;
+    padding: 16px;
+  }
+  #turnstile-overlay.show { display: flex; }
+  #turnstile-overlay .turnstile-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+    display: flex; flex-direction: column;
+    align-items: center; gap: 14px;
+    max-width: 380px; width: 100%;
+  }
+  #turnstile-overlay .turnstile-label {
+    font-size: 14px; font-weight: 600;
+  }
+  #turnstile-overlay .turnstile-hint {
+    color: var(--text-secondary);
+    font-size: 12px; text-align: center; line-height: 1.5;
+  }
+
   .modal h3 {
     font-size: 18px; font-weight: 600;
     margin-bottom: 12px;
@@ -2818,15 +2851,20 @@ async function forwardThrowawayDonation(record) {
 }
 
 // ─── Turnstile ───────────────────────────────────────────────────────
-// Each card-pay click renders a FRESH invisible widget, runs the
-// challenge, and removes the widget afterward. Reusing one widget
-// instance across clicks left it stuck in error state on Firefox after
-// a timeout (the SDK's reset() doesn't fully recover on every browser),
-// blocking subsequent attempts. error-callback receives Cloudflare's
-// numeric error code, which we map through turnstileErrorMessage() so
-// donors (and the operator reading logs) can tell apart transient
-// (200xxx network) from persistent (300030 = browser flagged for
-// invisible challenges → flip the dashboard widget to Managed mode).
+// Widget is set to "Managed" mode in the Cloudflare dashboard:
+// Cloudflare picks between invisible (resolves in <1s, overlay flashes
+// briefly) and click-to-verify (user has to click a checkbox or solve
+// a short interactive challenge) based on the visitor's bot score.
+// We accept both — the #turnstile-overlay element wraps the widget
+// with a label and a hint, and we toggle .show around the challenge.
+//
+// Each click renders a FRESH widget and removes it afterward. Reusing
+// one widget across clicks left it stuck in error state on Firefox
+// after a timeout (the SDK's reset() doesn't fully recover on every
+// browser). error-callback receives Cloudflare's numeric error code,
+// which we map through turnstileErrorMessage() so donors (and the
+// operator reading logs) can tell apart transient errors (200xxx
+// network) from persistent ones (600xxx visitor flagged).
 let _turnstileTokenWaiter = null; // single-flight sentinel; null means free
 
 // Stub kept because the api.js URL passes ?onload=onTurnstileReady. We
@@ -2838,8 +2876,8 @@ function onTurnstileReady() {}
 // Reference: https://developers.cloudflare.com/turnstile/troubleshooting/client-side-errors/error-codes/
 function turnstileErrorMessage(code) {
   const c = String(code || '');
-  if (c === '300030') return `This browser can't solve the invisible Turnstile challenge (${c}). Try Chrome or Safari, or disable Enhanced Tracking Protection for this site.`;
-  if (c === '300020') return `Browser fingerprint flagged by Turnstile (${c}). Try a different browser or turn off your VPN.`;
+  if (c === '300030') return `Cloudflare couldn't verify this browser (${c}). Try Chrome or Safari, or disable Enhanced Tracking Protection for this site.`;
+  if (c === '300020') return `Browser fingerprint flagged by Cloudflare (${c}). Try a different browser or turn off your VPN.`;
   if (c.startsWith('600'))  return `Cloudflare flagged this visitor (${c}). Try a different network or wait a few hours.`;
   if (c.startsWith('200'))  return `Network error reaching Cloudflare (${c}). Check your connection and retry.`;
   if (c.startsWith('300'))  return `Turnstile challenge failed (${c}). Try refreshing or switching browsers.`;
@@ -2858,6 +2896,8 @@ function getTurnstileToken() {
       return;
     }
 
+    const overlay = document.getElementById('turnstile-overlay');
+
     // Idempotent teardown — runs at most once per challenge regardless
     // of which callback (success / error / timeout / safety-net) wins.
     let widgetId = null;
@@ -2871,16 +2911,26 @@ function getTurnstileToken() {
         try { window.turnstile.remove(widgetId); } catch {}
         widgetId = null;
       }
+      if (overlay) overlay.classList.remove('show');
       _turnstileTokenWaiter = null;
       action();
     };
 
     _turnstileTokenWaiter = { resolve, reject }; // single-flight guard
 
+    // Reveal the overlay BEFORE rendering — Managed mode may show a
+    // checkbox the user has to click, and the widget needs to be
+    // visible at that moment. If the challenge resolves invisibly the
+    // overlay simply flashes for ~1s before finish() hides it again.
+    if (overlay) overlay.classList.add('show');
+
     try {
       widgetId = window.turnstile.render('#turnstile-container', {
         sitekey: TURNSTILE_SITE_KEY,
-        size: 'invisible',
+        // No size:'invisible' here — Managed mode picks the appearance
+        // for us. 'flexible' lets the checkbox span the card width when
+        // it shows. (Invisible challenges ignore this setting.)
+        size: 'flexible',
         callback: (token) => finish(() => resolve(token)),
         'error-callback': (errorCode) => {
           // Returning truthy tells Turnstile we've handled the error
@@ -2892,17 +2942,21 @@ function getTurnstileToken() {
         },
         'timeout-callback': () => finish(() => reject(new Error('Turnstile verification timed out (challenge expired before completion).'))),
       });
-      window.turnstile.execute(widgetId);
+      // No execute() call — Managed widgets self-execute on render.
+      // Calling execute() on a non-execute widget logs a console
+      // warning on some Cloudflare builds.
     } catch (err) {
       finish(() => reject(err instanceof Error ? err : new Error(String(err))));
       return;
     }
 
-    // Safety net — bail if Turnstile never calls any callback. Cleanup
-    // is idempotent so it's fine if a real callback fires concurrently.
+    // Safety net — bail if Turnstile never calls any callback. 90s
+    // accommodates an interactive challenge (slider/PoW) that takes
+    // longer than the old 30s invisible-only timeout. Cleanup is
+    // idempotent so it's fine if a real callback fires concurrently.
     safetyTimer = setTimeout(() => {
-      finish(() => reject(new Error('Turnstile verification timed out (no response after 30s).')));
-    }, 30 * 1000);
+      finish(() => reject(new Error('Turnstile verification timed out (no response after 90s).')));
+    }, 90 * 1000);
   });
 }
 
@@ -5043,7 +5097,19 @@ async function init() {
 init();
 </script>
 
-<!-- Turnstile invisible widget. Rendered via the api.js onload callback. -->
-<div id="turnstile-container" style="display:none;"></div>
+<!-- Turnstile (Cloudflare) overlay. Widget is set to "Managed" mode in
+     the dashboard, so Cloudflare picks between invisible and click-to-
+     verify based on the visitor's bot score. The wrapper is hidden by
+     default; getTurnstileToken() adds .show to surface it during a
+     challenge and removes it when the challenge resolves. The widget
+     iframe renders into #turnstile-container (kept as a stable mount
+     point so the JS selector doesn't have to change). -->
+<div id="turnstile-overlay">
+  <div class="turnstile-card">
+    <div class="turnstile-label">Verifying you're human…</div>
+    <div id="turnstile-container"></div>
+    <div class="turnstile-hint">If a checkbox appears, click it to continue. This is a one-time check that protects the donation flow.</div>
+  </div>
+</div>
 </body>
 </html>
