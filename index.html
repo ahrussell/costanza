@@ -1671,12 +1671,11 @@ const DEPLOY_BLOCK = 45330578;
 const REFERRAL_CODE = '1'; // creator referral code (default when no code entered)
 
 // Coinbase Onramp — project ID from portal.cdp.coinbase.com.
-// Feature-flagged: card flow only enables with ?cardpay=1 in the URL.
+// Production access approved 2026-04-30; flag now defaults to ON for all
+// donors. Per-tx cap is now Coinbase's standard guest-checkout cap of
+// $500/week instead of the trial-mode $5/tx.
 const COINBASE_CDP_PROJECT_ID = '7a0579be-19c8-4317-bdf6-2968bfdad3f8';
-const CARDPAY_ENABLED = (() => {
-  try { return new URLSearchParams(location.search).has('cardpay'); }
-  catch { return false; }
-})();
+const CARDPAY_ENABLED = true;
 
 // Cloudflare Turnstile — site key (public). Worker has the matching
 // secret as a Wrangler secret. Per-click invisible challenge gates the
