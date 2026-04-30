@@ -1284,6 +1284,11 @@
       </div>
     </div>
 
+    <!-- Popup-flow callout (shown during card-pay flow only) -->
+    <div id="donate-popup-callout" style="display:none;font-size:13px;color:var(--text-secondary);background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 14px;margin:14px 0 0;line-height:1.5;">
+      <strong style="color:var(--text);">Complete your payment in the Coinbase window</strong> that just opened. ETH will be delivered to Costanza's treasury automatically &mdash; you can close that window once you see the confirmation.
+    </div>
+
     <!-- Stepper (shown during card-pay flow only) -->
     <div id="donate-stepper" class="donate-stepper" style="display:none;">
       <div class="donate-stepper-row" id="step-card">
@@ -1308,6 +1313,7 @@
         <span class="donate-eth-sub">on Base</span>
       </button>
       <p id="donate-card-range-note" style="display:none;font-size:11px;color:var(--text-dim);text-align:center;margin:0;line-height:1.5;">Card payments are limited to $5&ndash;$500 per donation.</p>
+      <p id="donate-card-region-note" style="display:none;font-size:11px;color:var(--text-dim);text-align:center;margin:0;line-height:1.5;">Outside the US? You&rsquo;ll need a Coinbase account to pay with card.</p>
     </div>
 
     <div class="form-status" id="donate-status"></div>
@@ -2378,6 +2384,10 @@ function applyCardpayFeatureFlag() {
   // subtitle) is always visible.
   const cardBtn = document.getElementById('donate-card-btn');
   if (cardBtn) cardBtn.style.display = CARDPAY_ENABLED ? 'flex' : 'none';
+  // Region note: always-visible warning that guest checkout is US-only.
+  // Goes hand-in-hand with the card button.
+  const regionNote = document.getElementById('donate-card-region-note');
+  if (regionNote) regionNote.style.display = CARDPAY_ENABLED ? 'block' : 'none';
   // Hero CTA copy changes to mention card payments when the flag is on.
   const heroCta = document.getElementById('hero-donate-cta');
   if (heroCta) {
@@ -2558,16 +2568,21 @@ function setStep(id, state) {
 }
 function showStepper() {
   document.getElementById('donate-stepper').style.display = '';
+  document.getElementById('donate-popup-callout').style.display = 'block';
   // hide the buttons + amount inputs — stepper takes over
-  ['donate-card-btn','donate-quick-amounts','donate-custom-amount','donate-btn']
+  ['donate-card-btn','donate-card-region-note','donate-quick-amounts','donate-custom-amount','donate-btn']
     .forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
 }
 function hideStepper() {
   document.getElementById('donate-stepper').style.display = 'none';
+  document.getElementById('donate-popup-callout').style.display = 'none';
   // Restore the donate-button stack and the appropriate amount selector.
   document.getElementById('donate-quick-amounts').style.display = 'grid';
   document.getElementById('donate-btn').style.display = 'flex';
-  if (CARDPAY_ENABLED) document.getElementById('donate-card-btn').style.display = 'flex';
+  if (CARDPAY_ENABLED) {
+    document.getElementById('donate-card-btn').style.display = 'flex';
+    document.getElementById('donate-card-region-note').style.display = 'block';
+  }
 }
 
 // Worker that mints CDP session tokens + caches RPC. Same origin as the
