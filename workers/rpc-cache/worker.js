@@ -227,24 +227,54 @@ async function mintCdpJwt(env, method, host, path) {
   const now = Math.floor(Date.now() / 1000);
   const nonce = randomHex(16);
 
-  // Detect algorithm from the imported key. Coinbase CDP issues Ed25519
-  // for newer accounts, ECDSA P-256 for older. Try Ed25519 first.
+  // Coinbase CDP keys can arrive in several shapes; try them in order:
+  //   1. PKCS8 PEM (Ed25519 or ECDSA P-256, BEGIN PRIVATE KEY headers)
+  //   2. Raw 32-byte Ed25519 private key (base64) — wrap in PKCS8
+  //   3. Raw 64-byte Ed25519 keypair (priv||pub, base64) — take first 32
+  //   4. PKCS8 PEM ECDSA P-256 (BEGIN EC PRIVATE KEY → SEC1, only sometimes
+  //      works as PKCS8 depending on the export tool)
   const der = pemToDer(keyPem);
   let cryptoKey, alg;
-  try {
-    cryptoKey = await crypto.subtle.importKey(
-      "pkcs8", der, { name: "Ed25519" }, false, ["sign"]
-    );
-    alg = "EdDSA";
-  } catch {
-    try {
-      cryptoKey = await crypto.subtle.importKey(
-        "pkcs8", der, { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]
-      );
-      alg = "ES256";
-    } catch (err2) {
-      throw new Error("Could not import CDP key as Ed25519 or ECDSA P-256: " + err2.message);
+  const errs = [];
+
+  async function tryEd25519Pkcs8(buf) {
+    return crypto.subtle.importKey("pkcs8", buf, { name: "Ed25519" }, false, ["sign"]);
+  }
+  async function tryEcdsaPkcs8(buf) {
+    return crypto.subtle.importKey("pkcs8", buf, { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]);
+  }
+
+  // 1. Try PKCS8 directly (whatever's in `der`).
+  try { cryptoKey = await tryEd25519Pkcs8(der); alg = "EdDSA"; }
+  catch (e) { errs.push(`pkcs8/ed25519: ${e.message}`); }
+  if (!cryptoKey) {
+    try { cryptoKey = await tryEcdsaPkcs8(der); alg = "ES256"; }
+    catch (e) { errs.push(`pkcs8/ecdsa: ${e.message}`); }
+  }
+
+  // 2. & 3. Raw Ed25519 — wrap in PKCS8 envelope.
+  if (!cryptoKey) {
+    const bytes = new Uint8Array(der);
+    let raw32 = null;
+    if (bytes.length === 32) raw32 = bytes;
+    else if (bytes.length === 64) raw32 = bytes.slice(0, 32);
+    if (raw32) {
+      // PKCS8 wrapper for Ed25519:
+      //   SEQUENCE { INTEGER 0, SEQUENCE { OID 1.3.101.112 }, OCTET STRING { OCTET STRING raw32 } }
+      const prefix = new Uint8Array([
+        0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06,
+        0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20,
+      ]);
+      const wrapped = new Uint8Array(prefix.length + raw32.length);
+      wrapped.set(prefix, 0);
+      wrapped.set(raw32, prefix.length);
+      try { cryptoKey = await tryEd25519Pkcs8(wrapped.buffer); alg = "EdDSA"; }
+      catch (e) { errs.push(`raw-ed25519/${bytes.length}: ${e.message}`); }
     }
+  }
+
+  if (!cryptoKey) {
+    throw new Error(`Could not import CDP key (der length=${der.byteLength}): ${errs.join("; ")}`);
   }
 
   const header = { alg, kid: keyName, nonce, typ: "JWT" };
