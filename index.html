@@ -1301,13 +1301,13 @@
     <div class="donate-button-stack">
       <button id="donate-card-btn" class="card-pay-btn" style="display:none;" onclick="handlePayWithCard()">
         <svg class="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>
-        <span id="donate-card-btn-label">Donate with card</span>
+        <span id="donate-card-btn-label">Donate with debit card</span>
       </button>
       <button class="donate-eth-btn" id="donate-btn" onclick="handleSubmitDonation()">
         <span id="donate-btn-label">Donate with ETH</span>
       </button>
-      <p id="donate-card-range-note" style="display:none;font-size:11px;color:var(--text-dim);text-align:center;margin:0;line-height:1.5;">Card payments are limited to $5&ndash;$500 per donation.</p>
-      <p id="donate-card-region-note" style="display:none;font-size:11px;color:var(--text-dim);text-align:center;margin:0;line-height:1.5;">Outside the US? You&rsquo;ll need a Coinbase account to pay with card.</p>
+      <p id="donate-card-range-note" style="display:none;font-size:11px;color:var(--text-dim);text-align:center;margin:0;line-height:1.5;">Debit card payments are limited to $5&ndash;$500 per donation.</p>
+      <p id="donate-card-region-note" style="display:none;font-size:11px;color:var(--text-dim);text-align:center;margin:0;line-height:1.5;">Outside the US? You&rsquo;ll need a Coinbase account to pay with a debit card.</p>
     </div>
 
     <div class="form-status" id="donate-status"></div>
@@ -2493,7 +2493,7 @@ function updateDonateButtons() {
 
   if (cardBtnLabel) {
     const usd = _donateUsd;
-    cardBtnLabel.textContent = usd ? `Donate $${formatUsdShort(usd)} with card` : 'Donate with card';
+    cardBtnLabel.textContent = usd ? `Donate $${formatUsdShort(usd)} with debit card` : 'Donate with debit card';
   }
 
   if (ethBtnLabel) {
