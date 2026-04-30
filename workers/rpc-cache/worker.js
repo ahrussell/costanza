@@ -16,7 +16,7 @@ const CACHE_TTL = 900; // 15 minutes
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization",
   "Access-Control-Expose-Headers": "X-Cache, X-Cache-Age",
 };
@@ -83,6 +83,14 @@ export default {
     }
 
     const url = new URL(request.url);
+
+    // Geo lookup — Cloudflare sets CF-IPCountry on every edge request.
+    // Used by the frontend to conditionally show "Outside the US?"
+    // copy on the card-pay button (Coinbase guest checkout is US-only).
+    if (url.pathname === "/geo") {
+      const country = request.headers.get("CF-IPCountry") || "";
+      return jsonResp(JSON.stringify({ country }), { status: 200 });
+    }
 
     // Onramp session-token endpoint
     if (url.pathname === "/onramp/token") {

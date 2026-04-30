@@ -2384,10 +2384,14 @@ function applyCardpayFeatureFlag() {
   // subtitle) is always visible.
   const cardBtn = document.getElementById('donate-card-btn');
   if (cardBtn) cardBtn.style.display = CARDPAY_ENABLED ? 'flex' : 'none';
-  // Region note: always-visible warning that guest checkout is US-only.
-  // Goes hand-in-hand with the card button.
+  // Region note: only shown to non-US donors (guest checkout is US-only;
+  // others need a Coinbase account). Default to showing if we don't yet
+  // know the donor's country — loadDonorCountry() flips it off for US.
   const regionNote = document.getElementById('donate-card-region-note');
-  if (regionNote) regionNote.style.display = CARDPAY_ENABLED ? 'block' : 'none';
+  if (regionNote) {
+    const showRegion = CARDPAY_ENABLED && _donorCountry !== 'US';
+    regionNote.style.display = showRegion ? 'block' : 'none';
+  }
   // Hero CTA copy changes to mention card payments when the flag is on.
   const heroCta = document.getElementById('hero-donate-cta');
   if (heroCta) {
@@ -2581,13 +2585,38 @@ function hideStepper() {
   document.getElementById('donate-btn').style.display = 'flex';
   if (CARDPAY_ENABLED) {
     document.getElementById('donate-card-btn').style.display = 'flex';
-    document.getElementById('donate-card-region-note').style.display = 'block';
+    document.getElementById('donate-card-region-note').style.display =
+      _donorCountry === 'US' ? 'none' : 'block';
   }
 }
 
 // Worker that mints CDP session tokens + caches RPC. Same origin as the
 // existing RPC URL — we share the worker.
 const ONRAMP_TOKEN_URL = RPC_URL.replace(/\/$/, '') + '/onramp/token';
+const GEO_URL = RPC_URL.replace(/\/$/, '') + '/geo';
+
+// Cached country code from the worker's /geo endpoint (CF-IPCountry).
+// "US" → guest checkout works; everything else → user needs Coinbase
+// account. Empty string until the page loads it. We treat "unknown"
+// pessimistically (show the warning) so US donors briefly see it
+// during the first ~50ms after page load — a fine trade-off vs.
+// non-US donors getting a confusing surprise.
+let _donorCountry = '';
+
+async function loadDonorCountry() {
+  try {
+    const r = await fetch(GEO_URL);
+    if (r.ok) {
+      const data = await r.json();
+      _donorCountry = (data?.country || '').toUpperCase();
+      // Re-render the region note now that we know.
+      const note = document.getElementById('donate-card-region-note');
+      if (note && CARDPAY_ENABLED) {
+        note.style.display = _donorCountry === 'US' ? 'none' : 'block';
+      }
+    }
+  } catch {/* fall through — note stays defaulted */}
+}
 
 // ─── Turnstile ───────────────────────────────────────────────────────
 // Render an invisible widget once api.js is loaded; widgetId is captured
@@ -4474,6 +4503,7 @@ async function init() {
     document.getElementById('footer-contract').href = `${EXPLORER}/address/${CONTRACT_ADDRESS}`;
     updateWalletRows(); // initialize header connect button
     applyCardpayFeatureFlag(); // toggles donate modal layout based on ?cardpay=1
+    loadDonorCountry();        // hides "Outside the US?" note for US donors
 
     // Silent auto-reconnect for returning users (injected wallets only).
     attemptAutoReconnect().catch(() => {/* surfaced in console */});
