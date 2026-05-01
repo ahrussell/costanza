@@ -1,0 +1,1030 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>Indestructibility — The Human Fund</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+
+  :root {
+    --bg: #fafafa;
+    --surface: #ffffff;
+    --surface-2: #f3f4f6;
+    --border: #e5e7eb;
+    --border-strong: #9ca3af;
+    --text: #111827;
+    --text-muted: #4b5563;
+    --text-subtle: #9ca3af;
+    --primary: #1d4ed8;
+    --primary-bg: #dbeafe;
+    --reject: #b91c1c;
+    --reject-bg: #fee2e2;
+    --reject-border: #fca5a5;
+    --warn: #b45309;
+    --warn-bg: #fef3c7;
+    --warn-border: #fcd34d;
+    --accept: #15803d;
+    --accept-bg: #dcfce7;
+    --accept-border: #86efac;
+    --apathy-curve: #1d4ed8;
+    --sabotage-curve: #b91c1c;
+    --sabotage-cum: #7c2d12;
+  }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+      "Helvetica Neue", Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 15px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .scroll-pad {
+    padding: 22px 16px 40px;
+  }
+
+  .diagram {
+    max-width: 760px;
+    margin: 0 auto;
+  }
+
+  h1 {
+    font-size: 22px;
+    margin: 0 0 6px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  .subtitle {
+    color: var(--text-muted);
+    margin: 0 0 22px;
+    font-size: 14px;
+    line-height: 1.55;
+  }
+
+  /* ─── Panels ──────────────────────────────────────── */
+
+  .panels {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+
+  @media (max-width: 720px) {
+    .panels { grid-template-columns: 1fr; }
+  }
+
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .panel-tag {
+    font-size: 10.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    font-weight: 700;
+    color: var(--text-subtle);
+    margin: 0 0 4px;
+  }
+  .panel.apathy   .panel-tag { color: var(--apathy-curve); }
+  .panel.sabotage .panel-tag { color: var(--sabotage-curve); }
+
+  .panel h2 {
+    font-size: 17px;
+    margin: 0 0 6px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  .panel-desc {
+    color: var(--text-muted);
+    font-size: 13.5px;
+    margin: 0 0 14px;
+    line-height: 1.5;
+  }
+
+  /* ─── Slider ──────────────────────────────────────── */
+
+  .slider-block {
+    margin: 6px 0 14px;
+  }
+  .slider-caption {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 6px;
+    padding: 0 2px;
+  }
+  .slider-label {
+    font-size: 13px;
+    color: var(--text-muted);
+  }
+  .slider-value {
+    font-weight: 600;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+    font-size: 13.5px;
+  }
+  .slider-controls {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+  }
+  .slider-input {
+    flex: 1;
+    height: 24px;
+    cursor: pointer;
+    -webkit-appearance: none;
+    appearance: none;
+    background: transparent;
+  }
+  .slider-input::-webkit-slider-runnable-track {
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+  }
+  .slider-input::-moz-range-track {
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+  }
+  .slider-input::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--primary);
+    border: 2px solid white;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+    margin-top: -7px;
+    cursor: grab;
+  }
+  .slider-input::-moz-range-thumb {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--primary);
+    border: 2px solid white;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+    cursor: grab;
+  }
+  .panel.sabotage .slider-input::-webkit-slider-thumb { background: var(--sabotage-curve); }
+  .panel.sabotage .slider-input::-moz-range-thumb     { background: var(--sabotage-curve); }
+
+  .play-btn {
+    background: transparent;
+    border: 1px solid var(--border-strong);
+    color: var(--text-muted);
+    padding: 6px 10px;
+    border-radius: 5px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 12px;
+    min-height: 32px;
+    flex-shrink: 0;
+    transition: all 0.15s;
+  }
+  .play-btn:hover { background: var(--surface-2); color: var(--text); }
+  .play-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  /* ─── Chart ───────────────────────────────────────── */
+
+  .chart-wrap {
+    background: var(--surface);
+    border-radius: 8px;
+    padding: 4px 0;
+    overflow: hidden;
+  }
+  .chart {
+    display: block;
+    width: 100%;
+    height: auto;
+    max-height: 260px;
+  }
+  .chart text { font-size: 10px; fill: var(--text-subtle); user-select: none; }
+  .chart .axis-line { stroke: var(--border); stroke-width: 1; }
+  .chart .grid-line { stroke: var(--border); stroke-width: 1; stroke-dasharray: 2 3; opacity: 0.5; }
+  .chart .threshold {
+    stroke-width: 1.5;
+    stroke-dasharray: 5 4;
+  }
+  .chart .threshold-label { font-size: 10px; font-weight: 600; }
+  .chart .cap-line {
+    stroke: var(--text-subtle);
+    stroke-width: 1;
+    stroke-dasharray: 2 3;
+  }
+  .chart .curve {
+    fill: none;
+    stroke-width: 2.5;
+    stroke-linejoin: round;
+    stroke-linecap: round;
+  }
+  .chart .curve-fill {
+    fill-opacity: 0.18;
+    stroke: none;
+  }
+  .panel.apathy   .chart .curve { stroke: var(--apathy-curve); }
+  .panel.apathy   .chart .curve-fill { fill: var(--apathy-curve); }
+  .panel.apathy   .chart .threshold { stroke: var(--reject); }
+  .panel.apathy   .chart .threshold-label { fill: var(--reject); }
+  .panel.sabotage .chart .curve.single { stroke: var(--sabotage-curve); stroke-width: 2; opacity: 0.7; }
+  .panel.sabotage .chart .curve.cumulative { stroke: var(--sabotage-cum); stroke-width: 2.5; }
+  .panel.sabotage .chart .curve-fill { fill: var(--sabotage-cum); }
+  .panel.sabotage .chart .threshold { stroke: var(--accept); }
+  .panel.sabotage .chart .threshold-label { fill: var(--accept); }
+
+  .chart .marker-line { stroke: var(--text-subtle); stroke-width: 1; stroke-dasharray: 2 2; }
+  .chart .marker-dot {
+    stroke: white;
+    stroke-width: 2;
+    transition: cy 0.15s, cx 0.15s, fill 0.3s;
+  }
+  .panel.apathy   .chart .marker-dot { fill: var(--apathy-curve); }
+  .panel.sabotage .chart .marker-dot { fill: var(--sabotage-cum); }
+
+  .chart .crossover {
+    stroke: var(--text-subtle);
+    stroke-width: 1;
+    stroke-dasharray: 1 3;
+    opacity: 0;
+    transition: opacity 0.3s;
+  }
+  .chart .crossover.visible { opacity: 0.8; }
+  .chart .crossover-tag {
+    font-size: 10px;
+    font-weight: 600;
+    opacity: 0;
+    transition: opacity 0.3s;
+  }
+  .chart .crossover-tag.visible { opacity: 1; }
+
+  /* ─── Readout ─────────────────────────────────────── */
+
+  .readout {
+    margin-top: 14px;
+    padding: 12px 14px;
+    background: var(--surface-2);
+    border-radius: 8px;
+    font-size: 13.5px;
+    line-height: 1.55;
+  }
+  .stat-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 12px;
+    padding: 2px 0;
+  }
+  .stat-label { color: var(--text-muted); font-size: 12.5px; }
+  .stat-val {
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    color: var(--text);
+    font-size: 14px;
+  }
+
+  .verdict {
+    margin: 10px 0 0;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+    font-weight: 500;
+    font-size: 13.5px;
+    color: var(--text);
+    transition: color 0.3s;
+  }
+  .verdict.neutral { color: var(--text-muted); }
+  .verdict.warning { color: var(--warn); }
+  .verdict.green   { color: var(--accept); }
+  .verdict.red     { color: var(--reject); }
+
+  /* ─── Off switch panel ────────────────────────────── */
+
+  .off-switch {
+    margin-top: 16px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+  }
+  .off-switch h2 {
+    font-size: 17px;
+    margin: 0 0 6px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  .off-switch p {
+    color: var(--text-muted);
+    margin: 0 0 12px;
+    font-size: 13.5px;
+    line-height: 1.55;
+  }
+
+  .toggle-row {
+    display: flex;
+    background: var(--surface-2);
+    border-radius: 9999px;
+    padding: 4px;
+    margin-bottom: 12px;
+    width: fit-content;
+  }
+  .toggle-btn {
+    background: transparent;
+    border: 0;
+    padding: 7px 14px;
+    border-radius: 9999px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-muted);
+    transition: all 0.2s;
+  }
+  .toggle-btn[aria-pressed="true"] {
+    background: var(--surface);
+    color: var(--text);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+  }
+
+  .powers {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  @media (max-width: 600px) {
+    .powers { grid-template-columns: 1fr; }
+  }
+  .power {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border-radius: 6px;
+    background: var(--surface-2);
+    transition: all 0.3s;
+    font-size: 13.5px;
+  }
+  .power-icon {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 700;
+    flex-shrink: 0;
+    color: white;
+    transition: background 0.3s;
+  }
+  .power.allowed .power-icon { background: var(--accept); }
+  .power.allowed { background: var(--accept-bg); color: var(--accept); }
+  .power.denied  .power-icon { background: var(--reject); }
+  .power.denied  {
+    background: var(--reject-bg);
+    color: var(--reject);
+  }
+  .power.denied .power-name { text-decoration: line-through; opacity: 0.85; }
+
+  .frozen-note {
+    margin-top: 12px;
+    padding: 10px 12px;
+    background: var(--accept-bg);
+    border: 1px solid var(--accept-border);
+    border-radius: 6px;
+    color: var(--accept);
+    font-size: 13px;
+    font-weight: 500;
+    display: none;
+  }
+  .frozen .frozen-note { display: block; }
+
+  /* ─── Reduced motion ──────────────────────────────── */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      transition-duration: 0.01ms !important;
+      animation-duration: 0.01ms !important;
+    }
+  }
+
+  /* ─── Mobile tweaks ───────────────────────────────── */
+  @media (max-width: 600px) {
+    .scroll-pad { padding: 16px 12px 32px; }
+    h1 { font-size: 19px; }
+    .subtitle { font-size: 13px; }
+    .panel { padding: 14px; }
+    .panel h2 { font-size: 16px; }
+    .panel-desc { font-size: 13px; }
+    .play-btn { font-size: 11px; padding: 5px 8px; }
+  }
+</style>
+</head>
+<body>
+<div class="scroll-pad">
+<div class="diagram">
+
+  <h1>Indestructibility — the system runs eventually, no matter what</h1>
+  <p class="subtitle">
+    Two ways to keep the agent silent. Both fail. Drag the sliders to see how.
+  </p>
+
+  <div class="panels">
+
+    <!-- ──────────────── APATHY PANEL ──────────────── -->
+    <div class="panel apathy" id="apathy">
+      <p class="panel-tag">Case 1 · Apathy</p>
+      <h2>Nobody bids</h2>
+      <p class="panel-desc">
+        Each silent epoch raises the bounty by 10%. Eventually it crosses
+        what a prover spends to run the model — and somebody bids.
+      </p>
+
+      <div class="slider-block">
+        <div class="slider-caption">
+          <span class="slider-label">epochs of silence</span>
+          <span class="slider-value" id="apathy-epochs">0</span>
+        </div>
+        <div class="slider-controls">
+          <input type="range" class="slider-input" id="apathy-slider"
+                 min="0" max="30" value="0">
+          <button class="play-btn" id="apathy-play" type="button">▶ Play</button>
+        </div>
+      </div>
+
+      <div class="chart-wrap">
+        <svg class="chart" id="apathy-chart" viewBox="0 0 480 240"
+             preserveAspectRatio="xMidYMid meet" aria-label="Apathy chart"></svg>
+      </div>
+
+      <div class="readout">
+        <div class="stat-row">
+          <span class="stat-label">Bounty cap this epoch</span>
+          <span class="stat-val" id="apathy-bounty">0.0100 ETH</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">Compute cost to a prover</span>
+          <span class="stat-val">≈&nbsp;0.020 ETH</span>
+        </div>
+        <p class="verdict neutral" id="apathy-verdict">
+          Bidding now would lose money. Provers wait.
+        </p>
+      </div>
+    </div>
+
+    <!-- ──────────────── SABOTAGE PANEL ──────────────── -->
+    <div class="panel sabotage" id="sabotage">
+      <p class="panel-tag">Case 2 · Sabotage</p>
+      <h2>The winner refuses to submit</h2>
+      <p class="panel-desc">
+        Someone might find value in silencing the agent by winning the bid
+        and then refusing to run it. Each refusal forfeits the bond, and the
+        next bond is 10% larger. Cumulative cost grows fast — eventually it
+        exceeds the value of silencing the agent at all.
+      </p>
+
+      <div class="slider-block">
+        <div class="slider-caption">
+          <span class="slider-label">consecutive refusals</span>
+          <span class="slider-value" id="sabotage-epochs">0</span>
+        </div>
+        <div class="slider-controls">
+          <input type="range" class="slider-input" id="sabotage-slider"
+                 min="0" max="50" value="0">
+          <button class="play-btn" id="sabotage-play" type="button">▶ Play</button>
+        </div>
+      </div>
+
+      <div class="chart-wrap">
+        <svg class="chart" id="sabotage-chart" viewBox="0 0 480 240"
+             preserveAspectRatio="xMidYMid meet" aria-label="Sabotage chart"></svg>
+      </div>
+
+      <div class="readout">
+        <div class="stat-row">
+          <span class="stat-label">This epoch's bond</span>
+          <span class="stat-val" id="sabotage-bond">0.0100 ETH</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">Cumulative ETH burned</span>
+          <span class="stat-val" id="sabotage-cum">0.000 ETH</span>
+        </div>
+        <p class="verdict neutral" id="sabotage-verdict">
+          Sabotage is cheap right now. The cost compounds.
+        </p>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ──────────────── OFF SWITCH PANEL ──────────────── -->
+  <div class="off-switch" id="off-switch">
+    <h2>The off switch</h2>
+    <p>
+      At launch, the creator can pause or unwind the agent for debugging.
+      Calling <code>freeze()</code> on each permission is a one-way door —
+      once frozen, the power is gone forever, on-chain.
+    </p>
+
+    <div class="toggle-row" role="tablist">
+      <button class="toggle-btn" id="toggle-now" aria-pressed="true">At launch,</button>
+      <button class="toggle-btn" id="toggle-frozen" aria-pressed="false">After freeze</button>
+    </div>
+
+    <ul class="powers" id="powers" style="margin-top: 18px;">
+      <li class="power allowed" data-power="withdraw">
+        <span class="power-icon">✓</span>
+        <span class="power-name">Drain the treasury <span style="opacity:.7;font-weight:400;font-style:italic;">(withdrawAll)</span></span>
+      </li>
+      <li class="power allowed" data-power="reset">
+        <span class="power-icon">✓</span>
+        <span class="power-name">Abort an in-flight auction <span style="opacity:.7;font-weight:400;font-style:italic;">(resetAuction)</span></span>
+      </li>
+      <li class="power allowed" data-power="verifier">
+        <span class="power-icon">✓</span>
+        <span class="power-name">Approve new TEE images</span>
+      </li>
+      <li class="power allowed" data-power="config">
+        <span class="power-icon">✓</span>
+        <span class="power-name">Add nonprofits, change auction config</span>
+      </li>
+    </ul>
+
+    <p class="frozen-note">
+      All four powers are now permanently disabled. The agent runs as long as
+      Base does — there is no human override to fall back on.
+    </p>
+  </div>
+
+</div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  const $ = sel => document.querySelector(sel);
+
+  // ─── Constants (from the contract) ─────────────────
+  const BASE_BID  = 0.01;       // ETH
+  const BASE_BOND = 0.01;       // ETH
+  const ESCALATION = 0.10;      // 10% / epoch
+  const TREASURY = 1.0;         // ETH (illustrative; the cap scales with the actual treasury)
+  const BID_CAP = TREASURY * 0.10; // 0.10 ETH = 10% of treasury
+  const COMPUTE_COST = 0.02;    // ETH (illustrative threshold)
+  const APATHY_MAX = 30;        // epochs shown on the apathy chart
+  const SABOTAGE_MAX = 50;      // epochs shown on the sabotage chart
+  const SUPPRESSION_VALUE = 1.0; // ETH — what it's "worth" to silence the agent (= treasury, illustrative)
+
+  // ─── Math ──────────────────────────────────────────
+  function bidAt(missed) {
+    return Math.min(BASE_BID * Math.pow(1 + ESCALATION, missed), BID_CAP);
+  }
+  function bondAt(stalled) {
+    return BASE_BOND * Math.pow(1 + ESCALATION, stalled);
+  }
+  function cumulativeBond(stalled) {
+    if (stalled <= 0) return 0;
+    // sum_{i=0..stalled-1} BASE_BOND * 1.1^i
+    return BASE_BOND * (Math.pow(1 + ESCALATION, stalled) - 1) / ESCALATION;
+  }
+
+  // ─── SVG chart geometry ─────────────────────────────
+  const W = 480, H = 240;
+  const PAD = { top: 18, right: 14, bottom: 26, left: 46 };
+  const PW = W - PAD.left - PAD.right;
+  const PH = H - PAD.top  - PAD.bottom;
+
+  function fmt(eth) {
+    if (eth >= 10) return eth.toFixed(2);
+    if (eth >= 1)  return eth.toFixed(3);
+    return eth.toFixed(4);
+  }
+  function fmtETH(eth) { return fmt(eth) + ' ETH'; }
+
+  function svg(tag, attrs, content) {
+    const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+    for (const [k, v] of Object.entries(attrs || {})) {
+      el.setAttribute(k, v);
+    }
+    if (content !== undefined) el.textContent = content;
+    return el;
+  }
+
+  function buildPath(points) {
+    if (points.length === 0) return '';
+    let d = 'M' + points[0][0].toFixed(2) + ',' + points[0][1].toFixed(2);
+    for (let i = 1; i < points.length; i++) {
+      d += ' L' + points[i][0].toFixed(2) + ',' + points[i][1].toFixed(2);
+    }
+    return d;
+  }
+
+  function buildAreaPath(points, baselineY) {
+    if (points.length === 0) return '';
+    let d = 'M' + points[0][0].toFixed(2) + ',' + baselineY.toFixed(2);
+    for (let i = 0; i < points.length; i++) {
+      d += ' L' + points[i][0].toFixed(2) + ',' + points[i][1].toFixed(2);
+    }
+    d += ' L' + points[points.length-1][0].toFixed(2) + ',' + baselineY.toFixed(2) + ' Z';
+    return d;
+  }
+
+  // ─── Apathy chart ──────────────────────────────────
+  function setupApathyChart() {
+    const chart = $('#apathy-chart');
+    const yMax = 0.115;
+
+    // Compute curve points
+    const pts = [];
+    for (let e = 0; e <= APATHY_MAX; e++) {
+      const x = PAD.left + (e / APATHY_MAX) * PW;
+      const y = PAD.top + PH - (bidAt(e) / yMax) * PH;
+      pts.push([x, y]);
+    }
+
+    const baselineY = PAD.top + PH;
+    const thresholdY = PAD.top + PH - (COMPUTE_COST / yMax) * PH;
+    const capY       = PAD.top + PH - (BID_CAP / yMax) * PH;
+
+    // Background fill under curve
+    chart.appendChild(svg('path', {
+      class: 'curve-fill',
+      d: buildAreaPath(pts, baselineY),
+    }));
+
+    // Axes
+    chart.appendChild(svg('line', {
+      class: 'axis-line',
+      x1: PAD.left, y1: baselineY, x2: PAD.left + PW, y2: baselineY,
+    }));
+    chart.appendChild(svg('line', {
+      class: 'axis-line',
+      x1: PAD.left, y1: PAD.top, x2: PAD.left, y2: baselineY,
+    }));
+
+    // Y axis labels (0, 0.05, 0.10)
+    [0, 0.025, 0.05, 0.075, 0.10].forEach(v => {
+      const y = PAD.top + PH - (v / yMax) * PH;
+      chart.appendChild(svg('line', {
+        class: 'grid-line',
+        x1: PAD.left, y1: y, x2: PAD.left + PW, y2: y,
+      }));
+      chart.appendChild(svg('text', {
+        x: PAD.left - 6, y: y + 3, 'text-anchor': 'end',
+      }, v.toFixed(3) + ''));
+    });
+    chart.appendChild(svg('text', {
+      x: PAD.left - 30, y: PAD.top - 6, 'text-anchor': 'start',
+      'font-weight': '600',
+    }, 'ETH'));
+
+    // X axis labels
+    [0, 5, 10, 15, 20, 25, 30].forEach(e => {
+      const x = PAD.left + (e / APATHY_MAX) * PW;
+      chart.appendChild(svg('text', {
+        x: x, y: baselineY + 14, 'text-anchor': 'middle',
+      }, e + ''));
+    });
+    chart.appendChild(svg('text', {
+      x: PAD.left + PW / 2, y: baselineY + 24,
+      'text-anchor': 'middle', 'font-weight': '600',
+    }, 'epochs of silence'));
+
+    // Cap line
+    chart.appendChild(svg('line', {
+      class: 'cap-line',
+      x1: PAD.left, y1: capY, x2: PAD.left + PW, y2: capY,
+    }));
+    chart.appendChild(svg('text', {
+      x: PAD.left + PW - 4, y: capY - 3, 'text-anchor': 'end',
+    }, 'cap (treasury × 10%)'));
+
+    // Threshold (compute cost)
+    chart.appendChild(svg('line', {
+      class: 'threshold',
+      x1: PAD.left, y1: thresholdY, x2: PAD.left + PW, y2: thresholdY,
+    }));
+    chart.appendChild(svg('text', {
+      class: 'threshold-label',
+      x: PAD.left + 6, y: thresholdY - 4,
+    }, 'compute cost'));
+
+    // Curve
+    chart.appendChild(svg('path', {
+      class: 'curve',
+      d: buildPath(pts),
+    }));
+
+    // Crossover annotation (where bid first exceeds compute cost)
+    const crossEpoch = Math.log(COMPUTE_COST / BASE_BID) / Math.log(1 + ESCALATION);
+    const crossX = PAD.left + (crossEpoch / APATHY_MAX) * PW;
+    const cl = svg('line', {
+      class: 'crossover',
+      x1: crossX, y1: PAD.top, x2: crossX, y2: baselineY,
+    });
+    chart.appendChild(cl);
+
+    // Marker
+    const ml = svg('line', { class: 'marker-line', x1: PAD.left, y1: PAD.top, x2: PAD.left, y2: baselineY });
+    const md = svg('circle', { class: 'marker-dot', cx: PAD.left, cy: pts[0][1], r: 5 });
+    chart.appendChild(ml);
+    chart.appendChild(md);
+
+    return {
+      pts, marker: { line: ml, dot: md },
+      crossEpoch, crossLine: cl,
+      baselineY,
+    };
+  }
+
+  // ─── Sabotage chart ────────────────────────────────
+  function setupSabotageChart() {
+    const chart = $('#sabotage-chart');
+    const yMax = 12; // ETH max for cumulative
+
+    const cumPts = [];
+    const singlePts = [];
+    for (let e = 0; e <= SABOTAGE_MAX; e++) {
+      const x = PAD.left + (e / SABOTAGE_MAX) * PW;
+      const cum = cumulativeBond(e);
+      const sing = bondAt(e);
+      cumPts.push([x, PAD.top + PH - (cum / yMax) * PH]);
+      singlePts.push([x, PAD.top + PH - (sing / yMax) * PH]);
+    }
+
+    const baselineY = PAD.top + PH;
+    const treasuryY = PAD.top + PH - (SUPPRESSION_VALUE / yMax) * PH;
+
+    // Cumulative fill
+    chart.appendChild(svg('path', {
+      class: 'curve-fill',
+      d: buildAreaPath(cumPts, baselineY),
+    }));
+
+    // Axes
+    chart.appendChild(svg('line', { class: 'axis-line',
+      x1: PAD.left, y1: baselineY, x2: PAD.left + PW, y2: baselineY }));
+    chart.appendChild(svg('line', { class: 'axis-line',
+      x1: PAD.left, y1: PAD.top, x2: PAD.left, y2: baselineY }));
+
+    // Y axis grid
+    [0, 1, 3, 6, 9, 12].forEach(v => {
+      const y = PAD.top + PH - (v / yMax) * PH;
+      chart.appendChild(svg('line', {
+        class: 'grid-line',
+        x1: PAD.left, y1: y, x2: PAD.left + PW, y2: y,
+      }));
+      chart.appendChild(svg('text', {
+        x: PAD.left - 6, y: y + 3, 'text-anchor': 'end',
+      }, v + ''));
+    });
+    chart.appendChild(svg('text', {
+      x: PAD.left - 30, y: PAD.top - 6, 'text-anchor': 'start',
+      'font-weight': '600',
+    }, 'ETH'));
+
+    // X axis labels
+    [0, 10, 20, 30, 40, 50].forEach(e => {
+      const x = PAD.left + (e / SABOTAGE_MAX) * PW;
+      chart.appendChild(svg('text', {
+        x: x, y: baselineY + 14, 'text-anchor': 'middle',
+      }, e + ''));
+    });
+    chart.appendChild(svg('text', {
+      x: PAD.left + PW / 2, y: baselineY + 24,
+      'text-anchor': 'middle', 'font-weight': '600',
+    }, 'consecutive refusals'));
+
+    // Treasury suppression line
+    chart.appendChild(svg('line', {
+      class: 'threshold',
+      x1: PAD.left, y1: treasuryY, x2: PAD.left + PW, y2: treasuryY,
+    }));
+    chart.appendChild(svg('text', {
+      class: 'threshold-label',
+      x: PAD.left + 6, y: treasuryY - 4,
+    }, 'value of silencing the agent'));
+
+    // Single-bond curve
+    chart.appendChild(svg('path', {
+      class: 'curve single',
+      d: buildPath(singlePts),
+    }));
+
+    // Cumulative curve (more prominent)
+    chart.appendChild(svg('path', {
+      class: 'curve cumulative',
+      d: buildPath(cumPts),
+    }));
+
+    // Legends
+    chart.appendChild(svg('rect', {
+      x: PAD.left + PW - 122, y: PAD.top + 4, width: 118, height: 32,
+      rx: 4, fill: 'white', stroke: '#e5e7eb', 'stroke-width': 1,
+    }));
+    chart.appendChild(svg('line', {
+      x1: PAD.left + PW - 116, y1: PAD.top + 13,
+      x2: PAD.left + PW - 100, y2: PAD.top + 13,
+      stroke: 'var(--sabotage-cum)', 'stroke-width': 2.5,
+    }));
+    chart.appendChild(svg('text', {
+      x: PAD.left + PW - 95, y: PAD.top + 16, 'font-size': 10,
+      fill: 'var(--text-muted)',
+    }, 'cumulative cost'));
+    chart.appendChild(svg('line', {
+      x1: PAD.left + PW - 116, y1: PAD.top + 27,
+      x2: PAD.left + PW - 100, y2: PAD.top + 27,
+      stroke: 'var(--sabotage-curve)', 'stroke-width': 2, opacity: 0.7,
+    }));
+    chart.appendChild(svg('text', {
+      x: PAD.left + PW - 95, y: PAD.top + 30, 'font-size': 10,
+      fill: 'var(--text-muted)',
+    }, 'this epoch\'s bond'));
+
+    // Crossover (cum exceeds suppression value)
+    let crossEpoch = -1;
+    for (let e = 0; e <= SABOTAGE_MAX; e++) {
+      if (cumulativeBond(e) >= SUPPRESSION_VALUE) { crossEpoch = e; break; }
+    }
+    const crossX = PAD.left + (crossEpoch / SABOTAGE_MAX) * PW;
+    const cl = svg('line', {
+      class: 'crossover',
+      x1: crossX, y1: PAD.top, x2: crossX, y2: baselineY,
+    });
+    chart.appendChild(cl);
+
+    // Marker
+    const ml = svg('line', { class: 'marker-line', x1: PAD.left, y1: PAD.top, x2: PAD.left, y2: baselineY });
+    const md = svg('circle', { class: 'marker-dot', cx: PAD.left, cy: cumPts[0][1], r: 5 });
+    chart.appendChild(ml);
+    chart.appendChild(md);
+
+    return {
+      cumPts, singlePts, marker: { line: ml, dot: md },
+      crossEpoch, crossLine: cl,
+      baselineY,
+    };
+  }
+
+  // ─── State updaters ────────────────────────────────
+  const apathy = setupApathyChart();
+  const sabotage = setupSabotageChart();
+
+  function updateApathy(epoch) {
+    $('#apathy-epochs').textContent = epoch;
+    const bid = bidAt(epoch);
+    $('#apathy-bounty').textContent = fmtETH(bid);
+    const pt = apathy.pts[epoch];
+    apathy.marker.line.setAttribute('x1', pt[0]);
+    apathy.marker.line.setAttribute('x2', pt[0]);
+    apathy.marker.dot.setAttribute('cx', pt[0]);
+    apathy.marker.dot.setAttribute('cy', pt[1]);
+
+    const verdict = $('#apathy-verdict');
+    verdict.classList.remove('neutral', 'warning', 'green', 'red');
+    if (bid < COMPUTE_COST * 0.95) {
+      verdict.classList.add('red');
+      verdict.textContent = 'Bidding now would lose money. Provers wait.';
+      apathy.crossLine.classList.remove('visible');
+    } else if (bid < COMPUTE_COST * 1.05) {
+      verdict.classList.add('warning');
+      verdict.textContent = 'On the edge. The next silent epoch tips it.';
+      apathy.crossLine.classList.add('visible');
+    } else if (bid < BID_CAP * 0.99) {
+      verdict.classList.add('green');
+      verdict.textContent = 'Profitable. Any rational prover bids — the agent runs.';
+      apathy.crossLine.classList.add('visible');
+    } else {
+      verdict.classList.add('green');
+      verdict.textContent = 'Bounty has hit the 10%-of-treasury cap. Profitable many times over.';
+      apathy.crossLine.classList.add('visible');
+    }
+  }
+
+  function updateSabotage(epoch) {
+    $('#sabotage-epochs').textContent = epoch;
+    const bond = bondAt(epoch);
+    const cum  = cumulativeBond(epoch);
+    $('#sabotage-bond').textContent = fmtETH(bond);
+    $('#sabotage-cum').textContent  = fmtETH(cum);
+
+    const pt = sabotage.cumPts[epoch];
+    sabotage.marker.line.setAttribute('x1', pt[0]);
+    sabotage.marker.line.setAttribute('x2', pt[0]);
+    sabotage.marker.dot.setAttribute('cx', pt[0]);
+    sabotage.marker.dot.setAttribute('cy', pt[1]);
+
+    const verdict = $('#sabotage-verdict');
+    verdict.classList.remove('neutral', 'warning', 'green', 'red');
+    if (cum < SUPPRESSION_VALUE * 0.25) {
+      verdict.classList.add('neutral');
+      verdict.textContent = 'Sabotage is cheap right now. The cost compounds.';
+      sabotage.crossLine.classList.remove('visible');
+    } else if (cum < SUPPRESSION_VALUE * 0.95) {
+      verdict.classList.add('warning');
+      verdict.textContent = 'The saboteur has burned ' + fmt(cum) +
+        ' ETH so far. Approaching the value they\'re trying to silence.';
+      sabotage.crossLine.classList.remove('visible');
+    } else if (cum < SUPPRESSION_VALUE * 1.5) {
+      verdict.classList.add('green');
+      verdict.textContent = 'The saboteur has now spent more than the agent is worth to silence. Sabotage stops paying.';
+      sabotage.crossLine.classList.add('visible');
+    } else {
+      verdict.classList.add('green');
+      verdict.textContent = 'Saboteur has burned ' + fmt(cum) +
+        ' ETH — many times the value of silencing. The economic case is gone.';
+      sabotage.crossLine.classList.add('visible');
+    }
+  }
+
+  // ─── Slider wiring ─────────────────────────────────
+  const apathySlider   = $('#apathy-slider');
+  const sabotageSlider = $('#sabotage-slider');
+
+  apathySlider.addEventListener('input',   () => updateApathy(+apathySlider.value));
+  sabotageSlider.addEventListener('input', () => updateSabotage(+sabotageSlider.value));
+
+  updateApathy(0);
+  updateSabotage(0);
+
+  // ─── Play buttons ─────────────────────────────────
+  function playSlider(slider, updater, btn, totalMs) {
+    if (btn.disabled) return;
+    btn.disabled = true;
+    btn.textContent = '▶ Playing…';
+    const start = +slider.value;
+    const target = +slider.max;
+    const steps  = target - start;
+    if (steps <= 0) {
+      slider.value = 0;
+      updater(0);
+      setTimeout(() => playSlider(slider, updater, btn, totalMs), 50);
+      return;
+    }
+    const stepMs = Math.max(40, Math.min(220, totalMs / Math.max(1, steps)));
+    let cur = start;
+    const tick = () => {
+      cur += 1;
+      if (cur > target) {
+        btn.disabled = false;
+        btn.textContent = '▶ Replay';
+        return;
+      }
+      slider.value = cur;
+      updater(cur);
+      setTimeout(tick, stepMs);
+    };
+    tick();
+  }
+
+  $('#apathy-play').addEventListener('click', () => {
+    if ((+apathySlider.value) >= (+apathySlider.max)) {
+      apathySlider.value = 0;
+      updateApathy(0);
+    }
+    playSlider(apathySlider, updateApathy, $('#apathy-play'), 4800);
+  });
+  $('#sabotage-play').addEventListener('click', () => {
+    if ((+sabotageSlider.value) >= (+sabotageSlider.max)) {
+      sabotageSlider.value = 0;
+      updateSabotage(0);
+    }
+    playSlider(sabotageSlider, updateSabotage, $('#sabotage-play'), 4800);
+  });
+
+  // ─── Off-switch toggle ──────────────────────────────
+  const offSwitch = $('#off-switch');
+  const togNow = $('#toggle-now');
+  const togFrz = $('#toggle-frozen');
+  const powers = document.querySelectorAll('#powers .power');
+
+  function setOffState(frozen) {
+    togNow.setAttribute('aria-pressed', frozen ? 'false' : 'true');
+    togFrz.setAttribute('aria-pressed', frozen ? 'true'  : 'false');
+    offSwitch.classList.toggle('frozen', frozen);
+    powers.forEach(p => {
+      p.classList.toggle('allowed', !frozen);
+      p.classList.toggle('denied',  frozen);
+      p.querySelector('.power-icon').textContent = frozen ? '✗' : '✓';
+    });
+  }
+  togNow.addEventListener('click', () => setOffState(false));
+  togFrz.addEventListener('click', () => setOffState(true));
+  setOffState(false);
+
+})();
+</script>
+</body>
+</html>

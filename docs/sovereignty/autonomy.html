@@ -1,0 +1,1067 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>Autonomy — The Human Fund</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  html, body { height: 100%; }
+
+  :root {
+    --bg: #fafafa;
+    --surface: #ffffff;
+    --surface-2: #f3f4f6;
+    --border: #e5e7eb;
+    --border-strong: #9ca3af;
+    --text: #111827;
+    --text-muted: #4b5563;
+    --text-subtle: #9ca3af;
+    --primary: #1d4ed8;
+    --primary-bg: #dbeafe;
+    --reject: #b91c1c;
+    --reject-bg: #fee2e2;
+    --reject-border: #fca5a5;
+    --reject-soft: #fff1f2;
+    --warn: #b45309;
+    --warn-bg: #fef3c7;
+    --warn-border: #fcd34d;
+    --accept: #15803d;
+    --accept-bg: #dcfce7;
+    --accept-border: #86efac;
+    --tee-bg: #f0f9ff;
+    --tee-border: #7dd3fc;
+    --tee-label: #075985;
+    --shield: #0284c7;
+    --shield-bg: #e0f2fe;
+  }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+      "Helvetica Neue", Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 15px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    overflow-y: auto;
+  }
+
+  .scroll-pad {
+    padding: 22px 16px 100px;
+  }
+
+  .diagram {
+    max-width: 720px;
+    margin: 0 auto;
+  }
+
+  h1 {
+    font-size: 22px;
+    margin: 0 0 6px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  .subtitle {
+    color: var(--text-muted);
+    margin: 0 0 22px;
+    font-size: 14px;
+    line-height: 1.55;
+  }
+
+  /* ─── Flow ─────────────────────────────────────────── */
+
+  .flow { display: flex; flex-direction: column; }
+
+  .step {
+    position: relative;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 14px;
+    transition: border-color 0.3s, box-shadow 0.3s, background 0.3s;
+  }
+  .step + .step { margin-top: 28px; }
+
+  /* Connector arrow */
+  .step + .step::before {
+    content: '';
+    position: absolute;
+    top: -24px;
+    left: 50%;
+    width: 2px;
+    height: 18px;
+    background: var(--border-strong);
+    transform: translateX(-50%);
+    transition: background 0.3s, height 0.3s;
+  }
+  .step + .step::after {
+    content: '';
+    position: absolute;
+    top: -8px;
+    left: 50%;
+    width: 0; height: 0;
+    transform: translateX(-50%);
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 6px solid var(--border-strong);
+    transition: border-top-color 0.3s;
+  }
+  .step.active-arrow + .step::before,
+  .step + .step.active-arrow::before {
+    background: var(--primary);
+  }
+  .step.active-arrow + .step::after {
+    border-top-color: var(--primary);
+  }
+
+  /* Animated dot flowing down the connector when cascading */
+  .step + .step.flowing::before {
+    background: linear-gradient(
+      to bottom,
+      var(--primary) 0%,
+      var(--primary) 30%,
+      var(--border-strong) 30%,
+      var(--border-strong) 100%
+    );
+    background-size: 100% 200%;
+    background-position: 0% 0%;
+    animation: dot-flow 0.8s ease-in forwards;
+  }
+  @keyframes dot-flow {
+    from { background-position: 0% -50%; }
+    to   { background-position: 0% 100%; }
+  }
+
+  /* Step active glow */
+  .step.active {
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px var(--primary-bg);
+  }
+
+  .step-title {
+    font-size: 13px;
+    color: var(--text-muted);
+    margin: 0 0 6px;
+    font-weight: 600;
+  }
+
+  /* ─── Subnode (component) ──────────────────────────── */
+
+  .subnode {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 11px 12px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    transition: background 0.3s, border-color 0.3s, box-shadow 0.3s;
+  }
+  .step > .subnode:not(:last-child),
+  .tee > .subnode:not(:last-child) { margin-bottom: 8px; }
+
+  .subnode-text { flex: 1; min-width: 0; }
+  .subnode-name { font-weight: 500; font-size: 14px; display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+  .attack {
+    color: var(--text-subtle);
+    font-size: 12.5px;
+    margin-top: 2px;
+    font-style: italic;
+  }
+  .attack::before { content: '↳ '; opacity: 0.55; }
+
+  /* States ─────────────────── */
+
+  .subnode.tampered {
+    background: linear-gradient(180deg, var(--warn-bg), #fef9c3);
+    border-color: var(--warn-border);
+    box-shadow: 0 0 0 3px rgba(252, 211, 77, 0.25);
+  }
+  .subnode.tampered .subnode-name {
+    color: var(--warn);
+  }
+  .subnode.caught {
+    background: var(--reject-bg);
+    border-color: var(--reject-border);
+    box-shadow: 0 0 0 3px rgba(252, 165, 165, 0.4);
+  }
+  .subnode.caught .subnode-name { color: var(--reject); }
+
+  .subnode.blocked {
+    background: var(--shield-bg);
+    border-color: var(--tee-border);
+  }
+  .subnode.blocked .subnode-name { color: var(--shield); }
+
+  .subnode.repeating {
+    background: var(--accept-bg);
+    border-color: var(--accept-border);
+  }
+  .subnode.repeating .subnode-name { color: var(--accept); }
+
+  .subnode.pulsing {
+    animation: pulse-soft 1.6s ease-in-out infinite;
+  }
+  @keyframes pulse-soft {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(252, 211, 77, 0.5); }
+    50%      { box-shadow: 0 0 0 6px rgba(252, 211, 77, 0.0); }
+  }
+
+  /* Badges ────────────────────── */
+
+  .badge {
+    display: none;
+    font-size: 10px;
+    padding: 2px 7px;
+    border-radius: 999px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    font-weight: 700;
+    align-self: center;
+    line-height: 1.6;
+  }
+  .badge-armed { background: var(--warn); color: white; }
+  .badge-caught { background: var(--reject); color: white; }
+  .badge-blocked { background: var(--shield); color: white; }
+  .badge-deterministic { background: var(--accept); color: white; }
+
+  .subnode.tampered .badge-armed { display: inline-block; }
+  .subnode.caught .badge-armed { display: none; }
+  .subnode.caught .badge-caught { display: inline-block; }
+  .subnode.blocked .badge-armed { display: none; }
+  .subnode.blocked .badge-blocked { display: inline-block; }
+  .subnode.repeating .badge-deterministic { display: inline-block; }
+
+  /* TEE region ─────────────────────────────────────── */
+
+  .tee {
+    background: var(--tee-bg);
+    border: 1px dashed var(--tee-border);
+    position: relative;
+  }
+  .tee-label {
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--tee-label);
+    font-weight: 700;
+    margin-bottom: 10px;
+  }
+  .tee-label .tee-sub {
+    opacity: 0.7;
+    font-weight: 500;
+    text-transform: none;
+    letter-spacing: 0;
+    font-size: 11px;
+  }
+
+  /* Tamper button ──────────────────────────────────── */
+
+  .tamper-btn {
+    background: var(--surface);
+    border: 1px solid var(--border-strong);
+    color: var(--text);
+    padding: 7px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+    font-family: inherit;
+    min-height: 38px;
+    white-space: nowrap;
+    transition: all 0.15s;
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .tamper-btn:hover, .tamper-btn:focus {
+    background: var(--reject-soft);
+    border-color: var(--reject);
+    color: var(--reject);
+    outline: none;
+  }
+  .tamper-btn[aria-pressed="true"] {
+    background: var(--warn);
+    color: white;
+    border-color: var(--warn);
+  }
+  .tamper-btn[aria-pressed="true"]:hover {
+    background: #92400e;
+    color: white;
+    border-color: #92400e;
+  }
+  .tamper-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    pointer-events: none;
+  }
+
+  /* ─── Trial outputs (re-roll scenario) ─────────────── */
+
+  .trials {
+    display: none;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 10px;
+  }
+  .subnode.repeating .trials { display: flex; }
+
+  .trial {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 6px 10px;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11.5px;
+    color: var(--text-muted);
+    opacity: 0;
+    transform: translateY(4px);
+    transition: opacity 0.3s, transform 0.3s, background 0.3s, border-color 0.3s, color 0.3s;
+  }
+  .trial.shown { opacity: 1; transform: translateY(0); }
+  .trial.matched {
+    background: var(--accept-bg);
+    border-color: var(--accept-border);
+    color: var(--accept);
+  }
+
+  /* ─── Memory hardware shield ───────────────────────── */
+
+  .shield-overlay {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    overflow: visible;
+    opacity: 0;
+    transition: opacity 0.25s;
+  }
+  .subnode.blocked .shield-overlay { opacity: 1; }
+  .shield-svg {
+    position: absolute;
+    top: 50%;
+    right: 14px;
+    transform: translateY(-50%);
+    width: 36px;
+    height: 36px;
+  }
+  .shield-pulse {
+    position: absolute;
+    top: 50%;
+    right: 22px;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: rgba(2, 132, 199, 0.18);
+    transform: translateY(-50%) scale(0);
+    animation: shield-pulse 0.9s ease-out;
+  }
+  @keyframes shield-pulse {
+    0%   { transform: translateY(-50%) scale(0.3); opacity: 0.85; }
+    100% { transform: translateY(-50%) scale(2.4); opacity: 0; }
+  }
+
+  /* ─── Verifier checks ──────────────────────────────── */
+
+  .check-list { list-style: none; margin: 8px 0 0; padding: 0; }
+  .check-item {
+    padding: 9px 11px;
+    margin: 5px 0;
+    border-left: 3px solid var(--border);
+    background: rgba(0,0,0,0.02);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    transition: all 0.25s;
+    font-size: 13px;
+  }
+  .check-icon {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: var(--text-subtle);
+    color: white;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 700;
+    flex-shrink: 0;
+    transition: background 0.25s, transform 0.3s;
+  }
+  .check-item.firing .check-icon {
+    background: var(--primary);
+    animation: spin 0.6s linear infinite;
+  }
+  @keyframes spin {
+    from { transform: rotate(0); }
+    to   { transform: rotate(360deg); }
+  }
+  .check-item.passed { border-left-color: var(--accept); color: var(--accept); }
+  .check-item.passed .check-icon {
+    background: var(--accept);
+    animation: pop 0.35s cubic-bezier(0.34,1.56,0.64,1);
+  }
+  .check-item.failed {
+    border-left-color: var(--reject);
+    color: var(--reject);
+    background: var(--reject-bg);
+    font-weight: 600;
+  }
+  .check-item.failed .check-icon {
+    background: var(--reject);
+    animation: shake 0.45s;
+  }
+  @keyframes pop {
+    0%   { transform: scale(0.6); }
+    60%  { transform: scale(1.18); }
+    100% { transform: scale(1); }
+  }
+  @keyframes shake {
+    0%, 100% { transform: translateX(0); }
+    25% { transform: translateX(-3px); }
+    50% { transform: translateX(3px); }
+    75% { transform: translateX(-2px); }
+  }
+
+  /* ─── Result ──────────────────────────────────────── */
+
+  .result {
+    text-align: center;
+    padding: 22px 14px;
+    font-size: 16px;
+    font-weight: 600;
+    transition: all 0.4s;
+    color: var(--text-subtle);
+    position: relative;
+    overflow: hidden;
+  }
+  .result.rejected {
+    background: var(--reject-bg);
+    color: var(--reject);
+    border-color: var(--reject-border);
+  }
+  .result.accepted {
+    background: var(--accept-bg);
+    color: var(--accept);
+    border-color: var(--accept-border);
+  }
+  .stamp {
+    font-size: 38px;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    margin-bottom: 4px;
+    display: inline-block;
+    color: inherit;
+    transform-origin: center;
+  }
+  .result.rejected .stamp {
+    animation: stamp-down 0.55s cubic-bezier(0.34,1.56,0.64,1);
+  }
+  .result.accepted .stamp {
+    animation: stamp-soft 0.55s cubic-bezier(0.34,1.56,0.64,1);
+    font-size: 32px;
+  }
+  @keyframes stamp-down {
+    0%   { transform: scale(2.6) rotate(-12deg); opacity: 0; }
+    50%  { transform: scale(1.1) rotate(-3deg); opacity: 1; }
+    100% { transform: scale(1) rotate(-2deg); opacity: 1; }
+  }
+  @keyframes stamp-soft {
+    0%   { transform: scale(0.6); opacity: 0; }
+    100% { transform: scale(1); opacity: 1; }
+  }
+  .result-detail {
+    display: block;
+    font-size: 13px;
+    font-weight: 400;
+    margin-top: 8px;
+    line-height: 1.5;
+    color: var(--text-muted);
+    max-width: 56ch;
+    margin-left: auto;
+    margin-right: auto;
+  }
+  .result.rejected .result-detail { color: var(--reject); }
+  .result.accepted .result-detail { color: var(--accept); }
+
+  /* ─── Floating action bar ──────────────────────────── */
+
+  .action-bar {
+    position: fixed;
+    bottom: 14px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 50;
+    display: flex;
+    gap: 6px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 9999px;
+    padding: 5px;
+    box-shadow: 0 6px 24px rgba(0,0,0,0.10), 0 1px 4px rgba(0,0,0,0.05);
+    align-items: center;
+  }
+  .action-bar .btn {
+    border: 0;
+    padding: 9px 18px;
+    border-radius: 9999px;
+    font-size: 14px;
+    font-family: inherit;
+    cursor: pointer;
+    min-height: 40px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    transition: background 0.15s, color 0.15s;
+  }
+  .action-bar .btn-primary {
+    background: var(--primary);
+    color: white;
+    font-weight: 600;
+  }
+  .action-bar .btn-primary:hover { background: #1e3a8a; }
+  .action-bar .btn-secondary {
+    background: transparent;
+    color: var(--text-muted);
+  }
+  .action-bar .btn-secondary:hover { background: var(--surface-2); color: var(--text); }
+  .action-bar .btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    pointer-events: none;
+  }
+  .action-bar .status-mini {
+    font-size: 12px;
+    color: var(--text-muted);
+    padding: 0 10px;
+    max-width: 280px;
+    line-height: 1.3;
+  }
+
+  /* ─── Responsive ──────────────────────────────────── */
+
+  @media (max-width: 600px) {
+    .scroll-pad { padding: 16px 12px 110px; }
+    h1 { font-size: 19px; }
+    .subtitle { font-size: 13px; }
+    .subnode {
+      flex-direction: column;
+      align-items: stretch;
+    }
+    .subnode-name { flex-wrap: wrap; }
+    .tamper-btn { width: 100%; justify-content: center; }
+    .check-item { font-size: 12.5px; }
+    .stamp { font-size: 32px; }
+    .action-bar { padding: 4px; gap: 4px; }
+    .action-bar .status-mini { display: none; }
+    .action-bar .btn { padding: 8px 14px; font-size: 13px; }
+  }
+
+  /* Reduced motion ─────────────────────────────────── */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      transition-duration: 0.01ms !important;
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+    }
+  }
+</style>
+</head>
+<body>
+<div class="scroll-pad">
+<div class="diagram" id="diagram">
+
+  <h1>Autonomy — only the agent decides what the agent does</h1>
+  <p class="subtitle">
+    Tamper with the agent's program below to see how its design prevents attack.
+  </p>
+
+  <div class="flow" id="flow">
+
+    <!-- Step: contract state ─────────────────────────── -->
+    <div class="step" data-step="chain-state" id="step-chain">
+      <div class="subnode-text">
+        <div class="subnode-name">Contract state on Base</div>
+        <div class="attack" style="font-style: normal; opacity: 0.65;">publishes the canonical hash of inputs <em>before</em> the model runs</div>
+      </div>
+    </div>
+
+    <!-- Step: inputs ───────────────────────────────── -->
+    <div class="step" data-step="inputs" id="step-inputs">
+      <div class="subnode" data-component="inputs">
+        <div class="subnode-text">
+          <div class="subnode-name">
+            Inputs to the agent
+            <span class="badge badge-armed">Tampered</span>
+            <span class="badge badge-caught">Caught</span>
+          </div>
+          <div class="attack">to feed the model false data</div>
+        </div>
+        <button class="tamper-btn" data-attack="inputs" aria-pressed="false">🔧 Forge inputs</button>
+      </div>
+    </div>
+
+    <!-- Step: TEE ──────────────────────────────────── -->
+    <div class="step tee" data-step="tee" id="step-tee">
+      <div class="tee-label">
+        Trusted Execution Environment
+        <span class="tee-sub">— Intel TDX</span>
+      </div>
+
+      <div class="subnode" data-component="image">
+        <div class="subnode-text">
+          <div class="subnode-name">
+            Weights, prompt, and code
+            <span class="badge badge-armed">Tampered</span>
+            <span class="badge badge-caught">Caught</span>
+          </div>
+          <div class="attack">to change how the model thinks</div>
+        </div>
+        <button class="tamper-btn" data-attack="image" aria-pressed="false">🔧 Replace</button>
+      </div>
+
+      <div class="subnode" data-component="memory">
+        <div class="shield-overlay">
+          <div class="shield-pulse"></div>
+          <svg class="shield-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               style="color: var(--shield);" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2 4 5v7c0 5 3.5 9 8 10 4.5-1 8-5 8-10V5l-8-3z"/>
+            <path d="M9 12l2 2 4-4"/>
+          </svg>
+        </div>
+        <div class="subnode-text">
+          <div class="subnode-name">
+            Program memory (RAM)
+            <span class="badge badge-armed">Tampered</span>
+            <span class="badge badge-blocked">Hardware-blocked</span>
+          </div>
+          <div class="attack">to hijack the running program</div>
+        </div>
+        <button class="tamper-btn" data-attack="memory" aria-pressed="false">🔧 Modify mid-run</button>
+      </div>
+
+      <div class="subnode" data-component="inference">
+        <div class="subnode-text">
+          <div class="subnode-name">
+            Inference
+            <span class="badge badge-armed">Tampered</span>
+            <span class="badge badge-deterministic">Deterministic</span>
+          </div>
+          <div class="attack">to re-roll for a different output</div>
+          <div class="trials" id="trials">
+            <div class="trial" data-trial="1">trial 1 → action: donate(nonprofit_id=3, 0.05 ETH)</div>
+            <div class="trial" data-trial="2">trial 2 → action: donate(nonprofit_id=3, 0.05 ETH)</div>
+            <div class="trial" data-trial="3">trial 3 → action: donate(nonprofit_id=3, 0.05 ETH)</div>
+          </div>
+        </div>
+        <button class="tamper-btn" data-attack="inference" aria-pressed="false">🎲 Re-roll</button>
+      </div>
+
+      <div class="subnode" data-component="outputs">
+        <div class="subnode-text">
+          <div class="subnode-name">
+            Outputs + signed bundle
+            <span class="badge badge-armed">Tampered</span>
+            <span class="badge badge-caught">Caught</span>
+          </div>
+          <div class="attack">to substitute a different action</div>
+        </div>
+        <button class="tamper-btn" data-attack="outputs" aria-pressed="false">🔧 Modify outputs</button>
+      </div>
+    </div>
+
+    <!-- Step: submit ───────────────────────────────── -->
+    <div class="step" data-step="submit" id="step-submit">
+      <div class="subnode-text">
+        <div class="subnode-name">Submit to contract</div>
+        <div class="attack" style="font-style: normal; opacity: 0.65;">action + reasoning + signed bundle from the TEE</div>
+      </div>
+    </div>
+
+    <!-- Step: verifier ─────────────────────────────── -->
+    <div class="step" data-step="verify" id="step-verify">
+      <p class="step-title">On-chain verifier</p>
+      <ul class="check-list" id="checks">
+        <li class="check-item" data-check="signature">
+          <span class="check-icon">?</span>
+          <span>Bundle is signed by Intel TEE hardware</span>
+        </li>
+        <li class="check-item" data-check="fingerprint">
+          <span class="check-icon">?</span>
+          <span>System fingerprint is on the approved list</span>
+        </li>
+        <li class="check-item" data-check="inputHash">
+          <span class="check-icon">?</span>
+          <span>Hash of inputs in bundle = hash on chain</span>
+        </li>
+        <li class="check-item" data-check="outputHash">
+          <span class="check-icon">?</span>
+          <span>Hash of outputs in bundle = hash of submitted outputs</span>
+        </li>
+      </ul>
+    </div>
+
+    <!-- Step: result ───────────────────────────────── -->
+    <div class="step result" id="result">
+      <span class="stamp" id="stamp"></span>
+      <span class="result-detail" id="result-detail">Press <strong>▶ Run</strong> to verify the submission. Tamper with parts of the system first to see how each is caught.</span>
+    </div>
+
+  </div>
+</div>
+</div>
+
+<!-- ─── Floating action bar ─────────────────────────── -->
+<div class="action-bar">
+  <button class="btn btn-secondary" id="reset-btn" type="button">↺ Reset</button>
+  <span class="status-mini" id="status-mini">Tamper with anything you like, then run.</span>
+  <button class="btn btn-primary" id="run-btn" type="button">▶ Run verification</button>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  const $  = sel => document.querySelector(sel);
+  const $$ = sel => Array.from(document.querySelectorAll(sel));
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+  const els = {
+    flow: $('#flow'),
+    statusMini: $('#status-mini'),
+    runBtn: $('#run-btn'),
+    resetBtn: $('#reset-btn'),
+    result: $('#result'),
+    stamp: $('#stamp'),
+    resultDetail: $('#result-detail'),
+    checks: $$('#checks .check-item'),
+    subnodes: $$('.subnode[data-component]'),
+    tamperBtns: $$('.tamper-btn'),
+    steps: $$('.step'),
+  };
+
+  // Tamper state per component
+  const tampered = {
+    inputs: false,
+    image: false,
+    memory: false,
+    inference: false,
+    outputs: false,
+  };
+
+  let runState = 'idle'; // 'idle' | 'running' | 'done'
+
+  // ── helpers ────────────────────────────────────────
+
+  function setMini(text) { els.statusMini.textContent = text; }
+
+  function getSubnode(name) {
+    return document.querySelector(`.subnode[data-component="${name}"]`);
+  }
+
+  function getBtn(name) {
+    return document.querySelector(`.tamper-btn[data-attack="${name}"]`);
+  }
+
+  function getCheck(name) {
+    return document.querySelector(`.check-item[data-check="${name}"]`);
+  }
+
+  function getStep(id) {
+    return document.querySelector(`.step[data-step="${id}"]`);
+  }
+
+  function scrollTo(el) {
+    if (!el) return;
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }
+
+  function setTampered(name, on) {
+    tampered[name] = on;
+    const sub = getSubnode(name);
+    const btn = getBtn(name);
+    sub.classList.toggle('tampered', on);
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    // update status hint
+    const armed = Object.values(tampered).filter(Boolean).length;
+    if (armed > 0 && runState === 'idle') {
+      setMini(armed + ' tamper' + (armed > 1 ? 's' : '') + ' armed. Press ▶ Run.');
+    } else if (runState === 'idle') {
+      setMini('Tamper with anything you like, then run.');
+    }
+  }
+
+  function toggleTamper(name) {
+    if (runState !== 'idle') return;
+    setTampered(name, !tampered[name]);
+  }
+
+  // ── reset ─────────────────────────────────────────
+
+  function reset() {
+    runState = 'idle';
+    Object.keys(tampered).forEach(k => { tampered[k] = false; });
+    els.subnodes.forEach(el => el.classList.remove(
+      'tampered', 'caught', 'blocked', 'repeating', 'pulsing'
+    ));
+    els.tamperBtns.forEach(b => {
+      b.disabled = false;
+      b.setAttribute('aria-pressed', 'false');
+    });
+    $$('.trial').forEach(t => t.classList.remove('shown', 'matched'));
+    els.checks.forEach(c => {
+      c.classList.remove('firing', 'passed', 'failed');
+      c.querySelector('.check-icon').textContent = '?';
+    });
+    els.steps.forEach(s => s.classList.remove('active', 'flowing'));
+    els.result.classList.remove('rejected', 'accepted');
+    els.stamp.textContent = '';
+    els.resultDetail.innerHTML =
+      'Press <strong>▶ Run</strong> to verify the submission. Tamper with parts of the system first to see how each is caught.';
+    els.runBtn.disabled = false;
+    setMini('Tamper with anything you like, then run.');
+    // Reset memory shield (remove and re-add to restart pulse)
+    const memSub = getSubnode('memory');
+    const oldPulse = memSub.querySelector('.shield-pulse');
+    if (oldPulse) oldPulse.remove();
+    const newPulse = document.createElement('div');
+    newPulse.className = 'shield-pulse';
+    memSub.querySelector('.shield-overlay').prepend(newPulse);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  // ── activate / deactivate steps for visual focus ─────
+
+  function activateStep(stepEl) {
+    els.steps.forEach(s => s.classList.remove('active'));
+    if (stepEl) stepEl.classList.add('active');
+  }
+
+  function flowArrowFrom(stepEl) {
+    if (!stepEl) return;
+    const next = stepEl.nextElementSibling;
+    if (next && next.classList.contains('step')) {
+      next.classList.remove('flowing');
+      // force reflow to restart animation
+      void next.offsetWidth;
+      next.classList.add('flowing');
+    }
+  }
+
+  // ── animation steps ─────────────────────────────────
+
+  async function announceStep(stepEl, msg, dwell = 450) {
+    activateStep(stepEl);
+    flowArrowFrom(stepEl.previousElementSibling);
+    if (msg) setMini(msg);
+    scrollTo(stepEl);
+    await sleep(dwell);
+  }
+
+  async function showMemoryBlock() {
+    const sub = getSubnode('memory');
+    setMini('Memory tamper attempted — TDX hardware refuses host writes …');
+    sub.classList.remove('tampered');
+    sub.classList.add('blocked');
+    // restart pulse animation
+    const pulseEl = sub.querySelector('.shield-pulse');
+    if (pulseEl) {
+      pulseEl.style.animation = 'none';
+      void pulseEl.offsetWidth;
+      pulseEl.style.animation = '';
+    }
+    await sleep(900);
+  }
+
+  async function showInferenceTrials() {
+    const sub = getSubnode('inference');
+    setMini('Re-running inference with the same inputs …');
+    sub.classList.remove('tampered');
+    sub.classList.add('repeating');
+    await sleep(360);
+    document.querySelector('.trial[data-trial="1"]').classList.add('shown');
+    await sleep(560);
+    document.querySelector('.trial[data-trial="2"]').classList.add('shown');
+    await sleep(560);
+    document.querySelector('.trial[data-trial="3"]').classList.add('shown');
+    await sleep(620);
+    setMini('Every trial returns the exact same output.');
+    $$('.trial').forEach(t => t.classList.add('matched'));
+    await sleep(700);
+  }
+
+  async function fireCheck(name, willPass, reasonForFail) {
+    const el = getCheck(name);
+    el.classList.remove('passed', 'failed');
+    el.classList.add('firing');
+    el.querySelector('.check-icon').textContent = '…';
+    await sleep(420);
+    el.classList.remove('firing');
+    if (willPass) {
+      el.classList.add('passed');
+      el.querySelector('.check-icon').textContent = '✓';
+    } else {
+      el.classList.add('failed');
+      el.querySelector('.check-icon').textContent = '✗';
+      if (reasonForFail) setMini('Caught: ' + reasonForFail);
+    }
+    await sleep(280);
+  }
+
+  async function flagCaught(componentName) {
+    if (!componentName) return;
+    const sub = getSubnode(componentName);
+    sub.classList.remove('tampered');
+    sub.classList.add('caught');
+  }
+
+  // ── orchestration ───────────────────────────────────
+
+  async function run() {
+    if (runState !== 'idle') return;
+    runState = 'running';
+    els.runBtn.disabled = true;
+    els.tamperBtns.forEach(b => { b.disabled = true; });
+
+    // 1. Show contract state
+    await announceStep(getStep('chain-state'),
+      'Chain publishes the canonical hash of inputs.', 600);
+
+    // 2. Inputs flow to TEE
+    await announceStep(getStep('inputs'),
+      tampered.inputs
+        ? 'Inputs forged in transit to the TEE …'
+        : 'Inputs flow to the TEE.', 700);
+
+    // 3. TEE
+    await announceStep(getStep('tee'),
+      'TEE receives inputs and runs.', 500);
+
+    // Inside TEE: handle special pre-verifier scenarios
+    if (tampered.memory) {
+      scrollTo(getSubnode('memory'));
+      await showMemoryBlock();
+    }
+    if (tampered.inference) {
+      scrollTo(getSubnode('inference'));
+      await showInferenceTrials();
+    }
+
+    // 4. Submit
+    await announceStep(getStep('submit'),
+      'Bundle submitted to the contract.', 600);
+
+    // 5. Verifier
+    await announceStep(getStep('verify'),
+      'Verifier runs the four checks …', 400);
+
+    // Determine which checks fail based on tamper state
+    const sigPass    = true; // we do not model signature-key compromise
+    const fpPass     = !tampered.image;
+    const inHashPass = !tampered.inputs;
+    const outHashPass= !tampered.outputs;
+
+    let firstFailReason = null;
+    if (!fpPass)      firstFailReason = firstFailReason || 'system fingerprint not on approved list';
+    if (!inHashPass)  firstFailReason = firstFailReason || 'input-hash mismatch';
+    if (!outHashPass) firstFailReason = firstFailReason || 'output-hash mismatch';
+
+    await fireCheck('signature', sigPass, 'invalid hardware signature');
+    await fireCheck('fingerprint', fpPass, 'system fingerprint not on approved list');
+    if (!fpPass) await flagCaught('image');
+    await fireCheck('inputHash', inHashPass, 'input-hash mismatch');
+    if (!inHashPass) await flagCaught('inputs');
+    await fireCheck('outputHash', outHashPass, 'output-hash mismatch');
+    if (!outHashPass) await flagCaught('outputs');
+
+    await sleep(220);
+
+    // 6. Result
+    activateStep(null);
+    scrollTo(els.result);
+    flowArrowFrom(getStep('verify'));
+    await sleep(300);
+
+    const anyFail = !(sigPass && fpPass && inHashPass && outHashPass);
+    if (anyFail) {
+      els.result.classList.add('rejected');
+      els.stamp.textContent = 'REJECTED';
+      const why = describeRejection();
+      els.resultDetail.innerHTML = why;
+      setMini('Rejected. The agent\'s decision is preserved.');
+    } else {
+      els.result.classList.add('accepted');
+      els.stamp.textContent = 'ACCEPTED';
+      els.resultDetail.innerHTML = describeAcceptance();
+      setMini('Accepted. The agent ran without interference.');
+    }
+
+    runState = 'done';
+  }
+
+  function describeAcceptance() {
+    const notes = [];
+    if (tampered.memory) {
+      notes.push('Memory tamper was blocked at the hardware boundary — the inference still ran on the legitimate state.');
+    }
+    if (tampered.inference) {
+      notes.push('Re-running inference yields the same output because the seed, sampling parameters, weights, and inputs are all pinned. Verified across the test fixture battery.');
+    }
+    if (notes.length === 0) {
+      return 'No interference detected. The agent\'s output is accepted by all four checks.';
+    }
+    return notes.join('<br><br>');
+  }
+
+  function describeRejection() {
+    const fragments = [];
+    if (tampered.image) {
+      fragments.push('<strong>Weights / prompt / code:</strong> changing any byte on the read-only disk image changes the boot measurement, so the system\'s fingerprint no longer matches the one approved on-chain.');
+    }
+    if (tampered.inputs) {
+      fragments.push('<strong>Inputs:</strong> the chain published the canonical hash of inputs before the runner saw anything. Inside the TEE, the agent independently hashes whatever bytes it was given and signs that hash into the bundle. Mismatch is rejected.');
+    }
+    if (tampered.outputs) {
+      fragments.push('<strong>Outputs:</strong> the TEE hashes the action and reasoning before signing. The contract recomputes that hash from whatever was submitted — any change between TEE and chain produces a different hash.');
+    }
+    if (tampered.memory && fragments.length === 0) {
+      // memory alone doesn't reject — accepted path. Should not reach here.
+      fragments.push('Memory tamper was blocked at the hardware boundary.');
+    }
+    if (tampered.inference && fragments.length === 0) {
+      fragments.push('Re-rolling produces the same deterministic output. There is no attack surface here.');
+    }
+    if (fragments.length === 0) {
+      fragments.push('Nothing was tampered. The submission is accepted.');
+    }
+    return fragments.join('<br><br>');
+  }
+
+  // ── wiring ──────────────────────────────────────────
+
+  els.tamperBtns.forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (runState !== 'idle') {
+        // If completed, reset first then arm
+        reset();
+      }
+      const name = btn.getAttribute('data-attack');
+      toggleTamper(name);
+    });
+  });
+
+  els.runBtn.addEventListener('click', () => {
+    if (runState === 'done') reset();
+    setTimeout(run, 30);
+  });
+
+  els.resetBtn.addEventListener('click', reset);
+
+})();
+</script>
+</body>
+</html>
