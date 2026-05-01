@@ -1171,6 +1171,15 @@
     new ResizeObserver(sendHeight).observe(document.body);
   }
 
+  // Tell the parent we're ready to receive sticky-bar position
+  // messages. Parent might have tried sending before our message
+  // listener was registered (lazy iframes, late load, etc.); on
+  // 'ready' it re-sends the current visible region so the bar
+  // gets positioned without the user having to scroll first.
+  try {
+    window.parent.postMessage({ type: 'indestructibility:ready' }, '*');
+  } catch (e) { /* sandboxed parent — fine */ }
+
 })();
 </script>
 </body>
