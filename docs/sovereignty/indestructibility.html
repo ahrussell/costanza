@@ -1024,6 +1024,18 @@
   togFrz.addEventListener('click', () => setOffState(true));
   setOffState(false);
 
+  // ─── postMessage auto-resize ───────────────────────
+  function sendHeight() {
+    try {
+      const h = document.documentElement.scrollHeight;
+      window.parent.postMessage({ type: 'indestructibility:height', height: h }, '*');
+    } catch (e) { /* sandboxed without parent — fine */ }
+  }
+  window.addEventListener('load', sendHeight);
+  window.addEventListener('resize', sendHeight);
+  togNow.addEventListener('click', () => setTimeout(sendHeight, 50));
+  togFrz.addEventListener('click', () => setTimeout(sendHeight, 50));
+
 })();
 </script>
 </body>

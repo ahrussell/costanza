@@ -50,7 +50,7 @@
   }
 
   .scroll-pad {
-    padding: 22px 16px 100px;
+    padding: 22px 16px 28px;
   }
 
   .diagram {
@@ -488,21 +488,19 @@
   .result.rejected .result-detail { color: var(--reject); }
   .result.accepted .result-detail { color: var(--accept); }
 
-  /* ─── Floating action bar ──────────────────────────── */
+  /* ─── Action bar ───────────────────────────────────── */
 
   .action-bar {
-    position: fixed;
-    bottom: 14px;
-    left: 50%;
-    transform: translateX(-50%);
-    z-index: 50;
+    margin: 22px auto 0;
+    width: fit-content;
+    max-width: 100%;
     display: flex;
     gap: 6px;
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 9999px;
     padding: 5px;
-    box-shadow: 0 6px 24px rgba(0,0,0,0.10), 0 1px 4px rgba(0,0,0,0.05);
+    box-shadow: 0 6px 24px rgba(0,0,0,0.06), 0 1px 4px rgba(0,0,0,0.04);
     align-items: center;
   }
   .action-bar .btn {
@@ -712,14 +710,15 @@
     </div>
 
   </div>
-</div>
-</div>
 
-<!-- ─── Floating action bar ─────────────────────────── -->
-<div class="action-bar">
-  <button class="btn btn-secondary" id="reset-btn" type="button">↺ Reset</button>
-  <span class="status-mini" id="status-mini">Tamper with anything you like, then run.</span>
-  <button class="btn btn-primary" id="run-btn" type="button">▶ Run verification</button>
+  <!-- ─── Action bar ─────────────────────────────────── -->
+  <div class="action-bar">
+    <button class="btn btn-secondary" id="reset-btn" type="button">↺ Reset</button>
+    <span class="status-mini" id="status-mini">Tamper with anything you like, then run.</span>
+    <button class="btn btn-primary" id="run-btn" type="button">▶ Run verification</button>
+  </div>
+
+</div>
 </div>
 
 <script>
