@@ -1085,6 +1085,13 @@
   els.runBtn.addEventListener('click', () => setTimeout(sendHeight, 4500));
   els.resetBtn.addEventListener('click', () => setTimeout(sendHeight, 100));
 
+  // ResizeObserver on body so the iframe stays sized to content even
+  // mid-cascade (trial outputs appearing, etc.). sendHeight has its
+  // own dedup so this can't loop.
+  if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(sendHeight).observe(document.body);
+  }
+
 })();
 </script>
 </body>

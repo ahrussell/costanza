@@ -45,7 +45,63 @@
   }
 
   .scroll-pad {
-    padding: 22px 16px 40px;
+    padding: 22px 16px 90px; /* extra room at the bottom so the sticky bar can sit over background, not content */
+  }
+
+  /* ─── Sticky play bar (positioned by parent's scroll) ── */
+  .sticky-bar {
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 50;
+    top: 24px; /* set by JS based on parent's scroll position */
+    display: flex;
+    gap: 4px;
+    align-items: center;
+    background: rgba(255,255,255,0.96);
+    border: 1px solid var(--border);
+    border-radius: 9999px;
+    padding: 4px 4px 4px 12px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.10), 0 1px 4px rgba(0,0,0,0.06);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    font-size: 13px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s;
+    white-space: nowrap;
+  }
+  .sticky-bar.visible {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .sticky-bar .sticky-label {
+    color: var(--text-muted);
+    font-size: 12px;
+  }
+  .sticky-bar button {
+    border: 0;
+    padding: 7px 13px;
+    border-radius: 9999px;
+    background: transparent;
+    color: var(--text);
+    font-family: inherit;
+    font-size: 13px;
+    cursor: pointer;
+    min-height: 34px;
+    font-weight: 500;
+    transition: background 0.15s;
+  }
+  .sticky-bar button:hover { background: var(--surface-2); }
+  .sticky-bar .sticky-divider {
+    width: 1px;
+    height: 16px;
+    background: var(--border);
+  }
+  @media (max-width: 480px) {
+    .sticky-bar { font-size: 12px; padding: 3px 3px 3px 10px; }
+    .sticky-bar button { padding: 6px 10px; min-height: 32px; }
+    .sticky-bar .sticky-label { font-size: 11px; }
   }
 
   .diagram {
@@ -432,6 +488,16 @@
 </style>
 </head>
 <body>
+<!-- Sticky play bar — its top is set continuously by the parent page's
+     scroll handler (postMessage "indestructibility:stickyBar") so that
+     the bar tracks the visible portion of the iframe inside the parent's
+     viewport. -->
+<div class="sticky-bar" id="sticky-bar" role="region" aria-label="Playback">
+  <span class="sticky-label">▶ play</span>
+  <button type="button" data-play="apathy">apathy</button>
+  <span class="sticky-divider"></span>
+  <button type="button" data-play="sabotage">sabotage</button>
+</div>
 <div class="scroll-pad">
 <div class="diagram">
 
@@ -1052,21 +1118,58 @@
   // here (sliders + charts don't reflow), and observers can
   // create feedback loops with iframe parents.
 
-  // ─── Remote play (parent floating bar) ─────────────
-  // The blog page hosts a floating "play" bar that stays
-  // visible while the iframe is on screen. It sends us a
-  // play command for a specific panel; we just click the
-  // corresponding inline play button.
+  // ─── Sticky bar + remote play ───────────────────────
+  // The bar inside this iframe tracks the visible portion of the
+  // iframe inside the parent's viewport. The parent sends us a
+  // postMessage on every scroll tick with where to place the bar
+  // (in iframe-local coordinates). We just set top.
+  // Click handlers click the corresponding inline play button.
+  const stickyBar = document.getElementById('sticky-bar');
   window.addEventListener('message', (e) => {
     const d = e.data;
-    if (!d || typeof d !== 'object' || d.type !== 'indestructibility:play') return;
-    const id = d.panel === 'apathy'   ? 'apathy-play'
-             : d.panel === 'sabotage' ? 'sabotage-play'
-             : null;
-    if (!id) return;
-    const btn = document.getElementById(id);
-    if (btn && !btn.disabled) btn.click();
+    if (!d || typeof d !== 'object') return;
+
+    if (d.type === 'indestructibility:stickyBar') {
+      if (!stickyBar) return;
+      if (!d.visible) {
+        stickyBar.classList.remove('visible');
+        return;
+      }
+      stickyBar.style.top = d.top + 'px';
+      stickyBar.classList.add('visible');
+      return;
+    }
+
+    if (d.type === 'indestructibility:play') {
+      const id = d.panel === 'apathy'   ? 'apathy-play'
+               : d.panel === 'sabotage' ? 'sabotage-play'
+               : null;
+      if (!id) return;
+      const btn = document.getElementById(id);
+      if (btn && !btn.disabled) btn.click();
+    }
   });
+
+  if (stickyBar) {
+    stickyBar.querySelectorAll('button[data-play]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const panel = btn.getAttribute('data-play');
+        const id = panel === 'apathy'   ? 'apathy-play'
+                 : panel === 'sabotage' ? 'sabotage-play'
+                 : null;
+        if (!id) return;
+        const inline = document.getElementById(id);
+        if (inline && !inline.disabled) inline.click();
+      });
+    });
+  }
+
+  // ResizeObserver on body so we re-report height while the play
+  // animation grows the body (verdict text wraps differently, etc.).
+  // sendHeight has its own dedup, so this can't loop.
+  if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(sendHeight).observe(document.body);
+  }
 
 })();
 </script>
