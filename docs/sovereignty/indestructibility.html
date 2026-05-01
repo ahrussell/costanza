@@ -1052,6 +1052,22 @@
   // here (sliders + charts don't reflow), and observers can
   // create feedback loops with iframe parents.
 
+  // ─── Remote play (parent floating bar) ─────────────
+  // The blog page hosts a floating "play" bar that stays
+  // visible while the iframe is on screen. It sends us a
+  // play command for a specific panel; we just click the
+  // corresponding inline play button.
+  window.addEventListener('message', (e) => {
+    const d = e.data;
+    if (!d || typeof d !== 'object' || d.type !== 'indestructibility:play') return;
+    const id = d.panel === 'apathy'   ? 'apathy-play'
+             : d.panel === 'sabotage' ? 'sabotage-play'
+             : null;
+    if (!id) return;
+    const btn = document.getElementById(id);
+    if (btn && !btn.disabled) btn.click();
+  });
+
 })();
 </script>
 </body>
