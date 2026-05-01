@@ -973,7 +973,7 @@
       setTimeout(() => playSlider(slider, updater, btn, totalMs), 50);
       return;
     }
-    const stepMs = Math.max(40, Math.min(220, totalMs / Math.max(1, steps)));
+    const stepMs = Math.max(40, Math.min(400, totalMs / Math.max(1, steps)));
     let cur = start;
     const tick = () => {
       cur += 1;
@@ -994,7 +994,7 @@
       apathySlider.value = 0;
       updateApathy(0);
     }
-    playSlider(apathySlider, updateApathy, $('#apathy-play'), 4800);
+    playSlider(apathySlider, updateApathy, $('#apathy-play'), 9600);
   });
   $('#sabotage-play').addEventListener('click', () => {
     if ((+sabotageSlider.value) >= (+sabotageSlider.max)) {
