@@ -1058,6 +1058,33 @@
 
   els.resetBtn.addEventListener('click', reset);
 
+  // ── postMessage auto-resize ─────────────────────────
+  // Send our content height to the parent so it can size the
+  // iframe to fit. Dedup to prevent feedback loops.
+  let lastSentHeight = 0;
+  function sendHeight() {
+    try {
+      const h = Math.ceil(Math.max(
+        document.body.scrollHeight,
+        document.body.offsetHeight
+      ));
+      if (h <= 0 || h > 6000) return;
+      if (Math.abs(h - lastSentHeight) < 2) return;
+      lastSentHeight = h;
+      window.parent.postMessage({ type: 'autonomy:height', height: h }, '*');
+    } catch (e) { /* sandboxed parent — fine */ }
+  }
+  window.addEventListener('load', () => {
+    sendHeight();
+    setTimeout(sendHeight, 150);
+    setTimeout(sendHeight, 600);
+  });
+  window.addEventListener('resize', sendHeight);
+  // Resize after each scenario animation finishes (trial outputs etc.
+  // change body height). We piggy-back on the run/reset buttons.
+  els.runBtn.addEventListener('click', () => setTimeout(sendHeight, 4500));
+  els.resetBtn.addEventListener('click', () => setTimeout(sendHeight, 100));
+
 })();
 </script>
 </body>

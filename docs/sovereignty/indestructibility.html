@@ -1025,24 +1025,32 @@
   setOffState(false);
 
   // ─── postMessage auto-resize ───────────────────────
+  // Send our content height to the parent so it can size the
+  // iframe to fit. Dedup + cap to prevent feedback loops.
+  let lastSentHeight = 0;
   function sendHeight() {
     try {
-      const h = Math.max(
+      const h = Math.ceil(Math.max(
         document.body.scrollHeight,
-        document.body.offsetHeight,
-        document.documentElement.scrollHeight,
-        document.documentElement.offsetHeight
-      );
+        document.body.offsetHeight
+      ));
+      if (h <= 0 || h > 6000) return;
+      if (Math.abs(h - lastSentHeight) < 2) return;
+      lastSentHeight = h;
       window.parent.postMessage({ type: 'indestructibility:height', height: h }, '*');
     } catch (e) { /* sandboxed without parent — fine */ }
   }
-  window.addEventListener('load', () => { sendHeight(); setTimeout(sendHeight, 120); });
+  window.addEventListener('load', () => {
+    sendHeight();
+    setTimeout(sendHeight, 150);
+    setTimeout(sendHeight, 600);
+  });
   window.addEventListener('resize', sendHeight);
-  togNow.addEventListener('click', () => setTimeout(sendHeight, 50));
-  togFrz.addEventListener('click', () => setTimeout(sendHeight, 50));
-  if (typeof ResizeObserver !== 'undefined') {
-    new ResizeObserver(sendHeight).observe(document.body);
-  }
+  togNow.addEventListener('click', () => setTimeout(sendHeight, 80));
+  togFrz.addEventListener('click', () => setTimeout(sendHeight, 80));
+  // No ResizeObserver — content height is essentially static
+  // here (sliders + charts don't reflow), and observers can
+  // create feedback loops with iframe parents.
 
 })();
 </script>
