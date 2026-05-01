@@ -1027,14 +1027,22 @@
   // ─── postMessage auto-resize ───────────────────────
   function sendHeight() {
     try {
-      const h = document.documentElement.scrollHeight;
+      const h = Math.max(
+        document.body.scrollHeight,
+        document.body.offsetHeight,
+        document.documentElement.scrollHeight,
+        document.documentElement.offsetHeight
+      );
       window.parent.postMessage({ type: 'indestructibility:height', height: h }, '*');
     } catch (e) { /* sandboxed without parent — fine */ }
   }
-  window.addEventListener('load', sendHeight);
+  window.addEventListener('load', () => { sendHeight(); setTimeout(sendHeight, 120); });
   window.addEventListener('resize', sendHeight);
   togNow.addEventListener('click', () => setTimeout(sendHeight, 50));
   togFrz.addEventListener('click', () => setTimeout(sendHeight, 50));
+  if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(sendHeight).observe(document.body);
+  }
 
 })();
 </script>
