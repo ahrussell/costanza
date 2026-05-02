@@ -1747,6 +1747,18 @@ const CARDPAY_SMART_WALLET_ENABLED = (() => {
   catch { return false; }
 })();
 
+// Smart-Wallet debug bypass. Behind ?cardpaysmart_debug=1 (in addition
+// to ?cardpaysmart=1). When ON: skips Coinbase Onramp entirely and
+// instead instructs the donor to manually send ETH to their smart
+// wallet from any other wallet they control, then runs the same
+// donateWithMessage forwarding step. Lets us test the wallet/signing
+// half of the flow without depending on Coinbase's risk engine.
+// Strictly a dev/test affordance — never promote past the flag.
+const CARDPAY_SMART_WALLET_DEBUG = (() => {
+  try { return new URLSearchParams(location.search).has('cardpaysmart_debug'); }
+  catch { return false; }
+})();
+
 // Cloudflare Turnstile — site key (public). Worker has the matching
 // secret as a Wrangler secret. Per-click invisible challenge gates the
 // /onramp/token endpoint (requested by Coinbase support — see auth
@@ -3247,6 +3259,112 @@ async function handlePayWithCardThrowaway(usd, messageText) {
 // singleton, so connecting here uses the same instance the rest of the
 // page would use if the donor picked Smart Wallet from the wallet
 // picker — no isolation needed.
+// Production deposit path: Turnstile → mint Coinbase session token →
+// open Onramp popup → race popup-closed vs deposit-arrived. Returns
+// true if ETH landed in the smart wallet, false otherwise (and sets
+// an error status + hides the stepper on the way out).
+async function _smartWalletAwaitOnrampDeposit(smartAddress, startBalance, targetEth, usd, statusId) {
+  // 3. Turnstile challenge.
+  let turnstileToken;
+  try {
+    turnstileToken = await getTurnstileToken();
+  } catch (err) {
+    setStatus(statusId, `Could not verify human session: ${err.message}`, 'error');
+    hideStepper();
+    return false;
+  }
+
+  // 4. Mint Coinbase session token with destination = smart wallet address.
+  let sessionToken;
+  try {
+    const resp = await fetch(ONRAMP_TOKEN_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${turnstileToken}` },
+      body: JSON.stringify({ address: smartAddress, chain: 'base' }),
+    });
+    const data = await resp.json();
+    if (!resp.ok || !data.token) throw new Error(data.error || 'token mint failed');
+    sessionToken = data.token;
+  } catch (err) {
+    setStatus(statusId, `Could not start card payment: ${err.message}`, 'error');
+    hideStepper();
+    return false;
+  }
+
+  // 5. Open Coinbase popup.
+  const onrampUrl = new URL('https://pay.coinbase.com/buy/select-asset');
+  onrampUrl.searchParams.set('sessionToken', sessionToken);
+  onrampUrl.searchParams.set('presetFiatAmount', String(usd));
+  onrampUrl.searchParams.set('fiatCurrency', 'USD');
+  onrampUrl.searchParams.set('defaultAsset', 'ETH');
+  onrampUrl.searchParams.set('defaultNetwork', 'base');
+  onrampUrl.searchParams.set('defaultPaymentMethod', 'CARD');
+  onrampUrl.searchParams.set('redirectUrl', `${window.location.origin}${window.location.pathname}?onramp=success`);
+  const popup = window.open(onrampUrl.toString(), 'cbOnramp',
+    'width=460,height=720,menubar=no,toolbar=no,location=no,status=no');
+  if (!popup) {
+    setStatus(statusId, 'Browser blocked the popup. Allow popups for this site and try again.', 'error');
+    hideStepper();
+    return false;
+  }
+  setStatus(statusId, 'Pay with your card in the Coinbase window. Your message will be attached when the donation lands.', 'info');
+
+  // 6. Race popup-closed vs deposit-arrived.
+  const popupClosedPromise = new Promise(res => {
+    const t = setInterval(() => { if (popup.closed) { clearInterval(t); res('closed'); } }, 800);
+  });
+  const depositPromise = pollWalletForDeposit(smartAddress, startBalance, targetEth);
+  let outcome;
+  try {
+    outcome = await Promise.race([popupClosedPromise, depositPromise]);
+  } catch (err) {
+    try { popup.close(); } catch {}
+    setStatus(statusId, err.message || 'Onramp timed out.', 'error');
+    hideStepper();
+    return false;
+  }
+  if (outcome === 'closed') {
+    // Brief grace period — Coinbase sometimes closes the window before
+    // the actual settlement tx confirms.
+    try {
+      await pollWalletForDeposit(smartAddress, startBalance, targetEth, 30 * 1000);
+    } catch {
+      setStatus(statusId, `Onramp window closed before payment completed. If you completed the payment, the funds will arrive at your Smart Wallet (${fmtAddr(smartAddress)}). Reload, reconnect, and we'll forward them.`, 'error');
+      hideStepper();
+      return false;
+    }
+  } else {
+    try { popup.close(); } catch {}
+  }
+  return true;
+}
+
+// Debug deposit path (?cardpaysmart_debug=1): show the smart wallet
+// address with a copy hint, instruct the donor to send ETH manually
+// from another wallet, then poll the smart wallet for arrival. Lets
+// us validate the passkey + signing + bundler-relay half of the flow
+// without going through Coinbase Onramp at all. 10-minute timeout
+// since the donor is composing a tx by hand.
+async function _smartWalletAwaitManualDeposit(smartAddress, startBalance, targetEth, statusId) {
+  const html = `
+    <strong>[DEBUG MODE]</strong> Coinbase popup skipped. Send any ETH amount
+    (≥0.0005, ideally ~${targetEth.toFixed(6)} ETH) to your Smart Wallet:
+    <br>
+    <code style="user-select:all;display:inline-block;margin:8px 0;padding:6px 10px;background:var(--surface2);border-radius:6px;font-family:var(--mono);font-size:12px;word-break:break-all;">${smartAddress}</code>
+    <br>
+    <span style="font-size:11px;color:var(--text-secondary);">Polling for deposit (10 min timeout). Once detected, you'll be prompted to sign the donation from the Smart Wallet.</span>
+  `;
+  setStatusHtml(statusId, html, 'info');
+  try {
+    await pollWalletForDeposit(smartAddress, startBalance, targetEth, 10 * 60 * 1000);
+    return true;
+  } catch (err) {
+    setStatus(statusId, err.message || 'Deposit timed out — no ETH detected at the smart wallet within 10 minutes.', 'error');
+    hideStepper();
+    return false;
+  }
+}
+
 async function handlePayWithCardSmartWallet(usd, messageText) {
   const statusId = 'donate-status';
   showStepper();
@@ -3283,78 +3401,15 @@ async function handlePayWithCardSmartWallet(usd, messageText) {
   }
   const startBalance = await provider.getBalance(smartAddress);
 
-  // 3. Turnstile challenge.
-  let turnstileToken;
-  try {
-    turnstileToken = await getTurnstileToken();
-  } catch (err) {
-    setStatus(statusId, `Could not verify human session: ${err.message}`, 'error');
-    hideStepper();
-    return;
-  }
-
-  // 4. Mint Coinbase session token with destination = smart wallet address.
-  let sessionToken;
-  try {
-    const resp = await fetch(ONRAMP_TOKEN_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${turnstileToken}` },
-      body: JSON.stringify({ address: smartAddress, chain: 'base' }),
-    });
-    const data = await resp.json();
-    if (!resp.ok || !data.token) throw new Error(data.error || 'token mint failed');
-    sessionToken = data.token;
-  } catch (err) {
-    setStatus(statusId, `Could not start card payment: ${err.message}`, 'error');
-    hideStepper();
-    return;
-  }
-
-  // 5. Open Coinbase popup.
-  const onrampUrl = new URL('https://pay.coinbase.com/buy/select-asset');
-  onrampUrl.searchParams.set('sessionToken', sessionToken);
-  onrampUrl.searchParams.set('presetFiatAmount', String(usd));
-  onrampUrl.searchParams.set('fiatCurrency', 'USD');
-  onrampUrl.searchParams.set('defaultAsset', 'ETH');
-  onrampUrl.searchParams.set('defaultNetwork', 'base');
-  onrampUrl.searchParams.set('defaultPaymentMethod', 'CARD');
-  onrampUrl.searchParams.set('redirectUrl', `${window.location.origin}${window.location.pathname}?onramp=success`);
-  const popup = window.open(onrampUrl.toString(), 'cbOnramp',
-    'width=460,height=720,menubar=no,toolbar=no,location=no,status=no');
-  if (!popup) {
-    setStatus(statusId, 'Browser blocked the popup. Allow popups for this site and try again.', 'error');
-    hideStepper();
-    return;
-  }
-  setStatus(statusId, 'Pay with your card in the Coinbase window. Your message will be attached when the donation lands.', 'info');
-
-  // 6. Race popup-closed vs deposit-arrived.
-  const popupClosedPromise = new Promise(res => {
-    const t = setInterval(() => { if (popup.closed) { clearInterval(t); res('closed'); } }, 800);
-  });
-  const depositPromise = pollWalletForDeposit(smartAddress, startBalance, targetEth);
-  let outcome;
-  try {
-    outcome = await Promise.race([popupClosedPromise, depositPromise]);
-  } catch (err) {
-    try { popup.close(); } catch {}
-    setStatus(statusId, err.message || 'Onramp timed out.', 'error');
-    hideStepper();
-    return;
-  }
-  if (outcome === 'closed') {
-    // Brief grace period — Coinbase sometimes closes the window before
-    // the actual settlement tx confirms.
-    try {
-      await pollWalletForDeposit(smartAddress, startBalance, targetEth, 30 * 1000);
-    } catch {
-      setStatus(statusId, `Onramp window closed before payment completed. If you completed the payment, the funds will arrive at your Smart Wallet (${fmtAddr(smartAddress)}). Reload, reconnect, and we'll forward them.`, 'error');
-      hideStepper();
-      return;
-    }
-  } else {
-    try { popup.close(); } catch {}
-  }
+  // Steps 3–6: get ETH into the smart wallet. Either via Coinbase
+  // Onramp (production path) or — under ?cardpaysmart_debug=1 — by
+  // having the donor send ETH manually from another wallet they
+  // control. The debug path lets us test the wallet/signing half of
+  // the flow when Coinbase is unreachable (rate-limited cards, etc).
+  const depositOk = CARDPAY_SMART_WALLET_DEBUG
+    ? await _smartWalletAwaitManualDeposit(smartAddress, startBalance, targetEth, statusId)
+    : await _smartWalletAwaitOnrampDeposit(smartAddress, startBalance, targetEth, usd, statusId);
+  if (!depositOk) return; // helper already set the error status + hid the stepper
 
   // 7. Forward via donateWithMessage from the smart wallet — second
   // passkey prompt. Smart Wallet auto-relays via bundler so we don't
