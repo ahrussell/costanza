@@ -635,7 +635,7 @@
           <span class="stat-val" id="sabotage-cum">0.000 ETH</span>
         </div>
         <p class="verdict neutral" id="sabotage-verdict">
-          Sabotage is cheap right now. The cost compounds.
+          Sabotage is advantageous right now, but the cost compounds.
         </p>
       </div>
     </div>
@@ -1032,7 +1032,7 @@
     verdict.classList.remove('neutral', 'warning', 'green', 'red');
     if (cum < SUPPRESSION_VALUE * 0.25) {
       verdict.classList.add('neutral');
-      verdict.textContent = 'Sabotage is cheap right now. The cost compounds.';
+      verdict.textContent = 'Sabotage is advantageous right now, but the cost compounds.';
       sabotage.crossLine.classList.remove('visible');
     } else if (cum < SUPPRESSION_VALUE * 0.95) {
       verdict.classList.add('warning');
@@ -1076,7 +1076,7 @@
     if (cum < SUPPRESSION_VALUE * 0.95) return 'approaching';
     return 'tipped';
   }
-  function computeDwells(maxEpochs, phaseFn) {
+  function computeDwells(maxEpochs, phaseFn, phaseTimes) {
     const counts = {};
     for (let e = 0; e <= maxEpochs; e++) {
       const p = phaseFn(e);
@@ -1084,12 +1084,16 @@
     }
     const dwells = [];
     for (let e = 0; e <= maxEpochs; e++) {
-      dwells.push(Math.min(MAX_DWELL, PHASE_TIME / counts[phaseFn(e)]));
+      const p = phaseFn(e);
+      const time = (phaseTimes && phaseTimes[p]) || PHASE_TIME;
+      dwells.push(Math.min(MAX_DWELL, time / counts[p]));
     }
     return dwells;
   }
   const apathyDwells   = computeDwells(APATHY_MAX,   apathyPhase);
-  const sabotageDwells = computeDwells(SABOTAGE_MAX, sabotagePhase);
+  /* Sabotage's "cheap" verdict ("Sabotage is cheap right now…") doesn't
+     change as the user watches; halve its phase time so we move on faster. */
+  const sabotageDwells = computeDwells(SABOTAGE_MAX, sabotagePhase, { cheap: 2000 });
 
   function playSlider(slider, updater, btn, dwellsArr) {
     if (btn.disabled) return;
