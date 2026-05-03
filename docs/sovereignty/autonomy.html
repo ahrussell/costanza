@@ -1103,12 +1103,11 @@
     if (tampered.outputs) {
       fragments.push('<strong>Outputs:</strong> the TEE signs the output bundle, so any tampering means the submission is rejected.');
     }
-    if (tampered.memory && fragments.length === 0) {
-      // memory alone doesn't reject — accepted path. Should not reach here.
-      fragments.push('Memory tamper was blocked at the hardware boundary.');
+    if (tampered.memory) {
+      fragments.push('<strong>Memory:</strong> blocked at the hardware boundary. Intel TDX encrypts the VM\'s memory with a per-VM key, so the host hypervisor sees only ciphertext. The chain-of-trust ensures only authentic firmware and kernel are running between the encryption and the program.');
     }
-    if (tampered.inference && fragments.length === 0) {
-      fragments.push('Re-running inference produces the same deterministic output. There is no attack surface here.');
+    if (tampered.inference) {
+      fragments.push('<strong>Inference:</strong> re-running produces the same deterministic output because the seed, sampling parameters, weights, and inputs are all pinned. There is no attack surface here.');
     }
     if (fragments.length === 0) {
       fragments.push('Nothing was tampered. The submission is accepted.');
