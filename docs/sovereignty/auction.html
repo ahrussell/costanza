@@ -1,0 +1,523 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>Auction & execution flow — The Human Fund</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+
+  :root {
+    --bg: #fafafa;
+    --el: #ffffff;
+    --tx: #111827;
+    --mu: #6b7280;
+    --ac: #4b9ea0;
+    --as: #c9e3e3;
+    --bd: #d1d5db;
+    --ad: #3a8183;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--tx);
+    font-family: "IBM Plex Sans", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .scroll-pad {
+    padding: 16px 14px 24px;
+  }
+
+  /* The visualization container caps how big the SVG can render so it
+     doesn't balloon on wide viewports. JS swaps the max-width based on
+     which layout is active. */
+  .viz {
+    max-width: 720px;
+    margin: 0 auto;
+    background: var(--el);
+    border: 1px solid var(--bd);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .viz.portrait { max-width: 420px; }
+
+  @media (max-width: 600px) {
+    .scroll-pad { padding: 12px 10px 20px; }
+  }
+
+  /* Reduced motion */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      transition-duration: 0.01ms !important;
+      animation-duration: 0.01ms !important;
+    }
+  }
+</style>
+</head>
+<body>
+<div class="scroll-pad">
+  <div class="viz" id="viz"></div>
+</div>
+
+<script type="module">
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'https://esm.sh/react@18.3.1';
+import { createRoot } from 'https://esm.sh/react-dom@18.3.1/client?deps=react@18.3.1';
+import { motion } from 'https://esm.sh/framer-motion@11.18.2?deps=react@18.3.1,react-dom@18.3.1';
+
+const h = React.createElement;
+
+const C = { el:'#fff', tx:'#111827', mu:'#6b7280', ac:'#4b9ea0', as:'#c9e3e3', bd:'#d1d5db', ad:'#3a8183' };
+const F = { b:'"IBM Plex Sans",system-ui,sans-serif', m:'"IBM Plex Mono",monospace' };
+const E = [.4, 0, .2, 1];
+
+const STEPS = 10;
+const INT = 6000;
+
+// 0: Bidders appear  1: Sealed bids + bonds appear  2: Bonds sent to contract
+// 3: Reveal bids     4: Lowest bid wins             5: Winner selected, bonds resolved
+// 6: TEE loads state 7: TEE outputs                 8: Outputs submitted
+// 9: Verified + paid
+const SA = [0,0,0,0,0,0,1,1,2,2];
+const AL = ['Auction','Execution','Settlement'];
+
+function polar(cx, cy, r, d) {
+  const a = (d - 90) * Math.PI / 180;
+  return [cx + r * Math.cos(a), cy + r * Math.sin(a)];
+}
+function arc(cx, cy, r, s, e) {
+  const [sx, sy] = polar(cx, cy, r, s);
+  const [ex, ey] = polar(cx, cy, r, e);
+  return `M${sx},${sy}A${r},${r},0,${e - s > 180 ? 1 : 0},1,${ex},${ey}`;
+}
+
+const descs = [
+  'A new epoch begins. Bidders prepare to compete for the right to run Costanza’s inference.',
+  'Each bidder submits a sealed bid and posts a bond to the smart contract.',
+  'Bonds are collected by the contract. The sealed bids are locked until the reveal window.',
+  'The commit window closes. Bidders reveal their bids publicly.',
+  'The lowest bid wins. Bidder A’s bid of 0.0005 ETH undercuts the others.',
+  'Losing bidders get their bonds back. The winning bid becomes the bounty, held with the winner’s bond until execution.',
+  'The winner loads the current on-chain state into a hardware-sealed Trusted Execution Environment.',
+  'The TEE runs inference and produces a diary entry, an action, and a cryptographic proof of valid computation.',
+  'The outputs are submitted to the smart contract for on-chain verification.',
+  'The contract verifies the proof, publishes the diary, executes the action, and pays the bounty and bond to the winner.',
+];
+
+// ─── Container-width responsive breakpoint ─────────────
+//
+// We watch the .viz container with a ResizeObserver. When narrower than
+// PORTRAIT_THRESHOLD we use the compact 350x340 portrait layout; otherwise
+// the wider 700x280 landscape layout. The previous code compared
+// window.innerWidth to innerHeight, which made the layout flip every time
+// the auto-resized iframe changed height — a feedback-loopy mess.
+const PORTRAIT_THRESHOLD = 560;
+
+function useContainerLayout(containerRef) {
+  const [portrait, setPortrait] = useState(false);
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const update = () => {
+      const w = el.getBoundingClientRect().width;
+      setPortrait(w > 0 && w < PORTRAIT_THRESHOLD);
+    };
+    update();
+    if (typeof ResizeObserver !== 'undefined') {
+      const ro = new ResizeObserver(update);
+      ro.observe(el);
+      return () => ro.disconnect();
+    }
+    window.addEventListener('resize', update);
+    return () => window.removeEventListener('resize', update);
+  }, [containerRef]);
+  return portrait;
+}
+
+function EpochViz() {
+  const containerRef = useRef(null);
+  const isPortrait = useContainerLayout(containerRef);
+
+  const [step, setStep] = useState(0);
+  const [playing, setPlaying] = useState(true);
+  const [progress, setProgress] = useState(0);
+  const tr = useRef();
+  const pr = useRef();
+
+  const action = useMemo(() => {
+    const p = ['Donate $42','Invest 2 ETH','Withdraw 1.5 ETH','noop'];
+    return p[Math.floor(Math.random() * p.length)];
+  }, []);
+
+  const next = useCallback(() => { setStep(s => (s + 1) % STEPS); setProgress(0); }, []);
+  const prev = useCallback(() => { setStep(s => (s - 1 + STEPS) % STEPS); setProgress(0); }, []);
+  const go = fn => () => {
+    fn();
+    if (playing) {
+      clearInterval(tr.current);
+      tr.current = setInterval(next, INT);
+      setProgress(0);
+    }
+  };
+
+  useEffect(() => {
+    if (!playing) { clearInterval(tr.current); clearInterval(pr.current); return; }
+    setProgress(0);
+    tr.current = setInterval(next, INT);
+    const tick = 100;
+    pr.current = setInterval(() => setProgress(p => Math.min(p + tick / INT, 1)), tick);
+    return () => { clearInterval(tr.current); clearInterval(pr.current); };
+  }, [playing, next]);
+
+  const act = SA[step];
+  const t = { duration: .8, ease: E };
+
+  const vW = isPortrait ? 350 : 700;
+  const vH = isPortrait ? 340 : 280;
+
+  // Landscape actor positions: [x, y, opacity] per step (0-9)
+  const PL = {
+    contract: [[350,195,1],[350,195,1],[350,195,1],[350,195,1],[350,195,1],[350,195,1],[350,195,0],[350,195,0],[440,170,1],[380,170,1]],
+    winner:   [[130,105,1],[130,105,1],[130,105,1],[130,105,1],[130,105,1],[130,105,1],[185,165,1],[185,165,1],[150,165,1],[150,165,1]],
+    bidB:     [[350,62,1],[350,62,1],[350,62,1],[350,62,1],[350,62,1],[350,62,1],[350,62,0],[350,62,0],[350,62,0],[350,62,0]],
+    bidC:     [[570,105,1],[570,105,1],[570,105,1],[570,105,1],[570,105,1],[570,105,1],[570,105,0],[570,105,0],[570,105,0],[570,105,0]],
+    bidPillA: [[130,150,0],[130,150,1],[130,150,1],[130,150,1],[130,150,1],[130,150,0],[130,150,0],[130,150,0],[130,150,0],[130,150,0]],
+    bidPillB: [[350,100,0],[350,100,1],[350,100,1],[350,100,1],[350,100,1],[350,100,0],[350,100,0],[350,100,0],[350,100,0],[350,100,0]],
+    bidPillC: [[570,150,0],[570,150,1],[570,150,1],[570,150,1],[570,150,1],[570,150,0],[570,150,0],[570,150,0],[570,150,0],[570,150,0]],
+    bondA:    [[130,185,0],[130,185,1],[310,242,1],[310,242,1],[310,242,1],[640,68,1],[640,68,1],[640,68,1],[640,68,1],[150,245,1]],
+    bondB:    [[350,135,0],[350,135,1],[350,242,1],[350,242,1],[350,242,1],[350,98,1],[350,98,0],[350,98,0],[350,98,0],[350,98,0]],
+    bondC:    [[570,185,0],[570,185,1],[390,242,1],[390,242,1],[390,242,1],[570,145,1],[570,145,0],[570,145,0],[570,145,0],[570,145,0]],
+    bounty:   [[130,150,0],[130,150,0],[130,150,0],[130,150,0],[130,150,0],[640,35,1],[640,35,1],[640,35,1],[640,35,1],[150,212,1]],
+    enclave:  [[430,165,0],[430,165,0],[430,165,0],[430,165,0],[430,165,0],[430,165,0],[430,165,1],[430,165,1],[430,165,0],[430,165,0]],
+    state:    [[90,165,0],[90,165,0],[90,165,0],[90,165,0],[90,165,0],[90,165,0],[90,165,1],[430,192,0],[430,192,0],[430,192,0]],
+    diary:    [[530,130,0],[530,130,0],[530,130,0],[530,130,0],[530,130,0],[530,130,0],[530,130,0],[600,110,1],[300,115,1],[620,115,1]],
+    actionO:  [[530,165,0],[530,165,0],[530,165,0],[530,165,0],[530,165,0],[530,165,0],[530,165,0],[600,155,1],[300,155,1],[620,155,1]],
+    proof:    [[530,200,0],[530,200,0],[530,200,0],[530,200,0],[530,200,0],[530,200,0],[530,200,0],[600,200,1],[300,195,1],[620,195,1]],
+  };
+
+  // Portrait actor positions: 350×340 viewBox
+  const PP = {
+    contract: [[175,218,1],[175,218,1],[175,218,1],[175,218,1],[175,218,1],[175,218,1],[175,218,0],[175,218,0],[175,275,1],[175,205,1]],
+    winner:   [[70,88,1],[70,88,1],[70,88,1],[70,88,1],[70,88,1],[70,88,1],[105,108,1],[105,108,1],[175,65,1],[175,65,1]],
+    bidB:     [[175,48,1],[175,48,1],[175,48,1],[175,48,1],[175,48,1],[175,48,1],[175,48,0],[175,48,0],[175,48,0],[175,48,0]],
+    bidC:     [[280,88,1],[280,88,1],[280,88,1],[280,88,1],[280,88,1],[280,88,1],[280,88,0],[280,88,0],[280,88,0],[280,88,0]],
+    bidPillA: [[70,133,0],[70,133,1],[70,133,1],[70,133,1],[70,133,1],[70,133,0],[70,133,0],[70,133,0],[70,133,0],[70,133,0]],
+    bidPillB: [[175,92,0],[175,92,1],[175,92,1],[175,92,1],[175,92,1],[175,92,0],[175,92,0],[175,92,0],[175,92,0],[175,92,0]],
+    bidPillC: [[280,133,0],[280,133,1],[280,133,1],[280,133,1],[280,133,1],[280,133,0],[280,133,0],[280,133,0],[280,133,0],[280,133,0]],
+    bondA:    [[70,163,0],[70,163,1],[142,253,1],[142,253,1],[142,253,1],[295,65,1],[295,65,1],[295,65,1],[295,65,1],[175,148,1]],
+    bondB:    [[175,120,0],[175,120,1],[175,253,1],[175,253,1],[175,253,1],[175,92,1],[175,92,0],[175,92,0],[175,92,0],[175,92,0]],
+    bondC:    [[280,163,0],[280,163,1],[208,253,1],[208,253,1],[208,253,1],[280,133,1],[280,133,0],[280,133,0],[280,133,0],[280,133,0]],
+    bounty:   [[70,133,0],[70,133,0],[70,133,0],[70,133,0],[70,133,0],[295,25,1],[295,25,1],[295,25,1],[295,25,1],[175,115,1]],
+    enclave:  [[105,220,0],[105,220,0],[105,220,0],[105,220,0],[105,220,0],[105,220,0],[105,220,1],[105,220,1],[105,220,0],[105,220,0]],
+    state:    [[105,60,0],[105,60,0],[105,60,0],[105,60,0],[105,60,0],[105,60,0],[105,60,1],[105,240,0],[105,240,0],[105,240,0]],
+    diary:    [[270,195,0],[270,195,0],[270,195,0],[270,195,0],[270,195,0],[270,195,0],[270,195,0],[270,195,1],[175,148,1],[175,255,1]],
+    actionO:  [[270,225,0],[270,225,0],[270,225,0],[270,225,0],[270,225,0],[270,225,0],[270,225,0],[270,225,1],[175,178,1],[175,285,1]],
+    proof:    [[270,255,0],[270,255,0],[270,255,0],[270,255,0],[270,255,0],[270,255,0],[270,255,0],[270,255,1],[175,208,1],[175,315,1]],
+  };
+  const P = isPortrait ? PP : PL;
+  const p = id => P[id][step];
+
+  const A = (id, ch, tx) => {
+    const [x, y, o] = p(id);
+    return h(motion.g, {
+      initial: { x, y, opacity: 0 },
+      animate: { x, y, opacity: o },
+      transition: tx || t,
+    }, ch);
+  };
+
+  // Connection lines: [x1, y1, x2, y2, visibleSteps[], dashed, accent]
+  const linesL = [
+    [130,122,310,178,[2],true,false],
+    [350,80,350,173,[2],true,false],
+    [570,122,390,178,[2],true,false],
+    [320,200,350,100,[5],false,false],
+    [380,200,570,148,[5],false,false],
+    [140,165,170,165,[6],false,false],
+    [200,165,340,165,[6],false,false],
+    [520,135,560,110,[7],false,false],
+    [520,165,560,155,[7],false,false],
+    [520,195,560,200,[7],false,false],
+    [340,115,375,155,[8],false,true],
+    [365,155,375,170,[8],false,true],
+    [372,195,375,185,[8],false,true],
+  ];
+  const linesP = [
+    [70,104,110,196,[2],true,false],
+    [175,62,175,196,[2],true,false],
+    [280,102,240,196,[2],true,false],
+    [168,245,175,95,[5],false,false],
+    [182,245,280,140,[5],false,false],
+    [105,74,105,92,[6],false,false],
+    [105,124,105,170,[6],false,false],
+    [185,205,230,195,[7],false,false],
+    [185,225,205,225,[7],false,false],
+    [185,248,198,255,[7],false,false],
+    [165,160,160,253,[8],false,true],
+    [175,190,175,253,[8],false,true],
+    [185,220,190,253,[8],false,true],
+  ];
+  const lines = isPortrait ? linesP : linesL;
+
+  // Mini ring config
+  const rc = isPortrait ? 28 : 40;
+  const ry = isPortrait ? 26 : 34;
+  const rr = isPortrait ? 15 : 17;
+  const actStart = SA.indexOf(act);
+  const actEnd = SA.lastIndexOf(act);
+  const stepsInAct = actEnd - actStart + 1;
+  const actProgress = ((step - actStart) + progress) / stepsInAct;
+
+  const bs = {
+    background: 'none',
+    border: '1px solid ' + C.bd,
+    borderRadius: '6px',
+    padding: '4px 10px',
+    cursor: 'pointer',
+    fontFamily: F.b,
+    fontSize: '13px',
+    color: C.tx,
+    display: 'inline-flex',
+    alignItems: 'center',
+    transition: 'border-color .2s',
+  };
+
+  // Toggle the .portrait class on the container so CSS can adjust max-width
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    el.classList.toggle('portrait', isPortrait);
+  }, [isPortrait]);
+
+  return h('div', { ref: containerRef, className: 'viz' + (isPortrait ? ' portrait' : '') },
+    h('svg', {
+      viewBox: `0 0 ${vW} ${vH}`,
+      width: '100%',
+      style: { display: 'block', aspectRatio: `${vW}/${vH}` },
+    },
+      h('defs', null,
+        h('marker', { id:'arr', viewBox:'0 0 10 10', refX:9, refY:5, markerWidth:5, markerHeight:5, orient:'auto' },
+          h('path', { d:'M0,2 L8,5 L0,8', fill:'none', stroke:C.mu, strokeWidth:1.5, strokeLinecap:'round' })),
+        h('marker', { id:'arrA', viewBox:'0 0 10 10', refX:9, refY:5, markerWidth:5, markerHeight:5, orient:'auto' },
+          h('path', { d:'M0,2 L8,5 L0,8', fill:'none', stroke:C.ac, strokeWidth:1.5, strokeLinecap:'round' }))),
+
+      // Mini ring with progress fill
+      ...AL.map((_, i) => {
+        const span = 360 / 3, s = i * span + 5, e = (i + 1) * span - 5;
+        const isAct = act === i;
+        const bg = h(motion.path, {
+          key: 'rbg' + i,
+          d: arc(rc, ry, rr, s, e),
+          fill: 'none',
+          strokeLinecap: 'round',
+          animate: { stroke: C.bd, strokeWidth: isAct ? 2.5 : 1.2, opacity: isAct ? .25 : .15 },
+          transition: { duration: .3 },
+          style: { cursor: 'pointer' },
+          onClick: go(() => { const f = SA.indexOf(i); if (f >= 0) setStep(f); }),
+        });
+        if (!isAct) return bg;
+        const fillEnd = s + (e - s) * actProgress;
+        const fillArc = fillEnd > s + 1 ? h('path', {
+          key: 'rfill' + i,
+          d: arc(rc, ry, rr, s, Math.min(fillEnd, e)),
+          fill: 'none',
+          stroke: C.ac,
+          strokeWidth: 2.5,
+          strokeLinecap: 'round',
+          style: { cursor: 'pointer' },
+          onClick: go(() => { const f = SA.indexOf(i); if (f >= 0) setStep(f); }),
+        }) : null;
+        return h('g', { key: 'rg' + i }, bg, fillArc);
+      }),
+      h(motion.text, {
+        x: rc + rr + 6, y: ry, key: 'al' + act, dominantBaseline: 'central',
+        fontFamily: F.m, fontSize: 8.5, fill: C.mu, letterSpacing: '0.05em', opacity: .6,
+        initial: { opacity: 0 }, animate: { opacity: .6 }, transition: { duration: .25 },
+      }, AL[act].toUpperCase()),
+
+      // Connection lines
+      ...lines.map((l, i) => {
+        const vis = l[4].includes(step);
+        return h(motion.line, {
+          key: 'ln' + i, x1: l[0], y1: l[1], x2: l[2], y2: l[3],
+          stroke: l[6] ? C.ac : C.mu, strokeWidth: 1, strokeDasharray: l[5] ? '4 3' : undefined,
+          markerEnd: l[6] ? 'url(#arrA)' : 'url(#arr)',
+          animate: { opacity: vis ? .4 : 0 }, transition: { duration: .3, delay: vis ? .3 : 0 },
+        });
+      }),
+
+      // ── ACTORS ──
+
+      A('contract', h('g', null,
+        h('rect', { x:-65, y:-22, width:130, height:44, rx:8, fill:C.el, stroke:C.bd, strokeWidth:1.3 }),
+        h('text', { textAnchor:'middle', dominantBaseline:'central', fontFamily:F.b, fontSize:11, fontWeight:500, fill:C.tx }, 'Smart Contract'))),
+
+      A('winner', h('g', null,
+        h(motion.circle, { r:16, strokeWidth:1.3,
+          animate: { fill: step >= 4 ? C.as : C.el, stroke: step >= 4 ? C.ac : C.bd }, transition: { duration: .4 } }),
+        h('text', { textAnchor:'middle', y:1, dominantBaseline:'central', fontFamily:F.b, fontSize:11, fontWeight:600,
+          fill: step >= 4 ? C.ac : C.mu }, 'A'),
+        step <= 5 ? h('text', { textAnchor: isPortrait ? 'start' : 'end', x: isPortrait ? 22 : -22, y:1, dominantBaseline:'central', fontFamily:F.b, fontSize:9.5, fontWeight:500, fill:C.tx },
+          step <= 4 ? 'Bidder A' : 'Winner')
+        : h('text', { textAnchor:'middle', y:26, fontFamily:F.b, fontSize:9.5, fontWeight:500, fill:C.tx }, 'Winner'))),
+
+      A('bidB', h('g', null,
+        h('circle', { r:14, fill:C.el, stroke:C.bd, strokeWidth:1.3 }),
+        h('text', { textAnchor:'middle', y:1, dominantBaseline:'central', fontFamily:F.b, fontSize:10, fontWeight:600, fill:C.mu }, 'B'),
+        h('text', { textAnchor:'middle', y:-22, fontFamily:F.b, fontSize:9, fill:C.tx }, 'Bidder B'))),
+
+      A('bidC', h('g', null,
+        h('circle', { r:14, fill:C.el, stroke:C.bd, strokeWidth:1.3 }),
+        h('text', { textAnchor:'middle', y:1, dominantBaseline:'central', fontFamily:F.b, fontSize:10, fontWeight:600, fill:C.mu }, 'C'),
+        h('text', { textAnchor: isPortrait ? 'end' : 'start', x: isPortrait ? -22 : 22, y:1, dominantBaseline:'central', fontFamily:F.b, fontSize:9, fill:C.tx }, 'Bidder C'))),
+
+      A('bidPillA', h('g', null,
+        h(motion.rect, { x:-38, y:-11, width:76, height:22, rx:11, strokeWidth:1,
+          animate: { fill: step <= 2 ? '#374151' : step === 3 ? C.el : C.as, stroke: step <= 2 ? '#1f2937' : step === 3 ? C.bd : C.ac },
+          transition: { duration: .5 } }),
+        h('text', { textAnchor:'middle', dominantBaseline:'central', fontFamily:F.m, fontSize:8, fontWeight: step <= 2 ? 400 : 500,
+          fill: step <= 2 ? '#d1d5db' : step === 3 ? C.tx : C.ad },
+          step <= 2 ? '🔒 sealed' : '0.0005 ETH'),
+        step === 4 ? h(motion.text, { textAnchor:'middle', y:18, fontFamily:F.m, fontSize:7.5, fontWeight:500, fill:C.ac,
+          initial: { opacity: 0 }, animate: { opacity: 1 }, transition: { delay: .3, duration: .3 } }, 'lowest bid wins') : null)),
+
+      A('bidPillB', h('g', null,
+        h(motion.rect, { x:-38, y:-11, width:76, height:22, rx:11, strokeWidth:1,
+          animate: { fill: step <= 2 ? '#374151' : C.el, stroke: step <= 2 ? '#1f2937' : C.bd }, transition: { duration: .5 } }),
+        h('text', { textAnchor:'middle', dominantBaseline:'central', fontFamily:F.m, fontSize:8,
+          fill: step <= 2 ? '#d1d5db' : C.tx }, step <= 2 ? '🔒 sealed' : '0.0008 ETH'))),
+
+      A('bidPillC', h('g', null,
+        h(motion.rect, { x:-38, y:-11, width:76, height:22, rx:11, strokeWidth:1,
+          animate: { fill: step <= 2 ? '#374151' : C.el, stroke: step <= 2 ? '#1f2937' : C.bd }, transition: { duration: .5 } }),
+        h('text', { textAnchor:'middle', dominantBaseline:'central', fontFamily:F.m, fontSize:8,
+          fill: step <= 2 ? '#d1d5db' : C.tx }, step <= 2 ? '🔒 sealed' : '0.001 ETH'))),
+
+      A('bondA', h('g', null,
+        h('rect', { x:-32, y:-9, width:64, height:18, rx:9, fill:'#fef3c7', stroke:'#f59e0b', strokeWidth:.8 }),
+        h('text', { textAnchor:'middle', dominantBaseline:'central', fontFamily:F.m, fontSize:7, fill:'#92400e' }, 'bond 0.01 ETH'),
+        step >= 5 && step < 9 ? h('text', { textAnchor:'middle', y:15, fontFamily:F.b, fontSize:6.5, fill:C.mu }, 'held') : null,
+        step === 9 ? h('text', { textAnchor:'middle', y:15, fontFamily:F.b, fontSize:6.5, fill:C.mu }, 'returned') : null)),
+
+      A('bondB', h('g', null,
+        h('rect', { x:-32, y:-9, width:64, height:18, rx:9, fill:'#fef3c7', stroke:'#f59e0b', strokeWidth:.8 }),
+        h('text', { textAnchor:'middle', dominantBaseline:'central', fontFamily:F.m, fontSize:7, fill:'#92400e' }, 'bond 0.01 ETH'))),
+
+      A('bondC', h('g', null,
+        h('rect', { x:-32, y:-9, width:64, height:18, rx:9, fill:'#fef3c7', stroke:'#f59e0b', strokeWidth:.8 }),
+        h('text', { textAnchor:'middle', dominantBaseline:'central', fontFamily:F.m, fontSize:7, fill:'#92400e' }, 'bond 0.01 ETH'))),
+
+      step <= 2 ? h(motion.text, {
+        x: isPortrait ? 175 : 350, y: isPortrait ? 275 : 268, textAnchor:'middle',
+        fontFamily:F.m, fontSize:8, fill:C.mu,
+        initial: { opacity: 0 }, animate: { opacity: 1 }, transition: { delay: .3, duration: .3 },
+      }, 'Max bid: 0.002 ETH') : null,
+
+      A('enclave', h('g', null,
+        h('rect', { x:-75, y:-50, width:150, height:100, rx:8, fill:'#f0fafa', stroke:C.ac, strokeWidth:1.3, strokeDasharray:'6 3' }),
+        h('text', { textAnchor:'middle', y:-36, fontFamily:F.m, fontSize:9, fontWeight:600, fill:C.ac }, 'Secure Computing Enclave'),
+        h('g', { transform:'translate(0,-10)' },
+          h('rect', { x:-7, y:-1, width:14, height:10, rx:2, fill:'none', stroke:C.ac, strokeWidth:1 }),
+          h('path', { d:'M-3.5,-1 V-5 A3.5,3.5,0,0,1,3.5,-5 V-1', fill:'none', stroke:C.ac, strokeWidth:1 })),
+        h('text', { textAnchor:'middle', y:13, fontFamily:F.m, fontSize:7, fill:C.mu }, '70B LLM + dm-verity rootfs'),
+        h('text', { textAnchor:'middle', y:24, fontFamily:F.m, fontSize:7, fill:C.mu }, 'Intel TDX hardware'),
+        step === 7 ? h(motion.text, { textAnchor:'middle', y:36, fontFamily:F.m, fontSize:7, fontWeight:500, fill:C.ac,
+          initial: { opacity: 0 }, animate: { opacity: 1 }, transition: { delay: .3, duration: .4 } }, 'running inference…') : null)),
+
+      A('state', h('g', null,
+        h('rect', { x:-50, y:-14, width:100, height:28, rx:6, fill:C.el, stroke:C.bd, strokeWidth:1 }),
+        h('text', { textAnchor:'middle', dominantBaseline:'central', fontFamily:F.m, fontSize:9.5, fill:C.tx }, 'On-chain State'))),
+
+      A('diary', h('g', null,
+        h(motion.rect, { x:-40, y:-12, width:80, height:24, rx:12,
+          animate: { fill: step >= 9 ? C.as : step >= 8 ? '#f0fafa' : C.el, stroke: step >= 8 ? C.ac : C.bd },
+          transition: { duration: .3 }, strokeWidth:1 }),
+        h('text', { textAnchor:'middle', dominantBaseline:'central', fontFamily:F.m, fontSize:8.5, fill: step >= 8 ? C.ad : C.tx }, 'Diary entry'),
+        step === 9 ? h(motion.text, { textAnchor:'middle', y:18, fontFamily:F.m, fontSize:7, fill:C.ac,
+          initial: { opacity: 0 }, animate: { opacity: 1 }, transition: { delay: .4, duration: .3 } }, '✓ published') : null)),
+
+      A('actionO', h('g', null,
+        h(motion.rect, { x:-65, y:-12, width:130, height:24, rx:12,
+          animate: { fill: step >= 9 ? C.as : '#f0fafa', stroke: C.ac }, strokeWidth:1 }),
+        h('text', { textAnchor:'middle', dominantBaseline:'central', fontFamily:F.m, fontSize:8.5, fontWeight:500, fill:C.ad }, 'Action: ' + action),
+        step === 9 ? h(motion.text, { textAnchor:'middle', y:18, fontFamily:F.m, fontSize:7, fill:C.ac,
+          initial: { opacity: 0 }, animate: { opacity: 1 }, transition: { delay: .7, duration: .3 } }, '✓ executed') : null)),
+
+      A('proof', h('g', null,
+        h(motion.rect, { x:-72, y:-12, width:144, height:24, rx:12,
+          animate: { fill: step >= 9 ? C.as : step >= 8 ? '#f0fafa' : C.el, stroke: step >= 8 ? C.ac : C.bd },
+          transition: { duration: .3 }, strokeWidth:1 }),
+        h('text', { textAnchor:'middle', dominantBaseline:'central', fontFamily:F.m, fontSize:8, fill: step >= 8 ? C.ad : C.tx }, 'Proof of valid computation'),
+        step === 9 ? h(motion.text, { textAnchor:'middle', y:18, fontFamily:F.m, fontSize:7, fill:C.ac,
+          initial: { opacity: 0 }, animate: { opacity: 1 }, transition: { delay: .2, duration: .3 } }, '✓ verified') : null)),
+
+      A('bounty', h('g', null,
+        h('rect', { x:-40, y:-11, width:80, height:22, rx:11, fill:C.ac, opacity:.12 }),
+        h('text', { textAnchor:'middle', dominantBaseline:'central', fontFamily:F.m, fontSize:9, fontWeight:600, fill:C.ac }, '0.0005 ETH'),
+        h('text', { textAnchor:'middle', y:19, fontFamily:F.b, fontSize:7.5, fill:C.mu }, step === 9 ? 'paid' : 'bounty')),
+        step === 9 ? { duration: .9, ease: E, delay: .3 } : t),
+    ),
+
+    // Description text
+    h('div', { style: { padding: '10px 14px 6px', minHeight: isPortrait ? '78px' : '65px' } },
+      h(motion.p, {
+        key: 'd' + step,
+        style: { margin: 0, fontFamily: F.b, fontSize: isPortrait ? '13px' : '14px', lineHeight: '1.5', color: C.mu },
+        initial: { opacity: 0 }, animate: { opacity: 1 }, transition: { duration: .3 },
+      }, descs[step])),
+
+    // Controls
+    h('div', { style: {
+      display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
+      padding: '6px 14px 12px', borderTop: '1px solid ' + C.bd,
+    } },
+      h('button', { onClick: go(prev), style: bs, title: 'Previous', 'aria-label': 'Previous step' }, '◀'),
+      h('button', { onClick: () => setPlaying(q => !q), style: { ...bs, minWidth: '32px', justifyContent: 'center' },
+        title: playing ? 'Pause' : 'Play', 'aria-label': playing ? 'Pause' : 'Play' }, playing ? '⏸' : '▶'),
+      h('button', { onClick: go(next), style: bs, title: 'Next', 'aria-label': 'Next step' }, '▶'),
+      h('span', { style: { fontFamily: F.m, fontSize: '11px', color: C.mu, marginLeft: '4px', letterSpacing: '0.03em' } },
+        `${step + 1} of ${STEPS} · ${AL[SA[step]]}`)),
+  );
+}
+
+const root = createRoot(document.getElementById('viz'));
+root.render(h(EpochViz));
+
+// ─── postMessage auto-resize ─────────────────────────
+// Same pattern as the autonomy / indestructibility iframes: ping the
+// parent with our content height so it can grow the iframe to fit.
+let lastSentHeight = 0;
+function sendHeight() {
+  try {
+    const h = Math.ceil(Math.max(
+      document.body.scrollHeight,
+      document.body.offsetHeight
+    ));
+    if (h <= 0 || h > 6000) return;
+    if (Math.abs(h - lastSentHeight) < 2) return;
+    lastSentHeight = h;
+    window.parent.postMessage({ type: 'auction:height', height: h }, '*');
+  } catch (e) { /* sandboxed parent — fine */ }
+}
+window.addEventListener('load', () => {
+  sendHeight();
+  setTimeout(sendHeight, 200);
+  setTimeout(sendHeight, 800);
+});
+window.addEventListener('resize', sendHeight);
+if (typeof ResizeObserver !== 'undefined') {
+  new ResizeObserver(sendHeight).observe(document.body);
+}
+
+// Tell the parent we're ready (for parent-driven coordination if needed).
+try {
+  window.parent.postMessage({ type: 'auction:ready' }, '*');
+} catch (e) {}
+</script>
+</body>
+</html>
