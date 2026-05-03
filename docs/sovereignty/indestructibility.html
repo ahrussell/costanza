@@ -286,14 +286,22 @@
     height: auto;
     max-height: 260px;
   }
-  .chart text { font-size: 10px; fill: var(--text-subtle); user-select: none; }
+  .chart text { font-size: 12px; fill: var(--text-subtle); user-select: none; }
+  /* Mobile: SVG scales down with the container, so bump the in-viewBox
+     font-size to keep on-screen text readable. */
+  @media (max-width: 600px) {
+    .chart text { font-size: 16px; }
+  }
   .chart .axis-line { stroke: var(--border); stroke-width: 1; }
   .chart .grid-line { stroke: var(--border); stroke-width: 1; stroke-dasharray: 2 3; opacity: 0.5; }
   .chart .threshold {
     stroke-width: 1.5;
     stroke-dasharray: 5 4;
   }
-  .chart .threshold-label { font-size: 10px; font-weight: 600; }
+  .chart .threshold-label { font-size: 12px; font-weight: 600; }
+  @media (max-width: 600px) {
+    .chart .threshold-label { font-size: 15px; }
+  }
   .chart .cap-line {
     stroke: var(--text-subtle);
     stroke-width: 1;
@@ -337,10 +345,13 @@
   }
   .chart .crossover.visible { opacity: 0.8; }
   .chart .crossover-tag {
-    font-size: 10px;
+    font-size: 12px;
     font-weight: 600;
     opacity: 0;
     transition: opacity 0.3s;
+  }
+  @media (max-width: 600px) {
+    .chart .crossover-tag { font-size: 15px; }
   }
   .chart .crossover-tag.visible { opacity: 1; }
 
@@ -691,7 +702,7 @@
 
   // ─── SVG chart geometry ─────────────────────────────
   const W = 480, H = 240;
-  const PAD = { top: 18, right: 14, bottom: 26, left: 46 };
+  const PAD = { top: 24, right: 14, bottom: 38, left: 56 };
   const PW = W - PAD.left - PAD.right;
   const PH = H - PAD.top  - PAD.bottom;
 
@@ -918,27 +929,27 @@
       d: buildPath(cumPts),
     }));
 
-    // Legends
+    // Legends — sized for the larger viewBox font (12-16px).
     chart.appendChild(svg('rect', {
-      x: PAD.left + PW - 122, y: PAD.top + 4, width: 118, height: 32,
+      x: PAD.left + PW - 158, y: PAD.top + 4, width: 154, height: 46,
       rx: 4, fill: 'white', stroke: '#e5e7eb', 'stroke-width': 1,
     }));
     chart.appendChild(svg('line', {
-      x1: PAD.left + PW - 116, y1: PAD.top + 13,
-      x2: PAD.left + PW - 100, y2: PAD.top + 13,
+      x1: PAD.left + PW - 150, y1: PAD.top + 16,
+      x2: PAD.left + PW - 130, y2: PAD.top + 16,
       stroke: 'var(--sabotage-cum)', 'stroke-width': 2.5,
     }));
     chart.appendChild(svg('text', {
-      x: PAD.left + PW - 95, y: PAD.top + 16, 'font-size': 10,
+      x: PAD.left + PW - 124, y: PAD.top + 19,
       fill: 'var(--text-muted)',
     }, 'cumulative cost'));
     chart.appendChild(svg('line', {
-      x1: PAD.left + PW - 116, y1: PAD.top + 27,
-      x2: PAD.left + PW - 100, y2: PAD.top + 27,
+      x1: PAD.left + PW - 150, y1: PAD.top + 36,
+      x2: PAD.left + PW - 130, y2: PAD.top + 36,
       stroke: 'var(--sabotage-curve)', 'stroke-width': 2, opacity: 0.7,
     }));
     chart.appendChild(svg('text', {
-      x: PAD.left + PW - 95, y: PAD.top + 30, 'font-size': 10,
+      x: PAD.left + PW - 124, y: PAD.top + 39,
       fill: 'var(--text-muted)',
     }, 'this epoch\'s bond'));
 
