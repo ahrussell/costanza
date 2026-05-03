@@ -758,10 +758,6 @@
     <div class="step" data-step="verify" id="step-verify">
       <p class="step-title">On-chain verifier</p>
       <ul class="check-list" id="checks">
-        <li class="check-item" data-check="signature">
-          <span class="check-icon">?</span>
-          <span>Bundle is signed by Intel TEE hardware</span>
-        </li>
         <li class="check-item" data-check="fingerprint">
           <span class="check-icon">?</span>
           <span>System fingerprint is on the approved list</span>
@@ -772,7 +768,7 @@
         </li>
         <li class="check-item" data-check="outputHash">
           <span class="check-icon">?</span>
-          <span>Submitted outputs are TEE-signed</span>
+          <span>Submitted output bundle is signed by Intel TEE hardware</span>
         </li>
       </ul>
     </div>
@@ -1023,20 +1019,13 @@
 
     // 5. Verifier
     await announceStep(getStep('verify'),
-      'Verifier runs the four checks …', 400);
+      'Verifier runs the three checks …', 400);
 
     // Determine which checks fail based on tamper state
-    const sigPass    = true; // we do not model signature-key compromise
     const fpPass     = !tampered.image;
     const inHashPass = !tampered.inputs;
     const outHashPass= !tampered.outputs;
 
-    let firstFailReason = null;
-    if (!fpPass)      firstFailReason = firstFailReason || 'system fingerprint not on approved list';
-    if (!inHashPass)  firstFailReason = firstFailReason || 'input-hash mismatch';
-    if (!outHashPass) firstFailReason = firstFailReason || 'output-hash mismatch';
-
-    await fireCheck('signature', sigPass, 'invalid hardware signature');
     await fireCheck('fingerprint', fpPass, 'system fingerprint not on approved list');
     if (!fpPass) await flagCaught('image');
     await fireCheck('inputHash', inHashPass, 'input-hash mismatch');
@@ -1052,7 +1041,7 @@
     flowArrowFrom(getStep('verify'));
     await sleep(300);
 
-    const anyFail = !(sigPass && fpPass && inHashPass && outHashPass);
+    const anyFail = !(fpPass && inHashPass && outHashPass);
     if (anyFail) {
       els.result.classList.add('rejected');
       els.stamp.textContent = 'REJECTED';
@@ -1078,7 +1067,7 @@
       notes.push('<strong>Re-running inference yields the same output</strong> because the seed, sampling parameters, weights, and inputs are all pinned. Verified across the test fixture battery.');
     }
     if (notes.length === 0) {
-      return 'No interference detected. The agent\'s output is accepted by all four checks.';
+      return 'No interference detected. The agent\'s output is accepted by all three checks.';
     }
     return notes.join('<br><br>');
   }
