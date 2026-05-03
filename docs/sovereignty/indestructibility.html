@@ -1079,6 +1079,7 @@
   // the user can read them. Mirrors the verdict thresholds in
   // updateApathy / updateSabotage.
   const PHASE_TIME = 4000;
+  const MAX_DWELL  = 2000; /* cap so single-epoch phases (e.g. apathy's "On the edge") don't stall the user */
 
   function apathyPhase(epoch) {
     const bid = bidAt(epoch);
@@ -1102,7 +1103,7 @@
     }
     const dwells = [];
     for (let e = 0; e <= maxEpochs; e++) {
-      dwells.push(PHASE_TIME / counts[phaseFn(e)]);
+      dwells.push(Math.min(MAX_DWELL, PHASE_TIME / counts[phaseFn(e)]));
     }
     return dwells;
   }
