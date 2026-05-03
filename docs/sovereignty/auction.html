@@ -153,33 +153,32 @@ const descs = [
   'The contract verifies the proof, publishes the diary, executes the action, and pays the bounty and bond to the winner.',
 ];
 
-// Container-width-based portrait/landscape switch.
+// Iframe-width-based portrait/landscape switch.
+//
+// We measure window.innerWidth (= the iframe's content width) instead of the
+// .viz container's bounding rect, because .viz.portrait has max-width: 480px
+// and would lock us in portrait once the user widened the viewport again
+// (the container's width never grows back past 480, so the threshold never
+// trips). window.innerWidth tracks the actual iframe size and reacts to
+// resize events instantly.
 const PORTRAIT_THRESHOLD = 620;
 
-function useContainerLayout(containerRef) {
-  const [portrait, setPortrait] = useState(false);
+function useWindowLayout() {
+  const [portrait, setPortrait] = useState(() =>
+    typeof window !== 'undefined' && window.innerWidth < PORTRAIT_THRESHOLD
+  );
   useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    const update = () => {
-      const w = el.getBoundingClientRect().width;
-      setPortrait(w > 0 && w < PORTRAIT_THRESHOLD);
-    };
+    const update = () => setPortrait(window.innerWidth < PORTRAIT_THRESHOLD);
     update();
-    if (typeof ResizeObserver !== 'undefined') {
-      const ro = new ResizeObserver(update);
-      ro.observe(el);
-      return () => ro.disconnect();
-    }
     window.addEventListener('resize', update);
     return () => window.removeEventListener('resize', update);
-  }, [containerRef]);
+  }, []);
   return portrait;
 }
 
 function EpochViz() {
   const containerRef = useRef(null);
-  const isPortrait = useContainerLayout(containerRef);
+  const isPortrait = useWindowLayout();
 
   const [step, setStep] = useState(0);
   const [playing, setPlaying] = useState(true);
@@ -322,11 +321,8 @@ function EpochViz() {
   const stepsInAct = actEnd - actStart + 1;
   const actProgress = ((step - actStart) + progress) / stepsInAct;
 
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    el.classList.toggle('portrait', isPortrait);
-  }, [isPortrait]);
+  // (className below already encodes the portrait state; no separate
+  // class-toggling effect needed.)
 
   return h('div', { ref: containerRef, className: 'viz' + (isPortrait ? ' portrait' : '') },
     h('div', { className: 'viz-svg-wrap' },
