@@ -1058,7 +1058,7 @@
       els.stamp.textContent = 'REJECTED';
       const why = describeRejection();
       els.resultDetail.innerHTML = why;
-      setMini('Rejected. The agent\'s decision is preserved.');
+      setMini('Rejected. The adversary can\'t submit a tampered decision.');
     } else {
       els.result.classList.add('accepted');
       els.stamp.textContent = 'ACCEPTED';
