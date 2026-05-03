@@ -488,8 +488,8 @@
   .power.denied .power-name { text-decoration: line-through; opacity: 0.85; }
 
   .frozen-note {
-    margin-top: 22px;
-    padding: 10px 12px;
+    margin-top: 32px;
+    padding: 12px 14px;
     background: var(--accept-bg);
     border: 1px solid var(--accept-border);
     border-radius: 6px;
@@ -561,7 +561,7 @@
         <div class="slider-controls">
           <input type="range" class="slider-input" id="apathy-slider"
                  min="0" max="30" value="0">
-          <button class="play-btn" id="apathy-play" type="button"><svg class="icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"/></svg> Play</button>
+          <button class="play-btn" id="apathy-play" type="button"><svg class="icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"/></svg> <span class="play-label">Play</span></button>
         </div>
       </div>
 
@@ -604,7 +604,7 @@
         <div class="slider-controls">
           <input type="range" class="slider-input" id="sabotage-slider"
                  min="0" max="50" value="0">
-          <button class="play-btn" id="sabotage-play" type="button"><svg class="icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"/></svg> Play</button>
+          <button class="play-btn" id="sabotage-play" type="button"><svg class="icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"/></svg> <span class="play-label">Play</span></button>
         </div>
       </div>
 
@@ -1065,7 +1065,8 @@
   function playSlider(slider, updater, btn, totalMs) {
     if (btn.disabled) return;
     btn.disabled = true;
-    btn.textContent = '<svg class="icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"/></svg> Playing…';
+    const label = btn.querySelector('.play-label');
+    if (label) label.textContent = 'Playing…';
     const start = +slider.value;
     const target = +slider.max;
     const steps  = target - start;
@@ -1081,7 +1082,7 @@
       cur += 1;
       if (cur > target) {
         btn.disabled = false;
-        btn.textContent = '▶ Replay';
+        if (label) label.textContent = 'Replay';
         return;
       }
       slider.value = cur;
