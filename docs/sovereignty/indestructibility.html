@@ -175,6 +175,12 @@
     margin: 0 0 14px;
     line-height: 1.5;
   }
+  /* On desktop the two cases are side-by-side; pin the description
+     to the height of the longer (sabotage) one so the slider rows
+     and charts below it align horizontally across panels. */
+  @media (min-width: 721px) {
+    .panel-desc { min-height: 7.5em; }
+  }
 
   /* ─── Slider ──────────────────────────────────────── */
 
