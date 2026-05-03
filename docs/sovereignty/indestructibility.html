@@ -572,7 +572,7 @@
         </div>
         <div class="slider-controls">
           <input type="range" class="slider-input" id="apathy-slider"
-                 min="0" max="30" value="0">
+                 min="0" max="15" value="0">
           <button class="play-btn" id="apathy-play" type="button"><svg class="icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"/></svg> <span class="play-label">Play</span></button>
         </div>
       </div>
@@ -615,7 +615,7 @@
         </div>
         <div class="slider-controls">
           <input type="range" class="slider-input" id="sabotage-slider"
-                 min="0" max="50" value="0">
+                 min="0" max="15" value="0">
           <button class="play-btn" id="sabotage-play" type="button"><svg class="icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"/></svg> <span class="play-label">Play</span></button>
         </div>
       </div>
@@ -697,9 +697,9 @@
   const TREASURY = 1.0;         // ETH (illustrative; the cap scales with the actual treasury)
   const BID_CAP = TREASURY * 0.10; // 0.10 ETH = 10% of treasury
   const COMPUTE_COST = 0.02;    // ETH (illustrative threshold)
-  const APATHY_MAX = 30;        // epochs shown on the apathy chart
-  const SABOTAGE_MAX = 50;      // epochs shown on the sabotage chart
-  const SUPPRESSION_VALUE = 1.0; // ETH — what it's "worth" to silence the agent (= treasury, illustrative)
+  const APATHY_MAX = 15;        // epochs shown on the apathy chart
+  const SABOTAGE_MAX = 15;      // epochs shown on the sabotage chart
+  const SUPPRESSION_VALUE = 0.1; // ETH — what it's "worth" to silence the agent
 
   // ─── Math ──────────────────────────────────────────
   function bidAt(missed) {
@@ -758,7 +758,7 @@
   // ─── Apathy chart ──────────────────────────────────
   function setupApathyChart() {
     const chart = $('#apathy-chart');
-    const yMax = 0.115;
+    const yMax = 0.05;
 
     // Compute curve points
     const pts = [];
@@ -770,7 +770,6 @@
 
     const baselineY = PAD.top + PH;
     const thresholdY = PAD.top + PH - (COMPUTE_COST / yMax) * PH;
-    const capY       = PAD.top + PH - (BID_CAP / yMax) * PH;
 
     // Background fill under curve
     chart.appendChild(svg('path', {
@@ -788,8 +787,8 @@
       x1: PAD.left, y1: PAD.top, x2: PAD.left, y2: baselineY,
     }));
 
-    // Y axis labels (0, 0.05, 0.10)
-    [0, 0.025, 0.05, 0.075, 0.10].forEach(v => {
+    // Y axis labels
+    [0, 0.01, 0.02, 0.03, 0.04, 0.05].forEach(v => {
       const y = PAD.top + PH - (v / yMax) * PH;
       chart.appendChild(svg('line', {
         class: 'grid-line',
@@ -797,7 +796,7 @@
       }));
       chart.appendChild(svg('text', {
         x: PAD.left - 6, y: y + 3, 'text-anchor': 'end',
-      }, v.toFixed(3) + ''));
+      }, v.toFixed(2) + ''));
     });
     chart.appendChild(svg('text', {
       x: PAD.left - 30, y: PAD.top - 6, 'text-anchor': 'start',
@@ -805,7 +804,7 @@
     }, 'ETH'));
 
     // X axis labels
-    [0, 5, 10, 15, 20, 25, 30].forEach(e => {
+    [0, 5, 10, 15].forEach(e => {
       const x = PAD.left + (e / APATHY_MAX) * PW;
       chart.appendChild(svg('text', {
         x: x, y: baselineY + 18, 'text-anchor': 'middle',
@@ -816,14 +815,7 @@
       'text-anchor': 'middle', 'font-weight': '600',
     }, 'epochs of silence'));
 
-    // Cap line
-    chart.appendChild(svg('line', {
-      class: 'cap-line',
-      x1: PAD.left, y1: capY, x2: PAD.left + PW, y2: capY,
-    }));
-    chart.appendChild(svg('text', {
-      x: PAD.left + PW - 4, y: capY - 3, 'text-anchor': 'end',
-    }, 'cap (treasury × 10%)'));
+    // (cap line removed — with 15 epochs the curve doesn't reach the cap)
 
     // Threshold (compute cost)
     chart.appendChild(svg('line', {
@@ -866,7 +858,7 @@
   // ─── Sabotage chart ────────────────────────────────
   function setupSabotageChart() {
     const chart = $('#sabotage-chart');
-    const yMax = 12; // ETH max for cumulative
+    const yMax = 0.4; // ETH max for cumulative — sized for SUPPRESSION_VALUE=0.1 + headroom
 
     const cumPts = [];
     const singlePts = [];
@@ -894,7 +886,7 @@
       x1: PAD.left, y1: PAD.top, x2: PAD.left, y2: baselineY }));
 
     // Y axis grid
-    [0, 1, 3, 6, 9, 12].forEach(v => {
+    [0, 0.1, 0.2, 0.3, 0.4].forEach(v => {
       const y = PAD.top + PH - (v / yMax) * PH;
       chart.appendChild(svg('line', {
         class: 'grid-line',
@@ -902,7 +894,7 @@
       }));
       chart.appendChild(svg('text', {
         x: PAD.left - 6, y: y + 3, 'text-anchor': 'end',
-      }, v + ''));
+      }, v.toFixed(1)));
     });
     chart.appendChild(svg('text', {
       x: PAD.left - 30, y: PAD.top - 6, 'text-anchor': 'start',
@@ -910,7 +902,7 @@
     }, 'ETH'));
 
     // X axis labels
-    [0, 10, 20, 30, 40, 50].forEach(e => {
+    [0, 5, 10, 15].forEach(e => {
       const x = PAD.left + (e / SABOTAGE_MAX) * PW;
       chart.appendChild(svg('text', {
         x: x, y: baselineY + 18, 'text-anchor': 'middle',
@@ -1016,13 +1008,9 @@
       verdict.classList.add('warning');
       verdict.textContent = 'On the edge. The next silent epoch tips it.';
       apathy.crossLine.classList.add('visible');
-    } else if (bid < BID_CAP * 0.99) {
-      verdict.classList.add('green');
-      verdict.textContent = 'Profitable. Any rational prover bids — the agent runs.';
-      apathy.crossLine.classList.add('visible');
     } else {
       verdict.classList.add('green');
-      verdict.textContent = 'Bounty has hit the 10%-of-treasury cap. Profitable many times over.';
+      verdict.textContent = 'Profitable. Any rational prover bids — the agent runs.';
       apathy.crossLine.classList.add('visible');
     }
   }
@@ -1051,14 +1039,9 @@
       verdict.textContent = 'The saboteur has burned ' + fmt(cum) +
         ' ETH so far. Approaching the value they\'re trying to silence.';
       sabotage.crossLine.classList.remove('visible');
-    } else if (cum < SUPPRESSION_VALUE * 1.5) {
-      verdict.classList.add('green');
-      verdict.textContent = 'The saboteur has now spent more than the agent is worth to silence. Sabotage stops paying.';
-      sabotage.crossLine.classList.add('visible');
     } else {
       verdict.classList.add('green');
-      verdict.textContent = 'Saboteur has burned ' + fmt(cum) +
-        ' ETH — many times the value of silencing. The economic case is gone.';
+      verdict.textContent = 'The saboteur has now spent more than the agent is worth to silence.';
       sabotage.crossLine.classList.add('visible');
     }
   }
@@ -1085,15 +1068,13 @@
     const bid = bidAt(epoch);
     if (bid < COMPUTE_COST * 0.95) return 'red';
     if (bid < COMPUTE_COST * 1.05) return 'warning';
-    if (bid < BID_CAP * 0.99)      return 'green';
-    return 'capped';
+    return 'green';
   }
   function sabotagePhase(epoch) {
     const cum = cumulativeBond(epoch);
     if (cum < SUPPRESSION_VALUE * 0.25) return 'cheap';
     if (cum < SUPPRESSION_VALUE * 0.95) return 'approaching';
-    if (cum < SUPPRESSION_VALUE * 1.5)  return 'tipped';
-    return 'past';
+    return 'tipped';
   }
   function computeDwells(maxEpochs, phaseFn) {
     const counts = {};
