@@ -494,7 +494,7 @@
   .power.denied .power-name { text-decoration: line-through; opacity: 0.85; }
 
   .frozen-note {
-    margin-top: 48px;
+    margin-top: 0;
     padding: 12px 14px;
     background: var(--accept-bg);
     border: 1px solid var(--accept-border);
@@ -505,6 +505,12 @@
     display: none;
   }
   .frozen .frozen-note { display: block; }
+  /* Push the powers list down when frozen so the conclusion note has
+     visible breathing room. Padding here is more bulletproof than
+     margin-top on the note (no collapse, no display:none gotchas). */
+  .off-switch.frozen .powers {
+    padding-bottom: 36px;
+  }
 
   /* ─── Reduced motion ──────────────────────────────── */
   @media (prefers-reduced-motion: reduce) {
