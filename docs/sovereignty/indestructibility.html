@@ -787,8 +787,8 @@
       x1: PAD.left, y1: PAD.top, x2: PAD.left, y2: baselineY,
     }));
 
-    // Y axis labels
-    [0, 0.01, 0.02, 0.03, 0.04, 0.05].forEach(v => {
+    // Y axis labels (top tick omitted to avoid overlap with the "ETH" label)
+    [0, 0.01, 0.02, 0.03, 0.04].forEach(v => {
       const y = PAD.top + PH - (v / yMax) * PH;
       chart.appendChild(svg('line', {
         class: 'grid-line',
@@ -885,8 +885,8 @@
     chart.appendChild(svg('line', { class: 'axis-line',
       x1: PAD.left, y1: PAD.top, x2: PAD.left, y2: baselineY }));
 
-    // Y axis grid
-    [0, 0.1, 0.2, 0.3, 0.4].forEach(v => {
+    // Y axis grid (top tick omitted to avoid overlap with the "ETH" label)
+    [0, 0.1, 0.2, 0.3].forEach(v => {
       const y = PAD.top + PH - (v / yMax) * PH;
       chart.appendChild(svg('line', {
         class: 'grid-line',
