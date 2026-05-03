@@ -768,11 +768,11 @@
         </li>
         <li class="check-item" data-check="inputHash">
           <span class="check-icon">?</span>
-          <span>TDX-signed hash of inputs in bundle = hash of inputs on chain</span>
+          <span>TEE-signed hash of inputs in bundle = hash of inputs on chain</span>
         </li>
         <li class="check-item" data-check="outputHash">
           <span class="check-icon">?</span>
-          <span>Submitted outputs are TDX-signed</span>
+          <span>Submitted outputs are TEE-signed</span>
         </li>
       </ul>
     </div>
@@ -1092,7 +1092,7 @@
       fragments.push('<strong>Inputs:</strong> the chain published the canonical hash of inputs before the runner saw anything. Inside the TEE, the agent independently hashes whatever bytes it was given and signs that hash into the bundle. Mismatch is rejected.');
     }
     if (tampered.outputs) {
-      fragments.push('<strong>Outputs:</strong> the TEE hashes the action and reasoning before signing. The contract recomputes that hash from whatever was submitted — any change between TEE and chain produces a different hash.');
+      fragments.push('<strong>Outputs:</strong> the TEE signs the output bundle, so any tampering means the submission is rejected.');
     }
     if (tampered.memory && fragments.length === 0) {
       // memory alone doesn't reject — accepted path. Should not reach here.
