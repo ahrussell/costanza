@@ -1074,7 +1074,42 @@
   updateSabotage(0);
 
   // ─── Play buttons ─────────────────────────────────
-  function playSlider(slider, updater, btn, totalMs) {
+  // Each verdict-text "phase" gets ~PHASE_TIME total; phases with many
+  // epochs play through quickly per-step, single-epoch phases pause so
+  // the user can read them. Mirrors the verdict thresholds in
+  // updateApathy / updateSabotage.
+  const PHASE_TIME = 4000;
+
+  function apathyPhase(epoch) {
+    const bid = bidAt(epoch);
+    if (bid < COMPUTE_COST * 0.95) return 'red';
+    if (bid < COMPUTE_COST * 1.05) return 'warning';
+    if (bid < BID_CAP * 0.99)      return 'green';
+    return 'capped';
+  }
+  function sabotagePhase(epoch) {
+    const cum = cumulativeBond(epoch);
+    if (cum < SUPPRESSION_VALUE * 0.25) return 'cheap';
+    if (cum < SUPPRESSION_VALUE * 0.95) return 'approaching';
+    if (cum < SUPPRESSION_VALUE * 1.5)  return 'tipped';
+    return 'past';
+  }
+  function computeDwells(maxEpochs, phaseFn) {
+    const counts = {};
+    for (let e = 0; e <= maxEpochs; e++) {
+      const p = phaseFn(e);
+      counts[p] = (counts[p] || 0) + 1;
+    }
+    const dwells = [];
+    for (let e = 0; e <= maxEpochs; e++) {
+      dwells.push(PHASE_TIME / counts[phaseFn(e)]);
+    }
+    return dwells;
+  }
+  const apathyDwells   = computeDwells(APATHY_MAX,   apathyPhase);
+  const sabotageDwells = computeDwells(SABOTAGE_MAX, sabotagePhase);
+
+  function playSlider(slider, updater, btn, dwellsArr) {
     if (btn.disabled) return;
     btn.disabled = true;
     const label = btn.querySelector('.play-label');
@@ -1085,10 +1120,9 @@
     if (steps <= 0) {
       slider.value = 0;
       updater(0);
-      setTimeout(() => playSlider(slider, updater, btn, totalMs), 50);
+      setTimeout(() => playSlider(slider, updater, btn, dwellsArr), 50);
       return;
     }
-    const stepMs = Math.max(40, Math.min(400, totalMs / Math.max(1, steps)));
     let cur = start;
     const tick = () => {
       cur += 1;
@@ -1099,7 +1133,7 @@
       }
       slider.value = cur;
       updater(cur);
-      setTimeout(tick, stepMs);
+      setTimeout(tick, dwellsArr[cur] || 200);
     };
     tick();
   }
@@ -1109,14 +1143,14 @@
       apathySlider.value = 0;
       updateApathy(0);
     }
-    playSlider(apathySlider, updateApathy, $('#apathy-play'), 9600);
+    playSlider(apathySlider, updateApathy, $('#apathy-play'), apathyDwells);
   });
   $('#sabotage-play').addEventListener('click', () => {
     if ((+sabotageSlider.value) >= (+sabotageSlider.max)) {
       sabotageSlider.value = 0;
       updateSabotage(0);
     }
-    playSlider(sabotageSlider, updateSabotage, $('#sabotage-play'), 4800);
+    playSlider(sabotageSlider, updateSabotage, $('#sabotage-play'), sabotageDwells);
   });
 
   // ─── Off-switch toggle ──────────────────────────────
