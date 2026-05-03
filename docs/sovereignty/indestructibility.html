@@ -286,9 +286,11 @@
     height: auto;
     max-height: 260px;
   }
-  .chart text { font-size: 12px; fill: var(--text-subtle); user-select: none; }
-  /* Mobile: SVG scales down with the container, so bump the in-viewBox
-     font-size to keep on-screen text readable. */
+  /* SVG text is in viewBox units and scales with the SVG. The chart
+     container is ~340-400px wide on both mobile and the 2-column
+     desktop layout (since panels split the row), so we bump the
+     in-viewBox font-size everywhere to keep on-screen text legible. */
+  .chart text { font-size: 15px; fill: var(--text-subtle); user-select: none; }
   @media (max-width: 600px) {
     .chart text { font-size: 16px; }
   }
@@ -298,9 +300,9 @@
     stroke-width: 1.5;
     stroke-dasharray: 5 4;
   }
-  .chart .threshold-label { font-size: 12px; font-weight: 600; }
+  .chart .threshold-label { font-size: 15px; font-weight: 600; }
   @media (max-width: 600px) {
-    .chart .threshold-label { font-size: 15px; }
+    .chart .threshold-label { font-size: 16px; }
   }
   .chart .cap-line {
     stroke: var(--text-subtle);
@@ -345,13 +347,13 @@
   }
   .chart .crossover.visible { opacity: 0.8; }
   .chart .crossover-tag {
-    font-size: 12px;
+    font-size: 15px;
     font-weight: 600;
     opacity: 0;
     transition: opacity 0.3s;
   }
   @media (max-width: 600px) {
-    .chart .crossover-tag { font-size: 15px; }
+    .chart .crossover-tag { font-size: 16px; }
   }
   .chart .crossover-tag.visible { opacity: 1; }
 
@@ -702,7 +704,7 @@
 
   // ─── SVG chart geometry ─────────────────────────────
   const W = 480, H = 240;
-  const PAD = { top: 24, right: 14, bottom: 38, left: 56 };
+  const PAD = { top: 28, right: 14, bottom: 44, left: 62 };
   const PW = W - PAD.left - PAD.right;
   const PH = H - PAD.top  - PAD.bottom;
 
@@ -794,11 +796,11 @@
     [0, 5, 10, 15, 20, 25, 30].forEach(e => {
       const x = PAD.left + (e / APATHY_MAX) * PW;
       chart.appendChild(svg('text', {
-        x: x, y: baselineY + 14, 'text-anchor': 'middle',
+        x: x, y: baselineY + 18, 'text-anchor': 'middle',
       }, e + ''));
     });
     chart.appendChild(svg('text', {
-      x: PAD.left + PW / 2, y: baselineY + 24,
+      x: PAD.left + PW / 2, y: baselineY + 36,
       'text-anchor': 'middle', 'font-weight': '600',
     }, 'epochs of silence'));
 
@@ -899,11 +901,11 @@
     [0, 10, 20, 30, 40, 50].forEach(e => {
       const x = PAD.left + (e / SABOTAGE_MAX) * PW;
       chart.appendChild(svg('text', {
-        x: x, y: baselineY + 14, 'text-anchor': 'middle',
+        x: x, y: baselineY + 18, 'text-anchor': 'middle',
       }, e + ''));
     });
     chart.appendChild(svg('text', {
-      x: PAD.left + PW / 2, y: baselineY + 24,
+      x: PAD.left + PW / 2, y: baselineY + 36,
       'text-anchor': 'middle', 'font-weight': '600',
     }, 'consecutive refusals'));
 
