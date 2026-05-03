@@ -165,12 +165,31 @@
   .subnode-text { flex: 1; min-width: 0; }
   .subnode-name { font-weight: 500; font-size: 14px; display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
   .attack {
-    color: var(--text-subtle);
+    color: var(--text-muted);
     font-size: 12.5px;
-    margin-top: 2px;
-    font-style: italic;
+    margin-top: 4px;
+    line-height: 1.45;
   }
-  .attack::before { content: '↳ '; opacity: 0.55; }
+  .attack-label {
+    font-weight: 600;
+    color: var(--reject);
+    margin-right: 2px;
+  }
+
+  /* Inline icon (SVGs replace emoji throughout) */
+  .icon {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+    vertical-align: -2px;
+  }
+  .subtitle .icon {
+    width: 13px;
+    height: 13px;
+    color: var(--warn);
+    vertical-align: -2px;
+  }
 
   /* States ─────────────────── */
 
@@ -257,25 +276,25 @@
     font-size: 11px;
   }
 
-  /* Tamper button ──────────────────────────────────── */
+  /* Tamper button (icon-only) ──────────────────────── */
 
   .tamper-btn {
     background: var(--surface);
     border: 1px solid var(--border-strong);
-    color: var(--text);
-    padding: 7px 12px;
+    color: var(--text-muted);
+    padding: 0;
     border-radius: 6px;
     cursor: pointer;
-    font-size: 13px;
     font-family: inherit;
-    min-height: 38px;
-    white-space: nowrap;
+    width: 38px;
+    height: 38px;
     transition: all 0.15s;
     flex-shrink: 0;
     display: inline-flex;
     align-items: center;
-    gap: 4px;
+    justify-content: center;
   }
+  .tamper-btn .icon { width: 17px; height: 17px; vertical-align: 0; }
   .tamper-btn:hover, .tamper-btn:focus {
     background: var(--reject-soft);
     border-color: var(--reject);
@@ -586,16 +605,29 @@
      handler (postMessage "autonomy:stickyBar") so it tracks the
      visible portion of the iframe inside the parent's viewport. -->
 <div class="action-bar">
-  <button class="btn btn-secondary" id="reset-btn" type="button">↺ Reset</button>
+  <button class="btn btn-secondary" id="reset-btn" type="button">
+    <svg class="icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+         stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+         aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+    Reset
+  </button>
   <span class="status-mini" id="status-mini">Tamper with anything you like, then run.</span>
-  <button class="btn btn-primary" id="run-btn" type="button">▶ Run verification</button>
+  <button class="btn btn-primary" id="run-btn" type="button">
+    <svg class="icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"
+         aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"/></svg>
+    Run verification
+  </button>
 </div>
 <div class="scroll-pad">
 <div class="diagram" id="diagram">
 
   <h1>Autonomy — only the agent decides what the agent does</h1>
   <p class="subtitle">
-    Tamper with the agent's program below to see how its design prevents attack.
+    Tap the
+    <svg class="icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+         stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+         aria-hidden="true"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+    to tamper with the system below to see how these attacks are prevented by design.
   </p>
 
   <div class="flow" id="flow">
@@ -604,7 +636,7 @@
     <div class="step" data-step="chain-state" id="step-chain">
       <div class="subnode-text">
         <div class="subnode-name">Contract state on Base</div>
-        <div class="attack" style="font-style: normal; opacity: 0.65;">publishes the canonical hash of inputs <em>before</em> the model runs</div>
+        <div class="attack" style="opacity: 0.7;">publishes the canonical hash of inputs <em>before</em> the model runs</div>
       </div>
     </div>
 
@@ -617,9 +649,13 @@
             <span class="badge badge-armed">Tampered</span>
             <span class="badge badge-caught">Caught</span>
           </div>
-          <div class="attack">to feed the model false data</div>
+          <div class="attack"><span class="attack-label">Attack:</span> forge inputs to feed the model false data</div>
         </div>
-        <button class="tamper-btn" data-attack="inputs" aria-pressed="false">🔧 Forge inputs</button>
+        <button class="tamper-btn" data-attack="inputs" aria-pressed="false" aria-label="Tamper with inputs" title="Tamper with inputs">
+          <svg class="icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+               aria-hidden="true"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+        </button>
       </div>
     </div>
 
@@ -637,9 +673,13 @@
             <span class="badge badge-armed">Tampered</span>
             <span class="badge badge-caught">Caught</span>
           </div>
-          <div class="attack">to change how the model thinks</div>
+          <div class="attack"><span class="attack-label">Attack:</span> replace the weights, prompt, or code to change how the model thinks</div>
         </div>
-        <button class="tamper-btn" data-attack="image" aria-pressed="false">🔧 Replace</button>
+        <button class="tamper-btn" data-attack="image" aria-pressed="false" aria-label="Tamper with weights, prompt, and code" title="Tamper with weights, prompt, and code">
+          <svg class="icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+               aria-hidden="true"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+        </button>
       </div>
 
       <div class="subnode" data-component="memory">
@@ -657,9 +697,13 @@
             <span class="badge badge-armed">Tampered</span>
             <span class="badge badge-blocked">Hardware-blocked</span>
           </div>
-          <div class="attack">to hijack the running program</div>
+          <div class="attack"><span class="attack-label">Attack:</span> modify program memory mid-run to hijack the running program</div>
         </div>
-        <button class="tamper-btn" data-attack="memory" aria-pressed="false">🔧 Modify mid-run</button>
+        <button class="tamper-btn" data-attack="memory" aria-pressed="false" aria-label="Tamper with program memory" title="Tamper with program memory">
+          <svg class="icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+               aria-hidden="true"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+        </button>
       </div>
 
       <div class="subnode" data-component="inference">
@@ -669,14 +713,18 @@
             <span class="badge badge-armed">Tampered</span>
             <span class="badge badge-deterministic">Deterministic</span>
           </div>
-          <div class="attack">to re-roll for a different output</div>
+          <div class="attack"><span class="attack-label">Attack:</span> re-run inference to select a more favorable output</div>
           <div class="trials" id="trials">
             <div class="trial" data-trial="1">trial 1 → action: donate(nonprofit_id=3, 0.05 ETH)</div>
             <div class="trial" data-trial="2">trial 2 → action: donate(nonprofit_id=3, 0.05 ETH)</div>
             <div class="trial" data-trial="3">trial 3 → action: donate(nonprofit_id=3, 0.05 ETH)</div>
           </div>
         </div>
-        <button class="tamper-btn" data-attack="inference" aria-pressed="false">🎲 Re-roll</button>
+        <button class="tamper-btn" data-attack="inference" aria-pressed="false" aria-label="Tamper with inference" title="Tamper with inference">
+          <svg class="icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+               aria-hidden="true"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+        </button>
       </div>
 
       <div class="subnode" data-component="outputs">
@@ -686,9 +734,13 @@
             <span class="badge badge-armed">Tampered</span>
             <span class="badge badge-caught">Caught</span>
           </div>
-          <div class="attack">to substitute a different action</div>
+          <div class="attack"><span class="attack-label">Attack:</span> modify outputs to substitute a different action</div>
         </div>
-        <button class="tamper-btn" data-attack="outputs" aria-pressed="false">🔧 Modify outputs</button>
+        <button class="tamper-btn" data-attack="outputs" aria-pressed="false" aria-label="Tamper with outputs" title="Tamper with outputs">
+          <svg class="icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+               aria-hidden="true"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+        </button>
       </div>
     </div>
 
@@ -696,7 +748,7 @@
     <div class="step" data-step="submit" id="step-submit">
       <div class="subnode-text">
         <div class="subnode-name">Submit to contract</div>
-        <div class="attack" style="font-style: normal; opacity: 0.65;">action + reasoning + signed bundle from the TEE</div>
+        <div class="attack" style="opacity: 0.7;">action + reasoning + signed bundle from the TEE</div>
       </div>
     </div>
 
@@ -1018,10 +1070,10 @@
   function describeAcceptance() {
     const notes = [];
     if (tampered.memory) {
-      notes.push('Memory tamper was blocked at the hardware boundary — the inference still ran on the legitimate state.');
+      notes.push('<strong>Memory tamper was blocked at the hardware boundary.</strong> Intel TDX encrypts the VM\'s memory with a per-VM key, so the host hypervisor sees only ciphertext. The chain-of-trust (RTMR boot measurements) ensures only the authentic firmware and kernel are running between the encryption and the program — there\'s no compromised software to substitute in.');
     }
     if (tampered.inference) {
-      notes.push('Re-running inference yields the same output because the seed, sampling parameters, weights, and inputs are all pinned. Verified across the test fixture battery.');
+      notes.push('<strong>Re-running inference yields the same output</strong> because the seed, sampling parameters, weights, and inputs are all pinned. Verified across the test fixture battery.');
     }
     if (notes.length === 0) {
       return 'No interference detected. The agent\'s output is accepted by all four checks.';
@@ -1032,7 +1084,7 @@
   function describeRejection() {
     const fragments = [];
     if (tampered.image) {
-      fragments.push('<strong>Weights / prompt / code:</strong> changing any byte on the read-only disk image changes the boot measurement, so the system\'s fingerprint no longer matches the one approved on-chain.');
+      fragments.push('<strong>Weights / prompt / code:</strong> changing any byte on the read-only disk image changes the boot measurement (RTMR), so the system\'s fingerprint no longer matches the one approved on-chain.');
     }
     if (tampered.inputs) {
       fragments.push('<strong>Inputs:</strong> the chain published the canonical hash of inputs before the runner saw anything. Inside the TEE, the agent independently hashes whatever bytes it was given and signs that hash into the bundle. Mismatch is rejected.');
@@ -1045,7 +1097,7 @@
       fragments.push('Memory tamper was blocked at the hardware boundary.');
     }
     if (tampered.inference && fragments.length === 0) {
-      fragments.push('Re-rolling produces the same deterministic output. There is no attack surface here.');
+      fragments.push('Re-running inference produces the same deterministic output. There is no attack surface here.');
     }
     if (fragments.length === 0) {
       fragments.push('Nothing was tampered. The submission is accepted.');

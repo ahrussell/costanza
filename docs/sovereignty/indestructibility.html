@@ -78,6 +78,9 @@
   .sticky-bar .sticky-label {
     color: var(--text-muted);
     font-size: 12px;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
   }
   .sticky-bar button {
     border: 0;
@@ -248,7 +251,18 @@
     min-height: 32px;
     flex-shrink: 0;
     transition: all 0.15s;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
   }
+  .icon {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    flex-shrink: 0;
+    vertical-align: -1px;
+  }
+  .sticky-bar .icon { width: 11px; height: 11px; }
   .play-btn:hover { background: var(--surface-2); color: var(--text); }
   .play-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
@@ -493,7 +507,10 @@
      the bar tracks the visible portion of the iframe inside the parent's
      viewport. -->
 <div class="sticky-bar" id="sticky-bar" role="region" aria-label="Playback">
-  <span class="sticky-label">▶ play</span>
+  <span class="sticky-label">
+    <svg class="icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"/></svg>
+    play
+  </span>
   <button type="button" data-play="apathy">apathy</button>
   <span class="sticky-divider"></span>
   <button type="button" data-play="sabotage">sabotage</button>
@@ -525,7 +542,7 @@
         <div class="slider-controls">
           <input type="range" class="slider-input" id="apathy-slider"
                  min="0" max="30" value="0">
-          <button class="play-btn" id="apathy-play" type="button">▶ Play</button>
+          <button class="play-btn" id="apathy-play" type="button"><svg class="icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"/></svg> Play</button>
         </div>
       </div>
 
@@ -568,7 +585,7 @@
         <div class="slider-controls">
           <input type="range" class="slider-input" id="sabotage-slider"
                  min="0" max="50" value="0">
-          <button class="play-btn" id="sabotage-play" type="button">▶ Play</button>
+          <button class="play-btn" id="sabotage-play" type="button"><svg class="icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"/></svg> Play</button>
         </div>
       </div>
 
@@ -1029,7 +1046,7 @@
   function playSlider(slider, updater, btn, totalMs) {
     if (btn.disabled) return;
     btn.disabled = true;
-    btn.textContent = '▶ Playing…';
+    btn.textContent = '<svg class="icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"/></svg> Playing…';
     const start = +slider.value;
     const target = +slider.max;
     const steps  = target - start;
