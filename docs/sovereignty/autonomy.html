@@ -534,6 +534,12 @@
     opacity: 1;
     pointer-events: auto;
   }
+  /* Standalone (not embedded in a parent page): pin to viewport bottom. */
+  .action-bar.standalone {
+    position: fixed;
+    top: auto;
+    bottom: 20px;
+  }
   .action-bar .btn {
     border: 0;
     padding: 9px 18px;
@@ -1160,15 +1166,19 @@
   }
 
   // ─── Sticky action bar (parent drives position) ─────
-  // Parent page sends a postMessage on every scroll tick with
-  // where to place the action bar in iframe-local coordinates.
-  // We just set top + .visible.
+  // When embedded in a parent page, the parent sends a postMessage
+  // on every scroll tick with where to place the bar in iframe-local
+  // coordinates. When viewed standalone (no parent), we instead pin
+  // the bar to the viewport bottom via the .standalone CSS class.
   const actionBar = document.querySelector('.action-bar');
+  const standalone = window.top === window.self;
+  if (standalone && actionBar) actionBar.classList.add('standalone');
+
   window.addEventListener('message', (e) => {
     const d = e.data;
     if (!d || typeof d !== 'object') return;
     if (d.type === 'autonomy:stickyBar') {
-      if (!actionBar) return;
+      if (!actionBar || standalone) return;
       if (!d.visible) {
         actionBar.classList.remove('visible');
         return;

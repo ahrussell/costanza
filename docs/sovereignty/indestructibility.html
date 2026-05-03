@@ -75,6 +75,12 @@
     opacity: 1;
     pointer-events: auto;
   }
+  /* Standalone (not embedded in a parent page): pin to viewport bottom. */
+  .sticky-bar.standalone {
+    position: fixed;
+    top: auto;
+    bottom: 20px;
+  }
   .sticky-bar .sticky-label {
     color: var(--text-muted);
     font-size: 12px;
@@ -1136,18 +1142,20 @@
   // create feedback loops with iframe parents.
 
   // ─── Sticky bar + remote play ───────────────────────
-  // The bar inside this iframe tracks the visible portion of the
-  // iframe inside the parent's viewport. The parent sends us a
-  // postMessage on every scroll tick with where to place the bar
-  // (in iframe-local coordinates). We just set top.
+  // Embedded mode: parent sends a postMessage on every scroll tick
+  // with where to place the bar in iframe-local coordinates.
+  // Standalone mode (no parent): pin to viewport bottom via CSS.
   // Click handlers click the corresponding inline play button.
   const stickyBar = document.getElementById('sticky-bar');
+  const standalone = window.top === window.self;
+  if (standalone && stickyBar) stickyBar.classList.add('standalone');
+
   window.addEventListener('message', (e) => {
     const d = e.data;
     if (!d || typeof d !== 'object') return;
 
     if (d.type === 'indestructibility:stickyBar') {
-      if (!stickyBar) return;
+      if (!stickyBar || standalone) return;
       if (!d.visible) {
         stickyBar.classList.remove('visible');
         return;
