@@ -559,11 +559,19 @@
     font-weight: 600;
   }
   .action-bar .btn-primary:hover { background: #1e3a8a; }
-  .action-bar .btn-secondary {
-    background: transparent;
+  /* Reset button replaces Run when the cascade is done. Distinct
+     neutral-gray pill so it's clearly a different action. */
+  .action-bar .btn-reset {
+    background: var(--surface-2);
     color: var(--text-muted);
+    border: 1px solid var(--border-strong);
+    font-weight: 500;
   }
-  .action-bar .btn-secondary:hover { background: var(--surface-2); color: var(--text); }
+  .action-bar .btn-reset:hover {
+    background: #e5e7eb;
+    color: var(--text);
+    border-color: var(--text-muted);
+  }
   .action-bar .btn:disabled {
     opacity: 0.4;
     cursor: not-allowed;
@@ -607,17 +615,17 @@
      handler (postMessage "autonomy:stickyBar") so it tracks the
      visible portion of the iframe inside the parent's viewport. -->
 <div class="action-bar visible">
-  <button class="btn btn-secondary" id="reset-btn" type="button">
-    <svg class="icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
-         stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
-         aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
-    Reset
-  </button>
   <span class="status-mini" id="status-mini">Tamper with anything you like, then run.</span>
   <button class="btn btn-primary" id="run-btn" type="button">
     <svg class="icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"
          aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"/></svg>
     Run verification
+  </button>
+  <button class="btn btn-reset" id="reset-btn" type="button" style="display:none">
+    <svg class="icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+         stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+         aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+    Reset
   </button>
 </div>
 <div class="scroll-pad">
@@ -821,6 +829,16 @@
 
   function setMini(text) { els.statusMini.textContent = text; }
 
+  // Action-bar button visibility: Run is shown when idle (or briefly during
+  // running, disabled). Reset replaces Run once the cascade is done. We never
+  // show both at once — saves horizontal space.
+  function updateActionButtons() {
+    const showReset = runState === 'done';
+    els.runBtn.style.display = showReset ? 'none' : 'inline-flex';
+    els.resetBtn.style.display = showReset ? 'inline-flex' : 'none';
+    els.runBtn.disabled = (runState === 'running');
+  }
+
   function getSubnode(name) {
     return document.querySelector(`.subnode[data-component="${name}"]`);
   }
@@ -885,6 +903,7 @@
     els.resultDetail.innerHTML =
       'Press <strong>▶ Run</strong> to verify the submission. Tamper with parts of the system first to see how each is caught.';
     els.runBtn.disabled = false;
+    updateActionButtons();
     setMini('Tamper with anything you like, then run.');
     // Reset memory shield (remove and re-add to restart pulse)
     const memSub = getSubnode('memory');
@@ -986,7 +1005,7 @@
   async function run() {
     if (runState !== 'idle') return;
     runState = 'running';
-    els.runBtn.disabled = true;
+    updateActionButtons();
     els.tamperBtns.forEach(b => { b.disabled = true; });
 
     // 1. Show contract state
@@ -1056,6 +1075,7 @@
     }
 
     runState = 'done';
+    updateActionButtons();
   }
 
   function describeAcceptance() {
