@@ -394,13 +394,20 @@ function EpochViz() {
           h('text', { textAnchor:'middle', dominantBaseline:'central', fontFamily:F.b, fontSize:15, fontWeight:500, fill:C.tx }, 'Smart Contract'))),
 
         // Winner / Bidder A
+        // Portrait puts the label ABOVE the circle (like bidder B) to avoid
+        // the inward-pointing label colliding with bidder B's central pill column.
         A('winner', h('g', null,
           h(motion.circle, { r:22, strokeWidth:1.5,
             animate: { fill: step >= 4 ? C.as : C.el, stroke: step >= 4 ? C.ac : C.bd }, transition: { duration: .4 } }),
           h('text', { textAnchor:'middle', y:1, dominantBaseline:'central', fontFamily:F.b, fontSize:15, fontWeight:600,
             fill: step >= 4 ? C.ac : C.mu }, 'A'),
-          step <= 5 ? h('text', { textAnchor: isPortrait ? 'start' : 'end', x: isPortrait ? 30 : -30, y:1, dominantBaseline:'central', fontFamily:F.b, fontSize:13, fontWeight:500, fill:C.tx },
-            step <= 4 ? 'Bidder A' : 'Winner')
+          step <= 5 ? (
+            isPortrait
+              ? h('text', { textAnchor:'middle', y:-30, fontFamily:F.b, fontSize:13, fontWeight:500, fill:C.tx },
+                  step <= 4 ? 'Bidder A' : 'Winner')
+              : h('text', { textAnchor:'end', x:-30, y:1, dominantBaseline:'central', fontFamily:F.b, fontSize:13, fontWeight:500, fill:C.tx },
+                  step <= 4 ? 'Bidder A' : 'Winner')
+          )
           : step === 9 ? null  /* hide label in step 9; bounty/bond pills below show payment */
           : h('text', { textAnchor:'middle', y:36, fontFamily:F.b, fontSize:13, fontWeight:500, fill:C.tx }, 'Winner'))),
 
@@ -408,13 +415,15 @@ function EpochViz() {
         A('bidB', h('g', null,
           h('circle', { r:18, fill:C.el, stroke:C.bd, strokeWidth:1.5 }),
           h('text', { textAnchor:'middle', y:1, dominantBaseline:'central', fontFamily:F.b, fontSize:14, fontWeight:600, fill:C.mu }, 'B'),
-          h('text', { textAnchor:'middle', y:-28, fontFamily:F.b, fontSize:13, fill:C.tx }, 'Bidder B'))),
+          h('text', { textAnchor:'middle', y:-30, fontFamily:F.b, fontSize:13, fill:C.tx }, 'Bidder B'))),
 
         // Bidder C
         A('bidC', h('g', null,
           h('circle', { r:18, fill:C.el, stroke:C.bd, strokeWidth:1.5 }),
           h('text', { textAnchor:'middle', y:1, dominantBaseline:'central', fontFamily:F.b, fontSize:14, fontWeight:600, fill:C.mu }, 'C'),
-          h('text', { textAnchor: isPortrait ? 'end' : 'start', x: isPortrait ? -30 : 30, y:1, dominantBaseline:'central', fontFamily:F.b, fontSize:13, fill:C.tx }, 'Bidder C'))),
+          isPortrait
+            ? h('text', { textAnchor:'middle', y:-30, fontFamily:F.b, fontSize:13, fill:C.tx }, 'Bidder C')
+            : h('text', { textAnchor:'start', x:30, y:1, dominantBaseline:'central', fontFamily:F.b, fontSize:13, fill:C.tx }, 'Bidder C'))),
 
         // Sealed bid pill A
         A('bidPillA', h('g', null,
@@ -480,29 +489,37 @@ function EpochViz() {
           h('rect', { x:-65, y:-18, width:130, height:36, rx:7, fill:C.el, stroke:C.bd, strokeWidth:1.2 }),
           h('text', { textAnchor:'middle', dominantBaseline:'central', fontFamily:F.m, fontSize:13, fill:C.tx }, 'On-chain State'))),
 
-        // Output: Diary
+        // Output: Diary — narrower in portrait (less space alongside the enclave)
         A('diary', h('g', null,
-          h(motion.rect, { x:-52, y:-15, width:104, height:30, rx:15,
+          h(motion.rect, {
+            x: isPortrait ? -38 : -52, y:-15,
+            width: isPortrait ? 76 : 104, height:30, rx:15,
             animate: { fill: step >= 9 ? C.as : step >= 8 ? '#f0fafa' : C.el, stroke: step >= 8 ? C.ac : C.bd },
             transition: { duration: .3 }, strokeWidth:1.2 }),
-          h('text', { textAnchor:'middle', dominantBaseline:'central', fontFamily:F.m, fontSize:12, fill: step >= 8 ? C.ad : C.tx }, 'Diary entry'),
+          h('text', { textAnchor:'middle', dominantBaseline:'central', fontFamily:F.m, fontSize:12, fill: step >= 8 ? C.ad : C.tx },
+            isPortrait ? 'Diary' : 'Diary entry'),
           step === 9 ? h(motion.text, { textAnchor:'middle', y:25, fontFamily:F.m, fontSize:10, fill:C.ac,
             initial: { opacity: 0 }, animate: { opacity: 1 }, transition: { delay: .4, duration: .3 } }, '✓ published') : null)),
 
-        // Output: Action
+        // Output: Action — keep same width; the action text varies
         A('actionO', h('g', null,
-          h(motion.rect, { x:-82, y:-15, width:164, height:30, rx:15,
+          h(motion.rect, {
+            x: isPortrait ? -68 : -82, y:-15,
+            width: isPortrait ? 136 : 164, height:30, rx:15,
             animate: { fill: step >= 9 ? C.as : '#f0fafa', stroke: C.ac }, strokeWidth:1.2 }),
-          h('text', { textAnchor:'middle', dominantBaseline:'central', fontFamily:F.m, fontSize:12, fontWeight:500, fill:C.ad }, 'Action: ' + action),
+          h('text', { textAnchor:'middle', dominantBaseline:'central', fontFamily:F.m, fontSize: isPortrait ? 11 : 12, fontWeight:500, fill:C.ad }, 'Action: ' + action),
           step === 9 ? h(motion.text, { textAnchor:'middle', y:25, fontFamily:F.m, fontSize:10, fill:C.ac,
             initial: { opacity: 0 }, animate: { opacity: 1 }, transition: { delay: .7, duration: .3 } }, '✓ executed') : null)),
 
-        // Output: Proof
+        // Output: Proof — much shorter label in portrait
         A('proof', h('g', null,
-          h(motion.rect, { x:-92, y:-15, width:184, height:30, rx:15,
+          h(motion.rect, {
+            x: isPortrait ? -38 : -92, y:-15,
+            width: isPortrait ? 76 : 184, height:30, rx:15,
             animate: { fill: step >= 9 ? C.as : step >= 8 ? '#f0fafa' : C.el, stroke: step >= 8 ? C.ac : C.bd },
             transition: { duration: .3 }, strokeWidth:1.2 }),
-          h('text', { textAnchor:'middle', dominantBaseline:'central', fontFamily:F.m, fontSize:11, fill: step >= 8 ? C.ad : C.tx }, 'Proof of valid computation'),
+          h('text', { textAnchor:'middle', dominantBaseline:'central', fontFamily:F.m, fontSize: isPortrait ? 12 : 11, fill: step >= 8 ? C.ad : C.tx },
+            isPortrait ? 'Proof' : 'Proof of valid computation'),
           step === 9 ? h(motion.text, { textAnchor:'middle', y:25, fontFamily:F.m, fontSize:10, fill:C.ac,
             initial: { opacity: 0 }, animate: { opacity: 1 }, transition: { delay: .2, duration: .3 } }, '✓ verified') : null)),
 
