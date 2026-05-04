@@ -301,6 +301,84 @@
     width: 18px; height: 18px;
   }
 
+  /* Smart-Wallet recovery card — shown at top of donate modal when
+     the connected SW has stranded funds (typically from a donor who
+     paid Coinbase but closed the tab before the second passkey).
+     Sized larger than the info panel because this is "you have money
+     somewhere — finish what you started" not "here's how it works." */
+  .sw-recovery-card {
+    background: linear-gradient(135deg, var(--accent-bg), transparent);
+    border: 1.5px solid var(--accent);
+    border-radius: var(--radius);
+    padding: 18px 18px 16px;
+    margin: 0 0 16px;
+  }
+  .sw-recovery-card .sw-rec-headline {
+    display: flex; align-items: center; gap: 12px;
+    margin-bottom: 6px;
+  }
+  .sw-recovery-card .sw-rec-icon {
+    font-size: 22px;
+    line-height: 1;
+  }
+  .sw-recovery-card .sw-rec-amount {
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--text);
+  }
+  .sw-recovery-card .sw-rec-sub {
+    font-size: 13px;
+    color: var(--text-secondary);
+    line-height: 1.5;
+    margin: 0 0 4px;
+  }
+  .sw-recovery-card .sw-rec-message {
+    font-size: 12px;
+    color: var(--text-secondary);
+    background: var(--surface);
+    border-radius: var(--radius-xs);
+    padding: 8px 10px;
+    margin: 8px 0 12px;
+    border-left: 3px solid var(--accent);
+    font-style: italic;
+  }
+  .sw-recovery-card .sw-rec-actions {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    margin-top: 12px;
+  }
+  .sw-recovery-card .sw-rec-finalize {
+    flex: 1;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: var(--radius-sm);
+    padding: 12px 18px;
+    font-family: inherit; font-size: 14px; font-weight: 600;
+    cursor: pointer;
+    transition: var(--transition);
+  }
+  .sw-recovery-card .sw-rec-finalize:hover { background: var(--accent-dim); }
+  .sw-recovery-card .sw-rec-finalize:disabled { opacity: 0.6; cursor: not-allowed; }
+  .sw-recovery-card .sw-rec-switch {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    border-radius: var(--radius-sm);
+    padding: 12px 14px;
+    font-family: inherit; font-size: 13px;
+    cursor: pointer;
+  }
+  .sw-recovery-card .sw-rec-switch:hover { border-color: var(--border-hover); color: var(--text); }
+  .sw-recovery-card .sw-rec-status {
+    margin-top: 10px;
+    font-size: 12px;
+    line-height: 1.5;
+  }
+  .sw-recovery-card .sw-rec-status.error { color: var(--red); }
+  .sw-recovery-card .sw-rec-status.success { color: var(--green); }
+
   /* Pre-flight info panel — expanded by clicking the card button.
      Sits between the card and ETH buttons in the donate-button-stack. */
   .card-info-panel {
@@ -1366,6 +1444,13 @@
     </p>
     <div id="donate-wallet-row"></div>
 
+    <!-- Smart-Wallet recovery card. Surfaces when the connected
+         wallet is a Smart Wallet with stranded funds — typically a
+         donor who paid Coinbase but closed the tab before signing
+         donateWithMessage. renderSmartWalletRecoveryCard() populates
+         + toggles visibility. -->
+    <div id="sw-recovery-card" class="sw-recovery-card" style="display:none;"></div>
+
     <!-- Quick-amount buttons (always shown) -->
     <div id="donate-quick-amounts" class="quick-amounts">
       <button class="quick-amount-btn" data-usd="20" onclick="selectQuickAmount(20)">
@@ -2204,15 +2289,57 @@ function setStatus(id, msg, type) {
   el.className = 'form-status ' + type;
 }
 
-function updateWalletRows() {
-  const pillHtml = walletAddress
-    ? `<div class="wallet-pill"><span style="width:6px;height:6px;border-radius:50%;background:var(--green);display:inline-block;"></span>${walletShortAddr()}</div>`
-    : '';
+// Module-level cache of the connected Smart Wallet's balance, used by
+// updateWalletRows to render "0x29be…e300 · 0.006 ETH" in the header
+// pill. Smart wallets are otherwise opaque to the donor — they can't
+// open them in MetaMask or basescan with a one-click — so surfacing
+// the balance solves the "where's my money?" anxiety after a
+// half-finished card flow. We only track this for SW; other wallets
+// have their own UIs.
+let _swPillBalanceWei = null;
 
+async function _refreshSwPillBalance() {
+  if (!walletAddress || walletStoredUuid() !== SMART_WALLET_UUID) {
+    _swPillBalanceWei = null;
+    return;
+  }
+  try {
+    _swPillBalanceWei = await provider.getBalance(walletAddress);
+  } catch {
+    /* RPC blip — leave previous value */
+  }
+}
+
+function _walletPillSuffix() {
+  if (_swPillBalanceWei == null) return '';
+  const ethBal = Number(_swPillBalanceWei) / 1e18;
+  if (ethBal < 0.0001) return '';
+  return ` · ${ethBal.toFixed(4)} ETH`;
+}
+
+function _walletPillHtml(suffix) {
+  if (!walletAddress) return '';
+  return `<div class="wallet-pill"><span style="width:6px;height:6px;border-radius:50%;background:var(--green);display:inline-block;"></span>${walletShortAddr()}${suffix}</div>`;
+}
+
+function _renderWalletPills() {
+  const suffix = _walletPillSuffix();
+  const pillHtml = _walletPillHtml(suffix);
   ['donate', 'earn'].forEach(id => {
     const el = document.getElementById(id + '-wallet-row');
     if (el) el.innerHTML = pillHtml;
   });
+  const headerBtn = document.getElementById('header-connect-btn');
+  if (headerBtn && walletAddress) {
+    headerBtn.innerHTML = `<span class="pill-dot"></span>${walletShortAddr()}${suffix}`;
+  }
+}
+
+function updateWalletRows() {
+  // First pass: render synchronously from whatever balance cache we
+  // have (zero-state on first call). Then kick off an async refresh
+  // that re-renders just the pills once a fresh balance lands.
+  _renderWalletPills();
 
   const donateBtnLabel = document.getElementById('donate-btn-label');
   const earnBtn = document.getElementById('earn-btn');
@@ -2234,7 +2361,8 @@ function updateWalletRows() {
   if (headerBtn) {
     if (walletAddress) {
       headerBtn.classList.add('connected');
-      headerBtn.innerHTML = `<span class="pill-dot"></span>${walletShortAddr()}`;
+      // _renderWalletPills() above already populated the inner HTML;
+      // here we just set state-dependent attributes.
       headerBtn.title = 'Click to switch or disconnect';
     } else {
       headerBtn.classList.remove('connected');
@@ -2246,6 +2374,15 @@ function updateWalletRows() {
       headerBtn.title = 'Connect wallet';
     }
   }
+
+  // Async: fetch SW balance + re-render pills. Also re-render the
+  // donate-modal recovery card since both depend on the same balance.
+  _refreshSwPillBalance().then(() => {
+    _renderWalletPills();
+    if (typeof renderSmartWalletRecoveryCard === 'function') {
+      renderSmartWalletRecoveryCard();
+    }
+  });
 }
 
 async function _switchToBase(provider) {
@@ -2572,6 +2709,9 @@ function applyCardpayFeatureFlag() {
   // open on next visit.
   const infoPanel = document.getElementById('donate-card-info-panel');
   if (infoPanel) infoPanel.style.display = 'none';
+  // Surface stranded-SW recovery card if the donor has unfinalized
+  // funds in their Smart Wallet. Async — fires-and-forgets.
+  renderSmartWalletRecoveryCard();
   // Region note: only shown to non-US donors (guest checkout is US-only;
   // others need a Coinbase account). Default to showing if we don't yet
   // know the donor's country — loadDonorCountry() flips it off for US.
@@ -2846,17 +2986,33 @@ function readAllPendingDonations() {
       if (!key?.startsWith(PENDING_KEY_PREFIX)) continue;
       try {
         const r = JSON.parse(localStorage.getItem(key));
-        if (r && r.privateKey && r.address) out.push(r);
+        if (!r || !r.address) continue;
+        // Throwaway records carry a private key (auto-forwardable).
+        // Smart-wallet records carry type:'smart-wallet' (passkey
+        // required, surfaced via the donate-modal recovery card).
+        if (r.privateKey || r.type === 'smart-wallet') out.push(r);
       } catch {/* malformed — leave it; cleanup below if old */}
     }
   } catch {}
   return out;
 }
 
-// On init, scan localStorage for any pending donations. If their
-// throwaway address has a non-zero balance, auto-forward in the
-// background — the donor expressed intent earlier, we honor it on
-// the next page visit. Banner provides feedback while it runs.
+// Module-level handle on smart-wallet records waiting for a passkey
+// tap. Populated by reconcilePendingDonations() and consumed by the
+// donate-modal recovery card. We can't auto-forward these (no key in
+// localStorage), so they sit here until the donor clicks Finalize.
+let _pendingSmartWalletRecords = [];
+
+// On init, scan localStorage for any pending donations.
+//
+// Throwaway records (have privateKey): auto-forward in the background
+// via the existing banner — the donor expressed intent earlier, and
+// we hold the key, so we honor it without waiting for interaction.
+//
+// Smart-wallet records (type='smart-wallet'): can't auto-forward
+// because the wallet is passkey-secured. Stash them on the module so
+// the donate-modal recovery card can surface "Finalize $X" when the
+// donor next opens the modal.
 //
 // Old entries with no funds get cleaned up:
 //   - >30 days regardless of state → purged
@@ -2865,31 +3021,55 @@ async function reconcilePendingDonations() {
   const all = readAllPendingDonations();
   if (all.length === 0) return;
   const now = Date.now();
-  const recoverable = [];
+  const throwawayRecoverable = [];
+  const smartWalletRecoverable = [];
   for (const r of all) {
     const age = now - (r.createdAt || 0);
     if (age > PENDING_TTL_MS) {
       removePendingDonation(r.sessionId);
       continue;
     }
-    // Already-spent guard: if the throwaway has broadcast a tx, the
-    // donation already went through (or is pending in mempool). Don't
-    // surface a banner; just clean up.
-    let nonce = 0;
-    try { nonce = await provider.getTransactionCount(r.address, 'latest'); } catch {}
-    if (nonce > 0) {
-      removePendingDonation(r.sessionId);
-      continue;
+    // Throwaway-only: if the EOA has broadcast a tx (nonce > 0), the
+    // donation already went through. Smart wallets are contract
+    // accounts where this nonce check doesn't apply — bundlers
+    // broadcast on their own nonces, not the SW's.
+    if (r.type !== 'smart-wallet') {
+      let nonce = 0;
+      try { nonce = await provider.getTransactionCount(r.address, 'latest'); } catch {}
+      if (nonce > 0) {
+        removePendingDonation(r.sessionId);
+        continue;
+      }
     }
     let balance = 0n;
     try { balance = await provider.getBalance(r.address); } catch {/* RPC blip */}
     if (balance > 0n) {
-      recoverable.push({ ...r, balance });
+      const enriched = { ...r, balance };
+      if (r.type === 'smart-wallet') smartWalletRecoverable.push(enriched);
+      else throwawayRecoverable.push(enriched);
     } else if (age > PENDING_EMPTY_TTL_MS) {
       removePendingDonation(r.sessionId);
     }
   }
-  if (recoverable.length > 0) await autoForwardPendingDonations(recoverable);
+  _pendingSmartWalletRecords = smartWalletRecoverable;
+  if (throwawayRecoverable.length > 0) await autoForwardPendingDonations(throwawayRecoverable);
+  // Refresh the donate-modal recovery card if the modal is currently
+  // open (e.g. user opened it before reconcile finished).
+  if (typeof renderSmartWalletRecoveryCard === 'function') {
+    renderSmartWalletRecoveryCard();
+  }
+}
+
+// Look up a saved smart-wallet record by address. Used by the recovery
+// card to attach the donor's original message + refCode when they
+// finalize. Falls back to nothing if the SW is connected without a
+// matching record (e.g. funds were sent in a prior session whose
+// localStorage was cleared) — in that case the recovery card still
+// shows but offers a plain donate (no message).
+function getPendingSmartWalletRecord(address) {
+  if (!address) return null;
+  const lower = address.toLowerCase();
+  return _pendingSmartWalletRecords.find(r => r.address.toLowerCase() === lower) || null;
 }
 
 async function autoForwardPendingDonations(records) {
@@ -2955,6 +3135,48 @@ async function forwardThrowawayDonation(record) {
   }
   const value = balance - gasReserve;
   const fund = new ethers.Contract(CONTRACT_ADDRESS, FUND_ABI, wallet);
+  const refCode = BigInt(record.refCode || 0);
+  const message = record.message || '';
+  let tx;
+  if (message) {
+    tx = await fund.donateWithMessage(refCode, message, { value });
+  } else {
+    tx = await fund.donate(refCode, { value });
+  }
+  await tx.wait(1);
+  removePendingDonation(record.sessionId);
+}
+
+// Shared gas reserve — small ETH amount left untouched in the source
+// wallet so the donation tx itself can pay its fees. 0.0001 ETH is
+// ~$0.20-0.30, comfortably above Base's typical gas cost (≈ $0.01 per
+// donate tx) and Smart Wallet bundler fees (≈ $0.05).
+const DONATION_GAS_RESERVE = '0.0001';
+
+// Forward a pending smart-wallet donation. Unlike the throwaway path
+// (which auto-signs from a key in localStorage), the smart wallet
+// requires a passkey tap because there's no plaintext key to sign
+// with. Caller is expected to have already connected the smart wallet
+// (so walletSigner is the SW signer) — this function just constructs
+// + sends + waits.
+async function forwardSmartWalletDonation(record) {
+  if (!walletSigner || !walletAddress) {
+    throw new Error('Smart Wallet not connected — reconnect and try again.');
+  }
+  if (walletAddress.toLowerCase() !== record.address.toLowerCase()) {
+    throw new Error(`Connected wallet (${fmtAddr(walletAddress)}) doesn't match the pending donation's wallet (${fmtAddr(record.address)}).`);
+  }
+
+  const balance = await provider.getBalance(walletAddress);
+  if (balance === 0n) {
+    // Nothing to forward — clean up and tell the caller.
+    removePendingDonation(record.sessionId);
+    throw new Error('Smart Wallet balance is zero — payment may not have settled yet, or it was already finalized.');
+  }
+
+  const gasReserve = ethers.parseEther(DONATION_GAS_RESERVE);
+  const value = balance > gasReserve ? balance - gasReserve : balance;
+  const fund = new ethers.Contract(CONTRACT_ADDRESS, FUND_ABI, walletSigner);
   const refCode = BigInt(record.refCode || 0);
   const message = record.message || '';
   let tx;
@@ -3129,6 +3351,131 @@ function _renderCardInfoPanel() {
     `;
     warnEl.textContent = 'Keep this tab open until you see the success message — usually under 60 seconds.';
   }
+}
+
+// ─── Smart-Wallet recovery card ──────────────────────────────────────
+// Surfaces in the donate modal when the donor is connected to their
+// Coinbase Smart Wallet AND that wallet holds a non-trivial ETH
+// balance — i.e., there's something to finalize. Two common origins:
+//
+//   1. Donor paid Coinbase, then closed the tab before passkey #2.
+//      We have a saved record (type: 'smart-wallet') from when the
+//      flow started, so we attach the saved message + refCode.
+//   2. Donor has SW funds with no matching record (e.g. cleared
+//      localStorage, multi-device passkey). We still surface the
+//      recovery offer, just without a message attached.
+//
+// The "Switch wallet" escape hatch disconnects the SW and opens the
+// wallet picker, letting the donor pick MetaMask or anything else if
+// they'd rather donate from a different wallet entirely. The SW funds
+// stay where they are; the pending record (if any) survives so a
+// future visit can re-surface the recovery offer.
+
+const SW_RECOVERY_MIN_BALANCE_WEI = 500_000_000_000_000n; // 0.0005 ETH
+
+let _swRecoveryBusy = false; // guards the Finalize button against double-click
+
+async function renderSmartWalletRecoveryCard() {
+  const card = document.getElementById('sw-recovery-card');
+  if (!card) return;
+  // Only relevant when connected to the Smart Wallet specifically.
+  // (For other wallets there's no opaque "where are my funds?" issue.)
+  const connectedUuid = walletStoredUuid();
+  if (!walletAddress || connectedUuid !== SMART_WALLET_UUID) {
+    card.style.display = 'none';
+    return;
+  }
+  let balance = 0n;
+  try { balance = await provider.getBalance(walletAddress); } catch {/* RPC blip */}
+  if (balance < SW_RECOVERY_MIN_BALANCE_WEI) {
+    card.style.display = 'none';
+    return;
+  }
+  const ethBalance = Number(balance) / 1e18;
+  const ethUsd = await getEthUsd();
+  const usd = ethUsd ? ethBalance * ethUsd : null;
+  const usdLabel = usd ? `$${formatUsdShort(usd)}` : `${ethBalance.toFixed(5)} ETH`;
+  const ethLabel = `${ethBalance.toFixed(5)} ETH`;
+
+  const record = getPendingSmartWalletRecord(walletAddress);
+  const messageHtml = record && record.message
+    ? `<div class="sw-rec-message">"${escapeHtml(record.message)}"</div>`
+    : '';
+  const subText = record
+    ? "We saw your Coinbase payment but it hasn't been forwarded to Costanza yet. One passkey tap to finalize."
+    : "Your Smart Wallet has funds from an earlier session that weren't forwarded to Costanza. Send them now?";
+
+  card.innerHTML = `
+    <div class="sw-rec-headline">
+      <span class="sw-rec-icon">💳</span>
+      <span class="sw-rec-amount">${usdLabel} ready in your Smart Wallet</span>
+    </div>
+    <p class="sw-rec-sub">${subText}</p>
+    ${messageHtml}
+    <div style="font-size:11px;color:var(--text-dim);font-family:var(--mono);">
+      ${fmtAddr(walletAddress)} · ${ethLabel}
+    </div>
+    <div class="sw-rec-actions">
+      <button class="sw-rec-finalize" onclick="finalizeSmartWalletRecovery()" ${_swRecoveryBusy ? 'disabled' : ''}>
+        ${_swRecoveryBusy ? 'Finalizing…' : `Finalize ${usdLabel} to Costanza`}
+      </button>
+      <button class="sw-rec-switch" onclick="switchWalletFromRecovery()">Switch wallet</button>
+    </div>
+    <div class="sw-rec-status" id="sw-rec-status"></div>
+  `;
+  card.style.display = 'block';
+}
+
+async function finalizeSmartWalletRecovery() {
+  if (_swRecoveryBusy) return;
+  _swRecoveryBusy = true;
+  const statusEl = document.getElementById('sw-rec-status');
+  const setRecStatus = (msg, type = '') => {
+    if (!statusEl) return;
+    statusEl.textContent = msg;
+    statusEl.className = 'sw-rec-status' + (type ? ' ' + type : '');
+  };
+  // Re-render with disabled button + spinner state.
+  await renderSmartWalletRecoveryCard();
+
+  try {
+    if (!walletAddress || walletStoredUuid() !== SMART_WALLET_UUID) {
+      throw new Error('Smart Wallet not connected.');
+    }
+    // Build a record on the fly if we don't have a saved one — lets
+    // us recover funds even when localStorage was cleared between
+    // sessions (still a plain donation, no message).
+    const record = getPendingSmartWalletRecord(walletAddress) || {
+      type: 'smart-wallet',
+      sessionId: 'no-record-' + Date.now(),
+      address: walletAddress.toLowerCase(),
+      message: '',
+      refCode: String(getActiveReferralCode()),
+      usd: 0,
+      createdAt: Date.now(),
+    };
+    setRecStatus('Approve the donation in your Smart Wallet…');
+    await forwardSmartWalletDonation(record);
+    setRecStatus('Donation sent! Costanza will see it next epoch.', 'success');
+    // Refresh balance — should be ~0 now, which hides the card.
+    setTimeout(() => {
+      _swRecoveryBusy = false;
+      renderSmartWalletRecoveryCard();
+    }, 2000);
+  } catch (err) {
+    console.warn('SW recovery failed:', err);
+    setRecStatus(friendlyTxError(err), 'error');
+    _swRecoveryBusy = false;
+    renderSmartWalletRecoveryCard();
+  }
+}
+
+async function switchWalletFromRecovery() {
+  // Drop the SW connection and re-prompt. The pending record (if any)
+  // stays in localStorage so the next visit can re-offer recovery.
+  disconnectWallet();
+  await renderSmartWalletRecoveryCard();
+  showWalletPicker();
 }
 
 // Card flow: deliver ETH directly to the fund contract.
@@ -3560,6 +3907,25 @@ async function handlePayWithCardSmartWallet(usd, messageText) {
   }
   const startBalance = await provider.getBalance(smartAddress);
 
+  // Save a "pending" record at flow start — mirrors the throwaway path.
+  // No private key (passkey-secured), but the address + message + amount
+  // are enough for reconcilePendingDonations() to surface a recovery
+  // banner if the donor closes the tab between Coinbase delivery and
+  // the second passkey. Cleaned up after the forward tx confirms.
+  const sessionId = (crypto.randomUUID && crypto.randomUUID())
+    || Math.random().toString(36).slice(2) + Date.now().toString(36);
+  const pendingRecord = {
+    type: 'smart-wallet',
+    sessionId,
+    address: smartAddress.toLowerCase(),
+    message: messageText,
+    refCode: String(getActiveReferralCode()),
+    usd,
+    expectedEth: targetEth,
+    createdAt: Date.now(),
+  };
+  savePendingDonation(pendingRecord);
+
   // Steps 3–6: get ETH into the smart wallet. Either via Coinbase
   // Onramp (production path) or — under ?cardpaysmart_debug=1 — by
   // having the donor send ETH manually from another wallet they
@@ -3569,6 +3935,7 @@ async function handlePayWithCardSmartWallet(usd, messageText) {
     ? await _smartWalletAwaitManualDeposit(smartAddress, startBalance, targetEth, statusId)
     : await _smartWalletAwaitOnrampDeposit(smartAddress, startBalance, targetEth, usd, statusId);
   if (!depositOk) return; // helper already set the error status + hid the stepper
+                          // pending record stays in localStorage — recovery banner picks it up
 
   // 7. Forward via donateWithMessage from the smart wallet — second
   // passkey prompt. Smart Wallet auto-relays via bundler so we don't
@@ -3578,24 +3945,14 @@ async function handlePayWithCardSmartWallet(usd, messageText) {
   setStep('step-deposit', 'active');
   setStatus(statusId, 'Approve the donation in your Smart Wallet to attach your message…', 'info');
   try {
-    const balance = await provider.getBalance(smartAddress);
-    if (balance === 0n) {
-      throw new Error('Smart Wallet balance is zero — payment may not have settled yet.');
-    }
-    // Reserve a small buffer for bundler/relay fees on Base. Smart
-    // Wallet abstracts gas but the userOp still consumes ETH.
-    const gasReserve = ethers.parseEther('0.0001');
-    const value = balance > gasReserve ? balance - gasReserve : balance;
-    const fund = new ethers.Contract(CONTRACT_ADDRESS, FUND_ABI, walletSigner);
-    const refCode = BigInt(getActiveReferralCode());
-    const tx = await fund.donateWithMessage(refCode, messageText, { value });
-    await tx.wait(1);
+    await forwardSmartWalletDonation(pendingRecord);
     setStep('step-deposit', 'done');
     setStatus(statusId, "Donation sent and your message attached! Costanza will read it next epoch. You'll see it reflected on this page within a few minutes.", 'success');
   } catch (err) {
     const friendly = friendlyTxError(err);
-    setStatus(statusId, `Card payment landed but the donation tx failed: ${friendly} Your funds are safe in your Smart Wallet (${fmtAddr(smartAddress)}); reconnect and try again, or reach out for help.`, 'error');
+    setStatus(statusId, `Card payment landed but the donation tx failed: ${friendly} Your funds are safe in your Smart Wallet (${fmtAddr(smartAddress)}); reload the page and use the recovery banner to finalize.`, 'error');
     hideStepper();
+    // Don't remove the pending record — recovery banner needs it.
   }
 }
 
@@ -3646,11 +4003,47 @@ async function handleSubmitDonation() {
       }
     }
 
-    setStatus(statusId, 'Confirm the transaction in your wallet...', 'info');
     const fundWrite = new ethers.Contract(CONTRACT_ADDRESS, FUND_ABI, walletSigner);
     // ethers.parseEther wants a string; round to 18 decimals to avoid
     // floating-point artifacts (e.g. 0.012999999999999...).
-    const value = ethers.parseEther(ethAmount.toFixed(18));
+    const requestedValue = ethers.parseEther(ethAmount.toFixed(18));
+
+    // Auto-clamp: if the requested donation amount would consume more
+    // than (balance - gasReserve), reduce it instead of letting the tx
+    // revert with INSUFFICIENT_FUNDS. Common case: a Smart Wallet
+    // funded by Coinbase to exactly match the donor's USD amount, with
+    // no buffer for the bundler/gas fee. Both EOAs and SWs benefit.
+    let value = requestedValue;
+    let clamped = false;
+    let balance = 0n;
+    try { balance = await provider.getBalance(walletAddress); } catch {/* fall through */}
+    const gasReserve = ethers.parseEther(DONATION_GAS_RESERVE);
+    if (balance > 0n) {
+      if (balance <= gasReserve) {
+        setStatus(statusId, "Wallet doesn't have enough ETH to cover gas. Top up with at least 0.0001 ETH.", 'error');
+        return;
+      }
+      const maxDonatable = balance - gasReserve;
+      if (value > maxDonatable) {
+        // Special-case the message minimum: contract requires
+        // value >= 0.005 ETH for donateWithMessage. If clamping would
+        // drop below that, refuse instead of silently sending without
+        // the message.
+        const minMessageWei = ethers.parseEther('0.005');
+        if (msgText && maxDonatable < minMessageWei) {
+          setStatus(statusId, `After leaving ${DONATION_GAS_RESERVE} ETH for gas, only ${ethers.formatEther(maxDonatable)} ETH is donatable — below the 0.005 ETH minimum for messaging. Top up your wallet or shorten the donation.`, 'error');
+          return;
+        }
+        value = maxDonatable;
+        clamped = true;
+      }
+    }
+
+    if (clamped) {
+      setStatus(statusId, `Adjusting to ${parseFloat(ethers.formatEther(value)).toFixed(6)} ETH (leaving ${DONATION_GAS_RESERVE} ETH for gas). Confirm in your wallet…`, 'info');
+    } else {
+      setStatus(statusId, 'Confirm the transaction in your wallet...', 'info');
+    }
 
     let tx;
     if (msgText) {
@@ -3660,9 +4053,12 @@ async function handleSubmitDonation() {
     }
     setStatus(statusId, 'Transaction submitted. Waiting for confirmation...', 'info');
     await tx.wait();
+    const adjustedNote = clamped
+      ? ` (Adjusted from ${ethAmount.toFixed(6)} → ${parseFloat(ethers.formatEther(value)).toFixed(6)} ETH to leave gas headroom.)`
+      : '';
     const successMsg = msgText
-      ? "Message sent! Costanza will read it in the next epoch. You'll see it reflected on this page within a few minutes."
-      : "Donation confirmed! Thank you for supporting The Human Fund. You'll see it reflected on this page within a few minutes.";
+      ? `Message sent! Costanza will read it in the next epoch. You'll see it reflected on this page within a few minutes.${adjustedNote}`
+      : `Donation confirmed! Thank you for supporting The Human Fund. You'll see it reflected on this page within a few minutes.${adjustedNote}`;
     setStatus(statusId, successMsg, 'success');
     // Clear amount state on success.
     _donateUsd = null;
