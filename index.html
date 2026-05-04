@@ -1433,7 +1433,7 @@
     <div class="donate-button-stack">
       <button id="donate-card-btn" class="card-pay-btn" style="display:none;" onclick="togglePayWithCardInfo()">
         <svg class="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>
-        <span id="donate-card-btn-label">Donate with debit card or Coinbase account</span>
+        <span id="donate-card-btn-label">Donate with debit card or Coinbase</span>
       </button>
 
       <!-- Pre-flight info panel — expanded when card button is clicked.
@@ -2683,7 +2683,7 @@ function updateDonateButtons() {
 
   if (cardBtnLabel) {
     const usd = _donateUsd;
-    cardBtnLabel.textContent = usd ? `Donate $${formatUsdShort(usd)} with debit card` : 'Donate with debit card';
+    cardBtnLabel.textContent = usd ? `Donate $${formatUsdShort(usd)} with debit card or Coinbase` : 'Donate with debit card or Coinbase';
   }
 
   if (ethBtnLabel) {
