@@ -301,6 +301,99 @@
     width: 18px; height: 18px;
   }
 
+  /* Pre-flight info panel — expanded by clicking the card button.
+     Sits between the card and ETH buttons in the donate-button-stack. */
+  .card-info-panel {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 18px 18px 16px;
+    margin-top: 4px;
+    animation: card-info-slide-in 180ms ease-out;
+  }
+  @keyframes card-info-slide-in {
+    from { opacity: 0; transform: translateY(-6px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  .card-info-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 10px;
+  }
+  .card-info-steps {
+    list-style: none;
+    padding: 0;
+    margin: 0 0 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    counter-reset: card-step;
+  }
+  .card-info-steps li {
+    position: relative;
+    padding-left: 32px;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--text-secondary);
+    counter-increment: card-step;
+  }
+  .card-info-steps li::before {
+    content: counter(card-step);
+    position: absolute;
+    left: 0; top: 0;
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: #fff;
+    font-size: 11px; font-weight: 600;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .card-info-steps li strong {
+    color: var(--text);
+    font-weight: 600;
+  }
+  .card-info-warning {
+    font-size: 11px;
+    color: var(--text-dim);
+    line-height: 1.5;
+    margin: 0 0 14px;
+    padding: 8px 10px;
+    background: var(--surface);
+    border-radius: var(--radius-xs);
+    border-left: 3px solid var(--accent);
+  }
+  .card-info-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .card-info-back {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    font-family: inherit;
+    font-size: 13px;
+    padding: 8px 0;
+    cursor: pointer;
+  }
+  .card-info-back:hover { color: var(--text); }
+  .card-info-continue {
+    flex: 1;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: var(--radius-sm);
+    padding: 12px 18px;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: var(--transition);
+  }
+  .card-info-continue:hover { background: var(--accent-dim); }
+
   /* "Already have ETH?" link separator below card CTA */
   .crypto-fallback {
     display: flex; align-items: center; gap: 12px;
@@ -1338,16 +1431,32 @@
 
     <!-- Donate buttons (both visible) -->
     <div class="donate-button-stack">
-      <button id="donate-card-btn" class="card-pay-btn" style="display:none;" onclick="handlePayWithCard()">
+      <button id="donate-card-btn" class="card-pay-btn" style="display:none;" onclick="togglePayWithCardInfo()">
         <svg class="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>
-        <span id="donate-card-btn-label">Donate with debit card</span>
+        <span id="donate-card-btn-label">Donate with debit card or Coinbase account</span>
       </button>
+
+      <!-- Pre-flight info panel — expanded when card button is clicked.
+           Walks the donor through the steps before opening Coinbase, so
+           they know what's coming (passkey prompts, popup, etc.) and
+           don't bail mid-flow. -->
+      <div id="donate-card-info-panel" class="card-info-panel" style="display:none;">
+        <div class="card-info-title">How this works</div>
+        <ol id="donate-card-info-steps" class="card-info-steps">
+          <!-- populated by togglePayWithCardInfo() based on whether a message is typed -->
+        </ol>
+        <p id="donate-card-info-warning" class="card-info-warning"></p>
+        <div class="card-info-actions">
+          <button class="card-info-back" onclick="togglePayWithCardInfo(false)">&larr; Back</button>
+          <button class="card-info-continue" onclick="handlePayWithCard()">Continue to Coinbase</button>
+        </div>
+      </div>
+
       <button class="donate-eth-btn" id="donate-btn" onclick="handleSubmitDonation()">
         <span id="donate-btn-label">Donate with ETH</span>
       </button>
       <p id="donate-card-range-note" style="display:none;font-size:11px;color:var(--text-dim);text-align:center;margin:0;line-height:1.5;">Debit card payments are limited to $5&ndash;$500 per donation.</p>
       <p id="donate-card-region-note" style="display:none;font-size:11px;color:var(--text-dim);text-align:center;margin:0;line-height:1.5;">Outside the US? You&rsquo;ll need a Coinbase account to pay with a debit card.</p>
-      <p id="donate-card-message-note" style="display:none;font-size:11px;color:var(--red);text-align:center;margin:0;line-height:1.5;">Messages aren&rsquo;t included with debit card donations &mdash; switch to <strong>Donate with ETH</strong> to send your message, or clear the message field to use a card.</p>
     </div>
 
     <div class="form-status" id="donate-status"></div>
@@ -1711,15 +1820,13 @@ const DEPLOY_BLOCK = 45330578;
 const REFERRAL_CODE = '1'; // creator referral code (default when no code entered)
 
 // Coinbase Onramp — project ID from portal.cdp.coinbase.com.
-// Production access approved 2026-04-30; gated behind ?cardpay=1 again
-// (2026-05-01) while we work through Coinbase's per-phone-number
-// rate-limit on test attempts. Flip to `true` to re-open for all donors.
-// Per-tx cap is Coinbase's standard guest-checkout cap of $500/week.
+// Production access approved 2026-04-30, end-to-end verified on
+// mainnet 2026-05-03 (smart-wallet path with attached message,
+// messageId 14, donor 0x29be…e300). Card payments are now default-on
+// for all donors. Per-tx cap is Coinbase's standard guest-checkout
+// cap of $500/week.
 const COINBASE_CDP_PROJECT_ID = '7a0579be-19c8-4317-bdf6-2968bfdad3f8';
-const CARDPAY_ENABLED = (() => {
-  try { return new URLSearchParams(location.search).has('cardpay'); }
-  catch { return false; }
-})();
+const CARDPAY_ENABLED = true;
 
 // Throwaway-wallet flow for "card payment + message" donations. Behind
 // ?cardpaymsg=1 until verified end-to-end. When ON: the card button
@@ -1733,19 +1840,15 @@ const CARDPAY_WITH_MESSAGE_ENABLED = (() => {
   catch { return false; }
 })();
 
-// Smart-Wallet flow for "card payment + message" donations. Behind
-// ?cardpaysmart=1 until verified end-to-end. When ON: the card button
-// stays enabled when a message is typed; the page asks the donor to
-// authenticate a Coinbase Smart Wallet (passkey, no extension), targets
-// Coinbase Onramp at that smart wallet's address, then signs
-// donateWithMessage from the same smart wallet to forward funds. Two
-// passkey prompts total (one to create/connect, one to send). When BOTH
-// flags are on, smart-wallet wins — it has the better trust + recovery
-// story (deterministic per-passkey address, no key-in-localStorage).
-const CARDPAY_SMART_WALLET_ENABLED = (() => {
-  try { return new URLSearchParams(location.search).has('cardpaysmart'); }
-  catch { return false; }
-})();
+// Smart-Wallet flow for "card payment + message" donations. Verified
+// end-to-end on mainnet 2026-05-03 — donor authenticated their Smart
+// Wallet (passkey #1), funded it via Coinbase Onramp, signed
+// donateWithMessage (passkey #2), message landed on-chain at
+// messageId 14. Default-on for all donors. The throwaway-wallet
+// alternative below stays URL-gated since it was never tested
+// end-to-end and has a strictly worse trust story (plaintext key in
+// localStorage during the flight).
+const CARDPAY_SMART_WALLET_ENABLED = true;
 
 // Smart-Wallet debug bypass. Behind ?cardpaysmart_debug=1 (in addition
 // to ?cardpaysmart=1). When ON: skips Coinbase Onramp entirely and
@@ -2464,6 +2567,11 @@ function applyCardpayFeatureFlag() {
   // subtitle) is always visible.
   const cardBtn = document.getElementById('donate-card-btn');
   if (cardBtn) cardBtn.style.display = CARDPAY_ENABLED ? 'flex' : 'none';
+  // Reset the pre-flight info panel to collapsed each time the modal
+  // opens — donors who closed mid-expansion shouldn't see it dangling
+  // open on next visit.
+  const infoPanel = document.getElementById('donate-card-info-panel');
+  if (infoPanel) infoPanel.style.display = 'none';
   // Region note: only shown to non-US donors (guest checkout is US-only;
   // others need a Coinbase account). Default to showing if we don't yet
   // know the donor's country — loadDonorCountry() flips it off for US.
@@ -2586,35 +2694,29 @@ function updateDonateButtons() {
     }
   }
 
-  // Card button enabled when amount is in Coinbase's range AND either
-  // (a) no message typed OR (b) a card+message flow is enabled (either
-  // throwaway-wallet or smart-wallet path).
+  // Card button: enabled when amount is in Coinbase's range. Messages
+  // are always supported now (via the Smart Wallet path), so no
+  // message-related gating remains. If a message is typed, refresh
+  // the info panel content too — the rendered steps differ between
+  // direct and smart-wallet flows.
   const cardBtn = document.getElementById('donate-card-btn');
   const cardRangeNote = document.getElementById('donate-card-range-note');
-  const cardMessageNote = document.getElementById('donate-card-message-note');
-  const ta = document.getElementById('message-text');
-  const hasMessage = !!(ta && ta.value.trim().length > 0);
-  const cardWithMessageOk = CARDPAY_WITH_MESSAGE_ENABLED || CARDPAY_SMART_WALLET_ENABLED;
   if (cardBtn && CARDPAY_ENABLED) {
     const usd = _donateUsd;
     const amountOk = usd && usd >= COINBASE_GUEST_USD_MIN && usd <= COINBASE_GUEST_USD_MAX;
-    const messageOk = !hasMessage || cardWithMessageOk;
-    cardBtn.disabled = !(amountOk && messageOk);
-    cardBtn.title = !messageOk
-      ? "Messages aren't included with card donations — clear the message or use 'Donate with ETH'"
-      : (amountOk ? '' : `Card payments are $${COINBASE_GUEST_USD_MIN}–$${COINBASE_GUEST_USD_MAX}`);
+    cardBtn.disabled = !amountOk;
+    cardBtn.title = amountOk ? '' : `Card payments are $${COINBASE_GUEST_USD_MIN}–$${COINBASE_GUEST_USD_MAX}`;
     if (cardRangeNote) {
       cardRangeNote.style.display = (usd && !amountOk) ? 'block' : 'none';
     }
-    if (cardMessageNote) {
-      // Only surface the "messages aren't included" note when no
-      // card+message path is enabled — otherwise messages WILL be
-      // included (via throwaway or smart wallet).
-      cardMessageNote.style.display = (hasMessage && !cardWithMessageOk) ? 'block' : 'none';
+    // If the info panel is open, re-render to reflect the latest
+    // message state (steps differ when a message is/isn't typed).
+    const infoPanel = document.getElementById('donate-card-info-panel');
+    if (infoPanel && infoPanel.style.display !== 'none') {
+      _renderCardInfoPanel();
     }
-  } else {
-    if (cardRangeNote) cardRangeNote.style.display = 'none';
-    if (cardMessageNote) cardMessageNote.style.display = 'none';
+  } else if (cardRangeNote) {
+    cardRangeNote.style.display = 'none';
   }
 
   // ETH button enabled when an amount is set
@@ -2667,14 +2769,17 @@ function setStep(id, state) {
 function showStepper() {
   document.getElementById('donate-stepper').style.display = '';
   document.getElementById('donate-popup-callout').style.display = 'block';
-  // hide the buttons + amount inputs — stepper takes over
-  ['donate-card-btn','donate-card-region-note','donate-quick-amounts','donate-custom-amount','donate-btn']
+  // hide the buttons + amount inputs + info panel — stepper takes over
+  ['donate-card-btn','donate-card-info-panel','donate-card-region-note','donate-quick-amounts','donate-custom-amount','donate-btn']
     .forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
 }
 function hideStepper() {
   document.getElementById('donate-stepper').style.display = 'none';
   document.getElementById('donate-popup-callout').style.display = 'none';
   // Restore the donate-button stack and the appropriate amount selector.
+  // Note: info panel stays collapsed — donor re-clicks the card button
+  // to expand it again. Avoids the panel awkwardly reappearing after
+  // an error message replaces the stepper.
   document.getElementById('donate-quick-amounts').style.display = 'grid';
   document.getElementById('donate-btn').style.display = 'flex';
   if (CARDPAY_ENABLED) {
@@ -2970,6 +3075,60 @@ function getTurnstileToken() {
       finish(() => reject(new Error('Turnstile verification timed out (no response after 90s).')));
     }, 90 * 1000);
   });
+}
+
+// Card flow — pre-flight info panel.
+//
+// Donors are unfamiliar with passkeys and Coinbase popups; landing
+// directly in the popup with no warning produces bail-out mid-flow
+// (we lost two real attempts to this in early rollout). togglePayWith
+// CardInfo() expands an in-modal panel that walks them through the
+// steps before they commit. Continue button calls handlePayWithCard()
+// unchanged.
+function togglePayWithCardInfo(forceState) {
+  const panel = document.getElementById('donate-card-info-panel');
+  if (!panel) return;
+  const currentlyOpen = panel.style.display !== 'none';
+  // forceState: true → open, false → close, undefined → toggle
+  const shouldOpen = forceState === undefined ? !currentlyOpen : !!forceState;
+  if (!shouldOpen) {
+    panel.style.display = 'none';
+    return;
+  }
+  _renderCardInfoPanel();
+  panel.style.display = '';
+  // Bring it into view — the donate modal scrolls internally and the
+  // panel can land below the fold on smaller screens.
+  try {
+    panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  } catch {/* old browsers — fall through */}
+}
+
+// Render step-list + warning into the info panel. Content depends on
+// whether a message is typed: the smart-wallet path adds two passkey
+// taps (one to authenticate, one to sign donateWithMessage). The
+// no-message path is just "Coinbase pays the contract directly."
+function _renderCardInfoPanel() {
+  const ta = document.getElementById('message-text');
+  const hasMessage = !!(ta && ta.value.trim().length > 0);
+  const stepsEl = document.getElementById('donate-card-info-steps');
+  const warnEl = document.getElementById('donate-card-info-warning');
+  if (!stepsEl || !warnEl) return;
+
+  if (hasMessage) {
+    stepsEl.innerHTML = `
+      <li><strong>Authenticate your Smart Wallet.</strong> Uses your device's passkey (Touch ID, Face ID, or Windows Hello). One-time, ~10 seconds. No app or extension needed.</li>
+      <li><strong>Pay in the Coinbase window.</strong> Choose debit card, Apple Pay, or your Coinbase account balance — Coinbase handles the rest.</li>
+      <li><strong>Confirm the donation.</strong> One more passkey tap to send the funds with your message attached on-chain.</li>
+    `;
+    warnEl.textContent = 'Keep this tab open until you see the success message. Closing it before the second confirmation can leave funds in your Smart Wallet that need manual recovery later.';
+  } else {
+    stepsEl.innerHTML = `
+      <li><strong>Pay in the Coinbase window.</strong> Choose debit card, Apple Pay, or your Coinbase account balance — Coinbase handles the rest.</li>
+      <li><strong>ETH lands in Costanza's treasury automatically.</strong> No second confirmation needed.</li>
+    `;
+    warnEl.textContent = 'Keep this tab open until you see the success message — usually under 60 seconds.';
+  }
 }
 
 // Card flow: deliver ETH directly to the fund contract.
