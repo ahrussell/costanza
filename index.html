@@ -788,6 +788,43 @@
     color: var(--text-dim); margin-bottom: 8px;
   }
 
+  /* "How donating works" mini-explainer — sits above the Participate
+     buttons. First-time visitors see what's about to happen before
+     they click anything. Three short steps, each one a single line. */
+  .hero-howto {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    column-gap: 14px;
+    row-gap: 10px;
+    align-items: start;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 16px 18px;
+    margin-bottom: 18px;
+  }
+  .hero-howto-title {
+    grid-column: 1 / -1;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.7px;
+    color: var(--text-dim);
+    margin: 0 0 4px;
+  }
+  .hero-howto-icon {
+    font-size: 18px;
+    line-height: 1.4;
+    width: 24px;
+    text-align: center;
+  }
+  .hero-howto-text {
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--text-secondary);
+  }
+  .hero-howto-text strong { color: var(--text); font-weight: 600; }
+
   .participate-btn {
     flex: 1;
     padding: 10px 16px;
@@ -1474,6 +1511,20 @@
           </div>
         </div>
 
+        <!-- Three-step preview of the donation flow. Sets expectations
+             before the donor clicks Donate — first-time visitors hit
+             the amount picker without context otherwise. Sized to
+             match the Participate row's visual weight. -->
+        <div class="hero-howto">
+          <div class="hero-howto-title">How donating works</div>
+          <div class="hero-howto-icon">🪙</div>
+          <div class="hero-howto-text"><strong>Pick an amount.</strong> $5 minimum. Quick buttons or any custom amount.</div>
+          <div class="hero-howto-icon">💳</div>
+          <div class="hero-howto-text"><strong>Pay with debit card, Apple Pay, or your Coinbase account.</strong> No crypto wallet needed. Coinbase handles the payment in a small popup.</div>
+          <div class="hero-howto-icon">📖</div>
+          <div class="hero-howto-text"><strong>Costanza sees it within ~90 minutes.</strong> He deliberates, decides what to do with it, and writes about it on-chain. Optional: leave a message with your donation to influence his thinking.</div>
+        </div>
+
         <div>
           <div class="hero-participate-label">Participate</div>
           <div class="hero-participate">
@@ -1493,7 +1544,7 @@
     <button class="modal-close" onclick="document.getElementById('modal-donate').classList.remove('open')">&times;</button>
     <h3>Donate to The Human Fund</h3>
     <p style="font-size:13px;color:var(--text-secondary);margin-bottom:12px;line-height:1.6;">
-      Tip Costanza directly. The donation lands in his treasury and he deliberates on it next epoch. <strong>Donations are not tax-deductible.</strong>
+      Pay via Coinbase &mdash; debit card, Apple Pay, or your Coinbase account balance, no crypto wallet needed. Funds land in Costanza's treasury within a minute and he considers them in his next 90-minute decision. <strong>Donations are not tax-deductible.</strong>
     </p>
     <div id="donate-wallet-row"></div>
 
@@ -3363,13 +3414,27 @@ function getTurnstileToken() {
 
 // Card flow — pre-flight info panel.
 //
-// Donors are unfamiliar with passkeys and Coinbase popups; landing
-// directly in the popup with no warning produces bail-out mid-flow
-// (we lost two real attempts to this in early rollout). togglePayWith
-// CardInfo() expands an in-modal panel that walks them through the
-// steps before they commit. Continue button calls handlePayWithCard()
-// unchanged.
+// Two-mode dispatch based on whether a message is typed:
+//   - With message → expand the info panel first. The smart-wallet
+//     flow has two passkey prompts, which surprises donors who
+//     weren't warned. The expansion is a worthwhile heads-up.
+//   - Without message → skip the panel and open Coinbase straight
+//     away. The popup itself is self-explanatory ("Pick payment
+//     method, confirm, done") and the extra click was friction
+//     normies flagged.
 function togglePayWithCardInfo(forceState) {
+  // Fast-path: simple no-message donations bypass the panel entirely.
+  // forceState is only set when "Back" is clicked from inside the
+  // panel (false), so the bypass is safe here too.
+  if (forceState === undefined) {
+    const ta = document.getElementById('message-text');
+    const hasMessage = !!(ta && ta.value.trim().length > 0);
+    if (!hasMessage) {
+      handlePayWithCard();
+      return;
+    }
+  }
+
   const panel = document.getElementById('donate-card-info-panel');
   if (!panel) return;
   const currentlyOpen = panel.style.display !== 'none';
