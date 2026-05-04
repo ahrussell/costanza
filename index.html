@@ -125,6 +125,50 @@
   .nav-status.refreshing .dot { background: var(--orange); }
   .nav-status.error .dot { background: var(--red); }
 
+  /* Pending-donation pill in the navbar — surfaces stranded SW funds
+     sitewide so donors don't have to discover the recovery card
+     inside the donate modal. Pulses gently to draw the eye without
+     screaming. */
+  .nav-pending-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 11px;
+    background: var(--accent-bg);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    border-radius: 999px;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    height: 28px;
+    transition: var(--transition);
+    white-space: nowrap;
+  }
+  .nav-pending-pill:hover {
+    background: var(--accent);
+    color: #fff;
+  }
+  .nav-pending-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--accent);
+    flex-shrink: 0;
+    animation: nav-pending-pulse 1.8s ease-in-out infinite;
+  }
+  .nav-pending-pill:hover .nav-pending-dot { background: #fff; }
+  @keyframes nav-pending-pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50%      { opacity: 0.5; transform: scale(1.25); }
+  }
+  /* On narrow screens, drop the text and keep just the dot — the pill
+     is still tappable, but doesn't crowd the brand. */
+  @media (max-width: 600px) {
+    .nav-pending-text { display: none; }
+    .nav-pending-pill { padding: 5px 8px; }
+  }
+
   /* Header connect-wallet button — icon-only, low-key by default. */
   .connect-btn {
     background: var(--surface2);
@@ -1341,6 +1385,15 @@
   <div class="container">
     <div class="nav-brand">Costanza <span>/ The Human Fund</span></div>
     <div class="nav-controls">
+      <!-- Pending-donation pill: surfaces stranded Smart-Wallet funds
+           sitewide so donors who closed mid-flow can recover from any
+           page, not just the donate modal. Click → opens donate modal,
+           which renders the matching recovery card. Visibility managed
+           by renderNavbarPendingPill(). -->
+      <button id="nav-pending-pill" class="nav-pending-pill" style="display:none;" onclick="openModal('donate')" title="Click to finalize your pending donation">
+        <span class="nav-pending-dot"></span>
+        <span class="nav-pending-text">Finish donation</span>
+      </button>
       <button class="nav-select" style="background:none;border:none;cursor:pointer;font-size:13px;padding:4px 12px;border-radius:4px;transition:var(--transition);" onclick="openModal('donate')" title="Donate to The Human Fund">Donate</button>
       <a href="https://github.com/ahrussell/costanza" class="nav-select" style="text-decoration:none; display:flex; align-items:center; gap:6px;" target="_blank">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="opacity:0.7;">
@@ -2376,11 +2429,15 @@ function updateWalletRows() {
   }
 
   // Async: fetch SW balance + re-render pills. Also re-render the
-  // donate-modal recovery card since both depend on the same balance.
+  // donate-modal recovery card and the navbar pending pill — all
+  // three depend on the same balance check.
   _refreshSwPillBalance().then(() => {
     _renderWalletPills();
     if (typeof renderSmartWalletRecoveryCard === 'function') {
       renderSmartWalletRecoveryCard();
+    }
+    if (typeof renderNavbarPendingPill === 'function') {
+      renderNavbarPendingPill();
     }
   });
 }
@@ -2712,6 +2769,7 @@ function applyCardpayFeatureFlag() {
   // Surface stranded-SW recovery card if the donor has unfinalized
   // funds in their Smart Wallet. Async — fires-and-forgets.
   renderSmartWalletRecoveryCard();
+  renderNavbarPendingPill();
   // Region note: only shown to non-US donors (guest checkout is US-only;
   // others need a Coinbase account). Default to showing if we don't yet
   // know the donor's country — loadDonorCountry() flips it off for US.
@@ -3053,10 +3111,14 @@ async function reconcilePendingDonations() {
   }
   _pendingSmartWalletRecords = smartWalletRecoverable;
   if (throwawayRecoverable.length > 0) await autoForwardPendingDonations(throwawayRecoverable);
-  // Refresh the donate-modal recovery card if the modal is currently
-  // open (e.g. user opened it before reconcile finished).
+  // Refresh both the donate-modal recovery card (in case the modal is
+  // already open) and the always-visible navbar pill — they read the
+  // same _pendingSmartWalletRecords list we just populated.
   if (typeof renderSmartWalletRecoveryCard === 'function') {
     renderSmartWalletRecoveryCard();
+  }
+  if (typeof renderNavbarPendingPill === 'function') {
+    renderNavbarPendingPill();
   }
 }
 
@@ -3353,6 +3415,19 @@ function _renderCardInfoPanel() {
   }
 }
 
+// Refresh the navbar's "Finish donation" pill. Visible when there's
+// a recoverable Smart-Wallet target — either a pending record from
+// localStorage with positive balance, or a connected SW with balance
+// above the recovery threshold. Click on the pill opens the donate
+// modal, where the recovery card takes over.
+async function renderNavbarPendingPill() {
+  const pill = document.getElementById('nav-pending-pill');
+  if (!pill) return;
+  const target = await _resolveSwRecoveryTarget();
+  const visible = target && target.balance >= SW_RECOVERY_MIN_BALANCE_WEI;
+  pill.style.display = visible ? 'inline-flex' : 'none';
+}
+
 // ─── Smart-Wallet recovery card ──────────────────────────────────────
 // Surfaces in the donate modal when the donor is connected to their
 // Coinbase Smart Wallet AND that wallet holds a non-trivial ETH
@@ -3375,35 +3450,77 @@ const SW_RECOVERY_MIN_BALANCE_WEI = 500_000_000_000_000n; // 0.0005 ETH
 
 let _swRecoveryBusy = false; // guards the Finalize button against double-click
 
+// Resolve which Smart Wallet to recover from. Two sources, in priority
+// order: (1) a currently-connected SW (live balance), (2) a saved
+// pending record (uses the balance captured during reconcile). Lets
+// the recovery card surface even when the donor is connected to a
+// different wallet (or no wallet) — useful because Smart Wallet
+// sessions don't auto-restore on reload, but the saved address +
+// passkey credential are deterministic, so we can still recover.
+async function _resolveSwRecoveryTarget() {
+  const isConnected = walletAddress && walletStoredUuid() === SMART_WALLET_UUID;
+  if (isConnected) {
+    let balance = 0n;
+    try { balance = await provider.getBalance(walletAddress); } catch {/* RPC blip */}
+    return {
+      address: walletAddress,
+      balance,
+      record: getPendingSmartWalletRecord(walletAddress),
+      isConnected: true,
+    };
+  }
+  // Fall back to the most recently created pending record with funds.
+  if (_pendingSmartWalletRecords.length > 0) {
+    const sorted = _pendingSmartWalletRecords
+      .slice()
+      .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    const record = sorted[0];
+    return {
+      address: record.address,
+      balance: record.balance || 0n,
+      record,
+      isConnected: false,
+    };
+  }
+  return null;
+}
+
 async function renderSmartWalletRecoveryCard() {
   const card = document.getElementById('sw-recovery-card');
   if (!card) return;
-  // Only relevant when connected to the Smart Wallet specifically.
-  // (For other wallets there's no opaque "where are my funds?" issue.)
-  const connectedUuid = walletStoredUuid();
-  if (!walletAddress || connectedUuid !== SMART_WALLET_UUID) {
+
+  const target = await _resolveSwRecoveryTarget();
+  if (!target || target.balance < SW_RECOVERY_MIN_BALANCE_WEI) {
     card.style.display = 'none';
     return;
   }
-  let balance = 0n;
-  try { balance = await provider.getBalance(walletAddress); } catch {/* RPC blip */}
-  if (balance < SW_RECOVERY_MIN_BALANCE_WEI) {
-    card.style.display = 'none';
-    return;
-  }
+  const { address, balance, record, isConnected } = target;
   const ethBalance = Number(balance) / 1e18;
   const ethUsd = await getEthUsd();
   const usd = ethUsd ? ethBalance * ethUsd : null;
   const usdLabel = usd ? `$${formatUsdShort(usd)}` : `${ethBalance.toFixed(5)} ETH`;
   const ethLabel = `${ethBalance.toFixed(5)} ETH`;
 
-  const record = getPendingSmartWalletRecord(walletAddress);
   const messageHtml = record && record.message
     ? `<div class="sw-rec-message">"${escapeHtml(record.message)}"</div>`
     : '';
-  const subText = record
+  const subText = isConnected
     ? "We saw your Coinbase payment but it hasn't been forwarded to Costanza yet. One passkey tap to finalize."
-    : "Your Smart Wallet has funds from an earlier session that weren't forwarded to Costanza. Send them now?";
+    : "You have funds in a Smart Wallet from a previous session that weren't forwarded to Costanza. Authenticate with your passkey to finalize.";
+
+  // Button label adapts: connected → "Finalize $X" (one passkey),
+  // not-connected → "Authenticate & finalize $X" (two passkeys —
+  // first to connect, second to sign).
+  const finalizeLabel = _swRecoveryBusy
+    ? 'Finalizing…'
+    : (isConnected ? `Finalize ${usdLabel} to Costanza` : `Authenticate & finalize ${usdLabel}`);
+
+  // Switch-wallet escape hatch only useful when actively connected
+  // to the SW. When not connected, the donor can switch via the
+  // header connect button instead.
+  const switchButtonHtml = isConnected
+    ? `<button class="sw-rec-switch" onclick="switchWalletFromRecovery()">Switch wallet</button>`
+    : '';
 
   card.innerHTML = `
     <div class="sw-rec-headline">
@@ -3413,13 +3530,13 @@ async function renderSmartWalletRecoveryCard() {
     <p class="sw-rec-sub">${subText}</p>
     ${messageHtml}
     <div style="font-size:11px;color:var(--text-dim);font-family:var(--mono);">
-      ${fmtAddr(walletAddress)} · ${ethLabel}
+      ${fmtAddr(address)} · ${ethLabel}
     </div>
     <div class="sw-rec-actions">
       <button class="sw-rec-finalize" onclick="finalizeSmartWalletRecovery()" ${_swRecoveryBusy ? 'disabled' : ''}>
-        ${_swRecoveryBusy ? 'Finalizing…' : `Finalize ${usdLabel} to Costanza`}
+        ${finalizeLabel}
       </button>
-      <button class="sw-rec-switch" onclick="switchWalletFromRecovery()">Switch wallet</button>
+      ${switchButtonHtml}
     </div>
     <div class="sw-rec-status" id="sw-rec-status"></div>
   `;
@@ -3439,12 +3556,28 @@ async function finalizeSmartWalletRecovery() {
   await renderSmartWalletRecoveryCard();
 
   try {
-    if (!walletAddress || walletStoredUuid() !== SMART_WALLET_UUID) {
-      throw new Error('Smart Wallet not connected.');
+    // Step 1: connect Smart Wallet if not already connected.
+    // Donors landing on the page from a previous session won't have
+    // SW auto-connected (passkey re-prompt required), so the
+    // recovery flow handles auth-then-finalize as one click.
+    const alreadyConnected = walletAddress && walletStoredUuid() === SMART_WALLET_UUID;
+    if (!alreadyConnected) {
+      setRecStatus('Authenticating Smart Wallet (passkey required)…');
+      try {
+        await connectWalletByUuid(SMART_WALLET_UUID);
+      } catch (err) {
+        const msg = err && err.code === 4001 ? 'Passkey prompt cancelled.' : (err.message || 'Smart Wallet connection failed.');
+        throw new Error(msg);
+      }
+      if (!walletAddress || walletStoredUuid() !== SMART_WALLET_UUID) {
+        throw new Error('Smart Wallet did not connect.');
+      }
     }
-    // Build a record on the fly if we don't have a saved one — lets
-    // us recover funds even when localStorage was cleared between
-    // sessions (still a plain donation, no message).
+
+    // Step 2: find the matching record. If the connected wallet
+    // doesn't match any saved record (e.g. localStorage was cleared
+    // since the donation, or the donor authenticated a different
+    // device passkey), fall back to a plain donate (no message).
     const record = getPendingSmartWalletRecord(walletAddress) || {
       type: 'smart-wallet',
       sessionId: 'no-record-' + Date.now(),
@@ -3454,13 +3587,25 @@ async function finalizeSmartWalletRecovery() {
       usd: 0,
       createdAt: Date.now(),
     };
+
+    // Step 3: sign and broadcast donateWithMessage (passkey #2).
     setRecStatus('Approve the donation in your Smart Wallet…');
     await forwardSmartWalletDonation(record);
+
+    // Step 4: drop the in-memory record so the card and navbar pill
+    // disappear immediately (forwardSmartWalletDonation already
+    // removed the localStorage entry).
+    _pendingSmartWalletRecords = _pendingSmartWalletRecords.filter(
+      r => r.sessionId !== record.sessionId
+    );
+
     setRecStatus('Donation sent! Costanza will see it next epoch.', 'success');
-    // Refresh balance — should be ~0 now, which hides the card.
+    // Refresh after a beat so the user sees the success state before
+    // the card auto-hides.
     setTimeout(() => {
       _swRecoveryBusy = false;
       renderSmartWalletRecoveryCard();
+      renderNavbarPendingPill();
     }, 2000);
   } catch (err) {
     console.warn('SW recovery failed:', err);
