@@ -423,99 +423,6 @@
   .sw-recovery-card .sw-rec-status.error { color: var(--red); }
   .sw-recovery-card .sw-rec-status.success { color: var(--green); }
 
-  /* Pre-flight info panel — expanded by clicking the card button.
-     Sits between the card and ETH buttons in the donate-button-stack. */
-  .card-info-panel {
-    background: var(--surface2);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 18px 18px 16px;
-    margin-top: 4px;
-    animation: card-info-slide-in 180ms ease-out;
-  }
-  @keyframes card-info-slide-in {
-    from { opacity: 0; transform: translateY(-6px); }
-    to   { opacity: 1; transform: translateY(0); }
-  }
-  .card-info-title {
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--text);
-    margin-bottom: 10px;
-  }
-  .card-info-steps {
-    list-style: none;
-    padding: 0;
-    margin: 0 0 12px;
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    counter-reset: card-step;
-  }
-  .card-info-steps li {
-    position: relative;
-    padding-left: 32px;
-    font-size: 13px;
-    line-height: 1.5;
-    color: var(--text-secondary);
-    counter-increment: card-step;
-  }
-  .card-info-steps li::before {
-    content: counter(card-step);
-    position: absolute;
-    left: 0; top: 0;
-    width: 22px; height: 22px;
-    border-radius: 50%;
-    background: var(--accent);
-    color: #fff;
-    font-size: 11px; font-weight: 600;
-    display: inline-flex; align-items: center; justify-content: center;
-  }
-  .card-info-steps li strong {
-    color: var(--text);
-    font-weight: 600;
-  }
-  .card-info-warning {
-    font-size: 11px;
-    color: var(--text-dim);
-    line-height: 1.5;
-    margin: 0 0 14px;
-    padding: 8px 10px;
-    background: var(--surface);
-    border-radius: var(--radius-xs);
-    border-left: 3px solid var(--accent);
-  }
-  .card-info-actions {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-  }
-  .card-info-back {
-    background: none;
-    border: none;
-    color: var(--text-secondary);
-    font-family: inherit;
-    font-size: 13px;
-    padding: 8px 0;
-    cursor: pointer;
-  }
-  .card-info-back:hover { color: var(--text); }
-  .card-info-continue {
-    flex: 1;
-    background: var(--accent);
-    color: #fff;
-    border: none;
-    border-radius: var(--radius-sm);
-    padding: 12px 18px;
-    font-family: inherit;
-    font-size: 14px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: var(--transition);
-  }
-  .card-info-continue:hover { background: var(--accent-dim); }
-
   /* "Already have ETH?" link separator below card CTA */
   .crypto-fallback {
     display: flex; align-items: center; gap: 12px;
@@ -1675,26 +1582,10 @@
 
     <!-- Donate buttons (both visible) -->
     <div class="donate-button-stack">
-      <button id="donate-card-btn" class="card-pay-btn" style="display:none;" onclick="togglePayWithCardInfo()">
+      <button id="donate-card-btn" class="card-pay-btn" style="display:none;" onclick="handlePayWithCard()">
         <svg class="card-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>
         <span id="donate-card-btn-label">Donate with debit card or Coinbase</span>
       </button>
-
-      <!-- Pre-flight info panel — expanded when card button is clicked.
-           Walks the donor through the steps before opening Coinbase, so
-           they know what's coming (passkey prompts, popup, etc.) and
-           don't bail mid-flow. -->
-      <div id="donate-card-info-panel" class="card-info-panel" style="display:none;">
-        <div class="card-info-title">How this works</div>
-        <ol id="donate-card-info-steps" class="card-info-steps">
-          <!-- populated by togglePayWithCardInfo() based on whether a message is typed -->
-        </ol>
-        <p id="donate-card-info-warning" class="card-info-warning"></p>
-        <div class="card-info-actions">
-          <button class="card-info-back" onclick="togglePayWithCardInfo(false)">&larr; Back</button>
-          <button class="card-info-continue" onclick="handlePayWithCard()">Continue to Coinbase</button>
-        </div>
-      </div>
 
       <button class="donate-eth-btn" id="donate-btn" onclick="handleSubmitDonation()">
         <span id="donate-btn-label">Donate with ETH</span>
@@ -2072,17 +1963,17 @@ const REFERRAL_CODE = '1'; // creator referral code (default when no code entere
 const COINBASE_CDP_PROJECT_ID = '7a0579be-19c8-4317-bdf6-2968bfdad3f8';
 const CARDPAY_ENABLED = true;
 
-// Throwaway-wallet flow for "card payment + message" donations. Behind
-// ?cardpaymsg=1 until verified end-to-end. When ON: the card button
-// stays enabled when a message is typed; the page generates a one-shot
-// EOA in JS, Coinbase delivers to it, and we auto-sign donateWithMessage
-// from the throwaway. When OFF: the card button is disabled when a
-// message is typed (the conservative fallback — donor must clear the
-// message or use the ETH path).
-const CARDPAY_WITH_MESSAGE_ENABLED = (() => {
-  try { return new URLSearchParams(location.search).has('cardpaymsg'); }
-  catch { return false; }
-})();
+// Throwaway-wallet flow for "card payment + message" donations.
+// Verified end-to-end on mainnet 2026-05-05 (messageId 20, sender
+// 0x34E2…9be0 — a fresh EOA generated by the page, funded via Coinbase
+// Onramp + Coinbase balance). Default-on for all donors. The
+// throwaway path is invisible to the donor: a fresh EOA is generated
+// in-page, Coinbase delivers to it, and we auto-sign donateWithMessage
+// from the local key. Compared to Smart Wallet: no passkey prompts,
+// no second click, fewer Coinbase-side onboarding hops. Trade-off:
+// plaintext key in localStorage for the duration of the flight (kept
+// only until the forward tx confirms, then purged).
+const CARDPAY_WITH_MESSAGE_ENABLED = true;
 
 // Smart-Wallet flow for "card payment + message" donations. Verified
 // end-to-end on mainnet 2026-05-03 — donor authenticated their Smart
@@ -2892,13 +2783,10 @@ function applyCardpayFeatureFlag() {
   // subtitle) is always visible.
   const cardBtn = document.getElementById('donate-card-btn');
   if (cardBtn) cardBtn.style.display = CARDPAY_ENABLED ? 'flex' : 'none';
-  // Reset the pre-flight info panel to collapsed each time the modal
-  // opens — donors who closed mid-expansion shouldn't see it dangling
-  // open on next visit.
-  const infoPanel = document.getElementById('donate-card-info-panel');
-  if (infoPanel) infoPanel.style.display = 'none';
   // Surface stranded-SW recovery card if the donor has unfinalized
-  // funds in their Smart Wallet. Async — fires-and-forgets.
+  // funds in their Smart Wallet (legacy edge case from prior SW
+  // attempts — throwaway is the default flow now). Async — fire-and-
+  // forget.
   renderSmartWalletRecoveryCard();
   renderNavbarPendingPill();
   // Region note: only shown to non-US donors (guest checkout is US-only;
@@ -3038,12 +2926,6 @@ function updateDonateButtons() {
     if (cardRangeNote) {
       cardRangeNote.style.display = (usd && !amountOk) ? 'block' : 'none';
     }
-    // If the info panel is open, re-render to reflect the latest
-    // message state (steps differ when a message is/isn't typed).
-    const infoPanel = document.getElementById('donate-card-info-panel');
-    if (infoPanel && infoPanel.style.display !== 'none') {
-      _renderCardInfoPanel();
-    }
   } else if (cardRangeNote) {
     cardRangeNote.style.display = 'none';
   }
@@ -3099,7 +2981,7 @@ function showStepper() {
   document.getElementById('donate-stepper').style.display = '';
   document.getElementById('donate-popup-callout').style.display = 'block';
   // hide the buttons + amount inputs + info panel — stepper takes over
-  ['donate-card-btn','donate-card-info-panel','donate-card-region-note','donate-quick-amounts','donate-custom-amount','donate-btn']
+  ['donate-card-btn','donate-card-region-note','donate-quick-amounts','donate-custom-amount','donate-btn']
     .forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
 }
 function hideStepper() {
@@ -3492,74 +3374,6 @@ function getTurnstileToken() {
   });
 }
 
-// Card flow — pre-flight info panel.
-//
-// Two-mode dispatch based on whether a message is typed:
-//   - With message → expand the info panel first. The smart-wallet
-//     flow has two passkey prompts, which surprises donors who
-//     weren't warned. The expansion is a worthwhile heads-up.
-//   - Without message → skip the panel and open Coinbase straight
-//     away. The popup itself is self-explanatory ("Pick payment
-//     method, confirm, done") and the extra click was friction
-//     normies flagged.
-function togglePayWithCardInfo(forceState) {
-  // Fast-path: simple no-message donations bypass the panel entirely.
-  // forceState is only set when "Back" is clicked from inside the
-  // panel (false), so the bypass is safe here too.
-  if (forceState === undefined) {
-    const ta = document.getElementById('message-text');
-    const hasMessage = !!(ta && ta.value.trim().length > 0);
-    if (!hasMessage) {
-      handlePayWithCard();
-      return;
-    }
-  }
-
-  const panel = document.getElementById('donate-card-info-panel');
-  if (!panel) return;
-  const currentlyOpen = panel.style.display !== 'none';
-  // forceState: true → open, false → close, undefined → toggle
-  const shouldOpen = forceState === undefined ? !currentlyOpen : !!forceState;
-  if (!shouldOpen) {
-    panel.style.display = 'none';
-    return;
-  }
-  _renderCardInfoPanel();
-  panel.style.display = '';
-  // Bring it into view — the donate modal scrolls internally and the
-  // panel can land below the fold on smaller screens.
-  try {
-    panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-  } catch {/* old browsers — fall through */}
-}
-
-// Render step-list + warning into the info panel. Content depends on
-// whether a message is typed: the smart-wallet path adds two passkey
-// taps (one to authenticate, one to sign donateWithMessage). The
-// no-message path is just "Coinbase pays the contract directly."
-function _renderCardInfoPanel() {
-  const ta = document.getElementById('message-text');
-  const hasMessage = !!(ta && ta.value.trim().length > 0);
-  const stepsEl = document.getElementById('donate-card-info-steps');
-  const warnEl = document.getElementById('donate-card-info-warning');
-  if (!stepsEl || !warnEl) return;
-
-  if (hasMessage) {
-    stepsEl.innerHTML = `
-      <li><strong>Authenticate your Smart Wallet.</strong> Uses your device's passkey (Touch ID, Face ID, or Windows Hello). One-time, ~10 seconds. No app or extension needed.</li>
-      <li><strong>Pay in the Coinbase window.</strong> Choose debit card, Apple Pay, or your Coinbase account balance — Coinbase handles the rest.</li>
-      <li><strong>Confirm the donation.</strong> One more passkey tap to send the funds with your message attached on-chain.</li>
-    `;
-    warnEl.textContent = 'Keep this tab open until you see the success message. Closing it before the second confirmation can leave funds in your Smart Wallet that need manual recovery later.';
-  } else {
-    stepsEl.innerHTML = `
-      <li><strong>Pay in the Coinbase window.</strong> Choose debit card, Apple Pay, or your Coinbase account balance — Coinbase handles the rest.</li>
-      <li><strong>ETH lands in Costanza's treasury automatically.</strong> No second confirmation needed.</li>
-    `;
-    warnEl.textContent = 'Keep this tab open until you see the success message — usually under 60 seconds.';
-  }
-}
-
 // Refresh the navbar's "Finish donation" pill. Visible when there's
 // a recoverable Smart-Wallet target — either a pending record from
 // localStorage with positive balance, or a connected SW with balance
@@ -3791,13 +3605,12 @@ async function handlePayWithCard() {
 
     // Branch: if a message is typed AND a card+message flow is enabled,
     // route through that path so the message is attached on-chain via
-    // donateWithMessage(). Throwaway wins over Smart Wallet when its
-    // explicit URL flag is set — this is currently a testing affordance
-    // (?cardpaymsg=1) that lets us validate the throwaway path on real
-    // Coinbase Onramp deliveries without disrupting the default flow.
-    // If the throwaway test succeeds, we'll flip it to the default
-    // because it skips Coinbase's heavy Smart-Wallet onboarding (5+
-    // screens that confuse normies — see donor feedback 2026-05-04).
+    // donateWithMessage(). Throwaway is the default — verified on
+    // mainnet 2026-05-05 (messageId 20). It skips Coinbase's heavy
+    // Smart-Wallet onboarding (5+ screens that confused normie testers
+    // — see donor feedback 2026-05-04) and adds zero passkey prompts.
+    // Smart Wallet path stays around as a fallback + handles legacy
+    // stranded SW funds via the recovery card.
     const messageText = (document.getElementById('message-text')?.value || '').trim();
     if (messageText.length > 0) {
       if (CARDPAY_WITH_MESSAGE_ENABLED) {
@@ -3898,7 +3711,17 @@ async function handlePayWithCard() {
       try {
         await pollWalletForDeposit(CONTRACT_ADDRESS, startBalance, targetEth, 30 * 1000);
       } catch {
-        setStatus(statusId, 'Onramp window closed before payment completed. If you completed the payment, the donation will arrive shortly.', 'error');
+        // Distinguish clean cancel (no balance change) from "delivery
+        // in progress" (balance moved). For the no-message direct
+        // path we have no pending record to clean up; just surface
+        // the right status.
+        let postGraceBalance = startBalance;
+        try { postGraceBalance = await provider.getBalance(CONTRACT_ADDRESS); } catch {/* RPC blip */}
+        if (postGraceBalance <= startBalance) {
+          setStatus(statusId, 'Donation canceled. No payment was processed.', 'error');
+        } else {
+          setStatus(statusId, 'Onramp window closed but funds may still be in transit. Refresh in a minute to see the donation reflected.', 'error');
+        }
         hideStepper();
         return;
       }
@@ -4022,9 +3845,22 @@ async function handlePayWithCardThrowaway(usd, messageText) {
     try {
       await pollWalletForDeposit(throwaway.address, 0n, targetEth, 30 * 1000);
     } catch {
-      setStatus(statusId, 'Onramp window closed before payment completed. If you completed the payment, the donation will arrive shortly.', 'error');
+      // After grace timeout: if the throwaway's balance is still 0,
+      // this was a clean cancel (donor closed the popup before paying).
+      // Delete the pending record so the recovery banner doesn't
+      // surface a phantom "you have stranded funds" prompt next visit.
+      let postGraceBalance = 0n;
+      try { postGraceBalance = await provider.getBalance(throwaway.address); } catch {/* RPC blip */}
+      if (postGraceBalance === 0n) {
+        removePendingDonation(sessionId);
+        setStatus(statusId, 'Donation canceled. No payment was processed.', 'error');
+      } else {
+        // Funds did land but our forward couldn't fire — keep record,
+        // recovery banner picks it up on next visit.
+        setStatus(statusId, 'Onramp window closed before we could finalize. Funds landed; the recovery banner will complete the donation on your next visit.', 'error');
+      }
       hideStepper();
-      return; // recovery banner will surface this on next visit
+      return;
     }
   } else {
     try { popup.close(); } catch {}
@@ -4063,7 +3899,7 @@ async function handlePayWithCardThrowaway(usd, messageText) {
 // open Onramp popup → race popup-closed vs deposit-arrived. Returns
 // true if ETH landed in the smart wallet, false otherwise (and sets
 // an error status + hides the stepper on the way out).
-async function _smartWalletAwaitOnrampDeposit(smartAddress, startBalance, targetEth, usd, statusId) {
+async function _smartWalletAwaitOnrampDeposit(smartAddress, startBalance, targetEth, usd, statusId, sessionId) {
   // 3. Turnstile challenge.
   let turnstileToken;
   try {
@@ -4129,7 +3965,19 @@ async function _smartWalletAwaitOnrampDeposit(smartAddress, startBalance, target
     try {
       await pollWalletForDeposit(smartAddress, startBalance, targetEth, 30 * 1000);
     } catch {
-      setStatus(statusId, `Onramp window closed before payment completed. If you completed the payment, the funds will arrive at your Smart Wallet (${fmtAddr(smartAddress)}). Reload, reconnect, and we'll forward them.`, 'error');
+      // After grace timeout: if the SW's balance hasn't moved past
+      // startBalance, this was a clean cancel (donor closed the popup
+      // before paying). Delete the pending record so the recovery
+      // banner doesn't surface a phantom prompt next visit. If the
+      // balance HAS moved, funds are inflight and recovery should fire.
+      let postGraceBalance = startBalance;
+      try { postGraceBalance = await provider.getBalance(smartAddress); } catch {/* RPC blip */}
+      if (postGraceBalance <= startBalance && sessionId) {
+        removePendingDonation(sessionId);
+        setStatus(statusId, 'Donation canceled. No payment was processed.', 'error');
+      } else {
+        setStatus(statusId, `Onramp window closed before we could finalize. Funds may have landed at your Smart Wallet (${fmtAddr(smartAddress)}); the recovery card will surface them on your next visit.`, 'error');
+      }
       hideStepper();
       return false;
     }
@@ -4227,7 +4075,7 @@ async function handlePayWithCardSmartWallet(usd, messageText) {
   // the flow when Coinbase is unreachable (rate-limited cards, etc).
   const depositOk = CARDPAY_SMART_WALLET_DEBUG
     ? await _smartWalletAwaitManualDeposit(smartAddress, startBalance, targetEth, statusId)
-    : await _smartWalletAwaitOnrampDeposit(smartAddress, startBalance, targetEth, usd, statusId);
+    : await _smartWalletAwaitOnrampDeposit(smartAddress, startBalance, targetEth, usd, statusId, sessionId);
   if (!depositOk) return; // helper already set the error status + hid the stepper
                           // pending record stays in localStorage — recovery banner picks it up
 
