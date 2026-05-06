@@ -5812,7 +5812,12 @@ async function init() {
       if (input) { input.value = urlRefCode; updateReferralNote(); }
     }
 
-    provider = new ethers.JsonRpcProvider(RPC_URL, undefined, { batchMaxCount: 1 });
+    // batchMaxCount: 10 lets ethers group up to 10 concurrent calls into a
+    // single HTTP POST. The worker handles JSON-RPC batches by splitting,
+    // looking each up in cache individually, then merging — so batching
+    // here doesn't lose cache hits, just trims HTTP round-trips during
+    // loadAll's burst of fund.xxx() reads.
+    provider = new ethers.JsonRpcProvider(RPC_URL, undefined, { batchMaxCount: 10 });
     fund = new ethers.Contract(CONTRACT_ADDRESS, FUND_ABI, provider);
 
     // Base Sepolia public RPC caps eth_getLogs at 10,000 blocks per call;
@@ -5843,8 +5848,18 @@ async function init() {
 
     await refresh();
 
-    // Auto-refresh every 30s
-    setInterval(refresh, 30000);
+    // Auto-refresh every 90s (was 30s — Twitter-launch traffic spike
+    // 2026-05-06 burned through Alchemy quota). With a 6h epoch
+    // cadence, sub-minute refresh is overkill; 90s is plenty fresh.
+    // Skip refresh when the tab is hidden (most visitors open & switch
+    // away — no point polling for nobody). Re-fire immediately when
+    // the tab regains focus so returning visitors don't see stale state.
+    setInterval(() => {
+      if (!document.hidden) refresh();
+    }, 90000);
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) refresh();
+    });
   } catch (err) {
     console.error('Init error:', err);
     document.getElementById('status-text').textContent = 'failed to connect';

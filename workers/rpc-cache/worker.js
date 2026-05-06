@@ -12,7 +12,12 @@
 // Deploy: cd workers/rpc-cache && wrangler deploy
 // Secrets: COINBASE_CDP_KEY_NAME, COINBASE_CDP_KEY_SECRET (PEM)
 
-const CACHE_TTL = 900; // 15 minutes
+// Per-method cache TTLs (seconds). Keys are method names; the
+// build-cache-key function returns both the key and the TTL it should
+// use. Defaults to DEFAULT_TTL (15min) for methods not listed.
+const DEFAULT_TTL = 900;        // 15 min — eth_call (state can drift)
+const SHORT_TTL = 10;           // ~5 blocks on Base — moving block tags
+const FOREVER_TTL = 31536000;   // 1 year — immutable data (txes, sealed blocks)
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -29,17 +34,55 @@ const FUND_ADDRESS = "0x678dc1756b123168f23a698374c000019e38318c";
 // Cache-key version. Bump this any time the cache-payload schema changes
 // (e.g. adding stamped headers like X-Cached-At) to force eviction of all
 // stale entries that won't carry the new metadata. Otherwise serves limp
-// across deploys until the 15-min TTL expires per entry.
-const CACHE_KEY_VERSION = "v3";
+// across deploys until the per-key TTL expires per entry. v4 = added
+// eth_getTransactionByHash + eth_getBlockByNumber + eth_getCode caching,
+// normalized eth_getLogs toBlock; old v3 keys carry stale shape.
+const CACHE_KEY_VERSION = "v4";
 
-// Build a stable cache key by stripping volatile fields (request id, but
-// NOT block ranges — those affect the response set and must be in the key).
-function buildCacheKey(parsed) {
+// Coarse-boundary rounding for eth_getLogs toBlock. The frontend's
+// queryFilterChunked passes the live currentBlock as toBlock for the
+// last chunk, which advances every Base block (~2s) and breaks the
+// cache key. Round down to the nearest 1000 blocks (~33min on Base) so
+// the cache stays warm. Trade-off: chart data at the bleeding edge
+// can be up to ~33min stale. For a 6h epoch site, fine.
+const LOGS_TOBLOCK_BUCKET = 1000;
+
+// Block tags whose value changes block-to-block. Cache briefly (SHORT_TTL).
+// Any other tag (assumed numeric) is cached forever — sealed blocks are
+// immutable.
+const VOLATILE_BLOCK_TAGS = new Set(["latest", "pending", "earliest", "safe", "finalized"]);
+
+function isHexBlockNumber(s) {
+  return typeof s === "string" && /^0x[0-9a-fA-F]+$/.test(s);
+}
+
+function normalizeToBlock(toBlock) {
+  // Pass tag strings through untouched — the upstream RPC handles them.
+  // Round numeric block hex down to the bucket boundary so the cache
+  // key is stable across the ~33min that bucket covers.
+  if (!isHexBlockNumber(toBlock)) return toBlock || "";
+  const n = parseInt(toBlock, 16);
+  if (!Number.isFinite(n)) return toBlock;
+  const bucketed = Math.floor(n / LOGS_TOBLOCK_BUCKET) * LOGS_TOBLOCK_BUCKET;
+  return "0x" + bucketed.toString(16);
+}
+
+// Build a stable cache key + the TTL it should use. Returns null when
+// the method isn't one we know how to cache safely.
+function buildCacheEntry(parsed) {
   const method = parsed.method;
   let key = null;
+  let ttl = DEFAULT_TTL;
 
   if (method === "eth_blockNumber") {
     key = "eth_blockNumber";
+    ttl = SHORT_TTL; // moves every block; brief cache absorbs concurrent visitors
+  } else if (method === "eth_chainId" || method === "net_version") {
+    key = method;
+    ttl = FOREVER_TTL; // chain ID never changes
+  } else if (method === "eth_gasPrice" || method === "eth_maxPriorityFeePerGas") {
+    key = method;
+    ttl = SHORT_TTL; // changes block-to-block but tolerable for display
   } else if (method === "eth_call") {
     const p = parsed.params || [];
     const call = p[0] || {};
@@ -47,16 +90,49 @@ function buildCacheKey(parsed) {
     // pinning isn't used by the frontend and inflating the key with it
     // would tank cache hit rate.
     key = `eth_call:${(call.to || "").toLowerCase()}:${(call.data || "").toLowerCase()}`;
+    ttl = DEFAULT_TTL;
   } else if (method === "eth_getLogs") {
     const p = (parsed.params || [])[0] || {};
-    // fromBlock/toBlock MUST be in the key — different ranges return
-    // different log sets. Without this every chunked queryFilter() call
-    // returned the first chunk's events, duplicating data on the chart
-    // and dropping events from later chunks.
-    key = `eth_getLogs:${(p.address || "").toLowerCase()}:${p.fromBlock || ""}:${p.toBlock || ""}:${JSON.stringify(p.topics || [])}`;
+    // fromBlock/toBlock affect the response set; both go in the key.
+    // toBlock is bucketed to a coarse boundary so the chunked-query
+    // last chunk doesn't burn a fresh cache miss every 2 seconds.
+    const normTo = normalizeToBlock(p.toBlock);
+    key = `eth_getLogs:${(p.address || "").toLowerCase()}:${p.fromBlock || ""}:${normTo}:${JSON.stringify(p.topics || [])}`;
+    ttl = DEFAULT_TTL;
+  } else if (method === "eth_getTransactionByHash" || method === "eth_getTransactionReceipt") {
+    // Mined transactions / receipts are immutable. Cache forever.
+    // (Pre-mined hashes return null; the cache TTL still applies but
+    // we'd rather not cache nulls — see below.)
+    const hash = (parsed.params || [])[0] || "";
+    key = `${method}:${String(hash).toLowerCase()}`;
+    ttl = FOREVER_TTL;
+  } else if (method === "eth_getBlockByNumber" || method === "eth_getBlockByHash") {
+    const tag = (parsed.params || [])[0] || "";
+    const includeTxs = !!(parsed.params || [])[1];
+    if (method === "eth_getBlockByNumber" && typeof tag === "string" && VOLATILE_BLOCK_TAGS.has(tag)) {
+      key = `eth_getBlockByNumber:${tag}:${includeTxs ? "1" : "0"}`;
+      ttl = SHORT_TTL;
+    } else {
+      // Specific block (hex number or hash) — sealed, immutable.
+      key = `${method}:${String(tag).toLowerCase()}:${includeTxs ? "1" : "0"}`;
+      ttl = FOREVER_TTL;
+    }
+  } else if (method === "eth_getCode") {
+    const addr = (parsed.params || [])[0] || "";
+    const tag = (parsed.params || [])[1] || "latest";
+    // Code at the latest tag changes only on contract upgrades (rare
+    // for the fund); SHORT_TTL absorbs the burst, FOREVER_TTL for
+    // numbered blocks.
+    if (typeof tag === "string" && VOLATILE_BLOCK_TAGS.has(tag)) {
+      key = `eth_getCode:${String(addr).toLowerCase()}:${tag}`;
+      ttl = SHORT_TTL;
+    } else {
+      key = `eth_getCode:${String(addr).toLowerCase()}:${String(tag).toLowerCase()}`;
+      ttl = FOREVER_TTL;
+    }
   }
 
-  return key ? `${CACHE_KEY_VERSION}:${key}` : null;
+  return key ? { key: `${CACHE_KEY_VERSION}:${key}`, ttl } : null;
 }
 
 async function sha256(text) {
@@ -123,77 +199,120 @@ export default {
       return jsonResp(await resp.text(), { "X-Cache": "SKIP" });
     }
 
-    const requestId = parsed.id;
-    const keyStr = buildCacheKey(parsed);
-
-    // If we can't normalize, forward without caching
-    if (!keyStr) {
-      const resp = await fetch(env.ALCHEMY_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body,
-      });
-      return jsonResp(await resp.text(), { "X-Cache": "SKIP" });
-    }
-
-    const hash = await sha256(keyStr);
-    const cacheKey = new Request(`https://cache/${hash}`, { method: "GET" });
-    const cache = caches.default;
-
-    // Check cache — we store only the "result" or "error" value, not the full envelope
-    const cached = await cache.match(cacheKey);
-    if (cached) {
-      const cachedPayload = await cached.text();
-      // Reconstruct JSON-RPC envelope with the caller's request id
-      const envelope = JSON.parse(cachedPayload);
-      envelope.id = requestId;
-      // Compute cache age from the X-Cached-At header we stored on put.
-      // (Don't use the standard Date header — Cloudflare's edge cache
-      // overrides/strips it.)
-      const cachedAtMs = parseInt(cached.headers.get("x-cached-at") || "0", 10);
-      const ageSec = cachedAtMs
-        ? Math.max(0, Math.floor((Date.now() - cachedAtMs) / 1000))
-        : 0;
-      return jsonResp(JSON.stringify(envelope), {
-        "X-Cache": "HIT",
-        "X-Cache-Age": String(ageSec),
+    // JSON-RPC supports batched requests as an array of envelopes. Process
+    // each through the same cache logic and return the merged array. This
+    // lets the frontend opt into batchMaxCount > 1 without losing cache
+    // hits — without batch support here, every batched call would bypass
+    // cache (parsed.method would be undefined).
+    if (Array.isArray(parsed)) {
+      // Empty batch is a malformed request per JSON-RPC; forward as-is.
+      if (parsed.length === 0) {
+        const resp = await fetch(env.ALCHEMY_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body,
+        });
+        return jsonResp(await resp.text(), { "X-Cache": "SKIP" });
+      }
+      const results = await Promise.all(parsed.map(req => processRpcRequest(req, env)));
+      const responses = results.map(r => r.envelope);
+      // Compose summary cache stats so the donor's devtools can see how
+      // a batch landed without per-call breakdown.
+      const hits = results.filter(r => r.cacheStatus === "HIT").length;
+      const misses = results.filter(r => r.cacheStatus === "MISS").length;
+      const skips = results.filter(r => r.cacheStatus === "SKIP").length;
+      return jsonResp(JSON.stringify(responses), {
+        "X-Cache": `BATCH (${hits}H/${misses}M/${skips}S)`,
+        "X-Cache-Age": "0",
       });
     }
 
-    // Cache miss — forward to Alchemy
+    const result = await processRpcRequest(parsed, env);
+    return jsonResp(JSON.stringify(result.envelope), {
+      "X-Cache": result.cacheStatus,
+      "X-Cache-Age": String(result.cacheAge || 0),
+    });
+  },
+};
+
+// Process a single JSON-RPC request envelope through the cache + upstream
+// fetch logic. Returns { envelope, cacheStatus, cacheAge } so a calling
+// batch handler can compose responses + headers.
+async function processRpcRequest(parsed, env) {
+  const requestId = parsed.id;
+  const entry = buildCacheEntry(parsed);
+
+  // If we can't normalize, forward this single request to Alchemy.
+  if (!entry) {
     const resp = await fetch(env.ALCHEMY_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body,
+      body: JSON.stringify(parsed),
     });
+    let envelope;
+    try { envelope = JSON.parse(await resp.text()); }
+    catch { envelope = { jsonrpc: "2.0", id: requestId, error: { code: -32603, message: "upstream parse error" } }; }
+    if (envelope && envelope.id === undefined) envelope.id = requestId;
+    return { envelope, cacheStatus: "SKIP", cacheAge: 0 };
+  }
 
-    const data = await resp.text();
+  const hash = await sha256(entry.key);
+  const cacheKey = new Request(`https://cache/${hash}`, { method: "GET" });
+  const cache = caches.default;
 
-    // Cache successful responses (strip the id before caching). Stamp an
-    // X-Cached-At header so cache hits can compute their age cleanly.
-    if (resp.ok) {
+  // Check cache — we store only the result/error envelope, not the full HTTP wrapper
+  const cached = await cache.match(cacheKey);
+  if (cached) {
+    const envelope = JSON.parse(await cached.text());
+    envelope.id = requestId;
+    const cachedAtMs = parseInt(cached.headers.get("x-cached-at") || "0", 10);
+    const ageSec = cachedAtMs ? Math.max(0, Math.floor((Date.now() - cachedAtMs) / 1000)) : 0;
+    return { envelope, cacheStatus: "HIT", cacheAge: ageSec };
+  }
+
+  // Cache miss — forward to Alchemy
+  const resp = await fetch(env.ALCHEMY_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(parsed),
+  });
+  const data = await resp.text();
+  let envelope;
+  try { envelope = JSON.parse(data); }
+  catch {
+    return {
+      envelope: { jsonrpc: "2.0", id: requestId, error: { code: -32603, message: "upstream parse error" } },
+      cacheStatus: "ERR",
+      cacheAge: 0,
+    };
+  }
+
+  // Cache successful responses with the per-method TTL. Skip caching of
+  // null results for tx/receipt lookups (pre-mined hashes return null;
+  // we don't want to pin "not yet mined" forever).
+  if (resp.ok && envelope && (envelope.result !== undefined || envelope.error)) {
+    const isNullableMethod = parsed.method === "eth_getTransactionByHash"
+      || parsed.method === "eth_getTransactionReceipt"
+      || parsed.method === "eth_getBlockByNumber"
+      || parsed.method === "eth_getBlockByHash";
+    const skipCacheOfNull = isNullableMethod && envelope.result === null;
+    if (!skipCacheOfNull) {
+      // Strip caller's id so the stored payload is donor-agnostic.
+      const toCache = JSON.stringify({ ...envelope, id: 0 });
       try {
-        const rpcResp = JSON.parse(data);
-        if (rpcResp.result !== undefined || rpcResp.error) {
-          // Store with a placeholder id — we'll replace it on cache hit
-          rpcResp.id = 0;
-          const toCache = JSON.stringify(rpcResp);
-          await cache.put(cacheKey, new Response(toCache, {
-            headers: {
-              "Content-Type": "application/json",
-              "Cache-Control": `public, max-age=${CACHE_TTL}`,
-              "X-Cached-At": String(Date.now()),
-            },
-          }));
-        }
-      } catch {
-        // Can't parse — don't cache
-      }
+        await cache.put(cacheKey, new Response(toCache, {
+          headers: {
+            "Content-Type": "application/json",
+            "Cache-Control": `public, max-age=${entry.ttl}`,
+            "X-Cached-At": String(Date.now()),
+          },
+        }));
+      } catch {/* cache.put is best-effort */}
     }
-
-    return jsonResp(data, { "X-Cache": "MISS", "X-Cache-Age": "0" });
-  },
-};
+  }
+  if (envelope && envelope.id === undefined) envelope.id = requestId;
+  return { envelope, cacheStatus: "MISS", cacheAge: 0 };
+}
 
 // ─── Coinbase Onramp session-token minting ────────────────────────────────
 
