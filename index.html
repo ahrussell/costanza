@@ -3791,16 +3791,20 @@ async function handlePayWithCard() {
 
     // Branch: if a message is typed AND a card+message flow is enabled,
     // route through that path so the message is attached on-chain via
-    // donateWithMessage(). Smart-wallet wins over throwaway when both
-    // flags are on (better trust story — no plaintext key in local
-    // storage, deterministic recovery via passkey).
+    // donateWithMessage(). Throwaway wins over Smart Wallet when its
+    // explicit URL flag is set — this is currently a testing affordance
+    // (?cardpaymsg=1) that lets us validate the throwaway path on real
+    // Coinbase Onramp deliveries without disrupting the default flow.
+    // If the throwaway test succeeds, we'll flip it to the default
+    // because it skips Coinbase's heavy Smart-Wallet onboarding (5+
+    // screens that confuse normies — see donor feedback 2026-05-04).
     const messageText = (document.getElementById('message-text')?.value || '').trim();
     if (messageText.length > 0) {
-      if (CARDPAY_SMART_WALLET_ENABLED) {
-        return handlePayWithCardSmartWallet(usd, messageText);
-      }
       if (CARDPAY_WITH_MESSAGE_ENABLED) {
         return handlePayWithCardThrowaway(usd, messageText);
+      }
+      if (CARDPAY_SMART_WALLET_ENABLED) {
+        return handlePayWithCardSmartWallet(usd, messageText);
       }
     }
 
