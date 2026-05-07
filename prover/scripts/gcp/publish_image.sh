@@ -129,10 +129,16 @@ if gsutil -q stat "$GCS_TAR" 2>/dev/null; then
     log "Image already exported to $GCS_TAR (skipping export)"
 else
     log "Exporting $IMG → GCS (~30-60 min)..."
+    # Pin --zone so Daisy's export worker doesn't auto-pick a busy zone.
+    # Without this, Daisy defaults to us-central1-c (or whatever it picks
+    # internally), and we hit ZONE_RESOURCE_POOL_EXHAUSTED on busy days.
+    # us-central1-a is fine because it's the same zone the publisher VM
+    # is in (less network hop) and has historically had headroom.
     gcloud compute images export \
         --image="$IMG" \
         --destination-uri="$GCS_TAR" \
-        --project="$GCP_PROJECT"
+        --project="$GCP_PROJECT" \
+        --zone="$GCP_ZONE"
 fi
 
 log "Downloading tarball from GCS to local disk..."
