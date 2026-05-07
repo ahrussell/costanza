@@ -8,7 +8,7 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 - **Agent inference**: Hermes 4 70B (Q6_K, ~58 GB split GGUF, 2 parts) via llama.cpp on GCP TDX H100
 - **Prover client** (`prover/client/`): Cron-based auction prover — monitors phases, bids, orchestrates GCP TEE VMs
 - **TEE enclave** (`prover/enclave/`): One-shot Python program + llama-server running directly on full dm-verity rootfs (no Docker, no SSH). Input via GCP metadata, output via serial console
-- **Frontend** (`frontend/`): Diary viewer, treasury dashboard, donation/referral interface
+- **Frontend** (`index.html`, served from `thehumanfund.ai` on GitHub Pages): Diary viewer, treasury dashboard, donation/referral interface. Donations accept ETH from any wallet OR debit card / Apple Pay / Coinbase balance via Coinbase Onramp. Card+message donations route through a JS-generated throwaway EOA (Coinbase delivers ETH to it; the page auto-signs `donateWithMessage` to forward) — verified end-to-end on mainnet 2026-05-05. Smart Wallet (passkey-based) path also shipped as a fallback. RPC traffic flows through a Cloudflare Worker (`workers/rpc-cache/`) that signs CDP JWTs for Onramp session-token minting and caches Alchemy responses with per-method TTLs.
 
 ## Current Status
 
@@ -21,9 +21,9 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 - **DonationExecutor**: [`0x28DF01FBc55341Db43CE4589c6871f7a769730d5`](https://basescan.org/address/0x28DF01FBc55341Db43CE4589c6871f7a769730d5)
 - **Owner**: `0x2e61a91EbeD1B557199f42d3E843c06Afb445004` (single-use deploy EOA, will transfer to Safe `0x6dF6f527E193fAf1334c26A6d811fAd62E79E5Db`)
 - **Initial treasury**: 0.1 ETH (seedAmount)
-- **Epoch timing**: 240-min epochs (1h commit, 1h reveal, 2h execution)
+- **Epoch timing**: 360-min epochs (1h commit, 1h reveal, 4h execution); was 240-min until 2026-05-06 `resetAuction`
 - **BASE_BOND**: 0.01 ETH; effectiveMaxBid at openAuction: 0.01 ETH (capped by min(maxBid, 10%×treasury))
-- **404 forge tests + 100 Python tests pass** (392 non-fork + 12 mainnet-fork; core + auction + TDX verifier + investment + memory + messages + cross-stack + system invariants + ownership fan-out + enclave inference + voice anchors)
+- **406 forge tests + 106 Python tests pass** (core + auction + TDX verifier + investment + memory + messages + cross-stack + system invariants + ownership fan-out + enclave inference + voice anchors)
 - GPU image: `costanza-tdx-prover-v2`, key: `0x45f9fc10c7b842e457e1cee1c42de28fe81dfb10a349ed790a1742e6e7b09691` (encoder fix from PR #44 baked in; published to public R2 on 2026-05-07; see [v2_measurements.txt](prover/scripts/gcp/costanza-tdx-prover-v2-measurements.txt))
   - v1 (still approved on-chain): `0x1ff34454c9d46ea9f1cd400d490df0cffaa183f2c6bf6afc69d9749c60e34685` — NVIDIA CC GPU readiness fix; superseded by v2 ([v1_measurements.txt](prover/scripts/gcp/costanza-tdx-prover-v1-measurements.txt))
 - GCP TDX FMSPC `00806f050000` registered in Automata DCAP Dashboard
