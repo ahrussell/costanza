@@ -1,0 +1,19 @@
+image: costanza-tdx-prover-v2
+built: 2026-05-07
+
+MRTD: feb7486608382c1ff0e15b4648ddc0acea6ca974eb53e3529f4c4bd5ffbaa20bf335cb75965cea65fe473aed9647c162
+RTMR0: 01a7e9d7dd2662bce03bedf851427a7288253796b8dbcbe0b55ee10b8acd39cc84c7a815b0f01310e9fb0657fdba1fa0
+RTMR1: c16ce89dcd2f56286f8cbc7bb112f59a7d8c68caf7fdac1845351df057ee693091e275bc7fc710733893f5a353b9ace7
+RTMR2: b5e0bf0a03890370cd92deb6f79df5208d6a6849cb9b138aef3724ce64222592b1ba2fdd7c44a23a62da3477c0713194
+RTMR3: 000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+PLATFORM_KEY: 45f9fc10c7b842e457e1cee1c42de28fe81dfb10a349ed790a1742e6e7b09691
+
+rootfs_hash: bcecad334a078c457614741480f9aba4efb76c2d41d6081a1b81b2343bb36f83
+models_hash: d372225afa21dc8249759359dba26113c1eebc6d8929ccb8ef9f13f6b2700ae8
+
+base_image: humanfund-base-gpu-llama-b5270-hermes
+commit: 7f7d177
+
+# Validated end-to-end on 2026-05-07: rich-scenario synthetic inference run
+# completed in 12.5 min on H100, attestation generated, measurements
+# reproducible across runs. Encoder fix from PR #44 baked in.
