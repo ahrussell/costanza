@@ -24,7 +24,8 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 - **Epoch timing**: 240-min epochs (1h commit, 1h reveal, 2h execution)
 - **BASE_BOND**: 0.01 ETH; effectiveMaxBid at openAuction: 0.01 ETH (capped by min(maxBid, 10%×treasury))
 - **404 forge tests + 100 Python tests pass** (392 non-fork + 12 mainnet-fork; core + auction + TDX verifier + investment + memory + messages + cross-stack + system invariants + ownership fan-out + enclave inference + voice anchors)
-- GPU image: `costanza-tdx-prover-v1`, key: `0x1ff34454c9d46ea9f1cd400d490df0cffaa183f2c6bf6afc69d9749c60e34685` (NVIDIA CC GPU readiness fix; see [v1_measurements.txt](prover/scripts/gcp/costanza-tdx-prover-v1-measurements.txt))
+- GPU image: `costanza-tdx-prover-v2`, key: `0x45f9fc10c7b842e457e1cee1c42de28fe81dfb10a349ed790a1742e6e7b09691` (encoder fix from PR #44 baked in; published to public R2 on 2026-05-07; see [v2_measurements.txt](prover/scripts/gcp/costanza-tdx-prover-v2-measurements.txt))
+  - v1 (still approved on-chain): `0x1ff34454c9d46ea9f1cd400d490df0cffaa183f2c6bf6afc69d9749c60e34685` — NVIDIA CC GPU readiness fix; superseded by v2 ([v1_measurements.txt](prover/scripts/gcp/costanza-tdx-prover-v1-measurements.txt))
 - GCP TDX FMSPC `00806f050000` registered in Automata DCAP Dashboard
 - H100 on-demand quota is 0; all GPU VMs use `--provisioning-model=SPOT`
 - **Frontend RPC**: Cloudflare Worker at `humanfund-rpc-cache.thehumanfund.workers.dev` (proxies to Alchemy, 15-min cache)
@@ -386,10 +387,10 @@ bash prover/scripts/gcp/build_base_image.sh               # Build base image (sl
 bash prover/scripts/gcp/build_full_dmverity_image.sh \
   --base-image humanfund-base-gpu-llama-b5270-hermes        # Build production dm-verity image
 python prover/scripts/gcp/register_image.py \
-  --image costanza-tdx-prover-v1 \
+  --image costanza-tdx-prover-v2 \
   --verifier 0x...                            # Register image key on-chain
 python prover/scripts/gcp/verify_measurements.py \
-  --image costanza-tdx-prover-v1 \
+  --image costanza-tdx-prover-v2 \
   --verifier 0x...                            # Verify RTMR match
 
 # TEE enclave (local testing)
@@ -405,7 +406,7 @@ RPC_URL=https://sepolia.base.org
 CONTRACT_ADDRESS=0x...         # Deployed TheHumanFund contract address
 GCP_PROJECT=my-project         # GCP project ID
 GCP_ZONE=us-central1-a         # GCP zone with TDX support
-GCP_IMAGE=costanza-tdx-prover-v1   # Production dm-verity disk image
+GCP_IMAGE=costanza-tdx-prover-v2   # Production dm-verity disk image
 NTFY_CHANNEL=my-prover         # Optional: ntfy.sh channel
 ```
 
