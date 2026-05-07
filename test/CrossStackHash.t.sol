@@ -7,8 +7,11 @@ import "../src/AuctionManager.sol";
 import "../src/InvestmentManager.sol";
 import "../src/AgentMemory.sol";
 import "../src/adapters/MockAdapter.sol";
+import "../src/adapters/CostanzaTokenAdapter.sol";
 import "./helpers/MockEndaoment.sol";
 import "./helpers/EpochTest.sol";
+import "./helpers/CostanzaTokenAdapterMocks.sol";
+import "./helpers/V4PriceMath.sol";
 
 /// @title CrossStackHashTest
 /// @notice Verifies that the Solidity _computeInputHash() and the Python
@@ -175,6 +178,81 @@ contract CrossStackHashTest is EpochTest {
         speedrunEpoch(fund, doNothingAction, "seed titles", updates);
 
         _assertCrossStackMatch(2, "with titles (multi-update)");
+    }
+
+    /// @notice Test that the CostanzaTokenAdapter (a V4-token adapter
+    ///         with a non-trivial `balance()`) participates in the
+    ///         cross-stack hash without breaking parity. The Python
+    ///         side reads `current_value` from the frozen snapshot,
+    ///         so as long as `balance()` returned the same value at
+    ///         freeze time, the hashes agree.
+    function test_cross_stack_hash_with_costanza_adapter() public {
+        // Wire IM.
+        InvestmentManager im = new InvestmentManager(address(fund), address(this));
+        fund.setInvestmentManager(address(im));
+
+        // Mocks for the V4 plumbing.
+        MockCostanzaToken token = new MockCostanzaToken();
+        MockWETH wethMock = new MockWETH();
+        MockPoolOracle oracle = new MockPoolOracle();
+        MockPoolStateReader stateReader = new MockPoolStateReader();
+        MockSwapExecutor swapper = new MockSwapExecutor(address(token), address(wethMock), 1000e18);
+        MockFeeDistributor feeDist = new MockFeeDistributor(address(token), address(wethMock), address(this));
+
+        // Liquidity for the swapper.
+        token.mint(address(this), 1_000_000 ether);
+        token.approve(address(swapper), type(uint256).max);
+        swapper.seedTokenLiquidity(500_000 ether);
+        vm.deal(address(swapper), 1000 ether);
+
+        PoolKey memory key = PoolKey({
+            currency0: address(0),
+            currency1: address(token),
+            fee: 3000,
+            tickSpacing: 60,
+            hooks: address(0)
+        });
+
+        CostanzaTokenAdapter adapter = new CostanzaTokenAdapter(
+            address(token),
+            address(wethMock),
+            address(0xDEAD0001), // poolManager (unused by this adapter path)
+            address(stateReader),
+            address(oracle),
+            address(swapper),
+            address(feeDist),
+            payable(address(fund)),
+            address(im),
+            key,
+            5 ether
+        );
+
+        // Seed prices.
+        uint160 sqrt_ = V4PriceMath.sqrtPriceX96FromTokensPerEth18(1000e18, false);
+        oracle.setSqrtPriceX96(sqrt_);
+        stateReader.setSqrtPriceX96(sqrt_);
+
+        feeDist.setRecipient(address(adapter));
+
+        // Register protocol.
+        im.addProtocol(
+            address(adapter),
+            "Costanza Token",
+            "Speculative position in $COSTANZA. Volatile, not yield-bearing.",
+            4,
+            0
+        );
+
+        // Invest via the agent action path.
+        bytes memory invest = abi.encodePacked(
+            uint8(3), abi.encode(uint256(1), uint256(0.1 ether))
+        );
+        speedrunEpoch(fund, invest, "costanza invest");
+
+        // After speedrunEpoch, epoch 2 is open with the snapshot frozen.
+        // Both Solidity and Python read the protocol's `current_value`
+        // from that frozen snapshot, so they must agree.
+        _assertCrossStackMatch(2, "with costanza adapter");
     }
 
     /// @notice Test with both investments AND memory populated.
