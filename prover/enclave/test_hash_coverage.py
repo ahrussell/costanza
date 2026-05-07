@@ -56,6 +56,7 @@ _REPO = _HERE.parent.parent  # .../<worktree>
 _PROMPT_BUILDER = _HERE / "prompt_builder.py"
 _INPUT_HASH = _HERE / "input_hash.py"
 _EPOCH_STATE = _REPO / "prover" / "client" / "epoch_state.py"
+_ACTION_ENCODER = _HERE / "action_encoder.py"
 
 
 # ─── Walker ───────────────────────────────────────────────────────────────
@@ -448,13 +449,26 @@ class _FuncVisitor(ast.NodeVisitor):
 
 
 class _Analysis:
-    def __init__(self, source: Path):
+    def __init__(self, source: Path, extra_sources: Optional[list] = None):
+        """Parse `source` and merge function defs from any `extra_sources`.
+
+        Extra sources let the walker follow inter-procedural calls into
+        helpers defined in other files (e.g. `_compute_action_bounds`
+        lives in prompt_builder.py but is called from action_encoder.py).
+        On name collision the local file wins; ties between extra sources
+        are last-wins.
+        """
         self.source = source
-        tree = ast.parse(source.read_text())
         self.func_defs: Dict[str, ast.FunctionDef] = {}
+        # Load extras first so the entry source can shadow them on collision.
+        for extra in extra_sources or ():
+            tree = ast.parse(extra.read_text())
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    self.func_defs[node.name] = node
+        tree = ast.parse(source.read_text())
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                # Top-level name collision ignored — we just pick the last.
                 self.func_defs[node.name] = node
         self.reads: Set[str] = set()
         self._seen: Set[Tuple[str, Tuple]] = set()
@@ -474,7 +488,8 @@ class _Analysis:
 
 def extract_state_reads(source: Path, entry_func: str,
                         state_param: Optional[str] = None,
-                        initial_path: str = "") -> Set[str]:
+                        initial_path: str = "",
+                        extra_sources: Optional[list] = None) -> Set[str]:
     """Extract the set of state-rooted key paths read by `entry_func`.
 
     The first parameter of `entry_func` is treated as the tainted root
@@ -485,8 +500,13 @@ def extract_state_reads(source: Path, entry_func: str,
     helper function as if its parameter were already a sub-path of some
     larger state — useful for picking up functions that the walker loses
     track of through dict-indirection patterns.
+
+    `extra_sources` is a list of additional Path objects whose top-level
+    function defs are merged into the analysis, letting the walker follow
+    inter-procedural calls into helpers in other files (e.g. encoder calls
+    `_compute_action_bounds` defined in prompt_builder.py).
     """
-    analysis = _Analysis(source)
+    analysis = _Analysis(source, extra_sources=extra_sources)
     func = analysis.func_defs.get(entry_func)
     if func is None:
         raise LookupError(f"{source}: function `{entry_func}` not found")
@@ -566,6 +586,55 @@ def test_prompt_builder_only_reads_hashed_keys():
         "  (a) add the field to input_hash.py AND src/TheHumanFund.sol "
         "(plus the cross-stack test) — see CLAUDE.md 'Input Hash Integrity', or\n"
         "  (b) stop reading it in prompt_builder.py, or\n"
+        "  (c) derive it inside the enclave from fields that ARE hashed.\n\n"
+        f"Hash-side reads ({len(hash_reads)}): "
+        + ", ".join(sorted(hash_reads))
+    )
+
+
+# Fields the action encoder reads that are not bound into the input hash —
+# none currently allowed. Kept for documentation parity with _PROMPT_IGNORE.
+_ENCODER_IGNORE: Set[str] = set()
+
+
+def test_action_encoder_only_reads_hashed_keys():
+    """Every state field the encoder reads must be bound into input_hash.
+
+    `validate_and_clamp_action` runs inside the enclave and consumes the
+    same runner-supplied state dict that `build_epoch_context` does. If
+    it reads a field that isn't in the hash, a runner can lie about that
+    field without breaking on-chain verification — and the encoder will
+    misclamp the action.
+
+    Concrete history: `inv["id"]` was once read here for invest/withdraw
+    headroom lookups. `id` is the *only* investment field not in the hash
+    (the hash uses positional `i = idx + 1`), so a runner could permute
+    `id` labels and silently shrink or downgrade invest/withdraw actions.
+    Position-derived lookup is the fix; this test pins the property.
+    """
+    encoder_reads = _normalize_reads(
+        extract_state_reads(
+            _ACTION_ENCODER, "validate_and_clamp_action", state_param="state",
+            extra_sources=[_PROMPT_BUILDER],
+        )
+    )
+    hash_reads = _normalize_reads(
+        extract_state_reads(_INPUT_HASH, "compute_input_hash")
+        | extract_state_reads(
+            _INPUT_HASH, "_content_hash_for_entry", initial_path="history[*]"
+        )
+    )
+
+    leaked = (encoder_reads - hash_reads) - _ENCODER_IGNORE
+    assert not leaked, (
+        "action_encoder.validate_and_clamp_action reads state fields that "
+        "are NOT bound into input_hash.compute_input_hash:\n\n  "
+        + "\n  ".join(sorted(leaked))
+        + "\n\nEither:\n"
+        "  (a) add the field to input_hash.py AND src/TheHumanFund.sol "
+        "(plus the cross-stack test) — see CLAUDE.md 'Input Hash Integrity', or\n"
+        "  (b) stop reading it in action_encoder.py (prefer position-derived "
+        "lookups, e.g. `state['investments'][protocol_id - 1]`), or\n"
         "  (c) derive it inside the enclave from fields that ARE hashed.\n\n"
         f"Hash-side reads ({len(hash_reads)}): "
         + ", ".join(sorted(hash_reads))

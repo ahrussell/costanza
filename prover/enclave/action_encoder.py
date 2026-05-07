@@ -481,12 +481,20 @@ def validate_and_clamp_action(action_json: dict, state: dict):
 
         # Two caps: (1) overall capacity across all protocols; (2) per-protocol
         # cap = 25% of total assets minus whatever is already deposited there.
+        #
+        # SECURITY: protocol ids are derived from position (idx+1), NOT from
+        # `inv["id"]`. The investment hash (_hash_investments) uses positional
+        # `i = idx+1` and does NOT hash `inv["id"]`, so a malicious runner
+        # could swap `id` fields across entries (identical hash) and trick
+        # the encoder into reading the wrong existing-position value.
+        # On-chain InvestmentManager stores protocols 1-indexed in insertion
+        # order, matching the array the runner must supply to hash — so
+        # position-derived id is the ground truth here.
         protocol_id = _parse_protocol_id(params)
+        investments = state.get("investments", [])
         current_position_wei = 0
-        for inv in state.get("investments", []):
-            if inv.get("id") == protocol_id:
-                current_position_wei = inv.get("current_value", 0) or 0
-                break
+        if 1 <= protocol_id <= len(investments):
+            current_position_wei = investments[protocol_id - 1].get("current_value", 0) or 0
         per_protocol_room = max(0, bounds["max_per_protocol"] - current_position_wei)
         hard_cap = min(bounds["invest_capacity"], per_protocol_room)
 
@@ -522,12 +530,13 @@ def validate_and_clamp_action(action_json: dict, state: dict):
             return action_json, notes
         requested_wei = int(requested_eth * 1e18)
 
+        # SECURITY: see invest branch above — `inv["id"]` is not in the
+        # input hash and is therefore runner-controlled. Look up by position.
         protocol_id = _parse_protocol_id(params)
+        investments = state.get("investments", [])
         position_wei = 0
-        for inv in state.get("investments", []):
-            if inv.get("id") == protocol_id:
-                position_wei = inv.get("current_value", 0) or 0
-                break
+        if 1 <= protocol_id <= len(investments):
+            position_wei = investments[protocol_id - 1].get("current_value", 0) or 0
 
         if position_wei <= 0:
             notes.append(
