@@ -91,7 +91,7 @@ The inference VM boots from a dm-verity sealed disk image containing the inferen
 export GCP_PROJECT=your-gcp-project
 export GCP_STAGING_BUCKET=gs://your-staging-bucket   # must already exist
 
-bash prover/scripts/gcp/import_image.sh costanza-tdx-prover-v1
+bash prover/scripts/gcp/import_image.sh costanza-tdx-prover-v2
 ```
 
 The script downloads the tarball from R2 (free egress), verifies its SHA256 against the published `metadata.json`, uploads to your GCS staging bucket, creates the GCP image, and prints the next-step verification command. Allow ~15-30 min depending on your network.
@@ -104,7 +104,7 @@ This is the actual trust boundary — SHA256 only catches transit corruption. Th
 
 ```bash
 python prover/scripts/gcp/verify_measurements.py \
-  --image costanza-tdx-prover-v1 \
+  --image costanza-tdx-prover-v2 \
   --verifier 0xfE45dF36FA94f9d119332456E3925cD93B963c93 \
   --rpc-url https://mainnet.base.org
 ```
