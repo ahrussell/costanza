@@ -26,7 +26,7 @@ The prover client runs on **any Linux machine** — it only needs Python, a clou
 | **AuctionManager** | [`0x976AeAfe1F708e1Ef0d0C0d26203CC4D7503f6EC`](https://basescan.org/address/0x976AeAfe1F708e1Ef0d0C0d26203CC4D7503f6EC) |
 | **Chain** | Base Mainnet (8453) |
 | **RPC** | `https://mainnet.base.org` |
-| **Production image** | Published to public R2 — `https://images.thehumanfund.com/<image-name>/disk.tar.gz` (see step 2) |
+| **Production image** | Published to public R2 — `https://pub-ed740777c1434c748a0dc239f0c37ee7.r2.dev/<image-name>/disk.tar.gz` (see step 2) |
 
 To run as a prover, import the published image into your own GCP project and verify on-chain that its measurements match the registered platform key. Building from source is not currently a supported verification path: OS-level non-determinism (timestamps, package mirrors, kernel module signing) drifts the rootfs hash even with identical inputs, so a from-source build is not guaranteed to produce a byte-identical platform key. The trust path is on-chain measurement match, not build reproducibility.
 
@@ -96,7 +96,7 @@ bash prover/scripts/gcp/import_image.sh costanza-tdx-prover-v1
 
 The script downloads the tarball from R2 (free egress), verifies its SHA256 against the published `metadata.json`, uploads to your GCS staging bucket, creates the GCP image, and prints the next-step verification command. Allow ~15-30 min depending on your network.
 
-The published image's `metadata.json` lives at `<PUBLIC_BASE>/<image-name>/metadata.json` and contains the SHA256, byte size, and export timestamp. The default `PUBLIC_BASE` baked into the import script is `https://images.thehumanfund.com`.
+The published image's `metadata.json` lives at `<PUBLIC_BASE>/<image-name>/metadata.json` and contains the SHA256, byte size, and export timestamp. The default `PUBLIC_BASE` baked into the import script is `https://pub-ed740777c1434c748a0dc239f0c37ee7.r2.dev`.
 
 ### 3. Verify Measurements On-Chain
 

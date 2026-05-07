@@ -16,7 +16,7 @@
 #                          tarball before image creation. Must already exist.
 #
 # Optional env:
-#   PUBLIC_BASE          — default: https://images.thehumanfund.com
+#   PUBLIC_BASE          — default: https://pub-ed740777c1434c748a0dc239f0c37ee7.r2.dev
 #                          override if running off a different mirror
 #   KEEP_STAGING         — set to 1 to leave the staged tarball in GCS
 #                          (default: deleted after image is created)
@@ -38,7 +38,7 @@ fi
 
 : "${GCP_PROJECT:?Set GCP_PROJECT to your project ID}"
 : "${GCP_STAGING_BUCKET:?Set GCP_STAGING_BUCKET to a gs:// bucket in your project}"
-PUBLIC_BASE=${PUBLIC_BASE:-https://images.thehumanfund.com}
+PUBLIC_BASE=${PUBLIC_BASE:-https://pub-ed740777c1434c748a0dc239f0c37ee7.r2.dev}
 
 command -v curl >/dev/null || { echo "ERROR: curl not on PATH" >&2; exit 1; }
 command -v gcloud >/dev/null || { echo "ERROR: gcloud not on PATH" >&2; exit 1; }
