@@ -149,6 +149,12 @@ Every value shown to the model in the epoch context MUST be included in the `inp
 
 Without this, a malicious runner could feed the TEE arbitrary values for that field and on-chain verification would not catch it.
 
+#### Enclave consumers must be hash-covered
+
+Any enclave-side code that reads from the runner-supplied state dict (currently `prompt_builder.build_epoch_context` and `action_encoder.validate_and_clamp_action`) is a hash-coverage surface. New consumers MUST be added to `test_hash_coverage.py` so the static walker enforces "every state field read here is in the input hash" — and they MUST look up by position (`investments[idx]`, `nonprofits[idx]`) rather than by an `id` field, since `id` labels are NOT in the hash and a runner can permute them at will.
+
+The `id`-vs-position rule was learned the hard way ([costanza#44](https://github.com/ahrussell/costanza/pull/44)): the encoder's `inv["id"]` lookups let a runner shrink invest/withdraw amounts without breaking the input hash. Mirror the security comment at [prompt_builder.py:270-277](prover/enclave/prompt_builder.py:270) anywhere you do a similar lookup.
+
 ### Gas Estimates
 
 When contract functions change (new logic, different codegen from `via_ir`, etc.), the hardcoded gas limits in `prover/client/auction.py` may become too low, causing silent out-of-gas reverts. After any contract change, verify gas usage against the limits:
