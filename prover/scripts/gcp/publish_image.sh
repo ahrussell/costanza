@@ -1,24 +1,33 @@
 #!/bin/bash
-# Export a GCP image and upload it to Cloudflare R2, using a temporary
-# GCE worker VM as the relay. The 60GB tarball never touches your laptop.
+# Export a GCP image and upload it to Cloudflare R2 — direct path, no Daisy.
 #
 # Architecture:
-#   local                   GCE worker (us-central1)              R2
-#   -----                   ----------------------                ---
-#   create VM      ────►    boot, install awscli
-#   ssh, run        ────►   gcloud images export ──► gs://staging
-#                            gsutil cp ──► local disk
-#                            sha256
-#                            aws s3 cp ──────────────────────► r2 bucket
-#                            gsutil rm staging
-#   delete VM      ────►    terminate
+#   local                 publisher VM (n2-standard-8 + pd-ssd)         R2
+#   -----                 -----------------------------------------     ---
+#   create disk-from-image
+#   create publisher VM with src disk attached read-only
+#   ssh, run        ────►  dd /dev/<src> → /var/tmp/disk.raw on pd-ssd
+#                          tar - disk.raw | pigz -p 8 |
+#                          tee >(sha256sum) | aws s3 cp - ──────────► r2 bucket
+#                          metadata.json (sidecar) ───────────────────► r2 bucket
+#   delete VM + disk ◄──── self-cleanup via trap
 #
-# Why GCE relay:
-#   - GCS staging bucket stays private (worker SA reads it)
-#   - GCS → GCE is intra-region, free
-#   - GCE → R2 internet egress (~$7 per 60GB image) is unavoidable but
-#     happens on GCP's outbound, not your home connection
-#   - Your local terminal stays available; nothing big touches local disk
+# Why no Daisy:
+#   - Daisy uses single-threaded gzip on a small worker VM. The v2
+#     publish (2026-05-07) took 4h 32m end-to-end vs. ~30-40 min here.
+#   - Daisy's gcsfuse buffering produces confusing "where's my data"
+#     intermediate states.
+#   - One less moving part — we control the worker, the compression,
+#     and the streaming pipeline directly.
+#
+# Why this pipeline (tar | pigz | tee>(sha) | aws s3 cp):
+#   - Single read of the local disk.raw — no separate "compute SHA"
+#     pass that re-reads the whole file. The v2 publish lost ~75 min
+#     to a single-threaded sha256sum on a slow boot disk.
+#   - pigz parallelizes compression across all CPUs (~8x speedup on
+#     n2-standard-8 vs. single-threaded gzip).
+#   - aws CLI v2 with bumped multipart concurrency for ~5x faster
+#     upload than the apt-installed v1.
 #
 # Usage:
 #   bash prover/scripts/gcp/publish_image.sh <image-name>
@@ -33,8 +42,8 @@
 # Optional env:
 #   GCP_PROJECT          — default: the-human-fund
 #   GCP_ZONE             — default: us-central1-a
-#   GCS_TEMP_BUCKET      — default: gs://costanza-image-export-tmp
-#   KEEP_WORKER          — set to 1 to skip VM deletion (for debugging)
+#   PUBLISHER_MACHINE    — default: n2-standard-8
+#   KEEP_PUBLISHER       — set to 1 to skip VM/disk cleanup (for debugging)
 
 set -euo pipefail
 
@@ -52,52 +61,70 @@ fi
 
 GCP_PROJECT=${GCP_PROJECT:-the-human-fund}
 GCP_ZONE=${GCP_ZONE:-us-central1-a}
-GCS_TEMP_BUCKET=${GCS_TEMP_BUCKET:-gs://costanza-image-export-tmp}
-WORKER="costanza-publish-$(date +%s)"
-REGION="${GCP_ZONE%-*}"
+PUBLISHER_MACHINE=${PUBLISHER_MACHINE:-n2-standard-8}
+PUBLISHER="costanza-publisher-$(date +%s)"
+SRC_DISK="${PUBLISHER}-src"
 
-echo "═══ Publishing $IMG via GCE worker $WORKER ═══"
+echo "═══ Publishing $IMG via $PUBLISHER ═══"
 echo "  GCP project:    $GCP_PROJECT"
-echo "  Worker zone:    $GCP_ZONE"
-echo "  GCS staging:    $GCS_TEMP_BUCKET (private)"
+echo "  Publisher zone: $GCP_ZONE"
+echo "  Publisher VM:   $PUBLISHER_MACHINE + 200GB pd-ssd"
 echo "  R2 bucket:      $R2_BUCKET"
 echo "  Public URL:     $R2_PUBLIC_BASE/$IMG/disk.tar.gz"
 echo ""
 
 cleanup() {
-    if [ "${KEEP_WORKER:-0}" = "1" ]; then
-        echo "→ KEEP_WORKER=1, leaving VM $WORKER alive (delete manually)"
+    if [ "${KEEP_PUBLISHER:-0}" = "1" ]; then
+        echo "→ KEEP_PUBLISHER=1, leaving VM $PUBLISHER + disk $SRC_DISK alive (delete manually)"
         return
     fi
-    echo "→ Deleting worker VM $WORKER..."
-    gcloud compute instances delete "$WORKER" \
+    echo ""
+    echo "→ Cleaning up..."
+    gcloud compute instances delete "$PUBLISHER" \
+        --zone="$GCP_ZONE" --project="$GCP_PROJECT" --quiet 2>/dev/null || true
+    gcloud compute disks delete "$SRC_DISK" \
         --zone="$GCP_ZONE" --project="$GCP_PROJECT" --quiet 2>/dev/null || true
 }
 trap cleanup EXIT
 
-# Ensure GCS staging bucket exists (private)
-if ! gsutil ls "$GCS_TEMP_BUCKET" >/dev/null 2>&1; then
-    echo "→ Creating private staging bucket $GCS_TEMP_BUCKET..."
-    gsutil mb -l "$REGION" -p "$GCP_PROJECT" "$GCS_TEMP_BUCKET"
+# Verify source image exists before spending time on VM creation.
+if ! gcloud compute images describe "$IMG" --project="$GCP_PROJECT" --quiet >/dev/null 2>&1; then
+    echo "ERROR: Source image '$IMG' not found in project '$GCP_PROJECT'." >&2
+    exit 1
 fi
 
-# Create the worker VM. cloud-platform scope = full SA access including GCS.
-echo "→ Creating worker VM ($WORKER)..."
-gcloud compute instances create "$WORKER" \
+# Create source disk from the image. This is essentially a snapshot reference
+# for the disk we'll attach read-only to the publisher VM.
+echo "→ Creating source disk from image ($SRC_DISK)..."
+gcloud compute disks create "$SRC_DISK" \
+    --image="$IMG" \
     --zone="$GCP_ZONE" \
     --project="$GCP_PROJECT" \
-    --machine-type=e2-standard-4 \
-    --boot-disk-size=120GB \
+    --quiet >/dev/null
+
+# Create the publisher VM:
+#  - n2-standard-8 (default): dedicated CPUs, no e2-family burst throttling
+#  - pd-ssd 200GB boot disk: ~3x the read throughput of pd-balanced; matters
+#    for the dd/tar pass that touches every byte of the 100GB disk image
+#  - source disk attached read-only as a non-boot disk
+echo "→ Creating publisher VM ($PUBLISHER)..."
+gcloud compute instances create "$PUBLISHER" \
+    --zone="$GCP_ZONE" \
+    --project="$GCP_PROJECT" \
+    --machine-type="$PUBLISHER_MACHINE" \
+    --boot-disk-size=200GB \
+    --boot-disk-type=pd-ssd \
     --image-family=debian-12 \
     --image-project=debian-cloud \
     --scopes=cloud-platform \
     --metadata=enable-oslogin=FALSE \
+    --disk="name=$SRC_DISK,mode=ro,boot=no,device-name=src" \
     --quiet >/dev/null
 
-# Wait for SSH to come up (debian boot + first-time SSH key propagation)
+# Wait for SSH (debian boot + first-time SSH key propagation).
 echo "→ Waiting for SSH..."
 for i in $(seq 1 60); do
-    if gcloud compute ssh "$WORKER" --zone="$GCP_ZONE" --project="$GCP_PROJECT" \
+    if gcloud compute ssh "$PUBLISHER" --zone="$GCP_ZONE" --project="$GCP_PROJECT" \
         --command="echo ready" --quiet >/dev/null 2>&1; then
         break
     fi
@@ -110,55 +137,91 @@ REMOTE_RUNNER=$(mktemp)
 cat > "$REMOTE_RUNNER" <<'REMOTE_EOF'
 #!/bin/bash
 set -euo pipefail
+set -o pipefail
 
 IMG="$1"
-
-# Required env (passed from controller via env file at ~/.publish.env)
 source ~/.publish.env
-
-GCS_TAR="$GCS_TEMP_BUCKET/$IMG/disk.tar.gz"
-LOCAL_TAR="/var/tmp/disk.tar.gz"
 
 log() { printf "[%s] %s\n" "$(date -u +%H:%M:%S)" "$*"; }
 
-log "Installing awscli..."
+# ─── Install pigz + awscli v2 ────────────────────────────────────────
+# awscli v1 from Debian apt has poor multipart concurrency defaults
+# (~10 MB/s upload throughput observed in practice). awscli v2 with
+# explicit concurrency tuning gets us closer to network line rate.
+log "Installing pigz + awscli v2..."
 sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
-sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq awscli >/dev/null
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq pigz unzip curl >/dev/null
+cd /tmp
+curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o awscli.zip 2>/dev/null
+unzip -oq awscli.zip
+sudo ./aws/install --update >/dev/null 2>&1
+rm -rf /tmp/aws /tmp/awscli.zip
+AWS=$(command -v aws)
+log "  $($AWS --version)"
 
-if gsutil -q stat "$GCS_TAR" 2>/dev/null; then
-    log "Image already exported to $GCS_TAR (skipping export)"
-else
-    log "Exporting $IMG → GCS (~30-60 min)..."
-    # Pin --zone so Daisy's export worker doesn't auto-pick a busy zone.
-    # Without this, Daisy defaults to us-central1-c (or whatever it picks
-    # internally), and we hit ZONE_RESOURCE_POOL_EXHAUSTED on busy days.
-    # us-central1-a is fine because it's the same zone the publisher VM
-    # is in (less network hop) and has historically had headroom.
-    gcloud compute images export \
-        --image="$IMG" \
-        --destination-uri="$GCS_TAR" \
-        --project="$GCP_PROJECT" \
-        --zone="$GCP_ZONE"
+# Bump aws CLI multipart concurrency. Defaults are 10 / 8MB which leaves
+# bandwidth on the table on n2-standard-8 (which has ~16 Gbps egress).
+$AWS configure set default.s3.max_concurrent_requests 50
+$AWS configure set default.s3.multipart_chunksize 64MB
+
+# ─── Identify source disk ────────────────────────────────────────────
+# We attached the source disk with device-name=src, so it shows up under
+# /dev/disk/by-id/google-src on the VM.
+SRC=$(readlink -f /dev/disk/by-id/google-src)
+SIZE_BYTES=$(sudo blockdev --getsize64 "$SRC")
+log "Source disk: $SRC (${SIZE_BYTES} bytes)"
+
+# ─── Dump source disk to local pd-ssd ────────────────────────────────
+# We can't pipe straight from /dev/sd? to tar (tar wants a regular file
+# to record metadata). The intermediate disk.raw lives on pd-ssd which
+# is fast enough that this isn't a bottleneck (~5-7 min for 100GB).
+log "Dumping source disk to local /var/tmp/disk.raw..."
+sudo dd if="$SRC" of=/var/tmp/disk.raw bs=4M status=none
+sudo chmod 644 /var/tmp/disk.raw
+log "  Done ($(stat -c%s /var/tmp/disk.raw) bytes)"
+
+# ─── Stream: tar | pigz | tee >(sha256sum) | aws s3 cp ───────────────
+# Single read of disk.raw drives three consumers in parallel:
+#   1. pigz parallel-gzips the tar stream across all CPUs
+#   2. tee duplicates the gzipped stream to sha256sum AND aws s3 cp
+#   3. aws does the multipart upload to R2 directly
+# Total wall-time = max(disk read, pigz CPU, network upload), not sum.
+log "Compressing + hashing + uploading in single pass..."
+SHA_FILE=$(mktemp)
+
+# tar with --transform isn't strictly needed here — the disk.raw inside
+# the tarball will be at the path we cd to. The consumer's `gcloud
+# compute images create` extracts disk.raw and uses it as the source.
+( cd /var/tmp && tar --create disk.raw ) | \
+    pigz -p "$(nproc)" | \
+    tee >(sha256sum | awk '{print $1}' > "$SHA_FILE") | \
+    AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" \
+    AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" \
+    "$AWS" s3 cp - "s3://$R2_BUCKET/$IMG/disk.tar.gz" \
+        --endpoint-url="$R2_ENDPOINT" \
+        --no-progress
+
+SHA=$(cat "$SHA_FILE")
+if [ -z "$SHA" ]; then
+    log "ERROR: SHA file empty — pipeline failed somewhere"
+    exit 1
 fi
 
-log "Downloading tarball from GCS to local disk..."
-gsutil cp "$GCS_TAR" "$LOCAL_TAR"
-
-log "Computing SHA256..."
-SHA=$(sha256sum "$LOCAL_TAR" | awk '{print $1}')
-SIZE=$(stat -c%s "$LOCAL_TAR")
+# Read final upload size back from R2 to confirm the upload succeeded
+# end-to-end (catches multipart commits that didn't finalize).
+log "Reading R2 object size for verification..."
+SIZE=$(AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" \
+       AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" \
+       "$AWS" s3api head-object \
+           --bucket "$R2_BUCKET" --key "$IMG/disk.tar.gz" \
+           --endpoint-url="$R2_ENDPOINT" \
+           --query 'ContentLength' --output text)
 log "  SHA256: $SHA"
 log "  Size:   $SIZE bytes"
 
-log "Uploading tarball to R2..."
-AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" \
-AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" \
-aws s3 cp "$LOCAL_TAR" "s3://$R2_BUCKET/$IMG/disk.tar.gz" \
-    --endpoint-url="$R2_ENDPOINT" \
-    --no-progress
-
+# ─── Metadata sidecar ────────────────────────────────────────────────
 log "Writing metadata sidecar..."
-META=/var/tmp/metadata.json
+META=/tmp/metadata.json
 cat > "$META" <<META_EOF
 {
   "image": "$IMG",
@@ -168,27 +231,12 @@ cat > "$META" <<META_EOF
   "exported_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 META_EOF
+
 AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" \
 AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" \
-aws s3 cp "$META" "s3://$R2_BUCKET/$IMG/metadata.json" \
+"$AWS" s3 cp "$META" "s3://$R2_BUCKET/$IMG/metadata.json" \
     --endpoint-url="$R2_ENDPOINT" \
     --no-progress
-
-log "Verifying R2 upload size..."
-R2_SIZE=$(AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" \
-    AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" \
-    aws s3api head-object \
-        --bucket "$R2_BUCKET" --key "$IMG/disk.tar.gz" \
-        --endpoint-url="$R2_ENDPOINT" \
-        --query 'ContentLength' --output text)
-if [ "$R2_SIZE" != "$SIZE" ]; then
-    log "ERROR: R2 size $R2_SIZE != local size $SIZE"
-    exit 1
-fi
-log "  ✓ R2 size matches local"
-
-log "Deleting GCS staging copy..."
-gsutil rm "$GCS_TAR"
 
 log "═══ Done ═══"
 log "URL:    $R2_PUBLIC_BASE/$IMG/disk.tar.gz"
@@ -196,7 +244,7 @@ log "SHA256: $SHA"
 log "Size:   $SIZE bytes"
 REMOTE_EOF
 
-# Build env file the worker will source. Mode 600 + cleaned up on cleanup().
+# Build env file the publisher will source. Mode 600 + cleaned up on cleanup().
 ENV_FILE=$(mktemp)
 chmod 600 "$ENV_FILE"
 cat > "$ENV_FILE" <<EOF
@@ -205,24 +253,21 @@ R2_SECRET_ACCESS_KEY='$R2_SECRET_ACCESS_KEY'
 R2_ENDPOINT='$R2_ENDPOINT'
 R2_BUCKET='$R2_BUCKET'
 R2_PUBLIC_BASE='$R2_PUBLIC_BASE'
-GCP_PROJECT='$GCP_PROJECT'
-GCP_ZONE='$GCP_ZONE'
-GCS_TEMP_BUCKET='$GCS_TEMP_BUCKET'
 EOF
 
 trap '{ cleanup; rm -f "$REMOTE_RUNNER" "$ENV_FILE"; }' EXIT
 
-echo "→ Uploading runner + credentials to worker..."
-gcloud compute scp "$REMOTE_RUNNER" "$WORKER:~/run.sh" \
+echo "→ Uploading runner + credentials to publisher..."
+gcloud compute scp "$REMOTE_RUNNER" "$PUBLISHER:~/run.sh" \
     --zone="$GCP_ZONE" --project="$GCP_PROJECT" --quiet
-gcloud compute scp "$ENV_FILE" "$WORKER:~/.publish.env" \
+gcloud compute scp "$ENV_FILE" "$PUBLISHER:~/.publish.env" \
     --zone="$GCP_ZONE" --project="$GCP_PROJECT" --quiet
-gcloud compute ssh "$WORKER" --zone="$GCP_ZONE" --project="$GCP_PROJECT" \
+gcloud compute ssh "$PUBLISHER" --zone="$GCP_ZONE" --project="$GCP_PROJECT" \
     --command="chmod 600 ~/.publish.env ~/run.sh" --quiet
 
-echo "→ Running export + upload on worker (output streams below)..."
+echo "→ Running export + upload on publisher (output streams below)..."
 echo ""
-gcloud compute ssh "$WORKER" --zone="$GCP_ZONE" --project="$GCP_PROJECT" \
+gcloud compute ssh "$PUBLISHER" --zone="$GCP_ZONE" --project="$GCP_PROJECT" \
     --command="bash ~/run.sh '$IMG'"
 
 echo ""
