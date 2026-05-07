@@ -359,7 +359,7 @@ contract CostanzaTokenAdapterTest is Test {
         assertEq(adapter.netEthBasis(), 1.5 ether);
     }
 
-    // ─── Spot-vs-TWAP gate (buy side, 10% threshold) ─────────────────────
+    // ─── Spot-vs-TWAP gate (buy side) ────────────────────────────────────
 
     function test_spot_vs_twap_blocks_manipulated_spot_above() public {
         // TWAP at 1000, spot pumped to 1150 (15% above) — > 10% threshold.
@@ -407,7 +407,7 @@ contract CostanzaTokenAdapterTest is Test {
         assertGt(ethOut, 0);
     }
 
-    // ─── Buy-side slippage floor (minOut = TWAP × 85%) ───────────────────
+    // ─── Buy-side slippage floor (minOut anchored to TWAP) ───────────────
 
     function test_buy_slippage_rejects_loss_above_15pct() public {
         // Swapper configured with 20% adverse slippage. minOut is
@@ -754,8 +754,9 @@ contract CostanzaTokenAdapterTest is Test {
         _depositAs(1 ether);
         _setEpoch(10);
 
-        // Token crashes — sell at a loss.
-        _setPrice(1100e18); // 10% drop in token value (small enough not to lock out)
+        // Token crashes — sell at a loss (small enough that the
+        // sell floor still allows the trade).
+        _setPrice(1100e18);
         swapper.setRate(1100e18);
         // Sell all 1000 tokens at 1/1100 ETH each → 0.909 ETH.
         uint256 ethOut = _withdrawAs(adapter.tokensFromSwapsIn());
@@ -763,11 +764,10 @@ contract CostanzaTokenAdapterTest is Test {
         assertEq(adapter.netEthBasis(), 1 ether - ethOut);
 
         // Move forward and try to redeposit. Reset should NOT fire
-        // (cumOut < cumIn). The historical avgEntry persists.
+        // (cumOut < cumIn).
         _setEpoch(20);
-        // Confirm reset event NOT emitted by checking accumulators.
-        // Use a fresh deposit price tight to the historical avg so
-        // lockout doesn't fire either.
+        // Restore prices to par before the redeposit so other gates
+        // (spot-vs-TWAP, slippage) don't fire.
         _setPrice(1000e18);
         swapper.setRate(1000e18);
         _depositAs(0.1 ether);

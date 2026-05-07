@@ -45,8 +45,9 @@ struct PoolKey {
 /// @dev Differences from the existing yield-protocol adapters:
 ///        - Speculative (not yield-bearing). `expectedApyBps` registered
 ///          as 0; agent-facing description warns explicitly.
-///        - Tighter bounds: cooldown, drawdown lockout, lifetime cap,
-///          per-tx pool size cap. All hardcoded; no setters.
+///        - Tighter bounds: cooldown, lifetime exposure cap,
+///          spot-vs-TWAP gate, cost-basis sell floor. All hardcoded
+///          (or constructor-immutable); no setters.
 ///        - Owner has exactly one operational lever (`transferFeeClaim`)
 ///          that gets renounced via `freeze()` permanently.
 ///        - Auto-claims fees from the upstream distributor on every
@@ -181,11 +182,12 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
     uint256 public cumulativeEthOut;
 
     /// @notice Tokens received from `deposit()` swaps (not from fees).
-    ///         Used for `avgEntry = cumulativeEthIn / tokensFromSwapsIn`.
-    ///         Reset on profitable full exit.
+    ///         Tracked for off-chain visibility; not used by the
+    ///         contract's bound checks. Reset on profitable full exit.
     uint256 public tokensFromSwapsIn;
 
-    /// @notice Tokens spent on `withdraw()` swaps.
+    /// @notice Tokens spent on `withdraw()` swaps. Off-chain visibility
+    ///         only.
     uint256 public tokensFromSwapsOut;
 
     /// @notice Last epoch a deposit landed. For cooldown enforcement.
@@ -296,7 +298,7 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
         _checkLifetimeCap(msg.value);
         _checkSpotVsTwap();
 
-        // Slippage floor: expected tokens at TWAP × (1 - 1%).
+        // Slippage floor: minOut = TWAP-expected × (1 - EXEC_DEVIATION_BPS).
         uint160 sqrtTwap = oracle.consultSqrtPriceX96(poolId, TWAP_WINDOW);
         uint256 expectedTokens = _quoteTokensForEth(sqrtTwap, msg.value);
         uint256 minOut = (expectedTokens * (BPS_DENOM - EXEC_DEVIATION_BPS))
@@ -357,12 +359,12 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
         if (shares > tokenBal) shares = tokenBal;
         if (shares == 0) revert ZeroAmount();
 
-        // No cooldown / lockout / spot-vs-TWAP on the sell side —
-        // exits should generally be allowed. The cost-basis sell
-        // floor (folded into `minOut` below) is the sole bound: it
-        // anchors the floor to per-token cost basis rather than to
-        // current TWAP, so the agent can't be prompted to dump at
-        // arbitrary loss vs. what they paid.
+        // No cooldown or spot-vs-TWAP gate on the sell side — exits
+        // should generally be allowed. The cost-basis sell floor
+        // (folded into `minOut` below) is the sole bound: it anchors
+        // the floor to per-token cost basis rather than to current
+        // TWAP, so the agent can't be prompted to dump at arbitrary
+        // loss vs. what they paid.
         //
         // In "house money" mode (cumulativeEthOut ≥ cumulativeEthIn,
         // i.e. `netEthBasis() == 0`), there's no floor — sells can
@@ -456,10 +458,11 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
     // ─── Public ──────────────────────────────────────────────────────────
 
     /// @notice Permissionless: claim fees from upstream, unwrap WETH,
-    ///         pay caller a 2% tip, forward 98% to fund. $COSTANZA tokens
-    ///         received as fees stay in the adapter (zero cost basis,
-    ///         excluded from `tokensFromSwapsIn` so they don't pollute
-    ///         the drawdown lockout's `avgEntry`).
+    ///         pay caller a `POKE_TIP_BPS` tip, forward the rest to
+    ///         fund. $COSTANZA tokens received as fees stay in the
+    ///         adapter at zero cost basis (excluded from
+    ///         `tokensFromSwapsIn` so post-fee bookkeeping reflects
+    ///         only swap-purchased tokens).
     function pokeFees() external nonReentrant {
         _claimAndForwardFees(POKE_TIP_BPS);
     }
@@ -654,15 +657,17 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
         }
     }
 
-    /// @dev On a net-profitable position, zero the accumulators so the
-    ///      next deposit establishes a fresh baseline. Only fires when
-    ///      `cumulativeEthOut >= cumulativeEthIn` AND `cumulativeEthIn > 0`
-    ///      (so it's a real exit, not the initial empty state).
+    /// @dev On a net-profitable position, zero the accumulators so
+    ///      the next deposit establishes a fresh baseline. Only fires
+    ///      when `cumulativeEthOut >= cumulativeEthIn` AND
+    ///      `cumulativeEthIn > 0` (so it's a real exit, not the
+    ///      initial empty state).
     ///
-    ///      The asymmetric trigger means a wash-sale during a real
-    ///      drawdown can't bypass the lockout: selling at a loss leaves
-    ///      `cumOut < cumIn`, the reset doesn't fire, and the lockout
-    ///      stays armed against the malicious re-buy.
+    ///      The asymmetric trigger — only on profitable exits, never
+    ///      on losses — keeps wash-sales from gaming the cost-basis
+    ///      sell floor: selling at a loss leaves `cumOut < cumIn`, no
+    ///      reset, and `netEthBasis` carries the loss forward into the
+    ///      lifetime cap and the sell floor on subsequent trades.
     function _maybeResetOnProfitableExit() internal {
         if (cumulativeEthIn > 0 && cumulativeEthOut >= cumulativeEthIn) {
             cumulativeEthIn = 0;
