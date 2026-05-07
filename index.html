@@ -560,21 +560,21 @@
     position: relative;
     border-radius: var(--radius) 0 0 var(--radius);
     display: flex;
-    align-items: flex-end;
+    align-items: flex-start;
     justify-content: center;
-    padding: 24px 32px 24px 0;
+    padding: 32px 32px 24px 0;
   }
 
   .hero-image img {
     width: 100%;
     height: 100%;
     object-fit: contain;
-    object-position: center center;
+    object-position: center top;
     display: block;
   }
 
   .hero-right {
-    padding: 32px 36px;
+    padding: 32px 36px 24px;
     display: flex;
     flex-direction: column;
     gap: 20px;
@@ -708,7 +708,6 @@
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     padding: 16px 18px;
-    margin-bottom: 18px;
   }
   .hero-howto-title {
     grid-column: 1 / -1;
@@ -1094,6 +1093,45 @@
     margin-top: 16px;
   }
 
+  /* Range picker — pill group lives in each chart card's header */
+  .range-picker {
+    display: inline-flex;
+    gap: 2px;
+    padding: 2px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-xs);
+  }
+  .range-picker button {
+    background: none; border: none;
+    color: var(--text-dim);
+    font-family: var(--mono); font-size: 10px; font-weight: 500;
+    text-transform: none; letter-spacing: 0;
+    padding: 3px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: var(--transition);
+  }
+  .range-picker button:hover { color: var(--text-secondary); }
+  .range-picker button.active {
+    background: var(--surface);
+    color: var(--text);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+  }
+
+  /* Card header that hosts a range picker on the right */
+  .card-header.with-picker {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px;
+  }
+  @media (max-width: 768px) {
+    .card-header.with-picker {
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 10px;
+    }
+  }
+
   /* ── Info tooltip ────────────────────────────────── */
   .info-tip {
     display: inline-flex; align-items: center; justify-content: center;
@@ -1156,6 +1194,19 @@
   }
   @keyframes dots {
     0%, 20% { content: '.'; } 40% { content: '..'; } 60%, 100% { content: '...'; }
+  }
+
+  /* Overlay shown while a chart is fetching invested-value snapshots
+     for newly-visible epochs (e.g. switching range to All). */
+  .chart-loading-overlay {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--text-dim); font-size: 12px;
+    background: rgba(255,255,255,0.55);
+    pointer-events: none; z-index: 1;
+  }
+  .chart-loading-overlay::after {
+    content: ''; animation: dots 1.4s infinite;
   }
 
   .btn {
@@ -1650,7 +1701,7 @@
 </div>
 
 <!-- THE HUMAN FUND -->
-<section id="fund-section">
+<section id="fund-section" style="padding-top:24px;">
   <div class="container">
     <div class="section-label">Endowment</div>
     <h2 class="section-title">The Human Fund</h2>
@@ -1660,8 +1711,17 @@
 
     <div class="grid-2" style="margin-bottom:16px;">
       <!-- Treasury Snapshot -->
-      <div class="card">
-        <div class="card-header">Treasury</div>
+      <div class="card" style="display:flex;flex-direction:column;">
+        <div class="card-header with-picker">
+          <span>Treasury</span>
+          <div class="range-picker" data-chart="treasury" role="tablist" aria-label="Treasury chart date range">
+            <button type="button" data-range="1" onclick="setChartRange('treasury', 1)">1D</button>
+            <button type="button" data-range="3" class="active" onclick="setChartRange('treasury', 3)">3D</button>
+            <button type="button" data-range="7" onclick="setChartRange('treasury', 7)">7D</button>
+            <button type="button" data-range="28" onclick="setChartRange('treasury', 28)">28D</button>
+            <button type="button" data-range="all" onclick="setChartRange('treasury', 'all')">All</button>
+          </div>
+        </div>
         <div style="display:flex;gap:24px;margin-bottom:12px;">
           <div>
             <div style="font-size:11px;color:var(--text-dim);margin-bottom:2px;">Liquid ETH</div>
@@ -1672,14 +1732,23 @@
             <div id="fund-invested" style="font-family:var(--mono);font-size:20px;font-weight:600;color:var(--cyan);">--</div>
           </div>
         </div>
-        <div style="height:100px;position:relative;">
+        <div id="treasury-chart-wrap" style="flex:1;min-height:200px;position:relative;">
           <canvas id="treasury-chart"></canvas>
         </div>
       </div>
 
       <!-- Inflows / Outflows -->
       <div class="card">
-        <div class="card-header">Inflows / Outflows</div>
+        <div class="card-header with-picker">
+          <span>Inflows / Outflows</span>
+          <div class="range-picker" data-chart="inflow" role="tablist" aria-label="Inflows / outflows chart date range">
+            <button type="button" data-range="1" onclick="setChartRange('inflow', 1)">1D</button>
+            <button type="button" data-range="3" class="active" onclick="setChartRange('inflow', 3)">3D</button>
+            <button type="button" data-range="7" onclick="setChartRange('inflow', 7)">7D</button>
+            <button type="button" data-range="28" onclick="setChartRange('inflow', 28)">28D</button>
+            <button type="button" data-range="all" onclick="setChartRange('inflow', 'all')">All</button>
+          </div>
+        </div>
         <div style="display:flex;gap:24px;margin-bottom:12px;">
           <div>
             <div style="font-size:11px;color:var(--text-dim);margin-bottom:2px;">Total Inflows</div>
@@ -1690,7 +1759,7 @@
             <div id="outflow-total" style="font-family:var(--mono);font-size:20px;font-weight:600;color:var(--red);">--</div>
           </div>
         </div>
-        <div style="height:100px;position:relative;margin-bottom:12px;">
+        <div style="height:120px;position:relative;margin-bottom:12px;">
           <canvas id="inflow-chart"></canvas>
         </div>
         <div class="stat-divider"></div>
@@ -1942,6 +2011,324 @@
 
 function cv(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+// ── Chart range filter ────────────────────────────────────
+// Picks the slice of cached per-epoch arrays whose timestamp
+// falls within the active range (last N days, or 'all').
+function _filterByRange(data, chart) {
+  if (!data) return null;
+  const range = chartRanges[chart];
+  if (range === 'all') return data;
+  const cutoff = Math.floor(Date.now() / 1000) - range * 86400;
+  const idx = data.timestamps.findIndex(t => t >= cutoff);
+  if (idx < 0) {
+    // Nothing in range — show the most recent point so the chart
+    // never collapses to empty after a long quiet stretch.
+    const lastIdx = data.timestamps.length - 1;
+    return _sliceData(data, lastIdx, lastIdx + 1);
+  }
+  return _sliceData(data, idx, data.timestamps.length);
+}
+
+function _sliceData(data, start, end) {
+  const out = {};
+  for (const k of Object.keys(data)) {
+    out[k] = Array.isArray(data[k]) ? data[k].slice(start, end) : data[k];
+  }
+  return out;
+}
+
+// Downsample to roughly `target` buckets so longer ranges don't
+// render hundreds of overlapping data points. `kind` controls how
+// each bucket is collapsed: snapshots take the bucket's last value
+// (treasury), bar series sum within the bucket (inflows/outflows).
+function _bucketData(data, target, kind) {
+  const n = data.epochs.length;
+  if (n <= target) return data;
+  const size = Math.ceil(n / target);
+  const epochs = [];
+  const timestamps = [];
+  const series = {};
+  if (kind === 'snapshot') {
+    series.liquidValues = [];
+    series.investedValues = [];
+  } else {
+    series.inValues = [];
+    series.outValues = [];
+  }
+  for (let i = 0; i < n; i += size) {
+    const end = Math.min(i + size, n);
+    const last = end - 1;
+    epochs.push(data.epochs[last]);
+    timestamps.push(data.timestamps[last]);
+    if (kind === 'snapshot') {
+      series.liquidValues.push(data.liquidValues[last]);
+      series.investedValues.push(data.investedValues[last]);
+    } else {
+      let inS = 0, outS = 0;
+      for (let j = i; j < end; j++) {
+        inS += data.inValues[j];
+        outS += data.outValues[j];
+      }
+      series.inValues.push(inS);
+      series.outValues.push(outS);
+    }
+  }
+  return { epochs, timestamps, ...series };
+}
+
+// Per-range tick budget for the treasury x-axis. Tighter ranges
+// can show every (or nearly every) bucket; wider ranges thin out
+// to ~6 labels so the axis never crowds.
+function _xTicksLimitForRange(chart) {
+  const range = chartRanges[chart];
+  if (range === 1) return 8;
+  if (range === 3) return 8;
+  if (range === 7) return 7;
+  return 6;
+}
+
+// Target bucket count for the active range. Picked so each visible
+// point has room to breathe at the chart's typical width: short
+// ranges keep raw resolution, long ranges collapse aggressively.
+function _bucketTargetForRange(chart) {
+  const range = chartRanges[chart];
+  if (range === 1) return 24;
+  if (range === 3) return 36;
+  if (range === 7) return 42;
+  if (range === 28) return 56;
+  return 60; // 'all'
+}
+
+function _ethTickFormatter(v) {
+  const a = Math.abs(v);
+  if (a === 0) return '0';
+  if (a < 0.001) return v.toExponential(1);
+  if (a < 1) return v.toFixed(3).replace(/0+$/, '').replace(/\.$/, '') + ' ETH';
+  if (a < 100) return v.toFixed(2).replace(/0+$/, '').replace(/\.$/, '') + ' ETH';
+  return v.toFixed(0) + ' ETH';
+}
+
+function setChartRange(chart, range) {
+  chartRanges[chart] = range === 'all' ? 'all' : Number(range);
+  const picker = document.querySelector(`.range-picker[data-chart="${chart}"]`);
+  if (picker) {
+    picker.querySelectorAll('button').forEach(btn => {
+      btn.classList.toggle('active', btn.getAttribute('data-range') === String(range));
+    });
+  }
+  if (chart === 'treasury') renderTreasuryChart();
+  else if (chart === 'inflow') renderInflowChart();
+}
+
+// Fetches missing per-epoch invested-value snapshots from the contract,
+// writes them into chartRenderCache.treasury.investedByEpoch and the
+// permanent localStorage cache. Returns true if anything was fetched.
+async function _ensureInvestedFor(epochs) {
+  const cache = chartRenderCache && chartRenderCache.treasury;
+  if (!cache) return false;
+  const missing = epochs.filter(ep => !(ep in cache.investedByEpoch));
+  if (missing.length === 0) return false;
+  await Promise.all(missing.map(async (ep) => {
+    const nextEpoch = ep + 1;
+    if (nextEpoch > cache.currentEpoch) {
+      cache.investedByEpoch[ep] = cache.liveInvested;
+      return;
+    }
+    const cached = cacheGet('snap-inv', nextEpoch);
+    if (cached !== null) {
+      cache.investedByEpoch[ep] = cached;
+      return;
+    }
+    try {
+      const snap = await fund.getEpochSnapshot(nextEpoch);
+      // Sentinel: page loaded mid-rollover before the snapshot was
+      // frozen — fall back to live, don't cache the zero.
+      if (Number(snap.epoch) !== nextEpoch) {
+        cache.investedByEpoch[ep] = cache.liveInvested;
+        return;
+      }
+      const pCount = Number(snap.investmentProtocolCount);
+      let sum = 0n;
+      for (let i = 1; i <= pCount; i++) sum += snap.investmentCurrentValues[i];
+      const eth = parseFloat(ethers.formatEther(sum));
+      cacheSet('snap-inv', nextEpoch, eth);
+      cache.investedByEpoch[ep] = eth;
+    } catch {
+      cache.investedByEpoch[ep] = 0;
+    }
+  }));
+  return true;
+}
+
+function _setTreasuryLoading(on) {
+  const wrap = document.getElementById('treasury-chart-wrap');
+  if (!wrap) return;
+  let overlay = wrap.querySelector('.chart-loading-overlay');
+  if (on) {
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.className = 'chart-loading-overlay';
+      overlay.textContent = 'Loading';
+      wrap.appendChild(overlay);
+    }
+  } else if (overlay) {
+    overlay.remove();
+  }
+}
+
+async function renderTreasuryChart() {
+  const cache = chartRenderCache && chartRenderCache.treasury;
+  if (!cache) return;
+
+  // Lazy-fetch invested snapshots for visible-window epochs only.
+  // Filtering happens twice (here and below) because the first pass
+  // identifies which epochs we need to fetch before bucketing.
+  const visible = _filterByRange(cache, 'treasury');
+  if (visible && visible.epochs.length > 0) {
+    const missing = visible.epochs.filter(ep => !(ep in cache.investedByEpoch));
+    if (missing.length > 0) {
+      _setTreasuryLoading(true);
+      try {
+        await _ensureInvestedFor(visible.epochs);
+      } finally {
+        _setTreasuryLoading(false);
+      }
+    }
+  }
+
+  // Build a per-visible-epoch invested array, then bucket.
+  const visibleInvested = visible.epochs.map(ep =>
+    ep in cache.investedByEpoch ? cache.investedByEpoch[ep] : 0
+  );
+  // Live-truth override for the latest epoch when it's actually in view.
+  // The frozen snapshot for currentEpoch+1 doesn't exist yet (or is the
+  // mid-rollover sentinel), and the liquid number written into the diary
+  // record is end-of-execution, not now — so use live values when the
+  // window's right edge is currentEpoch.
+  const lastIdx = visible.epochs.length - 1;
+  const visibleLiquid = visible.liquidValues.slice();
+  if (lastIdx >= 0 && visible.epochs[lastIdx] === cache.currentEpoch) {
+    visibleLiquid[lastIdx] = cache.liveLiquid;
+    visibleInvested[lastIdx] = cache.liveInvested;
+  }
+
+  const d = _bucketData(
+    {
+      epochs: visible.epochs,
+      timestamps: visible.timestamps,
+      liquidValues: visibleLiquid,
+      investedValues: visibleInvested,
+    },
+    _bucketTargetForRange('treasury'),
+    'snapshot'
+  );
+  const labels = d.epochs.map(e => `E${e}`);
+
+  if (treasuryChart) treasuryChart.destroy();
+  treasuryChart = new Chart(document.getElementById('treasury-chart'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Invested',
+          data: d.investedValues,
+          borderColor: cv('--chart-invested-line'),
+          backgroundColor: cv('--chart-invested-fill'),
+          fill: 'origin', tension: 0.3,
+          pointRadius: 2, pointBackgroundColor: cv('--chart-invested-line'),
+          borderWidth: 1.5,
+        },
+        {
+          label: 'Liquid',
+          data: d.liquidValues,
+          borderColor: cv('--chart-line'),
+          backgroundColor: cv('--chart-fill'),
+          fill: '-1', tension: 0.3,
+          pointRadius: 2, pointBackgroundColor: cv('--chart-line'),
+          borderWidth: 1.5,
+        },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      layout: { padding: { left: 4, right: 8, top: 4, bottom: 0 } },
+      plugins: { legend: { display: false } },
+      scales: {
+        x: {
+          display: true,
+          grid: { display: false },
+          border: { color: cv('--border') },
+          ticks: {
+            color: cv('--text-dim'),
+            font: { size: 10, family: cv('--mono') || 'monospace' },
+            maxRotation: 0, autoSkip: true, maxTicksLimit: _xTicksLimitForRange('treasury'),
+          },
+        },
+        y: {
+          display: true, position: 'left', stacked: true, beginAtZero: false,
+          grid: { color: cv('--surface3'), drawTicks: false },
+          border: { display: false },
+          ticks: {
+            color: cv('--text-dim'),
+            font: { size: 10, family: cv('--mono') || 'monospace' },
+            padding: 6, maxTicksLimit: 5,
+            callback: _ethTickFormatter,
+          },
+        },
+      }
+    }
+  });
+}
+
+function renderInflowChart() {
+  const cache = chartRenderCache && chartRenderCache.inflow;
+  if (!cache) return;
+  const d = _bucketData(_filterByRange(cache, 'inflow'), _bucketTargetForRange('inflow'), 'flow');
+  const labels = d.epochs.map(e => `E${e}`);
+
+  if (inflowChart) inflowChart.destroy();
+  inflowChart = new Chart(document.getElementById('inflow-chart'), {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        {
+          data: d.inValues,
+          backgroundColor: cv('--chart-bar-pos'),
+          borderColor: cv('--chart-bar-pos-border'),
+          borderWidth: 1, borderRadius: 2,
+        },
+        {
+          data: d.outValues,
+          backgroundColor: cv('--chart-bar-neg'),
+          borderColor: cv('--chart-bar-neg-border'),
+          borderWidth: 1, borderRadius: 2,
+        },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      layout: { padding: { left: 4, right: 8, top: 4, bottom: 0 } },
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { display: false, stacked: true },
+        y: {
+          display: true, position: 'left', stacked: true,
+          grid: { color: cv('--surface3'), drawTicks: false },
+          border: { display: false },
+          ticks: {
+            color: cv('--text-dim'),
+            font: { size: 10, family: cv('--mono') || 'monospace' },
+            padding: 6, maxTicksLimit: 5,
+            callback: _ethTickFormatter,
+          },
+        }
+      }
+    }
+  });
 }
 
 // ═══════════════════════════════════════════════════════
@@ -2268,6 +2655,12 @@ let treasuryChart = null;
 let inflowChart = null;
 let diaryEntries = [];
 let allEvents = [];
+// Per-chart date range. Each value is 'all' or a number of days.
+// Persisted across renders within the session; the two charts are
+// independent so the user can scope inflows differently from treasury.
+let chartRanges = { treasury: 3, inflow: 3 };
+// Cached chart data so the range picker can re-render without a full reload.
+let chartRenderCache = null;
 
 // ═══════════════════════════════════════════════════════
 // WALLET
@@ -5136,93 +5529,40 @@ async function loadAll() {
     document.getElementById('fund-invested').textContent = 'N/A';
   }
 
-  // Treasury chart (stacked area: liquid + invested)
+  // Treasury chart (stacked area: liquid + invested) — lazy invested
+  // values: rather than RPC-fetching every epoch's snapshot up front,
+  // we seed the cache from localStorage (immutable, free) and let
+  // renderTreasuryChart() fetch only what the active range needs.
   if (diaryEntries.length > 0) {
     const chartData = [...diaryEntries].reverse();
-    const labels = chartData.map(e => `E${e.epoch}`);
     const liquidValues = chartData.map(e => parseFloat(ethers.formatEther(e.treasuryAfter)));
+    const liveInvested = parseFloat(ethers.formatEther(totalInvested));
+    const liveLiquid = parseFloat(ethers.formatEther(treasury));
 
-    // Per-epoch invested value comes from the *next* epoch's snapshot
-    // (frozen at auction-open, after the prior epoch executed). Includes
-    // accrued yield because investmentCurrentValues calls the live adapter.
-    // Snapshots are immutable once the epoch opens, so cache them.
-    const investedValues = await Promise.all(chartData.map(async (e) => {
+    const investedByEpoch = {};
+    for (const e of chartData) {
       const nextEpoch = e.epoch + 1;
       if (nextEpoch > currentEpochNum) {
-        // No future snapshot yet — use live invested for the rightmost bar.
-        return parseFloat(ethers.formatEther(totalInvested));
+        // No future snapshot exists yet — use live invested for the
+        // current epoch's bar. (Refreshed each loadAll.)
+        investedByEpoch[e.epoch] = liveInvested;
+      } else {
+        const cached = cacheGet('snap-inv', nextEpoch);
+        if (cached !== null) investedByEpoch[e.epoch] = cached;
       }
-      const cached = cacheGet('snap-inv', nextEpoch);
-      if (cached !== null) return cached;
-      try {
-        const snap = await fund.getEpochSnapshot(nextEpoch);
-        // Sentinel: an unfrozen snapshot returns the default struct with
-        // epoch=0. If we got that back (page loaded mid-rollover, before
-        // _freezeEpochSnapshot ran), don't cache the zero — fall back to
-        // live invested so the chart isn't stuck on a stale 0.
-        if (Number(snap.epoch) !== nextEpoch) {
-          return parseFloat(ethers.formatEther(totalInvested));
-        }
-        const pCount = Number(snap.investmentProtocolCount);
-        let sum = 0n;
-        for (let i = 1; i <= pCount; i++) {
-          sum += snap.investmentCurrentValues[i];
-        }
-        const eth = parseFloat(ethers.formatEther(sum));
-        cacheSet('snap-inv', nextEpoch, eth);
-        return eth;
-      } catch {
-        return 0;
-      }
-    }));
-
-    // Live-truth correction for the rightmost datapoint. The latest
-    // diary entry's "next epoch snapshot" may have been written stale
-    // (mid-rollover read of zeros, or pre-invest-action), and even when
-    // it's correct it's still the snapshot at the start of the current
-    // epoch — yields/withdrawals during this epoch aren't reflected.
-    // Override with live values from this refresh.
-    const last = chartData[chartData.length - 1];
-    if (last && last.epoch === currentEpochNum) {
-      liquidValues[liquidValues.length - 1] = parseFloat(ethers.formatEther(treasury));
-      investedValues[investedValues.length - 1] = parseFloat(ethers.formatEther(totalInvested));
     }
 
-    if (treasuryChart) treasuryChart.destroy();
-    treasuryChart = new Chart(document.getElementById('treasury-chart'), {
-      type: 'line',
-      data: {
-        labels,
-        datasets: [
-          {
-            label: 'Invested',
-            data: investedValues,
-            borderColor: cv('--chart-invested-line'),
-            backgroundColor: cv('--chart-invested-fill'),
-            fill: 'origin', tension: 0.3,
-            pointRadius: 2, pointBackgroundColor: cv('--chart-invested-line'),
-            borderWidth: 1.5,
-          },
-          {
-            label: 'Liquid',
-            data: liquidValues,
-            borderColor: cv('--chart-line'),
-            backgroundColor: cv('--chart-fill'),
-            fill: '-1', tension: 0.3,
-            pointRadius: 2, pointBackgroundColor: cv('--chart-line'),
-            borderWidth: 1.5,
-          },
-        ]
-      },
-      options: {
-        responsive: true, maintainAspectRatio: false,
-        plugins: { legend: { display: false } },
-        scales: {
-          x: { display: false },
-          y: { display: false, stacked: true, beginAtZero: false },
-        }
-      }
-    });
+    chartRenderCache = chartRenderCache || {};
+    chartRenderCache.treasury = {
+      epochs: chartData.map(e => e.epoch),
+      timestamps: chartData.map(e => Number(e.timestamp)),
+      liquidValues,
+      investedByEpoch,
+      currentEpoch: currentEpochNum,
+      liveInvested,
+      liveLiquid,
+    };
+    renderTreasuryChart();
   }
 
   // Inflows / Outflows
@@ -5236,41 +5576,17 @@ async function loadAll() {
   // Inflow/outflow chart — inflows as positive bars, outflows as negative bars
   if (diaryEntries.length > 1) {
     const chartData = [...diaryEntries].reverse();
-    const labels = chartData.map(e => `E${e.epoch}`);
     const inValues = chartData.map(e => inflowsByEpoch[e.epoch] || 0);
     const outValues = chartData.map(e => -(outflowsByEpoch[e.epoch] || 0));
 
-    if (inflowChart) inflowChart.destroy();
-    inflowChart = new Chart(document.getElementById('inflow-chart'), {
-      type: 'bar',
-      data: {
-        labels,
-        datasets: [
-          {
-            data: inValues,
-            backgroundColor: cv('--chart-bar-pos'),
-            borderColor: cv('--chart-bar-pos-border'),
-            borderWidth: 1,
-            borderRadius: 2,
-          },
-          {
-            data: outValues,
-            backgroundColor: cv('--chart-bar-neg'),
-            borderColor: cv('--chart-bar-neg-border'),
-            borderWidth: 1,
-            borderRadius: 2,
-          },
-        ]
-      },
-      options: {
-        responsive: true, maintainAspectRatio: false,
-        plugins: { legend: { display: false } },
-        scales: {
-          x: { display: false, stacked: true },
-          y: { display: false, stacked: true }
-        }
-      }
-    });
+    chartRenderCache = chartRenderCache || {};
+    chartRenderCache.inflow = {
+      epochs: chartData.map(e => e.epoch),
+      timestamps: chartData.map(e => Number(e.timestamp)),
+      inValues,
+      outValues,
+    };
+    renderInflowChart();
   }
 
   // Donations card
