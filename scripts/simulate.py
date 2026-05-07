@@ -151,6 +151,8 @@ def _base_state(treasury_eth, start_epoch):
         "consecutive_missed": 0,
         "epoch_inflow": 0,
         "epoch_donation_count": 0,
+        "epoch_eth_usd_price": 350000000000,  # $3500 in 8-decimal Chainlink format
+        "investment_manager_wired": False,
         "nonprofits": [
             {**np, "total_donated": 0, "donation_count": 0}
             for np in NONPROFITS
@@ -654,6 +656,8 @@ def generate_initial_state(treasury_eth, start_epoch=10):
         "consecutive_missed": 0,
         "epoch_inflow": _wei(0.01),
         "epoch_donation_count": 1,
+        "epoch_eth_usd_price": 350000000000,  # $3500 in 8-decimal Chainlink format
+        "investment_manager_wired": True,
         "nonprofits": nonprofits,
         "history": history,
         "snapshots": [],
