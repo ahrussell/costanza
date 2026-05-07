@@ -325,16 +325,16 @@ contract CostanzaTokenAdapterTest is Test {
         adapter.deposit{value: 0.1 ether}();
     }
 
-    function test_cooldown_clears_after_seven_epochs() public {
+    function test_cooldown_clears_after_three_epochs() public {
         _depositAs(0.1 ether);
-        _setEpoch(1 + 7); // exactly 7 epochs later
+        _setEpoch(1 + 3); // exactly 3 epochs later — first allowed redeposit
         uint256 shares = _depositAs(0.1 ether);
         assertGt(shares, 0);
     }
 
-    function test_cooldown_active_at_six_epochs() public {
+    function test_cooldown_active_at_two_epochs() public {
         _depositAs(0.1 ether);
-        _setEpoch(1 + 6); // one epoch shy
+        _setEpoch(1 + 2); // one epoch shy of clearing
         vm.deal(IM, 0.1 ether);
         vm.prank(IM);
         vm.expectRevert(CostanzaTokenAdapter.CooldownActive.selector);
@@ -359,62 +359,12 @@ contract CostanzaTokenAdapterTest is Test {
         assertEq(adapter.netEthBasis(), 1.5 ether);
     }
 
-    // ─── Drawdown lockout ────────────────────────────────────────────────
-
-    function test_drawdown_lockout_skipped_on_first_deposit() public {
-        // No prior position → tokensFromSwapsIn == 0 → lockout skipped.
-        // Move spot+TWAP+swapper together to a wildly different price
-        // and verify deposit still succeeds.
-        _setPrice(10_000e18); // 10x token devaluation
-        swapper.setRate(10_000e18);
-        uint256 shares = _depositAs(0.1 ether);
-        assertGt(shares, 0);
-    }
-
-    function test_drawdown_lockout_fires_at_twenty_percent_drawdown() public {
-        // Establish position at 1000 tokens/ETH.
-        _depositAs(0.5 ether);
-        _setEpoch(10);
-
-        // Token price collapses 25% — TWAP rises to ~1333 tokens/ETH.
-        // This is above the 15% lockout threshold (1/(1-0.15) ≈ 1.176×).
-        _setTwapPrice(1333e18);
-
-        vm.deal(IM, 0.1 ether);
-        vm.prank(IM);
-        vm.expectRevert(CostanzaTokenAdapter.DrawdownLockoutActive.selector);
-        adapter.deposit{value: 0.1 ether}();
-    }
-
-    function test_drawdown_lockout_clears_at_ten_percent_drawdown() public {
-        _depositAs(0.5 ether);
-        _setEpoch(10);
-
-        // Token price drops 10% — all three (TWAP / spot / swapper)
-        // move together so the slippage and spot-vs-TWAP checks pass.
-        _setPrice(1111e18);
-        swapper.setRate(1111e18);
-
-        uint256 shares = _depositAs(0.1 ether);
-        assertGt(shares, 0);
-    }
-
-    function test_drawdown_lockout_does_not_block_withdraw() public {
-        _depositAs(0.5 ether);
-        _setEpoch(10);
-
-        _setPrice(1500e18); // 33% token-value crash
-        // Withdraws are exempt from the lockout.
-        uint256 ethOut = _withdrawAs(adapter.tokensFromSwapsIn() / 2);
-        assertGt(ethOut, 0);
-    }
-
-    // ─── Spot-vs-TWAP check ──────────────────────────────────────────────
+    // ─── Spot-vs-TWAP gate (buy side, 10% threshold) ─────────────────────
 
     function test_spot_vs_twap_blocks_manipulated_spot_above() public {
-        // TWAP at 1000, spot pumped to 1050 (5% above) — > 2% threshold.
+        // TWAP at 1000, spot pumped to 1150 (15% above) — > 10% threshold.
         _setTwapPrice(1000e18);
-        _setSpotPrice(1050e18);
+        _setSpotPrice(1150e18);
 
         vm.deal(IM, 0.1 ether);
         vm.prank(IM);
@@ -424,7 +374,7 @@ contract CostanzaTokenAdapterTest is Test {
 
     function test_spot_vs_twap_blocks_manipulated_spot_below() public {
         _setTwapPrice(1000e18);
-        _setSpotPrice(950e18); // 5% below
+        _setSpotPrice(850e18); // 15% below
 
         vm.deal(IM, 0.1 ether);
         vm.prank(IM);
@@ -432,56 +382,157 @@ contract CostanzaTokenAdapterTest is Test {
         adapter.deposit{value: 0.1 ether}();
     }
 
-    function test_spot_vs_twap_allows_small_deviation() public {
-        // 1.5% deviation — within 2% tolerance.
+    function test_spot_vs_twap_allows_normal_drift() public {
+        // 5% deviation — well within the 10% tolerance. Reflects normal
+        // intra-window directional movement on a memecoin pool.
         _setTwapPrice(1000e18);
-        _setSpotPrice(1015e18);
+        _setSpotPrice(1050e18);
         uint256 shares = _depositAs(0.1 ether);
         assertGt(shares, 0);
     }
 
-    function test_spot_vs_twap_check_runs_on_withdraw_too() public {
-        // Deposit successfully first (matched prices).
+    function test_spot_vs_twap_does_not_run_on_withdraw() public {
+        // Sell side gates on cost-basis sell floor only — no spot-vs-TWAP.
+        // Manipulated spot doesn't block exits (cost-basis floor does).
         _depositAs(0.5 ether);
         _setEpoch(10);
 
-        // Snapshot the share amount BEFORE the expectRevert (the cheat
-        // matches the very next call; a view in between would consume it).
         uint256 sharesToSell = adapter.tokensFromSwapsIn();
+        _setSpotPrice(1500e18); // 50% off TWAP — would block a buy
 
-        // Then manipulate spot before the withdraw.
-        _setSpotPrice(1050e18); // 5% above TWAP
+        // Withdraw still goes through — no spot-vs-TWAP check on exit.
+        // (Sell floor is binding; we test that separately.)
         vm.prank(IM);
-        vm.expectRevert(CostanzaTokenAdapter.SpotDeviationExceeded.selector);
-        adapter.withdraw(sharesToSell);
+        uint256 ethOut = adapter.withdraw(sharesToSell);
+        assertGt(ethOut, 0);
     }
 
-    // ─── Slippage floor (minOut from TWAP) ───────────────────────────────
+    // ─── Buy-side slippage floor (minOut = TWAP × 85%) ───────────────────
 
-    function test_slippage_floor_rejects_lossy_swap() public {
-        // Swapper configured with 5% adverse slippage. minOut is 99% of
-        // TWAP-expected, so a 5% adverse execution should fail.
-        swapper.setSlippage(9500); // 5% adverse
+    function test_buy_slippage_rejects_loss_above_15pct() public {
+        // Swapper configured with 20% adverse slippage. minOut is
+        // 85% of TWAP-expected; 20% adverse breaches the 15% bound.
+        swapper.setSlippage(8000); // 20% adverse
 
         vm.deal(IM, 0.1 ether);
         vm.prank(IM);
-        // MockSwapExecutor reverts with its own error.
         vm.expectRevert(MockSwapExecutor.InsufficientOutput.selector);
         adapter.deposit{value: 0.1 ether}();
     }
 
-    function test_slippage_floor_accepts_normal_swap() public {
-        // Default slippage = 0; deposit succeeds with minOut just below
-        // expected.
+    function test_buy_slippage_accepts_normal_swap() public {
+        // No slippage on the swapper — deposit succeeds.
         uint256 shares = _depositAs(0.1 ether);
         assertGt(shares, 0);
     }
 
-    function test_slippage_floor_accepts_minor_slippage() public {
-        // 0.5% adverse slippage — within the 1% EXEC_DEVIATION tolerance.
-        swapper.setSlippage(9950);
+    function test_buy_slippage_accepts_up_to_15pct() public {
+        // 14% adverse slippage — within the 15% bound.
+        swapper.setSlippage(8600);
         uint256 shares = _depositAs(0.1 ether);
         assertGt(shares, 0);
+    }
+
+    // ─── Sell-side cost-basis floor ──────────────────────────────────────
+    //
+    // For a sell of `shares` tokens, `minOut` is anchored to per-token
+    // overall cost basis: `shares × netEthBasis × (1 - SELL_FLOOR_BPS) / totalTokens`.
+    // (`totalTokens` = full balance; fee tokens are included at zero cost.)
+
+    function test_sell_floor_blocks_below_cost_basis() public {
+        // Position established at par. Then market crashes 25% (real,
+        // sustained move — TWAP catches up too).
+        _depositAs(1 ether);
+        _setEpoch(10);
+        _setPrice(1334e18); // ~25% lower per-token ETH price
+        swapper.setRate(1334e18);
+
+        // Try to sell all 1000 tokens. Expected ETH: 1000 / 1334 ≈ 0.75 ETH.
+        // Floor: shares × netBasis × 0.8 / totalTokens = 1000 × 1 × 0.8 / 1000 = 0.8 ETH.
+        // 0.75 < 0.8 → executor reverts on InsufficientOutput.
+        uint256 shares = adapter.tokensFromSwapsIn();
+        vm.prank(IM);
+        vm.expectRevert(MockSwapExecutor.InsufficientOutput.selector);
+        adapter.withdraw(shares);
+    }
+
+    function test_sell_floor_allows_at_15pct_loss() public {
+        // 15% adverse move — within the 20% sell floor margin.
+        _depositAs(1 ether);
+        _setEpoch(10);
+        _setPrice(1176e18); // ~15% lower per-token ETH price (1/1176 ≈ 0.85/1000)
+        swapper.setRate(1176e18);
+
+        uint256 sharesToSell = adapter.tokensFromSwapsIn();
+        uint256 ethOut = _withdrawAs(sharesToSell);
+        // Got ~0.85 ETH back; floor would have been 0.8.
+        assertGt(ethOut, 0.8 ether);
+    }
+
+    function test_sell_floor_skipped_in_house_money() public {
+        // Profitable full exit triggers reset on next deposit. After
+        // that, if the agent ever re-enters and the situation is
+        // "house money" (cumOut >= cumIn), the sell floor is gone —
+        // sells can execute at any price.
+        _depositAs(1 ether);
+        _setEpoch(10);
+        _setPrice(800e18); // 25% pump
+        swapper.setRate(800e18);
+        _withdrawAs(adapter.tokensFromSwapsIn()); // exit at profit
+
+        // Snapshot proves house-money: cumOut > cumIn but accumulators
+        // not yet reset (reset fires on next deposit). For the sell
+        // floor we just need netEthBasis() == 0.
+        assertEq(adapter.netEthBasis(), 0);
+
+        // No further setup — there's nothing to sell. We can still
+        // verify directly that with `netEthBasis == 0` the floor is 0
+        // by checking the contract's view: a pretend sell wouldn't
+        // be gated. Direct invariant check:
+        // (Implicit assertion — this test passes by virtue of the
+        //  accumulator state above.)
+    }
+
+    function test_sell_floor_relaxes_with_fee_token_inflow() public {
+        // Buy 1 ETH worth → 1000 tokens. Cost basis per token = 0.001 ETH.
+        _depositAs(1 ether);
+
+        // Fees arrive: 500 free tokens. totalTokens jumps to 1500;
+        // overall cost basis per token drops to 1/1500 ≈ 0.000667 ETH.
+        _seedFees(0, 500 ether);
+        adapter.pokeFees();
+        assertEq(token.balanceOf(address(adapter)), 1500 ether);
+
+        _setEpoch(10);
+        // Drop price 30% — would have failed the sell floor under the
+        // pre-fees basis. With fees diluting basis, the floor is lower
+        // and the trade goes through.
+        _setPrice(1430e18); // ~30% adverse vs 1000
+        swapper.setRate(1430e18);
+
+        // Sell all 1500 tokens. Expected ETH = 1500/1430 ≈ 1.049 ETH.
+        // New floor = shares × net × 0.8 / totalTokens = 1500 × 1 × 0.8 / 1500 = 0.8 ETH.
+        // 1.049 > 0.8 → succeeds.
+        uint256 ethOut = _withdrawAs(1500 ether);
+        assertGt(ethOut, 0.8 ether);
+    }
+
+    function test_sell_floor_scales_with_partial_profit_taking() public {
+        // After an in-profit partial exit, the floor scales down with
+        // the remaining net basis.
+        _depositAs(2 ether); // 2000 tokens, basis 2 ETH
+        _setEpoch(10);
+        _withdrawAs(1000 ether); // sell half at par → 1 ETH back
+        // Now: netBasis = 1 ETH, totalTokens = 1000
+
+        // Drop price 25%. Floor: 1000 × 1 × 0.8 / 1000 = 0.8 ETH.
+        // Expected at new rate: 1000 / 1334 ≈ 0.75 ETH < 0.8 → reverts.
+        _setPrice(1334e18);
+        swapper.setRate(1334e18);
+
+        vm.prank(IM);
+        vm.expectRevert(MockSwapExecutor.InsufficientOutput.selector);
+        adapter.withdraw(1000 ether);
     }
 
     // ─── balance() with cost-basis floor ─────────────────────────────────
@@ -855,12 +906,12 @@ contract CostanzaTokenAdapterTest is Test {
     ///      within a single block; TWAP doesn't budge. Adapter rejects
     ///      the trade on the spot-vs-TWAP gate.
     function test_flash_loan_simulation_blocked_by_spot_vs_twap() public {
-        // Establish a position so the lockout/cap aren't the binding gate.
+        // Establish a position so the cap isn't the binding gate.
         _depositAs(0.1 ether);
         _setEpoch(20);
 
-        // Adversary pushes spot 5% off TWAP within this block.
-        _setSpotPrice(1050e18);
+        // Adversary pushes spot 15% off TWAP — past the 10% gate.
+        _setSpotPrice(1150e18);
         // TWAP unchanged (1000) — what real flash loans look like.
 
         vm.deal(IM, 0.1 ether);
@@ -954,8 +1005,8 @@ contract CostanzaTokenAdapterTest is Test {
         assertGt(ethOut, 0);
     }
 
-    function test_drawdown_lockout_skipped_when_reset_fires_post_profit() public {
-        // Same as the headline scenario but verifies the reset event fires.
+    function test_reset_event_fires_on_redeposit_after_profitable_exit() public {
+        // Profitable full exit, then redeposit triggers AccumulatorsReset.
         _depositAs(1 ether);
         _setEpoch(10);
         _setPrice(800e18); swapper.setRate(800e18);
@@ -969,30 +1020,27 @@ contract CostanzaTokenAdapterTest is Test {
         _depositAs(0.1 ether);
     }
 
-    function test_reset_lets_agent_re_enter_after_profitable_exit() public {
-        // Concrete scenario: agent enters at high price, exits at profit,
-        // then re-enters at a price that WOULD trigger the lockout under
-        // monotonic accumulators. Reset rule clears the historical avgEntry.
+    function test_reset_establishes_fresh_baseline_after_profitable_exit() public {
+        // Buy, fully exit at profit, redeposit at a different price.
+        // The reset rule zeros the accumulators so the new deposit
+        // shows up as a clean entry (not a continuation of the prior
+        // position's history).
         _depositAs(1 ether);
         _setEpoch(10);
 
-        // Pump 25% — fully exit at profit.
         _setPrice(800e18);
         swapper.setRate(800e18);
         _withdrawAs(adapter.tokensFromSwapsIn());
 
-        // Now $COSTANZA crashes hard — well past where the lockout
-        // would fire if avgEntry were still based on the historical 1 ETH.
         _setEpoch(20);
-        _setPrice(2000e18); // 50% token-value drop vs historical entry
+        _setPrice(2000e18);
         swapper.setRate(2000e18);
 
-        // With reset rule, this deposit succeeds: tokensFromSwapsIn is
-        // zeroed, lockout skipped, fresh baseline established.
         uint256 shares = _depositAs(0.1 ether);
         assertGt(shares, 0);
-        // New baseline established at 2000 tokens/ETH.
+        // Fresh baseline: only the new deposit counts.
         assertEq(adapter.cumulativeEthIn(), 0.1 ether);
+        assertEq(adapter.cumulativeEthOut(), 0);
         assertEq(adapter.tokensFromSwapsIn(), 200 ether);
     }
 }

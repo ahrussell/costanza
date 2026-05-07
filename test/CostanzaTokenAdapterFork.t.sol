@@ -28,7 +28,7 @@ import "../src/adapters/CostanzaTokenAdapter.sol";
 contract CostanzaTokenAdapterForkTest is Test {
     // ─── TBD: real Base mainnet addresses ───────────────────────────────
     //
-    // Open question §10 of COSTANZA_TOKEN_ADAPTER_DESIGN.md tracks these:
+    // Open question §10 of docs/COSTANZA_TOKEN_ADAPTER_DESIGN.md tracks these:
     //   - $COSTANZA token (open question §10.1: confirm)
     //   - V4 PoolManager singleton on Base
     //   - UniversalRouter on Base (V4-aware version)

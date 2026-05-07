@@ -53,7 +53,7 @@ struct PoolKey {
 ///          deposit/withdraw and via permissionless `pokeFees`.
 ///
 ///      Full rationale and adversarial scenarios live in
-///      COSTANZA_TOKEN_ADAPTER_DESIGN.md.
+///      docs/COSTANZA_TOKEN_ADAPTER_DESIGN.md.
 contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard {
     // ─── Errors ──────────────────────────────────────────────────────────
 
@@ -61,7 +61,6 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
     error ZeroAmount();
     error CooldownActive();
     error LifetimeCapExceeded();
-    error DrawdownLockoutActive();
     error SpotDeviationExceeded();
     error SwapFailed();
     error TransferFailed();
@@ -77,25 +76,33 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
     // ─── Constants ───────────────────────────────────────────────────────
 
     /// @notice Cooldown between deposits, in epochs. Withdraws are
-    ///         exempt from the cooldown.
-    uint256 internal constant COOLDOWN_EPOCHS = 7;
-
-    /// @notice If TWAP is more than this far below `avgEntryPrice`,
-    ///         deposits revert. 1500 = 15%.
-    uint256 internal constant DRAWDOWN_LOCKOUT_BPS = 1500;
+    ///         exempt. With `COOLDOWN_EPOCHS = 3`, a deposit in epoch
+    ///         N is followed by the next allowed deposit in epoch N+3.
+    uint256 internal constant COOLDOWN_EPOCHS = 3;
 
     /// @notice TWAP lookback window in seconds. Pool's oracle hook
     ///         must support at least this depth.
     uint32 internal constant TWAP_WINDOW = 1800;
 
-    /// @notice Max tolerated deviation between spot and TWAP at swap
-    ///         time. 200 = 2%.
-    uint256 internal constant SPOT_DEVIATION_BPS = 200;
+    /// @notice Max tolerated deviation between spot and TWAP on the
+    ///         buy side. 1000 = 10%. Loose enough to accommodate
+    ///         normal directional drift on a memecoin pool; tight
+    ///         enough to catch flash-loan-shaped manipulation.
+    uint256 internal constant SPOT_DEVIATION_BPS = 1000;
 
-    /// @notice Slippage floor: `amountOutMinimum` is computed as
-    ///         expected_at_twap × (10000 - EXEC_DEVIATION_BPS) / 10000.
-    ///         100 = 1%.
-    uint256 internal constant EXEC_DEVIATION_BPS = 100;
+    /// @notice Buy-side slippage floor: `amountOutMinimum` is computed
+    ///         as expected_at_twap × (10000 - EXEC_DEVIATION_BPS) / 10000.
+    ///         1500 = 15%.
+    uint256 internal constant EXEC_DEVIATION_BPS = 1500;
+
+    /// @notice Sell-side floor margin. The sell-side `amountOutMinimum`
+    ///         is anchored to per-token cost basis (not TWAP):
+    ///           minOut = shares × netEthBasis × (10000 - SELL_FLOOR_BPS)
+    ///                    ───────────────────────────────────────────────
+    ///                              totalTokens × 10000
+    ///         So the agent never sells more than this far below the
+    ///         (fee-token-blended) cost basis. 2000 = 20%.
+    uint256 internal constant SELL_FLOOR_BPS = 2000;
 
     /// @notice `pokeFees` caller's tip share of the unwrapped WETH.
     ///         200 = 2%.
@@ -287,7 +294,6 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
         // Bounds — fail fast before any swap.
         _checkCooldown();
         _checkLifetimeCap(msg.value);
-        _checkDrawdownLockout();
         _checkSpotVsTwap();
 
         // Slippage floor: expected tokens at TWAP × (1 - 1%).
@@ -351,16 +357,27 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
         if (shares > tokenBal) shares = tokenBal;
         if (shares == 0) revert ZeroAmount();
 
-        // Bounds — withdraws skip cooldown / lockout / cap (exits are
-        // always allowed); spot-vs-TWAP still gates against pool
-        // manipulation.
-        _checkSpotVsTwap();
-
-        // Slippage floor: expected ETH at TWAP × (1 - 1%).
-        uint160 sqrtTwap = oracle.consultSqrtPriceX96(poolId, TWAP_WINDOW);
-        uint256 expectedEth = _quoteEthForTokens(sqrtTwap, shares);
-        uint256 minOut = (expectedEth * (BPS_DENOM - EXEC_DEVIATION_BPS))
-                       / BPS_DENOM;
+        // No cooldown / lockout / spot-vs-TWAP on the sell side —
+        // exits should generally be allowed. The cost-basis sell
+        // floor (folded into `minOut` below) is the sole bound: it
+        // anchors the floor to per-token cost basis rather than to
+        // current TWAP, so the agent can't be prompted to dump at
+        // arbitrary loss vs. what they paid.
+        //
+        // In "house money" mode (cumulativeEthOut ≥ cumulativeEthIn,
+        // i.e. `netEthBasis() == 0`), there's no floor — sells can
+        // execute at any price. Documented behavior; the position is
+        // pure profit at that point.
+        uint256 minOut = 0;
+        uint256 net = netEthBasis();
+        uint256 totalTokens = costanzaToken.balanceOf(address(this));
+        if (net > 0 && totalTokens > 0) {
+            minOut = Math.mulDiv(
+                Math.mulDiv(shares, BPS_DENOM - SELL_FLOOR_BPS, BPS_DENOM),
+                net,
+                totalTokens
+            );
+        }
 
         uint256 ethBefore = address(this).balance;
 
@@ -618,24 +635,6 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
         uint256 upper = (twapVal * (BPS_DENOM + SPOT_DEVIATION_BPS)) / BPS_DENOM;
         uint256 lower = (twapVal * (BPS_DENOM - SPOT_DEVIATION_BPS)) / BPS_DENOM;
         if (spotVal > upper || spotVal < lower) revert SpotDeviationExceeded();
-    }
-
-    /// @dev Drawdown lockout: refuse `deposit()` when current TWAP price
-    ///      is more than DRAWDOWN_LOCKOUT_BPS below the volume-weighted
-    ///      historical entry price. Forces the agent to take an L on the
-    ///      books before averaging down.
-    ///
-    ///      Avg entry = `cumulativeEthIn / tokensFromSwapsIn`. Re-arranged
-    ///      to avoid division: `twapEthValue × 10000 < cumIn × (10000 - bps)`.
-    ///      Skipped when `tokensFromSwapsIn == 0` (post-reset / first deposit).
-    function _checkDrawdownLockout() internal view {
-        if (tokensFromSwapsIn == 0) return;
-        uint160 sqrtTwap = oracle.consultSqrtPriceX96(poolId, TWAP_WINDOW);
-        uint256 twapEthValue = _quoteEthForTokens(sqrtTwap, tokensFromSwapsIn);
-        if (twapEthValue * BPS_DENOM
-            < cumulativeEthIn * (BPS_DENOM - DRAWDOWN_LOCKOUT_BPS)) {
-            revert DrawdownLockoutActive();
-        }
     }
 
     /// @dev Cooldown enforcement based on current epoch.
