@@ -1888,10 +1888,11 @@
 <!-- DIARY VIEWER MODAL -->
 <div class="modal-overlay" id="modal-diary" onclick="closeModal(event, 'diary')">
   <div class="modal diary-viewer-modal" onclick="event.stopPropagation()">
-    <button class="modal-close" onclick="document.getElementById('modal-diary').classList.remove('open')">&times;</button>
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+    <button class="modal-close" onclick="closeDiaryViewer()">&times;</button>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;gap:12px;flex-wrap:wrap;">
       <h3 id="diary-viewer-title">Diary</h3>
-      <div style="display:flex;gap:8px;">
+      <div style="display:flex;gap:8px;align-items:center;">
+        <button class="btn" id="diary-copy-link" onclick="copyDiaryLink()" title="Copy link to this entry">Copy link</button>
         <button class="btn" id="diary-prev" onclick="diaryNav(-1)">&larr; Older</button>
         <button class="btn" id="diary-next" onclick="diaryNav(1)">Newer &rarr;</button>
       </div>
@@ -4971,6 +4972,7 @@ function openModal(id, opts = {}) {
 function closeModal(event, id) {
   if (event.target === event.currentTarget) {
     document.getElementById('modal-' + id).classList.remove('open');
+    if (id === 'diary') clearDiaryUrlHash();
   }
 }
 
@@ -5024,22 +5026,94 @@ async function loadEpochMessages(epoch) {
   return msgs;
 }
 
-let diaryViewerIdx = 0;
+let diaryViewerEpoch = null;
 
-function openDiaryViewer() {
-  diaryViewerIdx = 0;
+function setDiaryUrlHash(epoch) {
+  const newHash = `#epoch=${epoch}`;
+  if (location.hash !== newHash) {
+    history.replaceState(null, '', location.pathname + location.search + newHash);
+  }
+}
+
+function clearDiaryUrlHash() {
+  if (location.hash.startsWith('#epoch=')) {
+    history.replaceState(null, '', location.pathname + location.search);
+  }
+}
+
+function parseEpochFromHash() {
+  const m = location.hash.match(/^#epoch=(\d+)$/);
+  return m ? Number(m[1]) : null;
+}
+
+function openDiaryViewer(epoch) {
+  if (diaryEntries.length === 0) return;
+  const target = (typeof epoch === 'number' && diaryEntries.some(e => e.epoch === epoch))
+    ? epoch
+    : diaryEntries[0].epoch;
+  diaryViewerEpoch = target;
   renderDiaryViewer();
   document.getElementById('modal-diary').classList.add('open');
+  setDiaryUrlHash(diaryViewerEpoch);
+}
+
+function closeDiaryViewer() {
+  document.getElementById('modal-diary').classList.remove('open');
+  clearDiaryUrlHash();
 }
 
 function diaryNav(dir) {
-  diaryViewerIdx = Math.max(0, Math.min(diaryEntries.length - 1, diaryViewerIdx - dir));
+  const idx = diaryEntries.findIndex(e => e.epoch === diaryViewerEpoch);
+  if (idx < 0) return;
+  const newIdx = Math.max(0, Math.min(diaryEntries.length - 1, idx - dir));
+  diaryViewerEpoch = diaryEntries[newIdx].epoch;
   renderDiaryViewer();
+  setDiaryUrlHash(diaryViewerEpoch);
 }
+
+function copyDiaryLink() {
+  if (diaryViewerEpoch == null) return;
+  const url = `${location.origin}${location.pathname}#epoch=${diaryViewerEpoch}`;
+  const btn = document.getElementById('diary-copy-link');
+  const restore = () => { if (btn) btn.textContent = 'Copy link'; };
+  const flash = () => {
+    if (!btn) return;
+    btn.textContent = 'Copied!';
+    setTimeout(restore, 1500);
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(url).then(flash).catch(() => {
+      window.prompt('Copy this link:', url);
+    });
+  } else {
+    window.prompt('Copy this link:', url);
+  }
+}
+
+function handleEpochHash() {
+  const ep = parseEpochFromHash();
+  const modal = document.getElementById('modal-diary');
+  if (ep != null) {
+    if (diaryEntries.length === 0) return; // data not loaded yet; init() re-fires after refresh
+    if (!diaryEntries.some(e => e.epoch === ep)) return;
+    diaryViewerEpoch = ep;
+    renderDiaryViewer();
+    modal.classList.add('open');
+  } else if (modal.classList.contains('open')) {
+    modal.classList.remove('open');
+  }
+}
+
+window.addEventListener('hashchange', handleEpochHash);
 
 function renderDiaryViewer() {
   if (diaryEntries.length === 0) return;
-  const entry = diaryEntries[diaryViewerIdx];
+  let idx = diaryEntries.findIndex(e => e.epoch === diaryViewerEpoch);
+  if (idx < 0) {
+    idx = 0;
+    diaryViewerEpoch = diaryEntries[0].epoch;
+  }
+  const entry = diaryEntries[idx];
   const ts = Number(entry.timestamp);
   const timeStr = ts > 0 ? new Date(ts * 1000).toLocaleString() : '';
   document.getElementById('diary-viewer-title').innerHTML = `Epoch ${entry.epoch}${timeStr ? `<span style="font-size:12px;font-weight:400;color:var(--text-dim);margin-left:10px;">${timeStr}</span>` : ''}`;
@@ -5101,8 +5175,8 @@ function renderDiaryViewer() {
   });
 
   // Nav button states
-  document.getElementById('diary-prev').disabled = diaryViewerIdx >= diaryEntries.length - 1;
-  document.getElementById('diary-next').disabled = diaryViewerIdx <= 0;
+  document.getElementById('diary-prev').disabled = idx >= diaryEntries.length - 1;
+  document.getElementById('diary-next').disabled = idx <= 0;
 }
 
 function toggleExpandList(listId, toggleEl) {
@@ -6163,6 +6237,9 @@ async function init() {
     attemptAutoReconnect().catch(() => {/* surfaced in console */});
 
     await refresh();
+
+    // Honor #epoch=N deep links once diaryEntries has been populated.
+    handleEpochHash();
 
     // Auto-refresh every 90s (was 30s — Twitter-launch traffic spike
     // 2026-05-06 burned through Alchemy quota). With a 6h epoch
