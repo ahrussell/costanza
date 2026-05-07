@@ -282,7 +282,6 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
 
         // If we've fully exited at a profit since the last entry, zero
         // the accumulators so a new entry establishes a fresh baseline.
-        // No-op pre-Phase-7.
         _maybeResetOnProfitableExit();
 
         // Bounds — fail fast before any swap.
@@ -341,7 +340,8 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
     {
         if (shares == 0) revert ZeroAmount();
 
-        // TODO Phase 6: _claimAndForwardFees(0) at top.
+        // Drain any pending fees first so the upstream's accrued WETH
+        // and tokens land on our books before we touch the position.
         _claimAndForwardFees(0);
 
         // Cap shares to actual balance to avoid revert on partial
@@ -484,7 +484,7 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
         }
     }
 
-    // ─── Internal helpers (stubs filled in later phases) ─────────────────
+    // ─── Internal helpers ────────────────────────────────────────────────
 
     /// @dev Pull pending fees from upstream, unwrap any WETH inflow,
     ///      forward ETH to fund (minus an optional tip to msg.sender).
@@ -638,7 +638,7 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
         }
     }
 
-    /// @dev Phase 4 — cooldown enforcement based on current epoch.
+    /// @dev Cooldown enforcement based on current epoch.
     function _checkCooldown() internal view {
         if (lastDepositEpoch == 0) return; // first-ever deposit
         uint256 nowEpoch = ITheHumanFund(fund).currentEpoch();
@@ -647,7 +647,8 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
         }
     }
 
-    /// @dev Phase 4 — absolute lifetime exposure cap.
+    /// @dev Absolute lifetime exposure cap. Tighter than the IM's
+    ///      percentage cap once the treasury grows past `maxNetEthIn`.
     function _checkLifetimeCap(uint256 newDeposit) internal view {
         if (netEthBasis() + newDeposit > maxNetEthIn) {
             revert LifetimeCapExceeded();

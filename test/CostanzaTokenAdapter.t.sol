@@ -168,7 +168,7 @@ contract CostanzaTokenAdapterTest is Test {
         ethOut = adapter.withdraw(shares);
     }
 
-    // ─── Phase 1 / 2: skeleton + name ────────────────────────────────────
+    // ─── Constructor + name ──────────────────────────────────────────────
 
     function test_name() public view {
         assertEq(adapter.name(), "Costanza Token");
@@ -221,7 +221,7 @@ contract CostanzaTokenAdapterTest is Test {
         );
     }
 
-    // ─── Phase 3: deposit / withdraw round-trip ──────────────────────────
+    // ─── Deposit / withdraw round-trip ───────────────────────────────────
 
     function test_deposit_only_callable_by_investment_manager() public {
         vm.deal(address(0xBADD), 1 ether);
@@ -359,7 +359,7 @@ contract CostanzaTokenAdapterTest is Test {
         assertEq(adapter.netEthBasis(), 1.5 ether);
     }
 
-    // ─── Phase 4: drawdown lockout ───────────────────────────────────────
+    // ─── Drawdown lockout ────────────────────────────────────────────────
 
     function test_drawdown_lockout_skipped_on_first_deposit() public {
         // No prior position → tokensFromSwapsIn == 0 → lockout skipped.
@@ -409,7 +409,7 @@ contract CostanzaTokenAdapterTest is Test {
         assertGt(ethOut, 0);
     }
 
-    // ─── Phase 4: spot-vs-TWAP check ─────────────────────────────────────
+    // ─── Spot-vs-TWAP check ──────────────────────────────────────────────
 
     function test_spot_vs_twap_blocks_manipulated_spot_above() public {
         // TWAP at 1000, spot pumped to 1050 (5% above) — > 2% threshold.
@@ -456,7 +456,7 @@ contract CostanzaTokenAdapterTest is Test {
         adapter.withdraw(sharesToSell);
     }
 
-    // ─── Phase 4: slippage floor (minOut from TWAP) ──────────────────────
+    // ─── Slippage floor (minOut from TWAP) ───────────────────────────────
 
     function test_slippage_floor_rejects_lossy_swap() public {
         // Swapper configured with 5% adverse slippage. minOut is 99% of
@@ -484,7 +484,7 @@ contract CostanzaTokenAdapterTest is Test {
         assertGt(shares, 0);
     }
 
-    // ─── Phase 5: balance() ──────────────────────────────────────────────
+    // ─── balance() with cost-basis floor ─────────────────────────────────
 
     function test_balance_zero_with_no_position() public view {
         assertEq(adapter.balance(), 0);
@@ -553,7 +553,7 @@ contract CostanzaTokenAdapterTest is Test {
         assertEq(b, 1 ether);
     }
 
-    // ─── Phase 6: fee path ───────────────────────────────────────────────
+    // ─── Fee path (pokeFees + auto-claim on deposit/withdraw) ────────────
 
     /// @dev Seed the mock fee distributor with `wethAmount` of WETH-equivalent
     ///      (sent as raw ETH which `claim()` wraps internally) and
@@ -666,7 +666,7 @@ contract CostanzaTokenAdapterTest is Test {
         adapter.pokeFees();
     }
 
-    // ─── Phase 7: profitable-exit reset rule ─────────────────────────────
+    // ─── Profitable-exit reset rule ──────────────────────────────────────
 
     function test_reset_fires_on_profitable_full_exit() public {
         _depositAs(1 ether);
@@ -726,7 +726,7 @@ contract CostanzaTokenAdapterTest is Test {
         assertEq(adapter.tokensFromSwapsIn(), 1100 ether);
     }
 
-    // ─── Phase 8: owner controls ─────────────────────────────────────────
+    // ─── Owner controls (transferFeeClaim, freeze, Ownable2Step) ─────────
 
     function test_transferFeeClaim_only_callable_by_owner() public {
         vm.prank(address(0xBADD));
@@ -849,7 +849,7 @@ contract CostanzaTokenAdapterTest is Test {
         assertGt(b, 0);
     }
 
-    // ─── Phase 9: adversarial coverage ───────────────────────────────────
+    // ─── Adversarial coverage (flash-loan, reentrancy, migration) ────────
 
     /// @dev A2 (flash-loan pool manipulation). An adversary moves spot
     ///      within a single block; TWAP doesn't budge. Adapter rejects
