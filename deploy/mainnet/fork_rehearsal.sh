@@ -109,9 +109,9 @@ lc() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 # Send a transaction via cast and verify the on-chain receipt status.
 # `cast send` exits 0 even when the tx reverts on-chain (it just means
 # the JSON-RPC call succeeded). This wrapper parses the receipt's
-# status and dies with the tx hash + a `cast call` revert-reason probe
-# if the tx reverted. All args after the first are passed straight to
-# cast send.
+# status, dies with the tx hash, and on revert prints a full EVM
+# trace via `cast run` so we can see exactly which call reverted and
+# why. All args after the first are passed straight to cast send.
 send_or_die() {
     local label="$1"; shift
     local out
@@ -123,15 +123,18 @@ send_or_die() {
     tx_hash=$(echo "$out" | python3 -c \
         "import sys, json; d=json.load(sys.stdin); print(d.get('transactionHash',''))" 2>/dev/null) || tx_hash=""
     if [[ "$status" != "0x1" ]]; then
-        echo "❌ $label: tx reverted (status=$status, hash=$tx_hash)" >&2
-        echo "   Diagnostic eth_call (will surface revert reason):" >&2
-        echo "   cast call $@ --rpc-url $RPC_URL" >&2
-        # Try the diagnostic ourselves if possible.
-        local diag
-        diag=$(cast call "$@" --rpc-url "$RPC_URL" 2>&1 | head -5) || true
-        if [[ -n "$diag" ]]; then
-            echo "   $diag" >&2
-        fi
+        echo "" >&2
+        echo "❌ $label: tx reverted (status=$status)" >&2
+        echo "   tx hash: $tx_hash" >&2
+        echo "" >&2
+        echo "─── EVM trace (cast run, last 60 lines) ───" >&2
+        # cast run replays the tx with full trace. Needs anvil alive,
+        # which it is — we run this BEFORE the cleanup trap fires.
+        cast run "$tx_hash" --rpc-url "$RPC_URL" --quick 2>&1 | tail -60 >&2 || true
+        echo "─── end trace ───" >&2
+        echo "" >&2
+        echo "Re-run with anvil left alive for interactive debugging:" >&2
+        echo "   trap - EXIT; bash $0 ..." >&2
         exit 1
     fi
 }
