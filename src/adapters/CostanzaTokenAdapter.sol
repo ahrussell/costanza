@@ -345,7 +345,9 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
 
         // Pull pending fees + dump to fund. Runs first so fee-token
         // inflow lands on the adapter's books before bounds use them.
-        _claimAndForwardFees(0);
+        // Best-effort: a misbehaving upstream shouldn't block the
+        // agent from depositing.
+        _claimAndForwardFees(0, true);
 
         // If we've fully exited at a profit since the last entry, zero
         // the accumulators so a new entry establishes a fresh baseline.
@@ -419,7 +421,9 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
 
         // Drain any pending fees first so the upstream's accrued WETH
         // and tokens land on our books before we touch the position.
-        _claimAndForwardFees(0);
+        // Best-effort: a misbehaving upstream shouldn't block the
+        // agent from withdrawing.
+        _claimAndForwardFees(0, true);
 
         // Cap shares to actual balance to avoid revert on partial
         // exits — IM may hand us a stale `shares` from its own ledger
@@ -547,7 +551,9 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
         // adapter; nothing to claim here. Quietly no-op rather than
         // doing a wasted external call.
         if (migrated) return;
-        _claimAndForwardFees(POKE_TIP_BPS);
+        // Strict: keeper called us *to* claim. If the upstream reverts,
+        // they need to see it — don't swallow.
+        _claimAndForwardFees(POKE_TIP_BPS, false);
 
         // Refresh the history sample. pokeFees is the most-likely
         // permissionless mover — keepers running the fee claim also
@@ -610,7 +616,11 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
 
         // Pull pending fees so they migrate with the position rather
         // than being lost or claimed by a post-migration `pokeFees`.
-        _claimAndForwardFees(0);
+        // Best-effort: if the upstream is broken, fees aren't actually
+        // stranded — they'll still be claimable by `newAdapter` once
+        // we re-point the beneficiary below. The owner can always
+        // retry the sweep on `newAdapter` post-migration via pokeFees.
+        _claimAndForwardFees(0, true);
 
         // Snapshot state for the event before we zero it.
         uint256 _cumIn   = cumulativeEthIn;
@@ -672,12 +682,18 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
     ///      $COSTANZA tokens received stay in the adapter as
     ///      zero-cost-basis additions to the position.
     ///
-    ///      Best-effort: if the upstream `claim()` reverts (no pending
-    ///      fees, malicious upstream, etc.) we no-op rather than blocking
-    ///      the surrounding deposit/withdraw. The reentrancy guards on
-    ///      our entry points already block the malicious-upstream
-    ///      reentrancy attack independently.
-    function _claimAndForwardFees(uint256 tipBps) internal {
+    ///      `bestEffort = true` swallows any revert from the upstream
+    ///      `collectFees()` call so a misbehaving upstream doesn't
+    ///      brick the surrounding deposit/withdraw/migrate. Used by
+    ///      paths where claiming is opportunistic, not the primary
+    ///      purpose.
+    ///
+    ///      `bestEffort = false` lets any revert propagate. Used by
+    ///      `pokeFees()` — the keeper called us *to* claim, so a
+    ///      silent no-op would mask exactly the kind of bug we're
+    ///      trying to surface (e.g., upstream ABI drift, broken
+    ///      hook, paused fee stream).
+    function _claimAndForwardFees(uint256 tipBps, bool bestEffort) internal {
         // Snapshot balances BEFORE claim so we only forward the delta.
         // Crucial during deposit(): adapter holds `msg.value` ETH at
         // this point and we MUST NOT forward it to the fund — that's
@@ -686,15 +702,18 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
         uint256 tokenBefore = costanzaToken.balanceOf(address(this));
         uint256 wethBefore = weth.balanceOf(address(this));
 
-        // Best-effort claim. Catch any revert so a misbehaving upstream
-        // doesn't brick the surrounding deposit/withdraw. Doppler's
-        // `collectFees` settles the pool's accumulated LP fees and
-        // forwards them to the registered beneficiary — this adapter,
-        // post-handover.
-        try feeDistributor.collectFees(poolId) {
-            // OK
-        } catch {
-            return;
+        // Doppler's `collectFees` settles the pool's accumulated LP
+        // fees and forwards them to the registered beneficiary —
+        // this adapter, post-handover.
+        if (bestEffort) {
+            try feeDistributor.collectFees(poolId) {
+                // OK
+            } catch {
+                return;
+            }
+        } else {
+            // Strict: propagate any upstream revert.
+            feeDistributor.collectFees(poolId);
         }
 
         // Unwrap any new WETH inflow.

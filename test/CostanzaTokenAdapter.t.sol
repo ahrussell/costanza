@@ -722,20 +722,50 @@ contract CostanzaTokenAdapterTest is Test {
         assertEq(address(adapter).balance, 0);
     }
 
-    function test_pokeFees_claim_failure_does_not_revert() public {
-        // Mock fee distributor reverts on its own claim() — drop the
-        // recipient to a fee-rejecting target so transfer fails.
-        // Simpler: configure malicious mode to a target that always
-        // reverts.
-        feeDistributor.setReentrancyAttack(
-            address(0x1234567890),
-            hex"deadbeef" // call to no-such-fn at no-such-address
-        );
+    /// @notice pokeFees is the explicit-claim path — keepers call it
+    ///         specifically to claim, so an upstream failure must NOT
+    ///         be silently swallowed. The original (buggy) design
+    ///         wrapped collectFees in try/catch unconditionally, which
+    ///         hid a months-long ABI mismatch where the claim selector
+    ///         didn't exist. New behavior: the revert propagates.
+    function test_pokeFees_propagates_upstream_revert() public {
+        feeDistributor.setCollectFeesReverts(true);
 
-        // pokeFees should NOT revert — try/catch handles upstream failure.
-        // (The malicious target call fails → MockFeeDistributor's
-        //  require(ok) fires → claim() reverts → adapter catches it.)
+        vm.expectRevert(MockFeeDistributor.UpstreamBroken.selector);
         adapter.pokeFees();
+    }
+
+    /// @notice deposit's auto-claim is opportunistic — a misbehaving
+    ///         upstream shouldn't block the agent's main flow. The
+    ///         best-effort path swallows the revert, deposit completes.
+    function test_deposit_auto_claim_failure_does_not_block_deposit() public {
+        feeDistributor.setCollectFeesReverts(true);
+
+        // deposit should still succeed; fees just aren't claimed this
+        // round.
+        uint256 fundEthBefore = FUND.balance;
+        _depositAs(0.1 ether);
+        // Deposit landed (tokens received).
+        assertGt(adapter.tokensFromSwapsIn(), 0);
+        // No fees were forwarded (claim was skipped).
+        assertEq(FUND.balance, fundEthBefore);
+    }
+
+    /// @notice Same logic for withdraw — a broken upstream mustn't
+    ///         lock the agent out of its position.
+    function test_withdraw_auto_claim_failure_does_not_block_withdraw() public {
+        // Build a position first (with claim working).
+        _depositAs(0.1 ether);
+        uint256 shares = adapter.tokensFromSwapsIn();
+
+        // Now break the upstream and try to withdraw.
+        feeDistributor.setCollectFeesReverts(true);
+        _setEpoch(uint64(adapter.lastDepositEpoch()) + 4);  // clear cooldown for any spot reads
+
+        // Withdraw should still succeed.
+        vm.prank(IM);
+        uint256 ethOut = adapter.withdraw(shares);
+        assertGt(ethOut, 0);
     }
 
     // ─── Profitable-exit reset rule ──────────────────────────────────────
@@ -1262,31 +1292,40 @@ contract CostanzaTokenAdapterTest is Test {
     }
 
     /// @dev A8 (reentrancy via fee claim). Malicious upstream tries to
-    ///      re-enter `pokeFees` during the claim. nonReentrant guard
-    ///      blocks the inner call; the outer call no-ops via the
-    ///      try/catch on `feeDistributor.claim()`.
+    ///      re-enter `pokeFees` during the claim. The reentrancy guard
+    ///      fires inside the inner call → MockFeeDistributor's `require`
+    ///      surfaces the failure → collectFees reverts → strict path
+    ///      in pokeFees propagates the revert to the keeper.
+    ///
+    ///      Critical security property: no fees can be drained while
+    ///      the attack is in flight. Whether pokeFees succeeds or
+    ///      reverts is secondary — what matters is that the guard fires
+    ///      and no value moves.
     function test_reentrancy_pokeFees_blocked() public {
         _seedFees(0.1 ether, 0);
-        // Configure malicious mode: claim() will call adapter.pokeFees()
-        // before settling fees.
+        // Configure malicious mode: collectFees() will call
+        // adapter.pokeFees() before settling fees.
         feeDistributor.setReentrancyAttack(
             address(adapter),
             abi.encodeWithSelector(adapter.pokeFees.selector)
         );
 
+        uint256 fundEthBefore = FUND.balance;
+        uint256 keeperEthBefore = address(0xBEEF).balance;
+
         address keeper = address(0xBEEF);
         vm.prank(keeper);
-        // Outer call succeeds because the upstream's malicious call
-        // path reverts (re-entrancy guard fires inside) → mock's
-        // require fires → outer claim() reverts → adapter's try/catch
-        // catches it → no fees moved.
+        // Reentrancy attempt: inner call reverts on the guard, mock's
+        // require fires, the outer collectFees reverts, pokeFees (now
+        // strict) propagates that revert to the keeper. Surface the
+        // require message so it's clear which layer caught the attack.
+        vm.expectRevert("reentrancy attempt reverted (expected)");
         adapter.pokeFees();
 
-        // Critical: no fees moved (because attack defeated the claim),
-        // and the fee distributor still holds the seeded ETH (wrapped
-        // into WETH inside its claim() before the require fired).
-        // Adapter must hold no leftover ETH from a partial claim.
+        // No fees moved; no partial claim leaked ETH to the adapter.
         assertEq(address(adapter).balance, 0);
+        assertEq(FUND.balance, fundEthBefore);
+        assertEq(address(0xBEEF).balance, keeperEthBefore);
     }
 
     /// @dev A8 reentrancy via deposit path. Same shape as above but the
