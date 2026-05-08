@@ -207,23 +207,24 @@ interface IWETHLike {
 // =====================================================================
 
 /// @notice Test-controlled creator-fee distributor. Mirrors the
-///         Doppler hook's two-method shape (`release`, `updateBeneficiary`)
-///         with a simple per-poolId beneficiary registry.
+///         Doppler hook's two-method shape (`collectFees`,
+///         `updateBeneficiary`) with a simple per-poolId beneficiary
+///         registry.
 ///
 ///         Holds a stash of $COSTANZA + WETH representing "pending fees."
-///         On `release(poolId, beneficiary)`, transfers everything to
-///         the named beneficiary.
+///         On `collectFees(poolId)`, transfers everything to the
+///         registered beneficiary (the destination address is fixed
+///         by the registry — callers don't pick it).
 ///
 ///         Optional reentrancy mode: when `reentrantTarget != 0`, the
-///         release path makes a low-level call to `reentrantTarget`
+///         collectFees path makes a low-level call to `reentrantTarget`
 ///         BEFORE settling — used to verify the adapter's
 ///         `nonReentrant` guards hold.
 ///
-///         The mock keeps a `recipient` field for backward-compatibility
-///         with tests that do `setRecipient`-style wiring at setup time;
-///         it's the implicit beneficiary used when `release` is called
-///         without a poolId-specific override (callers can also pass
-///         the beneficiary directly via the IFeeDistributor method).
+///         Tests use `setRecipient(adapter)` at setup time to register
+///         the adapter as the beneficiary before any collect call. The
+///         IFeeDistributor path is via `updateBeneficiary`; both write
+///         to the same `recipient` slot.
 contract MockFeeDistributor is IFeeDistributor {
     address public recipient;
     address public costanzaToken;
@@ -239,7 +240,7 @@ contract MockFeeDistributor is IFeeDistributor {
     }
 
     /// @notice Direct setter — used by tests at setup time to register
-    ///         the adapter as recipient before any release call. Kept
+    ///         the adapter as recipient before any collect call. Kept
     ///         for ergonomics; the IFeeDistributor path is via
     ///         `updateBeneficiary`.
     function setRecipient(address newRecipient) external {
@@ -260,18 +261,18 @@ contract MockFeeDistributor is IFeeDistributor {
         IWETHLike(weth).transferFrom(msg.sender, address(this), amount);
     }
 
-    /// @notice Direct-deposit ETH; the mock will wrap it on `release`.
+    /// @notice Direct-deposit ETH; the mock will wrap it on `collectFees`.
     receive() external payable {}
 
-    /// @notice Configure a reentrancy attack: when `release()` runs, it
-    ///         will `call(reentrantCalldata)` against `target` before
+    /// @notice Configure a reentrancy attack: when `collectFees()` runs,
+    ///         it will `call(reentrantCalldata)` against `target` before
     ///         transferring fees. Set `target == address(0)` to disable.
     function setReentrancyAttack(address target, bytes calldata data) external {
         reentrantTarget = target;
         reentrantCalldata = data;
     }
 
-    function release(bytes32 /* poolId */, address beneficiary) external override {
+    function collectFees(bytes32 /* poolId */) external override {
         // Fire the reentrancy hook FIRST so it lands inside the
         // adapter's protected function before fees move.
         if (reentrantTarget != address(0)) {
@@ -280,12 +281,11 @@ contract MockFeeDistributor is IFeeDistributor {
             require(ok, "reentrancy attempt reverted (expected)");
         }
 
-        // Match Doppler's semantics: the param identifies WHO is being
-        // paid out, but only the registered beneficiary actually
-        // receives anything. A release call against a non-registered
-        // address is a no-op (returns 0 fees because that address has
-        // 0 shares in the registry).
-        if (beneficiary != recipient) {
+        // No registered beneficiary → no-op (matches a freshly-deployed
+        // pool with no one wired up; the real Doppler hook reverts in
+        // this case but the adapter wraps in try/catch so production
+        // behavior is preserved either way).
+        if (recipient == address(0)) {
             return;
         }
 
@@ -297,11 +297,11 @@ contract MockFeeDistributor is IFeeDistributor {
 
         uint256 tokenBal = IERC20Like(costanzaToken).balanceOf(address(this));
         if (tokenBal > 0) {
-            IERC20Like(costanzaToken).transfer(beneficiary, tokenBal);
+            IERC20Like(costanzaToken).transfer(recipient, tokenBal);
         }
         uint256 wethBal = IWETHLike(weth).balanceOf(address(this));
         if (wethBal > 0) {
-            IWETHLike(weth).transfer(beneficiary, wethBal);
+            IWETHLike(weth).transfer(recipient, wethBal);
         }
     }
 }

@@ -23,8 +23,9 @@ import "../src/adapters/V4SwapExecutor.sol";
 ///     PoolManager + Doppler hook.
 ///   - End-to-end adapter deposit + withdraw round-trip against the
 ///     real pool, with a stand-in fund (vm.mockCall for currentEpoch).
-///   - Doppler hook's `release` and `updateBeneficiary` ABI shapes
-///     work as our `IFeeDistributor` interface assumes.
+///   - Doppler hook's `collectFees` and `updateBeneficiary` ABI
+///     shapes work as our `IFeeDistributor` interface assumes
+///     (see live tx 0x5f6bd727…fb37e6d5).
 contract CostanzaTokenAdapterForkTest is Test {
     // ─── Real Base mainnet addresses ────────────────────────────────────
     address constant COSTANZA_TOKEN   = 0x3D9761a43cF76dA6CA6b3F46666e5C8Fa0989Ba3;
@@ -228,18 +229,24 @@ contract CostanzaTokenAdapterForkTest is Test {
 
     // ─── Doppler hook ABI compatibility ──────────────────────────────────
 
-    /// @dev Reality-check on Doppler: `release(poolId, beneficiary)`
-    ///      reverts when the beneficiary is not registered. This is
-    ///      exactly why the adapter wraps `feeDistributor.release(...)`
-    ///      in a `try/catch` in `_claimAndForwardFees` — pre-registration
-    ///      poke calls would otherwise revert the surrounding deposit
-    ///      or withdraw.
-    function test_fork_doppler_release_unregistered_beneficiary_reverts() public needsFork {
+    /// @dev Reality-check on Doppler: `collectFees` is permissionless on
+    ///      the caller side — anyone can trigger a sweep. Tokens always
+    ///      flow to the registered beneficiary (the `recipient`
+    ///      parameter doesn't exist on the production hook). This test
+    ///      just confirms the call lands without reverting; a richer
+    ///      "fees actually transfer to the adapter" check lives in
+    ///      `test_fork_e2e_doppler_handover_succeeds` below.
+    function test_fork_doppler_collectFees_is_permissionless() public needsFork {
         IFeeDistributor hook = IFeeDistributor(DOPPLER_HOOK);
         address randomCaller = address(0xDEAD0BAD0);
+        // Nothing is asserted post-call — we just need the call not to
+        // revert when made by a random EOA. Whether tokens move depends
+        // on (a) whether fees are pending and (b) who's the registered
+        // beneficiary; both vary with fork state, so we don't assert on
+        // them here.
+        vm.deal(randomCaller, 1 ether);
         vm.prank(randomCaller);
-        vm.expectRevert();
-        hook.release(POOL_ID, randomCaller);
+        hook.collectFees(POOL_ID);
     }
 
     /// @dev `updateBeneficiary` from an unauthorized caller should
@@ -409,17 +416,23 @@ contract CostanzaTokenAdapterForkTest is Test {
 
     /// @notice Step 3 of the deploy ceremony: the live Doppler
     ///         beneficiary EOA calls `updateBeneficiary` to point the
-    ///         fee stream at the adapter. Confirms two things:
+    ///         fee stream at the adapter. Confirms three things:
     ///
     ///           (1) `0x495fB7…` is in fact the current registered
     ///               beneficiary — Doppler's update path lets the
-    ///               call land and emits the expected event.
-    ///           (2) After the handover, `adapter.pokeFees()` runs
-    ///               cleanly without reverting, which is the only
-    ///               behavior the production system actually depends
-    ///               on (the internal `_claimAndForwardFees` wraps
-    ///               `release(...)` in `try/catch`, so a revert at
-    ///               that layer doesn't surface).
+    ///               call land and emits an event referencing the
+    ///               adapter.
+    ///           (2) Post-handover, a swap on the pool accrues fees
+    ///               that the adapter can sweep via `pokeFees()` —
+    ///               the bug we caught in PR review was that the
+    ///               original `release(bytes32,address)` selector
+    ///               didn't exist on Doppler, so the inner
+    ///               `try/catch` in `_claimAndForwardFees` was
+    ///               silently absorbing dispatch-fail reverts. This
+    ///               test verifies fees ACTUALLY transfer.
+    ///           (3) The fund (TheHumanFund) receives the WETH-side
+    ///               fees as ETH; the $COSTANZA-side fees stay in
+    ///               the adapter as inventory.
     ///
     ///         Counterpart to
     ///         `test_fork_doppler_updateBeneficiary_unauthorized_reverts`
@@ -433,40 +446,69 @@ contract CostanzaTokenAdapterForkTest is Test {
         vm.prank(LIVE_DOPPLER_BENEFICIARY);
         hook.updateBeneficiary(POOL_ID, address(adapter));
 
-        // Confirm the event landed with the right shape: the previous
-        // beneficiary should be 0x495fB7… and the new beneficiary the
-        // adapter. The Doppler hook emits `UpdateBeneficiary(poolId,
-        // oldBeneficiary, newBeneficiary)` (verified via trace).
+        // Confirm the event landed with the right shape: any log from
+        // the hook that mentions the adapter address means the registry
+        // recorded it. Doppler's exact event signature isn't externally
+        // documented, so we content-match.
         Vm.Log[] memory logs = vm.getRecordedLogs();
         bool found = false;
         for (uint256 i = 0; i < logs.length; i++) {
-            // Topic[0] is the event signature. We don't pin to a
-            // specific keccak — instead we look for any log from the
-            // hook that carries the adapter as the new-beneficiary
-            // word in `data`. (Doppler's event signature is stable but
-            // not externally documented; matching by content is more
-            // robust than matching by topic[0].)
             if (logs[i].emitter != DOPPLER_HOOK) continue;
-            // The new beneficiary appears as the last 32-byte word in
-            // either topics or data. Just confirm the adapter address
-            // shows up somewhere in the log.
-            bytes memory data = logs[i].data;
             if (_logContainsAddress(logs[i], address(adapter))) {
                 found = true;
                 break;
             }
-            data; // silence unused warning if branch not taken
         }
         assertTrue(found, "updateBeneficiary log didn't reference the adapter");
 
-        // Post-handover: pokeFees should run without reverting, even
-        // though there may be no fees ready to release. The adapter's
-        // try/catch around the inner release call is what makes this
-        // safe in production. Anyone can call pokeFees (permissionless).
+        // Force a swap to accrue fresh LP fees on the pool — without
+        // this, fees pending at the moment of pokeFees() depend on
+        // ambient trading activity since the last claim, which is
+        // unstable across fork-block pinning. A direct V4SwapExecutor
+        // swap from a separate caller mirrors what an external trader
+        // would do and books fees into the pool's owed-to-LP accumulator.
+        V4SwapExecutor sideExec = new V4SwapExecutor(POOL_MANAGER, _v4Key());
+        address trader = address(0xBEEF);
+        uint256 swapAmount = 0.005 ether;
+        vm.deal(trader, swapAmount);
+        vm.startPrank(trader);
+        IWETH9(WETH).deposit{value: swapAmount}();
+        IWETH9(WETH).approve(address(sideExec), swapAmount);
+        sideExec.swap(WETH, COSTANZA_TOKEN, swapAmount, 1);
+        vm.stopPrank();
+
+        // Now there should be fresh LP fees in the pool's owed-to-LP
+        // pot. Snapshot pre-poke state.
+        uint256 preFundBal    = LIVE_FUND.balance;
+        uint256 preAdapterTok = IERC20(COSTANZA_TOKEN).balanceOf(address(adapter));
+        uint256 preAdapterEth = address(adapter).balance;
+
+        // Sweep fees through the production code path. pokeFees is
+        // permissionless; anyone can call it. We prank a fresh EOA
+        // (not `address(this)`) because the 2% keeper tip is sent to
+        // msg.sender, and the test contract doesn't have a payable
+        // `receive` — a fresh EOA does by default.
+        address keeper = address(0xC0FFEE);
+        vm.prank(keeper);
         adapter.pokeFees();
-        // Token + WETH balance may have grown if fees were claimable;
-        // we don't assert strictly-greater because the live pool's
-        // accrual state is variable.
+        uint256 keeperTip = keeper.balance;
+
+        uint256 postFundBal    = LIVE_FUND.balance;
+        uint256 postAdapterTok = IERC20(COSTANZA_TOKEN).balanceOf(address(adapter));
+        uint256 postAdapterEth = address(adapter).balance;
+
+        // The fund should have received ETH (98% of unwrapped WETH-side
+        // fees, 2% goes to the keeper tip). The adapter should have
+        // received some $COSTANZA tokens. Adapter ETH balance should
+        // not have grown — _claimAndForwardFees forwards everything
+        // ETH to fund + tip. The keeper should have received their tip.
+        assertGt(postFundBal, preFundBal,
+            "fund should receive ETH from WETH-side fees");
+        assertGt(postAdapterTok, preAdapterTok,
+            "adapter should receive token-side fees");
+        assertEq(postAdapterEth, preAdapterEth,
+            "adapter shouldn't accumulate ETH (forwarded to fund + tip)");
+        assertGt(keeperTip, 0, "keeper should receive a 2% tip");
     }
 
     /// @dev True if any topic OR the right-most 32-byte word in `data`

@@ -687,8 +687,11 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
         uint256 wethBefore = weth.balanceOf(address(this));
 
         // Best-effort claim. Catch any revert so a misbehaving upstream
-        // doesn't brick the surrounding deposit/withdraw.
-        try feeDistributor.release(poolId, address(this)) {
+        // doesn't brick the surrounding deposit/withdraw. Doppler's
+        // `collectFees` settles the pool's accumulated LP fees and
+        // forwards them to the registered beneficiary — this adapter,
+        // post-handover.
+        try feeDistributor.collectFees(poolId) {
             // OK
         } catch {
             return;
