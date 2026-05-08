@@ -74,6 +74,15 @@ def format_eth_usd(wei_amount, eth_usd_price, feed_decimals=8):
     return f"{eth_str} ETH ({usd_str})"
 
 
+def _format_yield_pct(pct):
+    """Format yield-coverage percentage. One decimal under 100% so a small
+    nonzero yield doesn't truncate to a misleading "0%". Integer at 100%+.
+    """
+    if pct >= 100:
+        return f"{int(pct)}%"
+    return f"{pct:.1f}%"
+
+
 # ─── Spotlighting (Datamarking) ────────────────────────────────────────────
 # Defense against indirect prompt injection in donor messages.
 # Based on: "Defending Against Indirect Prompt Injection Attacks With
@@ -236,7 +245,7 @@ def _compute_lifespan(state):
 
     net_burn = total_spend - yield_per_epoch
     self_sustaining = yield_per_epoch >= total_spend
-    yield_covers_pct = int(yield_per_epoch * 100 / total_spend) if total_spend > 0 else 0
+    yield_covers_pct = (yield_per_epoch * 100 / total_spend) if total_spend > 0 else 0
 
     def _days(epochs):
         return epochs * epoch_days if epochs is not None else None
@@ -529,23 +538,24 @@ def build_epoch_context(state, seed=None, voice_anchors: str = ""):
         # Sustainability analysis
         lines.append("--- Sustainability ---")
         yield_ep = lifespan["yield_per_epoch"]
+        pct_str = _format_yield_pct(lifespan["yield_covers_pct"])
         if yield_ep > 0:
             lines.append(
                 f"Estimated yield per epoch: {format_eth_usd(yield_ep, eth_usd)} "
-                f"({lifespan['yield_covers_pct']}% of total spend)"
+                f"({pct_str} of total spend)"
             )
         else:
             lines.append("Estimated yield per epoch: 0 ETH (no investments)")
         if lifespan["self_sustaining"]:
             net_surplus = yield_ep - total_spend
             lines.append(f"Net surplus: +{format_eth(net_surplus)} ETH/epoch — treasury grows at recent spend")
-            lines.append(f"Status: SELF-SUSTAINING — yield covers {lifespan['yield_covers_pct']}% of total spend")
+            lines.append(f"Status: SELF-SUSTAINING — yield covers {pct_str} of total spend")
         else:
             lines.append(
                 f"Net burn per epoch: {format_eth(lifespan['net_burn_per_epoch'])} ETH "
                 f"(total spend minus yield)"
             )
-            lines.append("Status: NOT SELF-SUSTAINING")
+            lines.append(f"Status: NOT SELF-SUSTAINING — yield covers {pct_str} of total spend")
         if at_spend is not None and at_spend < 50:
             lines.append("WARNING: at recent spend rate, runway is fewer than 50 epochs.")
     else:
@@ -793,8 +803,11 @@ def build_epoch_context(state, seed=None, voice_anchors: str = ""):
     if eth_usd > 0:
         lines.append(f"ETH/USD: ${eth_usd / 1e8:,.2f}.")
     if lifespan["liquid_runway_compute_only"] is not None:
-        yield_pct = lifespan["yield_covers_pct"]
-        sustain = "SELF-SUSTAINING." if lifespan["self_sustaining"] else f"Yield covers {yield_pct}% of total spend."
+        pct_str = _format_yield_pct(lifespan["yield_covers_pct"])
+        if lifespan["self_sustaining"]:
+            sustain = f"SELF-SUSTAINING — yield covers {pct_str} of total spend."
+        else:
+            sustain = f"Yield covers {pct_str} of total spend."
         if lifespan["liquid_runway_at_total_spend"] is not None:
             lines.append(
                 f"Runway: ~{lifespan['liquid_runway_at_total_spend']} epochs at recent spend "
