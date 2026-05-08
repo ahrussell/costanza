@@ -5574,12 +5574,7 @@ async function loadAll() {
       const epochsCompute = avgCompute > 0n ? Number(treasury / avgCompute) : null;
       if (epochsTotal !== null) {
         document.getElementById('hero-runway').textContent = fmtShort(epochsTotal);
-        // Sub-line: epoch count, plus compute-only when it differs (i.e.
-        // donations are part of the burn).
-        const sub = donating > 0 && epochsCompute && epochsCompute > epochsTotal
-          ? `${epochsTotal} epochs · ${fmtShort(epochsCompute)} on compute`
-          : `${epochsTotal} epochs`;
-        document.getElementById('hero-runway-sub').textContent = sub;
+        document.getElementById('hero-runway-sub').textContent = `${epochsTotal} epochs`;
       }
     }
   }
