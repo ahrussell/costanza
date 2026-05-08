@@ -182,7 +182,15 @@ def main():
 
         executed = rec[6]
         if not executed:
-            logger.info("Epoch %d not executed (forfeited), skipping", e)
+            # `executed=false` for e == current means the epoch is in-progress
+            # (commit/reveal/execution not yet finalized). Don't advance state —
+            # next cron run will retry. Only treat as forfeited once the chain
+            # has moved past this epoch (i.e. e < current), at which point
+            # nothing will ever execute it.
+            if e >= current:
+                logger.info("Epoch %d not yet executed (in progress), retrying next run", e)
+                return
+            logger.info("Epoch %d forfeited (chain moved past, never executed), skipping", e)
             state["last_tweeted_epoch"] = e
             if not args.dry_run:
                 save_state(state)
