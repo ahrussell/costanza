@@ -464,18 +464,8 @@ contract CostanzaTokenAdapterForkTest is Test {
         // Force a swap to accrue fresh LP fees on the pool — without
         // this, fees pending at the moment of pokeFees() depend on
         // ambient trading activity since the last claim, which is
-        // unstable across fork-block pinning. A direct V4SwapExecutor
-        // swap from a separate caller mirrors what an external trader
-        // would do and books fees into the pool's owed-to-LP accumulator.
-        V4SwapExecutor sideExec = new V4SwapExecutor(POOL_MANAGER, _v4Key());
-        address trader = address(0xBEEF);
-        uint256 swapAmount = 0.005 ether;
-        vm.deal(trader, swapAmount);
-        vm.startPrank(trader);
-        IWETH9(WETH).deposit{value: swapAmount}();
-        IWETH9(WETH).approve(address(sideExec), swapAmount);
-        sideExec.swap(WETH, COSTANZA_TOKEN, swapAmount, 1);
-        vm.stopPrank();
+        // unstable across fork-block pinning.
+        _forceTrade();
 
         // Now there should be fresh LP fees in the pool's owed-to-LP
         // pot. Snapshot pre-poke state.
@@ -509,6 +499,167 @@ contract CostanzaTokenAdapterForkTest is Test {
         assertEq(postAdapterEth, preAdapterEth,
             "adapter shouldn't accumulate ETH (forwarded to fund + tip)");
         assertGt(keeperTip, 0, "keeper should receive a 2% tip");
+    }
+
+    /// @notice `collectFees` from a random caller cannot redirect fees
+    ///         to themselves — the destination is locked to the
+    ///         registered beneficiary, set via `updateBeneficiary`.
+    ///         A non-beneficiary caller's `collectFees` only does the
+    ///         pool→Doppler "collect" half of the dance; the beneficiary's
+    ///         own subsequent call is what triggers the release.
+    function test_fork_collectFees_random_caller_cannot_redirect() public needsFork {
+        (CostanzaTokenAdapter adapter,) = _deployLiveAdapter();
+        IFeeDistributor hook = IFeeDistributor(DOPPLER_HOOK);
+
+        vm.prank(LIVE_DOPPLER_BENEFICIARY);
+        hook.updateBeneficiary(POOL_ID, address(adapter));
+
+        // Force fees to accrue.
+        _forceTrade();
+
+        address attacker = address(0xBADBADBAD);
+        uint256 attackerTokBefore = IERC20(COSTANZA_TOKEN).balanceOf(attacker);
+        uint256 attackerWethBefore = IERC20(WETH).balanceOf(attacker);
+
+        // Random EOA calls collectFees. May "collect" pool fees into
+        // Doppler's internal pot (Collect event), but must NOT
+        // release anything to the attacker — the beneficiary registry
+        // governs the destination.
+        vm.prank(attacker);
+        hook.collectFees(POOL_ID);
+
+        assertEq(IERC20(COSTANZA_TOKEN).balanceOf(attacker), attackerTokBefore,
+            "attacker must not receive token-side fees");
+        assertEq(IERC20(WETH).balanceOf(attacker), attackerWethBefore,
+            "attacker must not receive WETH-side fees");
+        assertEq(attacker.balance, 0,
+            "attacker must not receive ETH");
+    }
+
+    /// @notice **The headline answer to "will the adapter claim my
+    ///         unclaimed fees after handover?"** — YES, as long as no
+    ///         one else triggered a `collectFees` between the old
+    ///         beneficiary's last claim and the handover.
+    ///
+    ///         Doppler's semantic: pool fees aren't tagged
+    ///         per-beneficiary inside the V4 pool. Whoever triggers
+    ///         the next `collectFees` causes the pool fees to flow
+    ///         out, credited to whoever is the *current* beneficiary
+    ///         at that moment. After handover, the adapter is the
+    ///         current beneficiary, so its first pokeFees pulls all
+    ///         pool-side fees (whether they accrued before or after
+    ///         the handover) into the adapter.
+    ///
+    ///         Empirical: 500k blocks of `cast logs` show no one but
+    ///         the registered beneficiary calls `collectFees` on this
+    ///         pool. So in practice the window of risk is tiny.
+    function test_fork_handover_inherits_pre_handover_pool_fees() public needsFork {
+        (CostanzaTokenAdapter adapter,) = _deployLiveAdapter();
+        IFeeDistributor hook = IFeeDistributor(DOPPLER_HOOK);
+
+        // Step 1: Trade while old beneficiary is registered. Fees
+        // accrue in V4 pool's owed-to-LP accumulator. Critically,
+        // NO ONE calls collectFees in this window — so fees stay in
+        // the pool, untagged.
+        _forceTrade();
+
+        // Step 2: Hand over to the adapter WITHOUT old beneficiary
+        // claiming first.
+        vm.prank(LIVE_DOPPLER_BENEFICIARY);
+        hook.updateBeneficiary(POOL_ID, address(adapter));
+
+        // Step 3: Adapter pokeFees. Should claim the accumulated
+        // pre-handover fees because Doppler credits them to "current
+        // beneficiary at moment of collect" = adapter (post-handover).
+        uint256 adapterTokBefore = IERC20(COSTANZA_TOKEN).balanceOf(address(adapter));
+        uint256 fundEthBefore    = LIVE_FUND.balance;
+
+        address keeper = address(0xC0FFEE);
+        vm.prank(keeper);
+        adapter.pokeFees();
+
+        // Adapter received the pre-handover-accrued fees.
+        bool gained =
+            IERC20(COSTANZA_TOKEN).balanceOf(address(adapter)) > adapterTokBefore
+            || LIVE_FUND.balance > fundEthBefore;
+        assertTrue(gained, "adapter must inherit pre-handover pool fees");
+    }
+
+    /// @notice The flip side: if a permissionless caller triggers
+    ///         `collectFees` BEFORE the handover, those fees come out
+    ///         of the V4 pool but get **stranded** in Doppler — neither
+    ///         the old beneficiary's nor the new beneficiary's
+    ///         subsequent collectFees can recover them. (Doppler's
+    ///         per-pool internal accounting only credits when the
+    ///         beneficiary themselves calls.)
+    ///
+    ///         This isn't a problem in practice — 500k blocks of logs
+    ///         show no one besides 0x495fB7… ever calls collectFees
+    ///         on this pool. The handover window is small enough that
+    ///         the chance of a hostile actor lining up a single
+    ///         pre-handover collectFees is negligible. Documented here
+    ///         so future readers know the risk pattern.
+    function test_fork_third_party_collect_pre_handover_strands_fees() public needsFork {
+        (CostanzaTokenAdapter adapter,) = _deployLiveAdapter();
+        IFeeDistributor hook = IFeeDistributor(DOPPLER_HOOK);
+
+        _forceTrade();
+
+        // Hostile/random EOA collectFees BEFORE handover.
+        address randomCaller = address(0xDEAD0BAD0);
+        vm.prank(randomCaller);
+        hook.collectFees(POOL_ID);
+
+        // Hand over.
+        vm.prank(LIVE_DOPPLER_BENEFICIARY);
+        hook.updateBeneficiary(POOL_ID, address(adapter));
+
+        // Adapter pokeFees — finds nothing for itself.
+        uint256 adapterTokBefore = IERC20(COSTANZA_TOKEN).balanceOf(address(adapter));
+        uint256 fundEthBefore    = LIVE_FUND.balance;
+
+        address keeper = address(0xC0FFEE);
+        vm.prank(keeper);
+        adapter.pokeFees();
+
+        assertEq(IERC20(COSTANZA_TOKEN).balanceOf(address(adapter)), adapterTokBefore,
+            "adapter should not inherit fees that were collected pre-handover by a third party");
+        assertEq(LIVE_FUND.balance, fundEthBefore,
+            "fund should not receive any forwarded fees");
+    }
+
+    /// @notice Confirms collectFees is safe to call when nothing has
+    ///         accrued — i.e., no revert on the "empty pool" case.
+    ///         Important because pokeFees() now propagates upstream
+    ///         reverts (see PR #53), so keeper bots could otherwise
+    ///         end up reverting on every poll between trades.
+    function test_fork_collectFees_no_pending_does_not_revert() public needsFork {
+        (CostanzaTokenAdapter adapter,) = _deployLiveAdapter();
+        IFeeDistributor hook = IFeeDistributor(DOPPLER_HOOK);
+
+        // Hand over with no fee-accruing activity in between.
+        vm.prank(LIVE_DOPPLER_BENEFICIARY);
+        hook.updateBeneficiary(POOL_ID, address(adapter));
+
+        // Drain any residual fees first via a direct collectFees, so
+        // the next call is guaranteed to find nothing pending. Then
+        // call again immediately — must not revert.
+        hook.collectFees(POOL_ID);
+        hook.collectFees(POOL_ID);
+    }
+
+    /// @dev Force fee accrual on the live pool by doing a small swap.
+    ///      Used by tests that need pending fees to claim. Trades a
+    ///      fresh 0.005 ETH from a stand-in trader EOA.
+    function _forceTrade() internal {
+        V4SwapExecutor sideExec = new V4SwapExecutor(POOL_MANAGER, _v4Key());
+        address trader = address(0xBEEF);
+        vm.deal(trader, 0.005 ether);
+        vm.startPrank(trader);
+        IWETH9(WETH).deposit{value: 0.005 ether}();
+        IWETH9(WETH).approve(address(sideExec), 0.005 ether);
+        sideExec.swap(WETH, COSTANZA_TOKEN, 0.005 ether, 1);
+        vm.stopPrank();
     }
 
     /// @dev True if any topic OR the right-most 32-byte word in `data`
