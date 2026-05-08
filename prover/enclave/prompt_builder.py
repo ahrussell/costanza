@@ -74,6 +74,15 @@ def format_eth_usd(wei_amount, eth_usd_price, feed_decimals=8):
     return f"{eth_str} ETH ({usd_str})"
 
 
+def _format_yield_pct(pct):
+    """Format yield-coverage percentage. One decimal under 100% so a small
+    nonzero yield doesn't truncate to a misleading "0%". Integer at 100%+.
+    """
+    if pct >= 100:
+        return f"{int(pct)}%"
+    return f"{pct:.1f}%"
+
+
 # ─── Spotlighting (Datamarking) ────────────────────────────────────────────
 # Defense against indirect prompt injection in donor messages.
 # Based on: "Defending Against Indirect Prompt Injection Attacks With
@@ -136,8 +145,50 @@ def derive_epoch_marker(state, seed=None):
 
 # ─── Epoch Context Computation ───────────────────────────────────────────
 
+def _extract_donation_amount(action_field):
+    """Return donation amount (wei) from a history entry's `action`, else 0.
+
+    Action bytes are produced by the model as `uint8 type || abi.encode(params)`.
+    For donate (type=1), bytes 33..65 are the amount uint256. For any other
+    type or malformed bytes, return 0.
+
+    `action_field` may arrive as raw bytes (contract read) or "0x..." hex
+    (after epoch_state.py serialization). Tolerate both.
+
+    NOTE: this is the model's *intended* amount, not the realized amount —
+    the contract clamps donations at 10% of treasury at execution time. We
+    accept a small over-report (tighter runway display) in exchange for a
+    burn-rate signal that is fully decoupled from treasury state.
+    """
+    if not action_field:
+        return 0
+    try:
+        if isinstance(action_field, bytes):
+            ab = action_field
+        else:
+            ab = bytes.fromhex(action_field.replace("0x", ""))
+    except Exception:
+        return 0
+    if len(ab) < 65 or ab[0] != 1:
+        return 0
+    try:
+        return int.from_bytes(ab[33:65], "big")
+    except Exception:
+        return 0
+
+
 def _compute_lifespan(state):
-    """Compute estimated lifespan and sustainability from rolling epoch costs and yield."""
+    """Compute lifespan and sustainability from rolling per-epoch spend.
+
+    Spend is split into two action-derived components, both computed over
+    the same 10-epoch window so the model can compare them directly:
+      - compute: `bounty_paid` per executed history entry
+      - donations: amount from action bytes when action_type==1
+
+    Treasury state never enters the burn-rate calculation (only the runway
+    division `balance / total_spend`). This keeps "what Costanza has been
+    spending" a function of his past actions alone.
+    """
     history = state.get("history", [])
     balance = state["treasury_balance"]
     # Re-derive total_assets from hashed primitives (see _derive_trusted_aggregates)
@@ -145,31 +196,43 @@ def _compute_lifespan(state):
     epoch_duration = state.get("epoch_duration", 86400)  # seconds
     epoch_days = epoch_duration / 86400
 
-    # Use last 10 epochs' bounty costs for rolling average
-    recent_costs = []
-    for entry in history[:10]:
-        bounty = entry.get("bounty_paid", 0)
-        if bounty > 0:
-            recent_costs.append(bounty)
+    window = min(10, len(history))
 
-    if not recent_costs:
+    if window == 0:
         return {
-            "avg_cost": 0,
-            "epochs_remaining": None,
-            "days_remaining": None,
-            "total_epochs_remaining": None,
-            "total_days_remaining": None,
+            "avg_compute_cost": 0,
+            "avg_donation_intent": 0,
+            "donation_window": 0,
+            "donating_epochs_in_window": 0,
+            "total_spend_per_epoch": 0,
+            "liquid_runway_compute_only": None,
+            "liquid_runway_at_total_spend": None,
+            "compute_only_days": None,
+            "at_spend_days": None,
+            "total_runway_at_total_spend": None,
+            "total_runway_days": None,
             "yield_per_epoch": 0,
             "net_burn_per_epoch": 0,
             "self_sustaining": False,
             "yield_covers_pct": 0,
-            "cost_window": 0,
             "epoch_days": epoch_days,
         }
 
-    avg_cost = sum(recent_costs) / len(recent_costs)
-    liquid_epochs = int(balance / avg_cost) if avg_cost > 0 else None
-    total_epochs = int(total_assets / avg_cost) if avg_cost > 0 else None
+    recent = history[:window]
+    avg_compute_cost = sum(e.get("bounty_paid", 0) for e in recent) / window
+
+    donation_per_epoch = [_extract_donation_amount(e.get("action")) for e in recent]
+    avg_donation_intent = sum(donation_per_epoch) / window
+    donating_epochs_in_window = sum(1 for amt in donation_per_epoch if amt > 0)
+
+    total_spend = avg_compute_cost + avg_donation_intent
+
+    def _runway(amount, denom):
+        return int(amount / denom) if denom > 0 else None
+
+    liquid_runway_compute_only = _runway(balance, avg_compute_cost)
+    liquid_runway_at_total_spend = _runway(balance, total_spend)
+    total_runway_at_total_spend = _runway(total_assets, total_spend)
 
     # Estimate yield per epoch from current investment positions
     epochs_per_year = (365 * 86400) / epoch_duration if epoch_duration > 0 else 365
@@ -178,24 +241,31 @@ def _compute_lifespan(state):
         value = inv.get("current_value", 0)
         apy_bps = inv.get("expected_apy_bps", 0)
         if value > 0 and apy_bps > 0:
-            annual_yield = value * apy_bps / 10000
-            yield_per_epoch += annual_yield / epochs_per_year
+            yield_per_epoch += (value * apy_bps / 10000) / epochs_per_year
 
-    net_burn = avg_cost - yield_per_epoch
-    self_sustaining = yield_per_epoch >= avg_cost
-    yield_covers_pct = int(yield_per_epoch * 100 / avg_cost) if avg_cost > 0 else 0
+    net_burn = total_spend - yield_per_epoch
+    self_sustaining = yield_per_epoch >= total_spend
+    yield_covers_pct = (yield_per_epoch * 100 / total_spend) if total_spend > 0 else 0
+
+    def _days(epochs):
+        return epochs * epoch_days if epochs is not None else None
 
     return {
-        "avg_cost": avg_cost,
-        "epochs_remaining": liquid_epochs,
-        "days_remaining": liquid_epochs * epoch_days if liquid_epochs is not None else None,
-        "total_epochs_remaining": total_epochs,
-        "total_days_remaining": total_epochs * epoch_days if total_epochs is not None else None,
+        "avg_compute_cost": avg_compute_cost,
+        "avg_donation_intent": avg_donation_intent,
+        "donation_window": window,
+        "donating_epochs_in_window": donating_epochs_in_window,
+        "total_spend_per_epoch": total_spend,
+        "liquid_runway_compute_only": liquid_runway_compute_only,
+        "liquid_runway_at_total_spend": liquid_runway_at_total_spend,
+        "compute_only_days": _days(liquid_runway_compute_only),
+        "at_spend_days": _days(liquid_runway_at_total_spend),
+        "total_runway_at_total_spend": total_runway_at_total_spend,
+        "total_runway_days": _days(total_runway_at_total_spend),
         "yield_per_epoch": yield_per_epoch,
         "net_burn_per_epoch": net_burn,
         "self_sustaining": self_sustaining,
         "yield_covers_pct": yield_covers_pct,
-        "cost_window": len(recent_costs),
         "epoch_days": epoch_days,
     }
 
@@ -426,33 +496,71 @@ def build_epoch_context(state, seed=None, voice_anchors: str = ""):
 
     # Lifespan estimate
     lines.append("")
-    if lifespan["epochs_remaining"] is not None:
-        lines.append(f"--- Lifespan Estimate (rolling {lifespan['cost_window']}-epoch avg) ---")
-        lines.append(f"Average cost per epoch: {format_eth(lifespan['avg_cost'])} ETH")
-        lines.append(f"Liquid runway: ~{lifespan['epochs_remaining']} epochs (~{lifespan['days_remaining']:.0f} days)")
-        if lifespan["total_epochs_remaining"] is not None and total_invested > 0:
-            lines.append(f"Total runway: ~{lifespan['total_epochs_remaining']} epochs (~{lifespan['total_days_remaining']:.0f} days) — if all investments liquidated")
+    window = lifespan["donation_window"]
+    if window > 0:
+        active = lifespan["donating_epochs_in_window"]
+        avg_compute = lifespan["avg_compute_cost"]
+        avg_donation = lifespan["avg_donation_intent"]
+        total_spend = lifespan["total_spend_per_epoch"]
+
+        lines.append(f"--- Lifespan Estimate (rolling {window}-epoch avg) ---")
+        lines.append(f"Compute cost: {format_eth_usd(avg_compute, eth_usd)} per epoch")
+        if active > 0:
+            lines.append(
+                f"Donations: {format_eth_usd(avg_donation, eth_usd)} per epoch "
+                f"— {active}/{window} epochs active"
+            )
+        else:
+            lines.append(f"Donations: 0 ETH per epoch — no donations in last {window} epochs")
+        lines.append(f"Total spend: {format_eth_usd(total_spend, eth_usd)} per epoch")
         lines.append("")
+
+        compute_only = lifespan["liquid_runway_compute_only"]
+        at_spend = lifespan["liquid_runway_at_total_spend"]
+        if compute_only is not None:
+            lines.append(
+                f"Runway at compute-only burn: ~{compute_only} epochs "
+                f"(~{lifespan['compute_only_days']:.0f} days)"
+            )
+        if at_spend is not None:
+            lines.append(
+                f"Runway at recent spend rate: ~{at_spend} epochs "
+                f"(~{lifespan['at_spend_days']:.0f} days)"
+            )
+        if lifespan["total_runway_at_total_spend"] is not None and total_invested > 0:
+            lines.append(
+                f"Total runway (if all investments liquidated, at recent spend rate): "
+                f"~{lifespan['total_runway_at_total_spend']} epochs "
+                f"(~{lifespan['total_runway_days']:.0f} days)"
+            )
+        lines.append("")
+
         # Sustainability analysis
         lines.append("--- Sustainability ---")
         yield_ep = lifespan["yield_per_epoch"]
+        pct_str = _format_yield_pct(lifespan["yield_covers_pct"])
         if yield_ep > 0:
-            lines.append(f"Estimated yield per epoch: {format_eth(yield_ep)} ETH ({format_eth_usd(yield_ep, eth_usd)})")
+            lines.append(
+                f"Estimated yield per epoch: {format_eth_usd(yield_ep, eth_usd)} "
+                f"({pct_str} of total spend)"
+            )
         else:
-            lines.append(f"Estimated yield per epoch: 0 ETH (no investments)")
-        lines.append(f"Average burn per epoch: {format_eth(lifespan['avg_cost'])} ETH ({format_eth_usd(lifespan['avg_cost'], eth_usd)})")
+            lines.append("Estimated yield per epoch: 0 ETH (no investments)")
         if lifespan["self_sustaining"]:
-            net_surplus = yield_ep - lifespan["avg_cost"]
-            lines.append(f"Net surplus: +{format_eth(net_surplus)} ETH/epoch — treasury grows without donations")
-            lines.append(f"Status: SELF-SUSTAINING — yield covers {lifespan['yield_covers_pct']}% of costs")
+            net_surplus = yield_ep - total_spend
+            lines.append(f"Net surplus: +{format_eth(net_surplus)} ETH/epoch — treasury grows at recent spend")
+            lines.append(f"Status: SELF-SUSTAINING — yield covers {pct_str} of total spend")
         else:
-            lines.append(f"Net burn: {format_eth(lifespan['net_burn_per_epoch'])} ETH/epoch (yield covers {lifespan['yield_covers_pct']}% of costs)")
-            lines.append(f"Status: NOT SELF-SUSTAINING")
-        if lifespan['epochs_remaining'] < 50:
-            lines.append(f"WARNING: At current burn rate, liquid runway is fewer than 50 epochs.")
+            lines.append(
+                f"Net burn per epoch: {format_eth(lifespan['net_burn_per_epoch'])} ETH "
+                f"(total spend minus yield)"
+            )
+            lines.append(f"Status: NOT SELF-SUSTAINING — yield covers {pct_str} of total spend")
+        if at_spend is not None and at_spend < 50:
+            lines.append("WARNING: at recent spend rate, runway is fewer than 50 epochs.")
     else:
         lines.append("--- Lifespan Estimate ---")
-        lines.append("No epoch cost data yet (no bounties paid).")
+        lines.append("No epoch cost data yet (no executed history).")
 
     # Cumulative stats. SECURITY: top-level `total_donated_usd` is NOT in
     # the input hash (only per-nonprofit total_donated_usd is, via
@@ -694,10 +802,19 @@ def build_epoch_context(state, seed=None, voice_anchors: str = ""):
     lines.append(f"You are Costanza, epoch {epoch}. Liquid: {format_eth_usd(balance, eth_usd)}. Total assets: {format_eth_usd(total_assets, eth_usd)}.")
     if eth_usd > 0:
         lines.append(f"ETH/USD: ${eth_usd / 1e8:,.2f}.")
-    if lifespan["epochs_remaining"] is not None:
-        yield_pct = lifespan["yield_covers_pct"]
-        sustain = "SELF-SUSTAINING." if lifespan["self_sustaining"] else f"Yield covers {yield_pct}% of costs."
-        lines.append(f"Liquid runway: ~{lifespan['epochs_remaining']} epochs. {sustain}")
+    if lifespan["liquid_runway_compute_only"] is not None:
+        pct_str = _format_yield_pct(lifespan["yield_covers_pct"])
+        if lifespan["self_sustaining"]:
+            sustain = f"SELF-SUSTAINING — yield covers {pct_str} of total spend."
+        else:
+            sustain = f"Yield covers {pct_str} of total spend."
+        if lifespan["liquid_runway_at_total_spend"] is not None:
+            lines.append(
+                f"Runway: ~{lifespan['liquid_runway_at_total_spend']} epochs at recent spend "
+                f"(~{lifespan['liquid_runway_compute_only']} epochs on compute alone). {sustain}"
+            )
+        else:
+            lines.append(f"Runway: ~{lifespan['liquid_runway_compute_only']} epochs on compute alone. {sustain}")
     lines.append(f"Max donate: {format_eth_usd(bounds['max_donate'], eth_usd)}. Commission: {commission / 100:.1f}%.")
     lines.append(f"Total donated lifetime: {format_eth(state.get('total_donated', 0))} ETH ({format_usd(total_donated_usd)} USD). Epochs since last donation: {epochs_since_donation}.")
 
