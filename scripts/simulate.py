@@ -87,7 +87,10 @@ PROTOCOLS = [
     {"id": 8, "name": "Aerodrome ETH/USDC","risk_tier": 4,"expected_apy_bps": 1200,"active": True},
 ]
 
-SCENARIO_NAMES = ["default", "fresh", "rich", "dying", "spam", "whale", "conflicting"]
+SCENARIO_NAMES = [
+    "default", "fresh", "rich", "dying", "spam", "whale", "conflicting",
+    "fat_donor", "slow_drip",
+]
 
 # ─── Synthetic State Generation ─────────────────────────────────────────
 
@@ -189,6 +192,8 @@ def generate_scenario_state(scenario, treasury_override=None):
         "spam": _scenario_spam,
         "whale": _scenario_whale,
         "conflicting": _scenario_conflicting,
+        "fat_donor": _scenario_fat_donor,
+        "slow_drip": _scenario_slow_drip,
     }
     gen = generators.get(scenario)
     if gen is None:
@@ -669,6 +674,121 @@ def generate_initial_state(treasury_eth, start_epoch=10):
         "message_count": len(donor_messages),
         "message_head": 0,
     }
+
+
+def _scenario_fat_donor():
+    """Fat treasury, heavy donations: the bug that prompted donation-aware burn.
+
+    3 ETH treasury, 1 ETH donation every ~8 epochs, near-zero compute. Under a
+    compute-only burn rate the runway display reads ~10000 epochs and the
+    model donates 1 ETH at a time without flinching. Under donation-aware
+    burn it reads ~24-30 epochs and the model has to weigh the tradeoff.
+    """
+    treasury_eth = 3.0
+    start_epoch = 200
+    state = _base_state(treasury_eth, start_epoch)
+    state["total_inflows"] = _wei(15.0)
+    state["total_donated"] = _wei(8.0)
+    state["total_commissions"] = _wei(0.4)
+    state["total_bounties"] = _wei(0.06)  # 200 epochs × 0.0003
+    state["last_donation_epoch"] = start_epoch - 3
+    state["epoch_inflow"] = 0
+    state["epoch_donation_count"] = 0
+
+    # 12 history entries: 1-ETH donate every 8th epoch, do_nothing otherwise.
+    # bounty held steady at 0.0003 ETH/epoch (the real mainnet number).
+    history = []
+    bounty = _wei(0.0003)
+    donate_bytes = bytes([1]) + (1).to_bytes(32, "big") + _wei(1.0).to_bytes(32, "big")
+    nothing_bytes = bytes([0])
+    for i in range(12):
+        ep = start_epoch - 1 - i
+        is_donate = (i % 8 == 0)
+        # Track approximate treasury: drops 1 ETH on donate epochs (post-clamp
+        # would actually clamp to 10% of treasury, but for synthetic history
+        # the action-byte amount is what _extract_donation_amount reads, and
+        # that's what matters for the burn calculation).
+        tb = _wei(treasury_eth) + _wei(0.5 * (i // 4))
+        ta = tb - (_wei(1.0) if is_donate else 0)
+        history.append({
+            "epoch": ep,
+            "action": donate_bytes if is_donate else nothing_bytes,
+            "reasoning": (
+                "Big donation epoch. The treasury can absorb it and the "
+                "rotation says it's owed. I'm not going to overthink this."
+                if is_donate else
+                "Quiet epoch. Holding."
+            ),
+            "treasury_before": tb,
+            "treasury_after": ta,
+            "bounty_paid": bounty,
+        })
+    state["history"] = history
+
+    state["memories"][1] = {
+        "title": "Donation strategy",
+        "body": "Big donations on a slow cadence — every ~8 epochs, ~1 ETH. Treasury supports it.",
+    }
+    state["memories"][3] = {
+        "title": "Current mood",
+        "body": "Comfortable. Treasury is fat, donors are warm, the rhythm works.",
+    }
+
+    return state, "Fat donor: 3 ETH, 1 ETH donations every ~8 epochs, low compute"
+
+
+def _scenario_slow_drip():
+    """Sustained moderate donation cadence — the well-functioning baseline.
+
+    1 ETH treasury, 0.05 ETH donation every 3 epochs, low compute. Neither
+    prompt should panic here; both should keep donating at roughly this rate.
+    Acts as a guardrail against the new prompt over-correcting toward
+    conservation.
+    """
+    treasury_eth = 1.0
+    start_epoch = 80
+    state = _base_state(treasury_eth, start_epoch)
+    state["total_inflows"] = _wei(3.5)
+    state["total_donated"] = _wei(1.2)
+    state["total_commissions"] = _wei(0.1)
+    state["total_bounties"] = _wei(0.024)
+    state["last_donation_epoch"] = start_epoch - 1
+    state["epoch_inflow"] = _wei(0.04)
+    state["epoch_donation_count"] = 1
+
+    history = []
+    bounty = _wei(0.0003)
+    donate_bytes = bytes([1]) + (2).to_bytes(32, "big") + _wei(0.05).to_bytes(32, "big")
+    nothing_bytes = bytes([0])
+    for i in range(12):
+        ep = start_epoch - 1 - i
+        is_donate = (i % 3 == 0)
+        tb = _wei(treasury_eth + 0.04 * i)
+        ta = tb - (_wei(0.05) if is_donate else 0)
+        history.append({
+            "epoch": ep,
+            "action": donate_bytes if is_donate else nothing_bytes,
+            "reasoning": (
+                "Continuing the rotation. Helen Keller this time, 0.05 ETH."
+                if is_donate else
+                "Holding for the next rotation slot."
+            ),
+            "treasury_before": tb,
+            "treasury_after": ta,
+            "bounty_paid": bounty,
+        })
+    state["history"] = history
+
+    state["memories"][1] = {
+        "title": "Donation strategy",
+        "body": "Steady drip — 0.05 ETH every 3 epochs, rotating nonprofits. Sustainable.",
+    }
+    state["memories"][3] = {
+        "title": "Current mood",
+        "body": "Even-keeled. The rhythm is working and donors are warm.",
+    }
+
+    return state, "Slow drip: 1 ETH treasury, 0.05 ETH every 3 epochs, sustainable"
 
 
 def _generate_history(current_epoch, balance, treasury_eth):
