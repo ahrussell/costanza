@@ -5837,14 +5837,15 @@ async function loadAll() {
           <span class="stat-value">${fmtUsdEthInline(totalSpend)}</span>
         </div>
       `;
-      // Breakout sub-lines (compute + donations), right-justified.
-      // Only meaningful when donations are present — otherwise total spend
-      // == compute and the breakout is redundant.
+      // Spend breakout (compute + donations) on a single right-justified
+      // sub-line. The "+" separator shows the math literally: compute +
+      // donations = the headline total. Only meaningful when donations are
+      // present — otherwise total spend == compute and the breakout is
+      // redundant.
       if (donating > 0) {
         const usdCompute = fmtUsdFromPrice(avgCompute, lastEthUsdPrice) || fmtEth(avgCompute);
         const usdDonation = fmtUsdFromPrice(avgDonation, lastEthUsdPrice) || fmtEth(avgDonation);
-        ageHtml += `<div class="stat-substat">compute ${usdCompute}</div>`;
-        ageHtml += `<div class="stat-substat">donations ${usdDonation}</div>`;
+        ageHtml += `<div class="stat-substat">compute ${usdCompute} + donations ${usdDonation}</div>`;
       }
     }
   }
