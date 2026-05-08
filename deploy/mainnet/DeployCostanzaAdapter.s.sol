@@ -55,6 +55,14 @@ import "../../src/adapters/V4SwapExecutor.sol";
 ///                         address as the final step (Ownable2Step pending,
 ///                         so the new owner must `acceptOwnership`).
 ///
+/// Optional env (migration deploy — used to seed v2 with v1's accumulators
+/// before calling v1.migrate(v2)). Default to zero for fresh deploys.
+///   INITIAL_CUMULATIVE_ETH_IN
+///   INITIAL_CUMULATIVE_ETH_OUT
+///   INITIAL_TOKENS_FROM_SWAPS_IN
+///   INITIAL_TOKENS_FROM_SWAPS_OUT
+///   INITIAL_LAST_DEPOSIT_EPOCH
+///
 /// @dev The adapter constructor enforces that the PoolKey must:
 ///        - reference $COSTANZA on either currency0 or currency1
 ///        - if not a native-ETH pool, the non-token side must equal WETH
@@ -149,17 +157,19 @@ contract DeployCostanzaAdapter is Script {
 
         // ─── 3. CostanzaTokenAdapter ────────────────────────────────────
 
-        // Fresh-deploy initial state: all zero. (For a migrate-deploy,
-        // edit this script to read the predecessor's getters and build
-        // the InitialState struct from them, then `migrate()` the old
-        // adapter onto the new one in a follow-up tx. We don't
-        // parameterize this via env — it's a deliberate human action.)
+        // Fresh-deploy initial state defaults to all zero. For a
+        // migration deploy, the caller pre-reads the predecessor's
+        // public getters and feeds them in via env so v2's accounting
+        // continues v1's unchanged. v1.migrate(v2) is the follow-up
+        // step that actually moves the tokens + Doppler beneficiary.
+        uint256 _ldeRaw = vm.envOr("INITIAL_LAST_DEPOSIT_EPOCH", uint256(0));
+        require(_ldeRaw <= type(uint64).max, "INITIAL_LAST_DEPOSIT_EPOCH overflow");
         InitialState memory initial = InitialState({
-            cumulativeEthIn:    0,
-            cumulativeEthOut:   0,
-            tokensFromSwapsIn:  0,
-            tokensFromSwapsOut: 0,
-            lastDepositEpoch:   0
+            cumulativeEthIn:    vm.envOr("INITIAL_CUMULATIVE_ETH_IN",     uint256(0)),
+            cumulativeEthOut:   vm.envOr("INITIAL_CUMULATIVE_ETH_OUT",    uint256(0)),
+            tokensFromSwapsIn:  vm.envOr("INITIAL_TOKENS_FROM_SWAPS_IN",  uint256(0)),
+            tokensFromSwapsOut: vm.envOr("INITIAL_TOKENS_FROM_SWAPS_OUT", uint256(0)),
+            lastDepositEpoch:   uint64(_ldeRaw)
         });
 
         CostanzaTokenAdapter adapter = new CostanzaTokenAdapter(
@@ -210,6 +220,19 @@ contract DeployCostanzaAdapter is Script {
         console.logBytes32(poolId);
         console.log("Live pool sqrtPriceX96:  ", uint256(sqrtPriceX96));
         console.log("MAX_NET_ETH_IN (wei):    ", c.maxNetEthIn);
+        if (initial.cumulativeEthIn != 0
+            || initial.cumulativeEthOut != 0
+            || initial.tokensFromSwapsIn != 0
+            || initial.tokensFromSwapsOut != 0
+            || initial.lastDepositEpoch != 0) {
+            console.log("");
+            console.log("--- Migration deploy: seeded InitialState ---");
+            console.log("cumulativeEthIn:        ", initial.cumulativeEthIn);
+            console.log("cumulativeEthOut:       ", initial.cumulativeEthOut);
+            console.log("tokensFromSwapsIn:      ", initial.tokensFromSwapsIn);
+            console.log("tokensFromSwapsOut:     ", initial.tokensFromSwapsOut);
+            console.log("lastDepositEpoch:       ", uint256(initial.lastDepositEpoch));
+        }
         console.log("");
         console.log("--- Adapter ownership ---");
         if (adapterOwner != address(0) && adapterOwner != deployer) {
