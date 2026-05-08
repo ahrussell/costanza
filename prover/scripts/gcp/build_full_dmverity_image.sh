@@ -50,9 +50,11 @@ cleanup() {
     echo ""
     gcloud compute instances delete "$VM_NAME" \
         --project="$GCP_PROJECT" --zone="$GCP_ZONE" --quiet 2>/dev/null || true
-    if ! $IMAGE_CREATED; then
+    if $IMAGE_CREATED; then
         gcloud compute disks delete "$OUTPUT_DISK" \
             --project="$GCP_PROJECT" --zone="$GCP_ZONE" --quiet 2>/dev/null || true
+    else
+        echo "  ⚠ Image not created — output disk $OUTPUT_DISK preserved for inspection/recovery"
     fi
     echo "  Cleaned."
 }
@@ -232,18 +234,25 @@ done
 # ─── Step 5: Create GCP image from output disk ──────────────────────
 
 echo "─── Step 5: Creating image ───"
-gcloud compute instances stop "$VM_NAME" --project="$GCP_PROJECT" --zone="$GCP_ZONE" --quiet 2>&1 | tail -3
+echo "  Stopping builder VM..."
+gcloud compute instances stop "$VM_NAME" --project="$GCP_PROJECT" --zone="$GCP_ZONE" --quiet 2>&1
+echo "  Detaching output disk..."
 gcloud compute instances detach-disk "$VM_NAME" --project="$GCP_PROJECT" --zone="$GCP_ZONE" --disk="$OUTPUT_DISK" 2>&1
-gcloud compute images delete "$IMAGE_NAME" --project="$GCP_PROJECT" --quiet 2>/dev/null || true
+echo "  Removing prior image (if any)..."
+gcloud compute images delete "$IMAGE_NAME" --project="$GCP_PROJECT" --quiet 2>&1 || true
 
 # gcloud sync-mode HTTP read timeout is 5min, but image creation from a
 # 100GB pd-ssd often takes longer. The op continues server-side after a
-# client timeout, so swallow the client-side non-zero and poll for READY.
+# client timeout, so the create call may exit non-zero while the
+# operation continues — that's fine, the polling loop below handles it.
 # (`gcloud compute images create` doesn't accept --async — would be the
 # cleaner approach if it existed.)
+echo "  Submitting images create..."
 gcloud compute images create "$IMAGE_NAME" --project="$GCP_PROJECT" \
     --source-disk="$OUTPUT_DISK" --source-disk-zone="$GCP_ZONE" --family=humanfund-tee \
-    --guest-os-features=UEFI_COMPATIBLE,GVNIC,TDX_CAPABLE 2>&1 || true
+    --guest-os-features=UEFI_COMPATIBLE,GVNIC,TDX_CAPABLE 2>&1 \
+    && echo "  ✓ images create returned 0" \
+    || echo "  ⚠ images create non-zero (may be HTTP-timeout — checking status)"
 
 echo "  Waiting for image to become READY..."
 for i in $(seq 1 45); do
