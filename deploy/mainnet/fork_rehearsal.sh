@@ -200,7 +200,15 @@ echo ""
 # ─── Phase A.1: deploy v1 ────────────────────────────────────────────────
 
 echo "═══ Phase A.1 — Deploy v1 ═══"
+# Explicitly pass canonical mainnet addresses to forge. These OVERRIDE
+# anything in `.env` (forge auto-loads .env and the user might have a
+# Sepolia INVESTMENT_MANAGER there from testnet work — that's a real
+# footgun we hit on first run).
 PRIVATE_KEY="$DEPLOYER_PK" \
+INVESTMENT_MANAGER="$IM" \
+FUND="$FUND" \
+COSTANZA_TOKEN="$COSTANZA" \
+FEE_DISTRIBUTOR="$DOPPLER" \
     forge script deploy/mainnet/DeployCostanzaAdapter.s.sol:DeployCostanzaAdapter \
         --rpc-url "$RPC_URL" \
         --broadcast \
@@ -306,6 +314,10 @@ INITIAL_TOKENS_FROM_SWAPS_IN="$V1_TOKENS_IN" \
 INITIAL_TOKENS_FROM_SWAPS_OUT="$V1_TOKENS_OUT" \
 INITIAL_LAST_DEPOSIT_EPOCH="$V1_LDE" \
 PRIVATE_KEY="$DEPLOYER_PK" \
+INVESTMENT_MANAGER="$IM" \
+FUND="$FUND" \
+COSTANZA_TOKEN="$COSTANZA" \
+FEE_DISTRIBUTOR="$DOPPLER" \
     forge script deploy/mainnet/DeployCostanzaAdapter.s.sol:DeployCostanzaAdapter \
         --rpc-url "$RPC_URL" \
         --broadcast \
