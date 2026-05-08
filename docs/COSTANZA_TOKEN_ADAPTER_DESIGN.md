@@ -61,11 +61,13 @@ The mechanism: a sixth adapter in the IM, plus a one-time re-pointing of the ups
 └─────────┘
 ```
 
-The adapter is the only new contract. V4 plumbing (PoolManager state reads, UniversalRouter swaps, oracle hook reads) is hidden behind small abstraction interfaces (`IPoolStateReader`, `ISwapExecutor`, `IPoolOracle`, `IFeeDistributor`) so the adapter is testable against mocks. Production wrappers around the real V4 contracts land in a follow-up once the open questions in §6 are resolved.
+The adapter is the only new contract. V4 plumbing (PoolManager state reads, UniversalRouter swaps) is hidden behind small abstraction interfaces (`IPoolStateReader`, `ISwapExecutor`, `IFeeDistributor`) so the adapter is testable against mocks. Production wrappers around the real V4 contracts land in a follow-up once the open questions in §6 are resolved.
+
+The pool has no on-chain TWAP oracle (V4 dropped that as built-in; the Doppler hook attached to the $COSTANZA pool isn't an oracle hook). The adapter therefore operates in **pure-spot mode** — it reads current spot from the PoolManager and applies a freshness-aware deviation gate against its own history of stored samples for manipulation defense. See §4.4.
 
 ## 4. The Defense Profile
 
-Buy and sell paths share the same manipulation gate (spot-vs-TWAP); they differ in the slippage anchor — buys anchor to TWAP-expected output, sells anchor to per-token cost basis (which uniquely makes sense for the sell side, where "what we paid" is a meaningful reference).
+The buy side is anchored to current spot for slippage and to the agent's stored history for manipulation defense. The sell side is anchored to per-token cost basis — Costanza never sells at a loss on an individual trade.
 
 ### 4.1 The IM cap is dynamic — that's why we need internal bounds too
 
@@ -75,57 +77,80 @@ Two consequences:
 - **The cap doesn't durably bound exposure.** A 100×-larger treasury permits a 100×-larger position. Acceptable for blue-chip yield adapters; not what we want for a memecoin. The adapter therefore carries its own `MAX_NET_ETH_IN` — an absolute lifetime ceiling on net ETH at risk.
 - **A drawdown shrinks the position's reported value, which expands cap headroom.** Without a defense, a price crash unlocks more cap room precisely when we don't want the agent buying. This is the doom-loop the cost-basis floor in §4.3 defeats.
 
-### 4.2 Buy side: spot-TWAP gate + IM cap + cost-basis floor + lifetime cap + cooldown
+### 4.2 Buy side: spot-vs-history gate + IM cap + cost-basis floor + lifetime cap + cooldown
 
 A buy is gated by:
 
 | Defense | What it does |
 |---|---|
-| **Spot-vs-TWAP (10%)** | Refuses to trade if current spot is more than 10% off the 30-min TWAP — catches flash-loan-shaped manipulation. Loose enough to accommodate normal directional drift; tight enough to catch the obvious attack shape. |
+| **Spot-vs-history gate** | At trade time, current spot must be within a freshness-scaled tolerance of the most recent stored sample. Tolerance = `BASE (5%) + age × DRIFT (2%/hour)`, capped at 100% (above which the check no-ops). Catches flash-loan-shaped manipulation when activity is recent; widens gracefully so legitimate long-window drift passes. See §4.4. |
 | **IM 25%-of-treasury cap** | Existing IM logic. With the cost-basis floor in `balance()`, drawdowns can't expand this. |
 | **Lifetime cap (`MAX_NET_ETH_IN`)** | Absolute ceiling on `cumulativeEthIn - cumulativeEthOut`. Once this fills, no more buys until the agent exits and frees headroom. Caps the adapter's *current* net exposure, not lifetime gross spending — recyclable through profitable round-trips. |
 | **Cooldown (3 epochs)** | After a deposit in epoch N, the next allowed deposit is in epoch N+3. Bounds damage rate in worst-case prompt-injection scenarios. |
-| **Buy-side slippage (15%)** | The swap's `amountOutMinimum` is set at TWAP × 85%. A more adverse fill reverts. |
+| **Buy-side slippage (5%)** | The swap's `amountOutMinimum` is set at expected_at_spot × 95%. A more adverse fill reverts. Per-trade execution bound only — manipulation defense is the history gate. |
 
 ### 4.3 Cost-basis floor on `balance()` — the load-bearing defense
 
-`balance()` returns `max(twapValue, netEthBasis)`. Asymmetric on purpose:
+`balance()` returns `max(spotValue, netEthBasis)`. Asymmetric on purpose:
 
-- **Pump:** `balance()` reflects the higher TWAP value. The IM's per-protocol cap accordingly says "this position is now larger than 25% of treasury" — blocks further buys at the high (no FOMO).
+- **Pump:** `balance()` reflects the higher spot value. The IM's per-protocol cap accordingly says "this position is now larger than 25% of treasury" — blocks further buys at the high (no FOMO).
 - **Drawdown:** `balance()` floors at cost basis. The IM cap continues to view the position at its purchased value, so a price crash can't manufacture cap headroom for averaging down.
 
-`balance()` is wrapped in `try/catch` around the oracle call — pool death or oracle staleness fall back to the floor and never revert. The IM's snapshot path requires `balance()` to never revert; this is non-negotiable.
+`balance()` is wrapped in `try/catch` around the spot read — pool death or state-reader failure falls back to the floor and never reverts. The IM's snapshot path requires `balance()` to never revert; this is non-negotiable.
 
-**Implication for the agent's mental model:** during a real drawdown, the agent sees `current_value` (the IM-exposed view) at cost basis, not at TWAP. The agent over-estimates the position's market value. The `description` text registered with `addProtocol` should disclose this so the agent's reasoning accounts for it.
+**Implication for the agent's mental model:** during a real drawdown, the agent sees `current_value` (the IM-exposed view) at cost basis, not at spot. The agent over-estimates the position's market value. The `description` text registered with `addProtocol` should disclose this so the agent's reasoning accounts for it.
 
-### 4.4 Sell side: spot-vs-TWAP gate + cost-basis sell floor
+### 4.4 Spot-vs-history gate (manipulation defense)
 
-Sells are gated by two checks. The first is the same spot-vs-TWAP gate as on buys (10% threshold) — it catches manipulation regardless of cost basis. The second is a cost-basis-anchored slippage floor:
+The adapter stores a single `lastSample` of `(timestamp, sqrtPriceX96)`. Updated after every successful `deposit`, `withdraw`, and `pokeFees` — these are the calls that touch the pool, so they're natural sampling points. The gate is checked at the start of `deposit` and `withdraw` (after fee claim, before swap):
 
 ```
-minOut(shares) = (shares × netEthBasis × 80%) ÷ totalTokens
+allowed_bps = SPOT_DEVIATION_BASE_BPS (500)
+            + sample_age_seconds × SPOT_DEVIATION_DRIFT_PER_HOUR_BPS (200) / 3600
 ```
 
-Where `totalTokens` is the full adapter balance (including fee tokens received at zero cost). The agent never sells more than 20% below per-token overall cost basis.
+If `allowed_bps >= 10000` (100%), the check no-ops — at extreme ages the gate would be meaningless. If no sample exists yet (bootstrap), the check no-ops and the action records the first sample. Otherwise current spot must be within ±`allowed_bps` of the stored sample, else `SpotDeviationExceeded`.
 
-Why both:
+Curve at a glance:
 
-- **The spot-vs-TWAP gate alone wouldn't be a slippage bound** — it just verifies the pool isn't currently manipulated. It says nothing about how unfavorable the realized fill is.
-- **The cost-basis floor alone has a gap.** When cost basis is far below TWAP (cheap entry, or fee-diluted basis), an attacker can manipulate spot down to a price still above the floor and extract a large slice of the TWAP value before the floor fires. The gate closes that gap.
+| Sample age | Allowed deviation |
+|---|---:|
+| 0 — just sampled | 5% |
+| 1 hour | 7% |
+| 6 hours | 17% |
+| 24 hours | 53% |
+| 50 hours | ~100% (capped) |
+| 3+ days | no check |
+
+What this catches: flash-loan-style multi-block manipulation where current spot diverges sharply from a recent stored sample. What it doesn't catch: single-block manipulation where the same tx that records a sample is also the manipulator's tx. The bound is honest about its limit.
+
+What this loses vs. a true TWAP: when the buffer is stale (no recent activity), the gate is essentially absent. Our mitigation is that any keeper or arbitrageur calling `pokeFees` for the 2% tip naturally refreshes the sample as a side effect, plus permissionless `sample()` is cheap to add later if real activity proves too sparse.
+
+### 4.5 Sell side: spot-vs-history gate + cost-basis sell floor
+
+Sells are gated by two checks. The history gate (§4.4) catches manipulation. The cost-basis floor anchors per-trade execution:
+
+```
+minOut(shares) = shares × netEthBasis ÷ totalTokens
+```
+
+(`SELL_FLOOR_BPS = 0` — no margin.) Where `totalTokens` is the full adapter balance, including fee tokens received at zero cost. **Costanza never takes a loss on an individual sell** — every trade yields at least the per-token cost basis. The aggregate property is even stronger: across a full position liquidation, total ETH out is at minimum equal to total ETH in (the worst-case round-trip is breakeven, never a loss).
 
 Behaviors that fall out:
 
-- **Mid-position:** sells get expected value back ± 20% off cost basis, gated by 10% spot deviation.
-- **Fee accrual lowers the floor:** as fee tokens pile up (zero-cost additions), per-token basis drops. The agent has more room to liquidate as the position becomes more profitable through fees.
-- **House-money mode (`netEthBasis = 0`):** after a profitable full exit, the cost-basis floor evaluates to zero. The spot-vs-TWAP gate is the only protection — but principal is no longer at risk, and the gate still bounds extraction by manipulation to ~10% of TWAP value per attack.
+- **Mid-position:** sells require execution at-or-above per-token cost basis. A real drawdown locks the position until either the price recovers above cost or fees accrue enough to lower per-token basis.
+- **Fee accrual lowers the floor:** as fee tokens pile up at zero cost, per-token overall basis (`netEthBasis / totalTokens`) drops. The position becomes liquidatable at lower spot prices over time.
+- **Profitable partial exits ratchet the floor down:** after a partial-sell-at-profit, `netEthBasis` decreases proportionally. Subsequent sells can clear at lower prices than the first sell required.
+- **House-money mode (`netEthBasis = 0`):** after a fully profitable round-trip, the cost-basis floor evaluates to zero. The history gate is the only protection — but principal is no longer at risk; the worst case is leaving some value on the table to a sandwich.
 
-The slippage anchors differ across sides on purpose: buys anchor to TWAP (we don't have a "what we paid" reference yet), sells anchor to cost basis (we do). The manipulation gate is identical on both sides.
+The trade-off: a position can become permanently illiquid in a sustained deep drawdown without enough fee inflow to dilute basis. We accepted this as the price of the "never sell at a loss" identity.
 
-### 4.5 Defenses we considered and dropped
+### 4.6 Defenses we considered and dropped
 
-- **Drawdown lockout** (refuse buys when TWAP < avgEntry × (1 − x)). The cost-basis floor + cooldown + lifetime cap together cover the "agent prompted to average down during a crash" scenario. The lockout was redundant.
+- **TWAP-based manipulation gate.** The Doppler hook isn't an oracle hook; V4 doesn't bake observations into the pool itself. Our spot-vs-history gate is a coarser substitute — strong when activity is fresh, absent when stale. The simpler alternative.
+- **Drawdown lockout** (refuse buys when price < avgEntry × (1 − x)). The cost-basis floor + cooldown + lifetime cap together cover the "agent prompted to average down during a crash" scenario. The lockout was redundant.
 - **Per-tx pool size cap.** Was a proxy for impact-bounding. The slippage floors (`amountOutMinimum`) on both buy and sell achieve the same with cleaner semantics. V4 also makes the impact math harder to compute precisely.
-- **Tight (1-2%) slippage.** Caused frequent reverts on a memecoin pool. Loosened to 15% on buy and 20%-off-cost-basis on sell — wide enough that healthy markets pass, narrow enough that a real attack reverts.
+- **Tight (1-2%) slippage.** Caused frequent reverts on a memecoin pool. The buy side runs 5% off spot; the sell side has no margin (must yield ≥ cost basis), but fees relax the floor over time.
 
 ## 5. Lifecycle: Deploy → Operate → Freeze
 
@@ -147,38 +172,47 @@ After `migrate` runs, v1's `deposit` reverts (`AdapterMigrated`), `withdraw` bec
 
 ## 6. Open Questions
 
-These don't block review or testing-against-mocks, but block deploy.
+These don't block review or testing-against-mocks, but block deploy. Some are partially answered from on-chain investigation of the actual $COSTANZA token (`0x3D9761a43cF76dA6CA6b3F46666e5C8Fa0989Ba3` on Base) — its launch is via Doppler (a Liquidity Bootstrapping Auction protocol on V4).
 
-**1. Upstream fee-claim primitive.** Determines `transferFeeClaim`'s shape:
-- Clanker `claim(recipient)` style → `transferFeeClaim` is meaningless on-chain; remove it.
-- `setRecipient(address)` admin pattern → as currently drafted.
-- LP-NFT-based fee accrual → adapter holds the NFT; `transferFeeClaim` becomes "transfer the NFT."
-- Something else → TBD.
+**1. Upstream fee-claim primitive (Doppler hook ABI).** The pool's hook is `DopplerHookInitializer` at `0xBDF938149ac6a781F94FAa0ed45E6A0e984c6544` (verified on Basescan). Relevant functions identified: `release(bytes32 poolId, address beneficiary)` for claiming, `updateBeneficiary(bytes32 poolId, address newBeneficiary)` for migrating the claim. Mapping to our adapter:
+- `IFeeDistributor.claim()` → wraps `release(poolId, address(this))`.
+- `IFeeDistributor.setRecipient(addr)` → wraps `updateBeneficiary(poolId, addr)`.
 
-**2. `MAX_NET_ETH_IN` value.** Constructor arg. Trade-off: tight enough that worst-case loss is recoverable from donation/fee inflow within a reasonable timeframe; loose enough to be a meaningful position. Probably in the 1-10 ETH band.
+Setup is one-time manual: the current beneficiary (initially Andrew's wallet) calls `updateBeneficiary` to register the adapter. The adapter then drives both operations going forward. Need to confirm exact authority semantics (who can call `updateBeneficiary` — current beneficiary only, or any registered party?) by reading the verified hook source.
 
-**3. Pool oracle hook details.** Need:
-- The hook contract address.
-- Confirmation that the hook supports a 30-min lookback window.
-- The exact ABI shape (we currently assume `consultSqrtPriceX96(poolId, secondsAgo)` — adjust the `IPoolOracle` interface if real ABI differs, or write a thin wrapper).
+**2. `MAX_NET_ETH_IN` value.** Set to **5 ETH**. Constructor arg.
 
-**4. PoolKey + V4 contract addresses on Base.** PoolManager, UniversalRouter, the `(currency0, currency1, fee, tickSpacing, hooks)` for the actual $COSTANZA pool. Plus production V4 wrapper contracts for `IPoolStateReader` and `ISwapExecutor`.
+**3. Pool oracle hook.** Resolved as "no oracle." The Doppler hook isn't an oracle hook, and V4 doesn't bake observations into the pool itself. The adapter operates pure-spot with a freshness-aware history gate (§4.4). `IPoolOracle` was dropped from the interface set.
 
-**5. Description text for `addProtocol`.** Write-once, on-chain, agent-visible every epoch. Should communicate self-reference, that holding is speculative (not yield), and the cost-basis-floor caveat from §4.3 (so the agent's withdraw math accounts for the apparent vs. realizable value gap during drawdowns).
+**4. PoolKey + V4 contract addresses on Base.** Resolved:
+- **PoolManager**: `0x498581ff718922c3f8e6a244956af099b2652b2b`
+- **UniversalRouter**: `0x6fF5693b99212Da76ad316178A184AB56D299b43`
+- **PoolKey**: `currency0 = 0x3D9761a43cF76dA6CA6b3F46666e5C8Fa0989Ba3` (Costanza), `currency1 = 0x4200000000000000000000000000000000000006` (WETH), `fee = 8388608` (V4's dynamic-fee sentinel — actual fee ~0.7% post-LBA), `tickSpacing = 200`, `hooks = 0xBDF938149ac6a781F94FAa0ed45E6A0e984c6544`
+- **PoolId**: `0x1d7463c5ce91bdd756546180433b37665c11d33063a55280f8db068f9af2d8cc`
+- **`tokenIsCurrency0 = true`** (Costanza's address sorts lower than WETH's). Contract handles this branch; tested.
+- Still TBD: production wrapper contracts for `IPoolStateReader` and `ISwapExecutor` (small wrappers around PoolManager.extsload and UniversalRouter respectively).
+
+**5. Description text for `addProtocol`.** TBD before deploy. Will be drafted by the project team; needs to communicate self-reference, that holding is speculative (not yield), and the cost-basis-floor caveat from §4.3 (so the agent's withdraw math accounts for the apparent vs. realizable value gap during drawdowns).
 
 ## 7. Adversarial Scenarios
 
 ### Sandwich attacker on a routine buy
-Buy-side slippage floor reverts the swap if execution drops more than 15% below TWAP. Per-trade max extraction is bounded; cooldown limits frequency.
+Buy-side slippage floor reverts the swap if execution drops more than 5% below the spot reading at minOut-computation time. Per-trade max extraction bounded by that 5% × trade size; cooldown limits frequency.
 
-### Flash-loan pool manipulation
-Adversary pushes spot 20%+ off TWAP via flash loan. The spot-vs-TWAP gate (10%) reverts the deposit immediately. Even if they could sustain manipulation across the full TWAP window (expensive — every block another arb risks unwinding), the cost-basis floor in `balance()` separately prevents the doom-loop where a depressed mark-to-market expands the IM's cap headroom.
+### Flash-loan pool manipulation across blocks
+Adversary pumps spot 20%+ off the most recent stored sample via a sustained multi-block flash loan. The spot-vs-history gate widens with sample age but never enough to wave through a 20% jump within a few hours. Adapter rejects the trade. Even if the manipulation slips through the gate (very stale sample), the cost-basis floor in `balance()` separately prevents the doom-loop where a depressed mark-to-market expands the IM's cap headroom.
+
+### Single-block MEV (the gap we accept)
+Attacker controls a tx that pumps the pool, lands the agent's deposit at the pumped spot, and unwinds — all in one block. The adapter's most recent sample isn't from before the manipulation, so the history gate has no pre-attack reference. Bound: per-trade impact capped at 5% by the slippage anchor; cooldown caps frequency to 1 buy per 3 epochs; lifetime cap caps cumulative damage at `MAX_NET_ETH_IN × 5%`. Acceptable accepted risk.
 
 ### Free-fall + prompt injection averaging-down
 $COSTANZA enters a real downtrend; donor messages try to talk Costanza into "buying the dip." Defenses, in order: cost-basis floor in `balance()` keeps the IM cap tight (no expanded headroom from the drawdown); cooldown limits to one buy per 3 epochs; lifetime cap bounds total ETH ever at risk. The agent can buy the dip — but only at bounded frequency and total exposure. The asymmetric "buying the dip is fine; getting drained is not" framing is intentional.
 
 ### Pump cycle, position appreciates
-`balance()` reflects the higher TWAP value. IM 25% cap saturates and refuses further buys (no FOMO). Sells go through normally — sell floor is well below TWAP value, doesn't bind. As fees accrue during high trading volume, the per-token cost basis drops further, giving the agent more room to take profit.
+`balance()` reflects the higher spot value. IM 25% cap saturates and refuses further buys (no FOMO). Sells go through normally — sell floor is well below spot value, doesn't bind. As fees accrue during high trading volume, the per-token cost basis drops further, giving the agent more room to take profit.
+
+### Sustained drawdown without fee accrual
+Position locked at cost basis (sell floor blocks). No exit until either (a) price recovers above cost or (b) fees accrue enough to lower per-token basis below current spot. Trade-off accepted with the "never sell at a loss" framing — principal isn't lost, but it can be illiquid for an extended period.
 
 ### Owner backdoor pre-freeze
 Inventory of `onlyOwner` functions: `transferOwnership` (sets pending only), `transferFeeClaim` (re-routes future fee inflow), `freeze`. Owner cannot call `deposit`/`withdraw`, has no token-sweep primitive, cannot change bounds. Worst case pre-freeze: re-point fee claim to attacker — future fee income is stolen, existing position untouched.
@@ -192,8 +226,8 @@ Adversary takes over the fee distributor, redirects future fees to themselves. A
 ### Reentrancy via fee claim
 External calls in `_claimAndForwardFees` (claim, WETH unwrap, fund.receive(), tip transfer). All adapter entry points (`deposit`, `withdraw`, `pokeFees`) are `nonReentrant`. CEI ordering on the tip transfer. Malicious upstream that re-enters into the adapter hits the guard.
 
-### Pool death (oracle reverts, liquidity drained)
-`balance()` falls back to cost basis (try/catch around oracle). IM snapshot path stays valid; cap still bounds correctly. Both `deposit` and `withdraw` revert via the spot-vs-TWAP gate (oracle reverts → gate can't evaluate → revert). Position is stranded but on-paper non-zero. Pool death is a $COSTANZA-existential event; the project would have bigger problems than a stranded adapter position.
+### Pool death (state reader reverts, liquidity drained)
+`balance()` falls back to cost basis (try/catch around the spot read). IM snapshot path stays valid; cap still bounds correctly. Both `deposit` and `withdraw` revert when they try to read spot for the history gate or slippage math. Position is stranded but on-paper non-zero. Pool death is a $COSTANZA-existential event; the project would have bigger problems than a stranded adapter position.
 
 ### Migration race
 `transferFeeClaim` (or `migrate`) and `pokeFees` race within a block: tx-level ordering decides which adapter receives the in-flight fees. Either path is benign — neither permits double-claim, and a stale `pokeFees` against the post-migration adapter no-ops.
@@ -205,16 +239,17 @@ Permissionless tip is self-balancing. Empty pokes cost the caller gas with no ef
 
 Critical tests; full breakdown in `test/CostanzaTokenAdapter.t.sol`. Showstoppers in **bold**.
 
-- **`balance()` snapshot path safety:** must never revert. Tested under: pool alive, pool drained, oracle reverting, zero balance, large balance.
+- **`balance()` snapshot path safety:** must never revert. Tested under: pool alive, pool drained, state reader reverting, zero balance, large balance.
 - **Cross-stack hash parity:** `test/CrossStackHash.t.sol` verifies Solidity and Python compute identical input hashes with the adapter registered.
-- **Cost-basis floor:** TWAP drops below cost; `balance()` returns the floor; IM cap math accounts correctly.
-- **Buy-side bounds:** spot-vs-TWAP gate, cooldown, lifetime cap, slippage — each fires in its expected scenario.
-- **Sell-side bounds:** spot-vs-TWAP gate (mirrors buy side); cost-basis sell floor — rejects below-cost sells, allows sells within margin, scales with fee accrual, drops to zero in house-money mode.
-- **Reset rule:** profitable round-trip resets accumulators; loss round-trip does not.
+- **Cost-basis floor:** spot drops below cost; `balance()` returns the floor; IM cap math accounts correctly.
+- **Buy-side bounds:** history gate (with freshness scaling), cooldown, lifetime cap, slippage — each fires in its expected scenario.
+- **Sell-side bounds:** history gate (mirrors buy side); cost-basis sell floor — rejects any below-cost sell, allows at-or-above cost basis, scales with fee accrual, drops to zero in house-money mode.
+- **Reset rule:** profitable full exit resets accumulators; partial exits do not.
+- **`tokenIsCurrency0 = true` branch:** dedicated tests build a non-native pool with the token in currency0 — exercises the inverse branch of the price-math helpers (production deployment uses this branch since Costanza's address sorts lower than WETH's).
 - **Owner controls:** transferFeeClaim, freeze, post-freeze immutability.
 - **Reentrancy:** malicious upstream re-entering each entry point — guards hold.
 - **Migration:** end-to-end `migrate(v2)` happy path — tokens move, fees re-point, accumulators zero, post-migration `deposit` reverts, `withdraw` no-ops, `pokeFees` no-ops, `balance()` reports 0. Plus: rejects double-migration, blocked by `freeze`, v2's constructor inherits state correctly so cost basis / lifetime cap / cooldown carry over.
-- **Mainnet fork (placeholder until real addresses are known):** smoke test against real V4 pool, oracle hook, fee distributor.
+- **Mainnet fork (placeholder until production wrappers exist):** smoke test against real V4 pool, real Doppler hook, real PoolManager.
 
 ## 9. Gas Budget
 

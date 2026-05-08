@@ -2,7 +2,6 @@
 pragma solidity ^0.8.20;
 
 import "../../src/adapters/IFeeDistributor.sol";
-import "../../src/adapters/IPoolOracle.sol";
 import "../../src/adapters/IPoolStateReader.sol";
 import "../../src/adapters/ISwapExecutor.sol";
 import "../../src/adapters/IWETH.sol";
@@ -57,34 +56,6 @@ contract MockCostanzaToken {
         balanceOf[to] += amount;
         emit Transfer(from, to, amount);
         return true;
-    }
-}
-
-// =====================================================================
-// MockPoolOracle
-// =====================================================================
-
-/// @notice Test-controlled TWAP oracle. Stores a sqrtPriceX96 directly;
-///         tests set it via `setSqrtPriceX96`. Optional `failMode` flag
-///         makes `consultSqrtPriceX96` revert (simulates oracle hook
-///         unavailable / pool dead / cardinality insufficient).
-contract MockPoolOracle is IPoolOracle {
-    uint160 public sqrtPriceX96;
-    bool    public failMode;
-
-    error OracleFail();
-
-    function setSqrtPriceX96(uint160 _v) external {
-        sqrtPriceX96 = _v;
-    }
-
-    function setFailMode(bool _fail) external {
-        failMode = _fail;
-    }
-
-    function consultSqrtPriceX96(bytes32, uint32) external view override returns (uint160) {
-        if (failMode) revert OracleFail();
-        return sqrtPriceX96;
     }
 }
 

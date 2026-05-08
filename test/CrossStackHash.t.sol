@@ -194,7 +194,6 @@ contract CrossStackHashTest is EpochTest {
         // Mocks for the V4 plumbing.
         MockCostanzaToken token = new MockCostanzaToken();
         MockWETH wethMock = new MockWETH();
-        MockPoolOracle oracle = new MockPoolOracle();
         MockPoolStateReader stateReader = new MockPoolStateReader();
         MockSwapExecutor swapper = new MockSwapExecutor(address(token), address(wethMock), 1000e18);
         MockFeeDistributor feeDist = new MockFeeDistributor(address(token), address(wethMock), address(this));
@@ -218,7 +217,6 @@ contract CrossStackHashTest is EpochTest {
             address(wethMock),
             address(0xDEAD0001), // poolManager (unused by this adapter path)
             address(stateReader),
-            address(oracle),
             address(swapper),
             address(feeDist),
             payable(address(fund)),
@@ -228,9 +226,8 @@ contract CrossStackHashTest is EpochTest {
             InitialState(0, 0, 0, 0, 0)
         );
 
-        // Seed prices.
+        // Seed state reader's spot.
         uint160 sqrt_ = V4PriceMath.sqrtPriceX96FromTokensPerEth18(1000e18, false);
-        oracle.setSqrtPriceX96(sqrt_);
         stateReader.setSqrtPriceX96(sqrt_);
 
         feeDist.setRecipient(address(adapter));

@@ -8,7 +8,6 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
 
 import "./IFeeDistributor.sol";
-import "./IPoolOracle.sol";
 import "./IPoolStateReader.sol";
 import "./ISwapExecutor.sol";
 import "./IWETH.sol";
@@ -105,29 +104,37 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
     ///         N is followed by the next allowed deposit in epoch N+3.
     uint256 internal constant COOLDOWN_EPOCHS = 3;
 
-    /// @notice TWAP lookback window in seconds. Pool's oracle hook
-    ///         must support at least this depth.
-    uint32 internal constant TWAP_WINDOW = 1800;
-
-    /// @notice Max tolerated deviation between spot and TWAP on the
-    ///         buy side. 1000 = 10%. Loose enough to accommodate
-    ///         normal directional drift on a memecoin pool; tight
-    ///         enough to catch flash-loan-shaped manipulation.
-    uint256 internal constant SPOT_DEVIATION_BPS = 1000;
-
-    /// @notice Buy-side slippage floor: `amountOutMinimum` is computed
-    ///         as expected_at_twap × (10000 - EXEC_DEVIATION_BPS) / 10000.
-    ///         1500 = 15%.
-    uint256 internal constant EXEC_DEVIATION_BPS = 1500;
+    /// @notice Buy-side slippage floor: `amountOutMinimum` for buys is
+    ///         computed as `expected_at_spot × (10000 - BUY_SLIPPAGE_BPS) / 10000`.
+    ///         500 = 5% — anchored to current spot since we have no
+    ///         on-chain TWAP for this pool. The history-deviation gate
+    ///         (below) is the manipulation bound; this is just per-trade
+    ///         execution slippage.
+    uint256 internal constant BUY_SLIPPAGE_BPS = 500;
 
     /// @notice Sell-side floor margin. The sell-side `amountOutMinimum`
-    ///         is anchored to per-token cost basis (not TWAP):
+    ///         is anchored to per-token overall cost basis:
     ///           minOut = shares × netEthBasis × (10000 - SELL_FLOOR_BPS)
     ///                    ───────────────────────────────────────────────
     ///                              totalTokens × 10000
-    ///         So the agent never sells more than this far below the
-    ///         (fee-token-blended) cost basis. 2000 = 20%.
-    uint256 internal constant SELL_FLOOR_BPS = 2000;
+    ///         At `SELL_FLOOR_BPS = 0`, sells must yield at least the
+    ///         per-token cost basis exactly — Costanza never takes a
+    ///         loss on an individual sell. Fee-token inflows lower the
+    ///         per-token basis over time, naturally widening the
+    ///         sellable price range.
+    uint256 internal constant SELL_FLOOR_BPS = 0;
+
+    /// @notice Spot-vs-history gate: the manipulation bound. Compares
+    ///         current spot to the most-recent stored sample with a
+    ///         tolerance that widens with sample age, so legitimate
+    ///         long-window drift passes while flash-loan-shaped moves
+    ///         on a recent reference get rejected.
+    ///
+    ///         `allowed_bps = BASE + (age_seconds × DRIFT_PER_HOUR / 3600)`
+    ///
+    ///         clamped at 100% (above which the check no-ops).
+    uint256 internal constant SPOT_DEVIATION_BASE_BPS = 500;            // 5%
+    uint256 internal constant SPOT_DEVIATION_DRIFT_PER_HOUR_BPS = 200;  // +2% / hour
 
     /// @notice `pokeFees` caller's tip share of the unwrapped WETH.
     ///         200 = 2%.
@@ -151,9 +158,6 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
 
     /// @notice Reads spot price and active liquidity for the pool.
     IPoolStateReader public immutable poolStateReader;
-
-    /// @notice TWAP source. May be a hook contract or a thin wrapper.
-    IPoolOracle public immutable oracle;
 
     /// @notice Executes the actual swap. Wraps UniversalRouter in
     ///         production; mock in tests.
@@ -227,6 +231,19 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
     /// One-way; cannot be unset.
     bool public migrated;
 
+    /// @notice Most recent observed spot price, recorded after every
+    ///         `deposit`, `withdraw`, and `pokeFees`. Used by
+    ///         `_checkSpotAgainstHistory` to gate manipulation: at
+    ///         trade time, current spot must be within a freshness-
+    ///         scaled tolerance of this sample. Single slot — we don't
+    ///         maintain a buffer, so the check is "compare to last
+    ///         observation," not a true TWAP.
+    struct PriceSample {
+        uint32  timestamp;
+        uint160 sqrtPriceX96;
+    }
+    PriceSample public lastSample;
+
     // ─── Modifiers ───────────────────────────────────────────────────────
 
     modifier onlyInvestmentManager() {
@@ -241,7 +258,6 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
         address _weth,
         address _poolManager,
         address _poolStateReader,
-        address _oracle,
         address _swapExecutor,
         address _feeDistributor,
         address payable _fund,
@@ -253,7 +269,6 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
         if (_costanzaToken == address(0)
             || _poolManager == address(0)
             || _poolStateReader == address(0)
-            || _oracle == address(0)
             || _swapExecutor == address(0)
             || _feeDistributor == address(0)
             || _fund == address(0)
@@ -281,7 +296,6 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
         weth             = IWETH(_weth);
         poolManager      = _poolManager;
         poolStateReader  = IPoolStateReader(_poolStateReader);
-        oracle           = IPoolOracle(_oracle);
         swapExecutor     = ISwapExecutor(_swapExecutor);
         feeDistributor   = IFeeDistributor(_feeDistributor);
         fund             = _fund;
@@ -340,12 +354,13 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
         // Bounds — fail fast before any swap.
         _checkCooldown();
         _checkLifetimeCap(msg.value);
-        _checkSpotVsTwap();
+        _checkSpotAgainstHistory();
 
-        // Slippage floor: minOut = TWAP-expected × (1 - EXEC_DEVIATION_BPS).
-        uint160 sqrtTwap = oracle.consultSqrtPriceX96(poolId, TWAP_WINDOW);
-        uint256 expectedTokens = _quoteTokensForEth(sqrtTwap, msg.value);
-        uint256 minOut = (expectedTokens * (BPS_DENOM - EXEC_DEVIATION_BPS))
+        // Slippage floor: anchored to current spot.
+        // minOut = expected_at_spot × (1 - BUY_SLIPPAGE_BPS).
+        uint160 sqrtSpot = poolStateReader.getSpotSqrtPriceX96(poolId);
+        uint256 expectedTokens = _quoteTokensForEth(sqrtSpot, msg.value);
+        uint256 minOut = (expectedTokens * (BPS_DENOM - BUY_SLIPPAGE_BPS))
                        / BPS_DENOM;
 
         uint256 tokenBalBefore = costanzaToken.balanceOf(address(this));
@@ -380,6 +395,9 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
         cumulativeEthIn += msg.value;
         tokensFromSwapsIn += shares;
         lastDepositEpoch = uint64(ITheHumanFund(fund).currentEpoch());
+
+        // Record post-trade spot for the next call's history gate.
+        _recordSample();
     }
 
     /// @notice Withdraw: swap $COSTANZA → WETH/ETH, send ETH back to IM.
@@ -410,21 +428,24 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
         if (shares > tokenBal) shares = tokenBal;
         if (shares == 0) revert ZeroAmount();
 
-        // Spot-vs-TWAP gate (same threshold as buy side) — refuses to
-        // execute against a manipulated pool. Closes the corner case
-        // where cost basis is far below TWAP (e.g. cheap entry, or
-        // fee-diluted basis) and an attacker manipulates spot down to
-        // a level that's still above the cost-basis floor.
-        _checkSpotVsTwap();
+        // History-deviation gate — refuses to trade against a pool
+        // whose current spot is too far from the most recent stored
+        // sample (with tolerance scaled by sample age). Catches
+        // multi-block manipulation; same gate applied symmetrically
+        // on buy side.
+        _checkSpotAgainstHistory();
 
-        // Cost-basis sell floor — see `minOut` below. Anchors per-trade
-        // execution to what we paid, not to current TWAP, so the agent
-        // can't be prompted to dump at arbitrary loss vs. cost.
+        // Cost-basis sell floor — anchors per-trade execution to per-
+        // token overall cost basis (fee tokens included at zero cost).
+        // With SELL_FLOOR_BPS = 0, sells must yield at least cost
+        // basis exactly: the agent never takes a loss on an individual
+        // sell. Fee-token inflows lower the per-token basis over time,
+        // naturally widening the sellable price range.
         //
         // In "house money" mode (cumulativeEthOut ≥ cumulativeEthIn,
         // i.e. `netEthBasis() == 0`), the cost-basis floor is zero —
-        // the spot-vs-TWAP gate above is the only protection. Pure
-        // profit at that point; principal is not at risk.
+        // the history-deviation gate above is the only protection.
+        // Pure profit at that point; principal is not at risk.
         uint256 minOut = 0;
         uint256 net = netEthBasis();
         uint256 totalTokens = costanzaToken.balanceOf(address(this));
@@ -470,6 +491,9 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
         cumulativeEthOut += ethReturned;
         tokensFromSwapsOut += shares;
 
+        // Record post-trade spot for the next call's history gate.
+        _recordSample();
+
         // Forward to the InvestmentManager (the caller).
         (bool sent, ) = msg.sender.call{value: ethReturned}("");
         if (!sent) revert TransferFailed();
@@ -480,30 +504,30 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
     ///      InvestmentManager calls this via staticcall semantics during
     ///      `totalInvestedValue()` and `_buildInvestmentsHash()`, and a
     ///      revert here breaks the entire epoch snapshot pipeline for
-    ///      every adapter. Pool-death / oracle-staleness must fall back
-    ///      gracefully to the cost-basis floor.
+    ///      every adapter. Pool-death / spot-read failure must fall
+    ///      back gracefully to the cost-basis floor.
     function balance() external view override returns (uint256) {
         uint256 floor = netEthBasis();
-        try this.twapValueOfHoldings() returns (uint256 twapValue) {
-            return twapValue > floor ? twapValue : floor;
+        try this.spotValueOfHoldings() returns (uint256 spotValue) {
+            return spotValue > floor ? spotValue : floor;
         } catch {
-            // Oracle hook reverted, mulDiv overflowed, or token balance
-            // read reverted. Fall back to cost basis (which may itself
-            // be 0 if the position is in profit or empty).
+            // Pool dead, state reader reverted, or mulDiv overflowed.
+            // Fall back to cost basis (which may itself be 0 if the
+            // position is in profit or empty).
             return floor;
         }
     }
 
     /// @notice External view used by `balance()`'s try/catch wrapper.
     ///         Call directly only for diagnostics — it can revert on
-    ///         oracle failure, which is by design (so `balance()`'s
+    ///         pool failure, which is by design (so `balance()`'s
     ///         try/catch can catch it). Marked external so we can use
-    ///         `this.twapValueOfHoldings()` syntax.
-    function twapValueOfHoldings() external view returns (uint256) {
+    ///         `this.spotValueOfHoldings()` syntax.
+    function spotValueOfHoldings() external view returns (uint256) {
         uint256 tokens = costanzaToken.balanceOf(address(this));
         if (tokens == 0) return 0;
-        uint160 sqrtTwap = oracle.consultSqrtPriceX96(poolId, TWAP_WINDOW);
-        return _quoteEthForTokens(sqrtTwap, tokens);
+        uint160 sqrtSpot = poolStateReader.getSpotSqrtPriceX96(poolId);
+        return _quoteEthForTokens(sqrtSpot, tokens);
     }
 
     function name() external pure override returns (string memory) {
@@ -524,6 +548,12 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
         // doing a wasted external call.
         if (migrated) return;
         _claimAndForwardFees(POKE_TIP_BPS);
+
+        // Refresh the history sample. pokeFees is the most-likely
+        // permissionless mover — keepers running the fee claim also
+        // keep our manipulation gate's reference fresh as a side
+        // effect.
+        _recordSample();
     }
 
     // ─── Owner ───────────────────────────────────────────────────────────
@@ -753,22 +783,41 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
         }
     }
 
-    /// @dev Reverts if spot price diverges from TWAP by more than
-    ///      `SPOT_DEVIATION_BPS`. Catches flash-loan manipulation
-    ///      against a slow-moving TWAP — if spot is currently wildly
-    ///      off the time-weighted average, refuse to trade.
-    function _checkSpotVsTwap() internal view {
-        uint160 sqrtSpot = poolStateReader.getSpotSqrtPriceX96(poolId);
-        uint160 sqrtTwap = oracle.consultSqrtPriceX96(poolId, TWAP_WINDOW);
-        // Compare ETH value of a fixed-size token bucket at each price.
-        uint256 base = 1e18;
-        uint256 spotVal = _quoteEthForTokens(sqrtSpot, base);
-        uint256 twapVal = _quoteEthForTokens(sqrtTwap, base);
-        if (twapVal == 0) revert SpotDeviationExceeded(); // degenerate TWAP
+    /// @dev Manipulation gate. Compares current spot to the most
+    ///      recent stored sample, with allowed deviation widening as
+    ///      the sample ages:
+    ///        allowed_bps = BASE + (age_seconds × DRIFT_PER_HOUR / 3600)
+    ///      Bootstrap (no sample yet): no-op, just record on the way
+    ///      out. Stale (allowed ≥ 100%): no-op, no meaningful check.
+    ///      In between: compare ETH-value of a unit-token bucket at
+    ///      each price; reject if outside the allowed band.
+    function _checkSpotAgainstHistory() internal view {
+        if (lastSample.timestamp == 0) return; // bootstrap
 
-        uint256 upper = (twapVal * (BPS_DENOM + SPOT_DEVIATION_BPS)) / BPS_DENOM;
-        uint256 lower = (twapVal * (BPS_DENOM - SPOT_DEVIATION_BPS)) / BPS_DENOM;
-        if (spotVal > upper || spotVal < lower) revert SpotDeviationExceeded();
+        uint160 sqrtNow = poolStateReader.getSpotSqrtPriceX96(poolId);
+        uint256 base = 1e18;
+        uint256 valLast = _quoteEthForTokens(lastSample.sqrtPriceX96, base);
+        uint256 valNow  = _quoteEthForTokens(sqrtNow, base);
+        if (valLast == 0) return; // degenerate sample; skip
+
+        uint256 ageSec = block.timestamp - uint256(lastSample.timestamp);
+        uint256 allowedBps = SPOT_DEVIATION_BASE_BPS
+            + (ageSec * SPOT_DEVIATION_DRIFT_PER_HOUR_BPS) / 3600;
+        if (allowedBps >= BPS_DENOM) return; // no meaningful check at this age
+
+        uint256 upper = (valLast * (BPS_DENOM + allowedBps)) / BPS_DENOM;
+        uint256 lower = (valLast * (BPS_DENOM - allowedBps)) / BPS_DENOM;
+        if (valNow > upper || valNow < lower) revert SpotDeviationExceeded();
+    }
+
+    /// @dev Snapshot the current spot into `lastSample`. Called after
+    ///      every successful adapter operation that could move the
+    ///      pool price (deposit, withdraw, pokeFees).
+    function _recordSample() internal {
+        lastSample = PriceSample({
+            timestamp: uint32(block.timestamp),
+            sqrtPriceX96: poolStateReader.getSpotSqrtPriceX96(poolId)
+        });
     }
 
     /// @dev Cooldown enforcement based on current epoch.
