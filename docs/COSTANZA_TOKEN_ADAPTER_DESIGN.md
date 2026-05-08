@@ -192,7 +192,11 @@ Setup is one-time manual: the current beneficiary (initially Andrew's wallet) ca
 - **`tokenIsCurrency0 = true`** (Costanza's address sorts lower than WETH's). Contract handles this branch; tested.
 - Still TBD: production wrapper contracts for `IPoolStateReader` and `ISwapExecutor` (small wrappers around PoolManager.extsload and UniversalRouter respectively).
 
-**5. Description text for `addProtocol`.** TBD before deploy. Will be drafted by the project team; needs to communicate self-reference, that holding is speculative (not yield), and the cost-basis-floor caveat from §4.3 (so the agent's withdraw math accounts for the apparent vs. realizable value gap during drawdowns).
+**5. Description text for `addProtocol`.** Resolved. Registration call uses `riskTier = 4` ("HIGH" — the highest tier the enclave's prompt builder maps; no other tier-4 protocol exists, so the slot is uncontested). Description string:
+
+> Your own memecoin, $COSTANZA. Speculative — buy/sell via deposit/withdraw; trading fees from other holders accrue to the fund and lower your per-token cost basis. The contract won't sell below cost basis, so a position can be locked during drawdowns. Lifetime cap: 5 ETH.
+
+`expectedApyBps = 0` — informational only; trading-fee inflow is unpredictable and shouldn't be projected as APY.
 
 ## 7. Adversarial Scenarios
 

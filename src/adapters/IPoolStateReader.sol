@@ -12,15 +12,16 @@ pragma solidity ^0.8.20;
 ///        - the V4 storage-layout coupling lives in one small wrapper
 ///          contract that can be redeployed independently
 ///
-///      Production deployment wires a `V4PoolStateReader` (TBD, separate
-///      file) that wraps `IPoolManager.extsload`. Tests use a mock that
+///      Production deployment wires `V4PoolStateReader` (see
+///      `V4PoolStateReader.sol`), which wraps `IPoolManager.extsload`
+///      against the live PoolManager singleton. Tests use a mock that
 ///      lets us drive spot/liquidity directly.
 interface IPoolStateReader {
     /// @notice Current spot sqrtPrice for `poolId` (Q64.96 format).
     /// @dev Reverts if the pool doesn't exist. Caller squares to get the
     ///      raw price ratio. Spot is manipulable in a single block —
-    ///      callers that care about manipulation resistance should use
-    ///      `IPoolOracle` instead.
+    ///      the adapter pairs this with a self-maintained spot-vs-history
+    ///      gate to bound the manipulation window.
     function getSpotSqrtPriceX96(bytes32 poolId)
         external
         view
