@@ -134,12 +134,19 @@ send_or_die() {
         exit 1
     fi
 
+    # Cast's --json receipt is the FIRST line of stdout. Sometimes
+    # cast appends an alloy_provider log message after the JSON (e.g.
+    # a post-tx "failed to fetch block" warning if anvil burped) which
+    # breaks `json.load` on the whole stream. Extract the first line
+    # only.
+    local receipt_line
+    receipt_line=$(head -n 1 "$stdout_file")
     local status tx_hash
-    status=$(python3 -c \
-        "import sys, json; d=json.load(open('$stdout_file')); print(d.get('status',''))" 2>/dev/null) \
+    status=$(printf '%s' "$receipt_line" | python3 -c \
+        "import sys, json; d=json.loads(sys.stdin.read() or '{}'); print(d.get('status',''))" 2>/dev/null) \
         || status=""
-    tx_hash=$(python3 -c \
-        "import sys, json; d=json.load(open('$stdout_file')); print(d.get('transactionHash',''))" 2>/dev/null) \
+    tx_hash=$(printf '%s' "$receipt_line" | python3 -c \
+        "import sys, json; d=json.loads(sys.stdin.read() or '{}'); print(d.get('transactionHash',''))" 2>/dev/null) \
         || tx_hash=""
 
     if [[ "$status" != "0x1" ]]; then
