@@ -892,6 +892,16 @@
     border-top: 1px solid var(--border);
     margin: 8px 0;
   }
+  /* Secondary value below a primary stat-row — used by the lifespan card to
+     show "compute-only" runway and the compute/donations breakdown without
+     adding full-height rows. */
+  .stat-substat {
+    font-family: var(--mono); font-size: 11px;
+    color: var(--text-dim);
+    text-align: right;
+    padding: 0 0 4px 0;
+    margin-top: -4px;
+  }
 
   /* ── Badges ───────────────────────────────────────── */
   .badge {
@@ -4866,28 +4876,28 @@ function decodeAction(actionBytes, rejectReason) {
   const suffix = rejected ? rejectionSuffix(t, rejectReason) : '';
   const labelSuffix = rejected ? ' (rejected)' : '';
 
-  if (t === 0) return { type: 'do_nothing', label: 'do_nothing' + labelSuffix, detail: 'No action taken' + suffix, rejected };
+  if (t === 0) return { type: 'do_nothing', label: 'do_nothing' + labelSuffix, detail: 'No action taken' + suffix, amountWei: 0n, rejected };
   if (t === 1 && bytes.length >= 65) {
     const d = decoder.decode(['uint256','uint256'], bytes.slice(1));
     const verb = rejected ? 'Tried to donate' : 'Donated';
-    return { type: 'donate', label: 'donate' + labelSuffix, detail: `${verb} ${fmtEth(d[1])} to nonprofit #${d[0]}${suffix}`, rejected };
+    return { type: 'donate', label: 'donate' + labelSuffix, detail: `${verb} ${fmtEth(d[1])} to nonprofit #${d[0]}${suffix}`, amountWei: d[1], rejected };
   }
   if (t === 2 && bytes.length >= 33) {
     const d = decoder.decode(['uint256'], bytes.slice(1));
     const verb = rejected ? 'Tried to set' : 'Set';
-    return { type: 'set_commission_rate', label: 'set_commission' + labelSuffix, detail: `${verb} commission to ${Number(d[0])/100}%${suffix}`, rejected };
+    return { type: 'set_commission_rate', label: 'set_commission' + labelSuffix, detail: `${verb} commission to ${Number(d[0])/100}%${suffix}`, amountWei: 0n, rejected };
   }
   if (t === 3 && bytes.length >= 65) {
     const d = decoder.decode(['uint256','uint256'], bytes.slice(1));
     const verb = rejected ? 'Tried to invest' : 'Invested';
-    return { type: 'invest', label: 'invest' + labelSuffix, detail: `${verb} ${fmtEth(d[1])} in protocol #${d[0]}${suffix}`, rejected };
+    return { type: 'invest', label: 'invest' + labelSuffix, detail: `${verb} ${fmtEth(d[1])} in protocol #${d[0]}${suffix}`, amountWei: d[1], rejected };
   }
   if (t === 4 && bytes.length >= 65) {
     const d = decoder.decode(['uint256','uint256'], bytes.slice(1));
     const verb = rejected ? 'Tried to withdraw' : 'Withdrew';
-    return { type: 'withdraw', label: 'withdraw' + labelSuffix, detail: `${verb} ${fmtEth(d[1])} from protocol #${d[0]}${suffix}`, rejected };
+    return { type: 'withdraw', label: 'withdraw' + labelSuffix, detail: `${verb} ${fmtEth(d[1])} from protocol #${d[0]}${suffix}`, amountWei: d[1], rejected };
   }
-  return { type: 'unknown', label: '???' + labelSuffix, detail: 'Unknown action' + suffix, rejected };
+  return { type: 'unknown', label: '???' + labelSuffix, detail: 'Unknown action' + suffix, amountWei: 0n, rejected };
 }
 
 function decodeReasoning(reasoningBytes) {
@@ -5537,20 +5547,40 @@ async function loadAll() {
   const ageDays = Math.floor(age / 86400);
   document.getElementById('hero-lifespan').textContent = ageDays > 0 ? `${ageDays}d` : '1 day';
 
-  // Runway
+  // Runway — mirrors prompt_builder.py:_compute_lifespan. Headline is the
+  // at-recent-spend runway (compute + donations); sub-line shows compute-only
+  // when it diverges so the reader can tell apart "fund is healthy" from
+  // "donations are eating the treasury."
   if (diaryEntries.length > 0) {
-    let avgCost = 0n, costCount = 0;
+    let computeTotal = 0n, donationTotal = 0n, n = 0, donating = 0;
     for (const e of diaryEntries.slice(0, 10)) {
-      if (e.bountyPaid > 0n) { avgCost += e.bountyPaid; costCount++; }
+      n++;
+      if (e.bountyPaid > 0n) computeTotal += e.bountyPaid;
+      if (e.action.type === 'donate' && e.action.amountWei && e.action.amountWei > 0n) {
+        donationTotal += e.action.amountWei;
+        donating++;
+      }
     }
-    if (costCount > 0 && avgCost > 0n) {
-      avgCost = avgCost / BigInt(costCount);
-      const epochsRemaining = Number(treasury / avgCost);
+    if (n > 0) {
+      const N = BigInt(n);
+      const avgCompute = computeTotal / N;
+      const totalSpend = avgCompute + donationTotal / N;
       const hoursPerEpoch = Number(epochDur) / 3600;
-      const daysRemaining = Math.floor(epochsRemaining * hoursPerEpoch / 24);
-      document.getElementById('hero-runway').textContent =
-        daysRemaining > 365 ? `~${(daysRemaining / 365).toFixed(1)}yr` : `~${daysRemaining}d`;
-      document.getElementById('hero-runway-sub').textContent = `${epochsRemaining} epochs`;
+      const fmtShort = (epochs) => {
+        const days = Math.floor(epochs * hoursPerEpoch / 24);
+        return days > 365 ? `~${(days / 365).toFixed(1)}yr` : `~${days}d`;
+      };
+      const epochsTotal = totalSpend > 0n ? Number(treasury / totalSpend) : null;
+      const epochsCompute = avgCompute > 0n ? Number(treasury / avgCompute) : null;
+      if (epochsTotal !== null) {
+        document.getElementById('hero-runway').textContent = fmtShort(epochsTotal);
+        // Sub-line: epoch count, plus compute-only when it differs (i.e.
+        // donations are part of the burn).
+        const sub = donating > 0 && epochsCompute && epochsCompute > epochsTotal
+          ? `${epochsTotal} epochs · ${fmtShort(epochsCompute)} on compute`
+          : `${epochsTotal} epochs`;
+        document.getElementById('hero-runway-sub').textContent = sub;
+      }
     }
   }
 
@@ -5733,22 +5763,89 @@ async function loadAll() {
 
   // ── COSTANZA'S WORLD ──
 
-  // Age & Lifespan card
+  // Age & Lifespan card.
+  // Mirrors prover/enclave/prompt_builder.py:_compute_lifespan — the burn
+  // rate Costanza sees in his prompt is split into compute (bounties) and
+  // donations (decoded from action bytes), so the dashboard shows both
+  // runways here too. Otherwise the page reports ~thousands of epochs of
+  // runway when his recent donation cadence eats the treasury in days.
+  //
+  // Layout: 1 identity row (age · epochs · duration) + divider + runway row
+  // with compute-only runway as a right-justified sub-line + spend row with
+  // compute/donations breakouts as right-justified sub-lines. Sub-lines only
+  // appear when they carry new info (i.e. donations are nonzero).
+  const epochSec = Number(epochDur);
+  const ageStr = ageDays > 0 ? `${ageDays}d` : '1d';
+  // Compact "4h" / "1d 2h" duration, no minute precision (epochs are coarse).
+  const durStr = (() => {
+    const d = Math.floor(epochSec / 86400);
+    const h = Math.floor((epochSec % 86400) / 3600);
+    if (d > 0) return h > 0 ? `${d}d ${h}h` : `${d}d`;
+    return `${h}h`;
+  })();
+  const dot = '<span style="color:var(--text-dim);"> · </span>';
   let ageHtml = `
-    <div class="stat-row"><span class="stat-label">Age</span><span class="stat-value">${ageDays > 0 ? ageDays + ' days' : '1 day'}</span></div>
-    <div class="stat-row"><span class="stat-label">Epochs completed</span><span class="stat-value accent">${diaryEntries.length}</span></div>
-    <div class="stat-row"><span class="stat-label">Epoch duration</span><span class="stat-value">${fmtDuration(Number(epochDur))}</span></div>
+    <div class="stat-row">
+      <span class="stat-label">Age</span>
+      <span class="stat-value">${ageStr}${dot}<span class="accent">${diaryEntries.length}</span> epochs${dot}${durStr}/epoch</span>
+    </div>
   `;
   if (diaryEntries.length > 0) {
-    let ac = 0n, cc = 0;
-    for (const e of diaryEntries.slice(0, 10)) { if (e.bountyPaid > 0n) { ac += e.bountyPaid; cc++; } }
-    if (cc > 0 && ac > 0n) {
-      ac = ac / BigInt(cc);
-      const er = Number(treasury / ac);
-      const dr = Math.floor(er * Number(epochDur) / 86400);
+    // Rolling 10-epoch window (matches the python builder's window).
+    let computeTotal = 0n, donationTotal = 0n, n = 0, donating = 0;
+    for (const e of diaryEntries.slice(0, 10)) {
+      n++;
+      if (e.bountyPaid > 0n) computeTotal += e.bountyPaid;
+      // amountWei is the model's intent — pre-clamp. Rejected donates still
+      // count toward intent, same as the python lifespan calc.
+      if (e.action.type === 'donate' && e.action.amountWei && e.action.amountWei > 0n) {
+        donationTotal += e.action.amountWei;
+        donating++;
+      }
+    }
+    if (n > 0) {
+      const N = BigInt(n);
+      const avgCompute = computeTotal / N;
+      const avgDonation = donationTotal / N;
+      const totalSpend = avgCompute + avgDonation;
+      const fmtRunwayDays = (epochs) => {
+        const days = Math.floor(epochs * epochSec / 86400);
+        return days > 365 ? `~${(days / 365).toFixed(1)}yr` : `~${days}d`;
+      };
+      const runwayCompute = avgCompute > 0n ? Number(treasury / avgCompute) : null;
+      const runwayTotal = totalSpend > 0n ? Number(treasury / totalSpend) : null;
+
       ageHtml += `<div class="stat-divider"></div>`;
-      ageHtml += `<div class="stat-row"><span class="stat-label">Est. runway</span><span class="stat-value green">${dr > 365 ? '~' + (dr/365).toFixed(1) + ' years' : '~' + dr + ' days'}</span></div>`;
-      ageHtml += `<div class="stat-row"><span class="stat-label">Avg cost/epoch</span><span class="stat-value">${fmtUsdEthInline(ac)}</span></div>`;
+
+      if (runwayTotal !== null) {
+        ageHtml += `
+          <div class="stat-row">
+            <span class="stat-label">Est. runway</span>
+            <span class="stat-value green">${fmtRunwayDays(runwayTotal)}</span>
+          </div>
+        `;
+        // Compute-only runway as a right-justified sub-line, only when it
+        // diverges from the headline (i.e. donations are part of the burn).
+        if (donating > 0 && runwayCompute !== null && runwayCompute > runwayTotal) {
+          ageHtml += `<div class="stat-substat">${fmtRunwayDays(runwayCompute)} on compute alone</div>`;
+        }
+      }
+
+      ageHtml += `
+        <div class="stat-row">
+          <span class="stat-label">Spend/epoch</span>
+          <span class="stat-value">${fmtUsdEthInline(totalSpend)}</span>
+        </div>
+      `;
+      // Breakout sub-lines (compute + donations), right-justified.
+      // Only meaningful when donations are present — otherwise total spend
+      // == compute and the breakout is redundant.
+      if (donating > 0) {
+        const usdCompute = fmtUsdFromPrice(avgCompute, lastEthUsdPrice) || fmtEth(avgCompute);
+        const usdDonation = fmtUsdFromPrice(avgDonation, lastEthUsdPrice) || fmtEth(avgDonation);
+        ageHtml += `<div class="stat-substat">compute ${usdCompute}</div>`;
+        ageHtml += `<div class="stat-substat">donations ${usdDonation}</div>`;
+      }
     }
   }
   document.getElementById('world-age').innerHTML = ageHtml;
