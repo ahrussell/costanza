@@ -2,28 +2,43 @@
 pragma solidity ^0.8.20;
 
 /// @title IFeeDistributor
-/// @notice Stub interface for the upstream $COSTANZA creator-fee distributor.
+/// @notice Interface for the $COSTANZA creator-fee distributor.
 ///
-/// @dev TBD: the exact upstream primitive isn't confirmed yet. The two
-///      shapes we expect to see in the wild:
+/// @dev Shaped to match the Doppler hook's actual ABI on Base:
+///        - `release(poolId, beneficiary)` pulls a beneficiary's
+///          accrued fees and sends them to that beneficiary's address.
+///          Permissionless to call.
+///        - `updateBeneficiary(poolId, newBeneficiary)` reassigns the
+///          registered beneficiary. Authority is the current
+///          beneficiary (the adapter, post-setup).
 ///
-///        1. `setRecipient(address)` admin pattern — owner sets a recipient
-///           once, subsequent `claim()` calls pay the current recipient.
-///           This is what the adapter assumes today.
+///      Production wiring:
+///        - The constructor's `_feeDistributor` param is the Doppler
+///          hook address (0xBDF938149ac6a781F94FAa0ed45E6A0e984c6544
+///          on Base).
+///        - One-time setup before adapter operates: the existing
+///          beneficiary calls
+///          `dopplerHook.updateBeneficiary(poolId, address(adapter))`,
+///          registering the adapter as the beneficiary.
+///        - Subsequent claims route automatically:
+///          adapter → `dopplerHook.release(poolId, adapter)`.
+///        - Migrate path uses `updateBeneficiary` on the adapter's
+///          authority (since adapter is now the beneficiary).
 ///
-///        2. Clanker-style `claim(address recipient)` — recipient passed
-///           per-call, no setRecipient. If we end up here, replace this
-///           interface with a single `claim(address)` and remove the
-///           adapter's `transferFeeClaim` (it becomes a no-op).
-///
-///      Other shapes (Uniswap V3 LP NFT, custom escrow, etc.) require
-///      adapter-side changes too. Confirm before mainnet deploy and adjust.
+///      `MockFeeDistributor` in tests implements the same interface
+///      with a simplified registry.
 interface IFeeDistributor {
-    /// @notice Pull pending fees to the current recipient.
-    /// @dev Adapter calls this from `_claimAndForwardFees`.
-    function claim() external;
+    /// @notice Pull pending fees to the named beneficiary.
+    /// @dev Adapter calls `release(poolId, address(this))` from
+    ///      `_claimAndForwardFees`. Permissionless on the upstream
+    ///      side — any caller can trigger a harvest for any
+    ///      registered beneficiary.
+    function release(bytes32 poolId, address beneficiary) external;
 
-    /// @notice Re-point future claims at a new recipient address.
-    /// @dev Owner-gated upstream. Adapter calls via `transferFeeClaim`.
-    function setRecipient(address newRecipient) external;
+    /// @notice Reassign the registered beneficiary for `poolId` to
+    ///         `newBeneficiary`.
+    /// @dev Caller must be the current beneficiary (or whatever
+    ///      authority the upstream enforces). Adapter calls this
+    ///      from `transferFeeClaim` and `migrate`.
+    function updateBeneficiary(bytes32 poolId, address newBeneficiary) external;
 }

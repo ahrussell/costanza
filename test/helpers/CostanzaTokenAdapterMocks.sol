@@ -206,14 +206,24 @@ interface IWETHLike {
 // MockFeeDistributor
 // =====================================================================
 
-/// @notice Test-controlled creator-fee distributor. Holds a stash of
-///         $COSTANZA + WETH which represents "pending fees." On `claim()`,
-///         transfers everything to `recipient`.
+/// @notice Test-controlled creator-fee distributor. Mirrors the
+///         Doppler hook's two-method shape (`release`, `updateBeneficiary`)
+///         with a simple per-poolId beneficiary registry.
+///
+///         Holds a stash of $COSTANZA + WETH representing "pending fees."
+///         On `release(poolId, beneficiary)`, transfers everything to
+///         the named beneficiary.
 ///
 ///         Optional reentrancy mode: when `reentrantTarget != 0`, the
-///         claim path makes a low-level `call(reentrantCalldata)` to
-///         `reentrantTarget` BEFORE settling. Used to verify the
-///         adapter's `nonReentrant` guards hold.
+///         release path makes a low-level call to `reentrantTarget`
+///         BEFORE settling — used to verify the adapter's
+///         `nonReentrant` guards hold.
+///
+///         The mock keeps a `recipient` field for backward-compatibility
+///         with tests that do `setRecipient`-style wiring at setup time;
+///         it's the implicit beneficiary used when `release` is called
+///         without a poolId-specific override (callers can also pass
+///         the beneficiary directly via the IFeeDistributor method).
 contract MockFeeDistributor is IFeeDistributor {
     address public recipient;
     address public costanzaToken;
@@ -228,8 +238,16 @@ contract MockFeeDistributor is IFeeDistributor {
         recipient = _initialRecipient;
     }
 
-    function setRecipient(address newRecipient) external override {
+    /// @notice Direct setter — used by tests at setup time to register
+    ///         the adapter as recipient before any release call. Kept
+    ///         for ergonomics; the IFeeDistributor path is via
+    ///         `updateBeneficiary`.
+    function setRecipient(address newRecipient) external {
         recipient = newRecipient;
+    }
+
+    function updateBeneficiary(bytes32 /* poolId */, address newBeneficiary) external override {
+        recipient = newBeneficiary;
     }
 
     /// @notice Seed pending fees (token side). Caller must `transferFrom`-approve.
@@ -242,10 +260,10 @@ contract MockFeeDistributor is IFeeDistributor {
         IWETHLike(weth).transferFrom(msg.sender, address(this), amount);
     }
 
-    /// @notice Direct-deposit ETH; the mock will wrap it on `claim`.
+    /// @notice Direct-deposit ETH; the mock will wrap it on `release`.
     receive() external payable {}
 
-    /// @notice Configure a reentrancy attack: when `claim()` runs, it
+    /// @notice Configure a reentrancy attack: when `release()` runs, it
     ///         will `call(reentrantCalldata)` against `target` before
     ///         transferring fees. Set `target == address(0)` to disable.
     function setReentrancyAttack(address target, bytes calldata data) external {
@@ -253,7 +271,7 @@ contract MockFeeDistributor is IFeeDistributor {
         reentrantCalldata = data;
     }
 
-    function claim() external override {
+    function release(bytes32 /* poolId */, address beneficiary) external override {
         // Fire the reentrancy hook FIRST so it lands inside the
         // adapter's protected function before fees move.
         if (reentrantTarget != address(0)) {
@@ -262,20 +280,28 @@ contract MockFeeDistributor is IFeeDistributor {
             require(ok, "reentrancy attempt reverted (expected)");
         }
 
+        // Match Doppler's semantics: the param identifies WHO is being
+        // paid out, but only the registered beneficiary actually
+        // receives anything. A release call against a non-registered
+        // address is a no-op (returns 0 fees because that address has
+        // 0 shares in the registry).
+        if (beneficiary != recipient) {
+            return;
+        }
+
         // Wrap any held ETH into WETH so the adapter gets a uniform
-        // ERC-20 inflow (matches what real upstream distributors do).
+        // ERC-20 inflow (matches real upstream distributor behavior).
         if (address(this).balance > 0) {
             IWETHLike(weth).deposit{value: address(this).balance}();
         }
 
-        // Transfer all $COSTANZA + WETH to the recipient.
         uint256 tokenBal = IERC20Like(costanzaToken).balanceOf(address(this));
         if (tokenBal > 0) {
-            IERC20Like(costanzaToken).transfer(recipient, tokenBal);
+            IERC20Like(costanzaToken).transfer(beneficiary, tokenBal);
         }
         uint256 wethBal = IWETHLike(weth).balanceOf(address(this));
         if (wethBal > 0) {
-            IWETHLike(weth).transfer(recipient, wethBal);
+            IWETHLike(weth).transfer(beneficiary, wethBal);
         }
     }
 }

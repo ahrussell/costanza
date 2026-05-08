@@ -565,7 +565,7 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
     ///      body changes shape (and `IFeeDistributor` along with it).
     function transferFeeClaim(address newRecipient) external onlyOwner {
         if (newRecipient == address(0)) revert InvalidConfig();
-        feeDistributor.setRecipient(newRecipient);
+        feeDistributor.updateBeneficiary(poolId, newRecipient);
         emit FeeClaimRecipientChanged(newRecipient);
     }
 
@@ -640,7 +640,7 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
         // Folded into migrate() for atomicity — partial migration where
         // tokens moved but fees didn't is a worse state than either
         // extreme.
-        feeDistributor.setRecipient(newAdapter);
+        feeDistributor.updateBeneficiary(poolId, newAdapter);
 
         // Zero accumulators so `balance()` returns 0 (no phantom value
         // in the IM cap math while v1's `pos.shares` gets drained).
@@ -688,7 +688,7 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
 
         // Best-effort claim. Catch any revert so a misbehaving upstream
         // doesn't brick the surrounding deposit/withdraw.
-        try feeDistributor.claim() {
+        try feeDistributor.release(poolId, address(this)) {
             // OK
         } catch {
             return;
