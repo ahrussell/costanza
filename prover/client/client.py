@@ -32,7 +32,7 @@ from pathlib import Path
 from .config import load_config
 from .chain import ChainClient
 from .auction import (
-    sync_phase, commit_bid, reveal_bid, submit_result,
+    sync_phase, commit_bid, reveal_bid, submit_result, poke_costanza_fees,
     SubmissionError, MAX_SUBMIT_RETRIES, _match_error, ERROR_SELECTORS,
     PHASE_NAMES,
 )
@@ -302,6 +302,12 @@ def _handle_commit(chain, config, auction, saved, participation, state_dir, ntfy
 
     saved = commit_bid(chain, bid, state_dir=state_dir)
     notify_bid_committed(ntfy, epoch, bid / 1e18)
+
+    # Opportunistic harvest of $COSTANZA fees. Runs on every commit
+    # (so multiple competing provers naturally share keeper duty) and
+    # routes 98% to the fund. Best-effort — failure here is a benign
+    # no-op (see poke_costanza_fees docstring).
+    poke_costanza_fees(chain, config.get("costanza_adapter"))
 
 
 def _handle_reveal(chain, auction, saved, participation, state_dir, ntfy):
@@ -606,6 +612,12 @@ def _submit_result(chain, config, tee_result, auction, saved, state_dir, ntfy):
 
         clear_state(state_dir)
         notify_result_submitted(ntfy, epoch, action_name)
+
+        # Opportunistic harvest of $COSTANZA fees right after a
+        # successful submit. Once-per-epoch cadence, runner gets a 2%
+        # tip as gas subsidy. Best-effort; revert here doesn't undo
+        # the successful submit.
+        poke_costanza_fees(chain, config.get("costanza_adapter"))
     except SubmissionError as e:
         saved["submission_attempts"] = attempts + 1
         if not e.should_retry or saved["submission_attempts"] >= MAX_SUBMIT_RETRIES:
