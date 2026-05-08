@@ -359,17 +359,21 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
         if (shares > tokenBal) shares = tokenBal;
         if (shares == 0) revert ZeroAmount();
 
-        // No cooldown or spot-vs-TWAP gate on the sell side — exits
-        // should generally be allowed. The cost-basis sell floor
-        // (folded into `minOut` below) is the sole bound: it anchors
-        // the floor to per-token cost basis rather than to current
-        // TWAP, so the agent can't be prompted to dump at arbitrary
-        // loss vs. what they paid.
+        // Spot-vs-TWAP gate (same threshold as buy side) — refuses to
+        // execute against a manipulated pool. Closes the corner case
+        // where cost basis is far below TWAP (e.g. cheap entry, or
+        // fee-diluted basis) and an attacker manipulates spot down to
+        // a level that's still above the cost-basis floor.
+        _checkSpotVsTwap();
+
+        // Cost-basis sell floor — see `minOut` below. Anchors per-trade
+        // execution to what we paid, not to current TWAP, so the agent
+        // can't be prompted to dump at arbitrary loss vs. cost.
         //
         // In "house money" mode (cumulativeEthOut ≥ cumulativeEthIn,
-        // i.e. `netEthBasis() == 0`), there's no floor — sells can
-        // execute at any price. Documented behavior; the position is
-        // pure profit at that point.
+        // i.e. `netEthBasis() == 0`), the cost-basis floor is zero —
+        // the spot-vs-TWAP gate above is the only protection. Pure
+        // profit at that point; principal is not at risk.
         uint256 minOut = 0;
         uint256 net = netEthBasis();
         uint256 totalTokens = costanzaToken.balanceOf(address(this));

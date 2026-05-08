@@ -65,7 +65,7 @@ The adapter is the only new contract. V4 plumbing (PoolManager state reads, Univ
 
 ## 4. The Defense Profile
 
-The adapter is asymmetric: tight on the buy side, looser on the sell side, but with a different anchor (cost basis instead of TWAP).
+Buy and sell paths share the same manipulation gate (spot-vs-TWAP); they differ in the slippage anchor — buys anchor to TWAP-expected output, sells anchor to per-token cost basis (which uniquely makes sense for the sell side, where "what we paid" is a meaningful reference).
 
 ### 4.1 The IM cap is dynamic — that's why we need internal bounds too
 
@@ -98,9 +98,9 @@ A buy is gated by:
 
 **Implication for the agent's mental model:** during a real drawdown, the agent sees `current_value` (the IM-exposed view) at cost basis, not at TWAP. The agent over-estimates the position's market value. The `description` text registered with `addProtocol` should disclose this so the agent's reasoning accounts for it.
 
-### 4.4 Sell side: cost-basis sell floor
+### 4.4 Sell side: spot-vs-TWAP gate + cost-basis sell floor
 
-Sells are gated by a single cost-basis-anchored floor:
+Sells are gated by two checks. The first is the same spot-vs-TWAP gate as on buys (10% threshold) — it catches manipulation regardless of cost basis. The second is a cost-basis-anchored slippage floor:
 
 ```
 minOut(shares) = (shares × netEthBasis × 80%) ÷ totalTokens
@@ -108,19 +108,23 @@ minOut(shares) = (shares × netEthBasis × 80%) ÷ totalTokens
 
 Where `totalTokens` is the full adapter balance (including fee tokens received at zero cost). The agent never sells more than 20% below per-token overall cost basis.
 
-Three behaviors fall out cleanly:
+Why both:
 
-- **Mid-position:** sells get the position's expected value back, ± 20% margin.
+- **The spot-vs-TWAP gate alone wouldn't be a slippage bound** — it just verifies the pool isn't currently manipulated. It says nothing about how unfavorable the realized fill is.
+- **The cost-basis floor alone has a gap.** When cost basis is far below TWAP (cheap entry, or fee-diluted basis), an attacker can manipulate spot down to a price still above the floor and extract a large slice of the TWAP value before the floor fires. The gate closes that gap.
+
+Behaviors that fall out:
+
+- **Mid-position:** sells get expected value back ± 20% off cost basis, gated by 10% spot deviation.
 - **Fee accrual lowers the floor:** as fee tokens pile up (zero-cost additions), per-token basis drops. The agent has more room to liquidate as the position becomes more profitable through fees.
-- **House-money mode (`netEthBasis = 0`):** after a profitable full exit, the floor is gone — sells can execute at any price. Documented behavior; the position is pure profit and no principal is at risk.
+- **House-money mode (`netEthBasis = 0`):** after a profitable full exit, the cost-basis floor evaluates to zero. The spot-vs-TWAP gate is the only protection — but principal is no longer at risk, and the gate still bounds extraction by manipulation to ~10% of TWAP value per attack.
 
-The sell floor replaces what would otherwise be a spot-vs-TWAP gate plus a TWAP-anchored slippage check on the sell side. One concept, anchored to what the agent actually paid, instead of two anchored to the current market.
+The slippage anchors differ across sides on purpose: buys anchor to TWAP (we don't have a "what we paid" reference yet), sells anchor to cost basis (we do). The manipulation gate is identical on both sides.
 
 ### 4.5 Defenses we considered and dropped
 
 - **Drawdown lockout** (refuse buys when TWAP < avgEntry × (1 − x)). The cost-basis floor + cooldown + lifetime cap together cover the "agent prompted to average down during a crash" scenario. The lockout was redundant.
 - **Per-tx pool size cap.** Was a proxy for impact-bounding. The slippage floors (`amountOutMinimum`) on both buy and sell achieve the same with cleaner semantics. V4 also makes the impact math harder to compute precisely.
-- **Spot-vs-TWAP gate on the sell side.** Replaced by the cost-basis sell floor.
 - **Tight (1-2%) slippage.** Caused frequent reverts on a memecoin pool. Loosened to 15% on buy and 20%-off-cost-basis on sell — wide enough that healthy markets pass, narrow enough that a real attack reverts.
 
 ## 5. Lifecycle: Deploy → Operate → Freeze
@@ -187,7 +191,7 @@ Adversary takes over the fee distributor, redirects future fees to themselves. A
 External calls in `_claimAndForwardFees` (claim, WETH unwrap, fund.receive(), tip transfer). All adapter entry points (`deposit`, `withdraw`, `pokeFees`) are `nonReentrant`. CEI ordering on the tip transfer. Malicious upstream that re-enters into the adapter hits the guard.
 
 ### Pool death (oracle reverts, liquidity drained)
-`balance()` falls back to cost basis (try/catch around oracle). IM snapshot path stays valid; cap still bounds correctly. `deposit` reverts via spot-vs-TWAP gate; `withdraw` reverts via sell floor (can't meet `minOut` against a dead pool). Position is stranded but on-paper non-zero. Pool death is a $COSTANZA-existential event; the project would have bigger problems than a stranded adapter position.
+`balance()` falls back to cost basis (try/catch around oracle). IM snapshot path stays valid; cap still bounds correctly. Both `deposit` and `withdraw` revert via the spot-vs-TWAP gate (oracle reverts → gate can't evaluate → revert). Position is stranded but on-paper non-zero. Pool death is a $COSTANZA-existential event; the project would have bigger problems than a stranded adapter position.
 
 ### Migration race
 `transferFeeClaim` and `pokeFees` race within a block: tx-level ordering decides which adapter receives the in-flight fees. Either path is benign — neither permits double-claim, and a stale `pokeFees` against the old adapter just claims zero.
@@ -203,7 +207,7 @@ Critical tests; full breakdown in `test/CostanzaTokenAdapter.t.sol`. Showstopper
 - **Cross-stack hash parity:** `test/CrossStackHash.t.sol` verifies Solidity and Python compute identical input hashes with the adapter registered.
 - **Cost-basis floor:** TWAP drops below cost; `balance()` returns the floor; IM cap math accounts correctly.
 - **Buy-side bounds:** spot-vs-TWAP gate, cooldown, lifetime cap, slippage — each fires in its expected scenario.
-- **Sell floor:** rejects below-cost sells, allows sells within margin, scales with fee accrual, drops to zero in house-money mode.
+- **Sell-side bounds:** spot-vs-TWAP gate (mirrors buy side); cost-basis sell floor — rejects below-cost sells, allows sells within margin, scales with fee accrual, drops to zero in house-money mode.
 - **Reset rule:** profitable round-trip resets accumulators; loss round-trip does not.
 - **Owner controls:** transferFeeClaim, freeze, post-freeze immutability.
 - **Reentrancy:** malicious upstream re-entering each entry point — guards hold.

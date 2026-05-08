@@ -391,19 +391,29 @@ contract CostanzaTokenAdapterTest is Test {
         assertGt(shares, 0);
     }
 
-    function test_spot_vs_twap_does_not_run_on_withdraw() public {
-        // Sell side gates on cost-basis sell floor only — no spot-vs-TWAP.
-        // Manipulated spot doesn't block exits (cost-basis floor does).
+    function test_spot_vs_twap_runs_on_withdraw_too() public {
+        // Sells share the spot-vs-TWAP gate with buys. Catches
+        // manipulation when cost basis is below the manipulated price
+        // (otherwise the sell floor alone wouldn't fire).
         _depositAs(0.5 ether);
         _setEpoch(10);
 
         uint256 sharesToSell = adapter.tokensFromSwapsIn();
-        _setSpotPrice(1500e18); // 50% off TWAP — would block a buy
+        _setSpotPrice(1500e18); // 50% off TWAP — past the gate
 
-        // Withdraw still goes through — no spot-vs-TWAP check on exit.
-        // (Sell floor is binding; we test that separately.)
         vm.prank(IM);
-        uint256 ethOut = adapter.withdraw(sharesToSell);
+        vm.expectRevert(CostanzaTokenAdapter.SpotDeviationExceeded.selector);
+        adapter.withdraw(sharesToSell);
+    }
+
+    function test_spot_vs_twap_within_tolerance_allows_withdraw() public {
+        // Spot drifts within tolerance — withdraw succeeds (sell floor
+        // alone determines the outcome from there).
+        _depositAs(0.5 ether);
+        _setEpoch(10);
+        _setSpotPrice(1050e18); // 5% off TWAP — within tolerance
+
+        uint256 ethOut = _withdrawAs(adapter.tokensFromSwapsIn());
         assertGt(ethOut, 0);
     }
 
