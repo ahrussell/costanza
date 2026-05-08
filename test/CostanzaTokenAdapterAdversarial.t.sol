@@ -113,7 +113,7 @@ contract CostanzaTokenAdapterAdversarial is Test {
         im.addProtocol(
             address(adapter),
             "Costanza Token",
-            "Speculative position in $COSTANZA.",
+            unicode"Your own memecoin, $COSTANZA. Speculative — buy/sell via deposit/withdraw; trading fees from other holders accrue to the fund and lower your per-token cost basis. The contract won't sell below cost basis, so a position can be locked during drawdowns. Lifetime cap: 5 ETH.",
             4, 0
         );
     }
