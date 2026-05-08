@@ -23,13 +23,13 @@ Before starting, confirm:
 3. **A fork dry-run** of `DeployCostanzaAdapter.s.sol` succeeds — see
    the **Fork rehearsal** section below. Don't go to mainnet without
    this.
-4. **The current Doppler beneficiary EOA** is identified and reachable
-   for signing. As of writing, this is the deployer wallet that
-   originally collected fees from the $COSTANZA launch. The on-chain
-   value isn't exposed via a public getter on the Doppler hook — find
-   it by reading the most recent `BeneficiaryUpdated` event from
-   `0xBDF938149ac6a781F94FAa0ed45E6A0e984c6544`, or by asking the
-   project lead.
+4. **The current Doppler beneficiary EOA** is
+   `0x495fB7ddD383be8030EFC93324Ff078f173eAb2A` and is reachable for
+   signing. The on-chain value isn't exposed via a public getter on
+   the Doppler hook; this address was confirmed off-chain by the
+   project lead and verified against the most recent
+   `BeneficiaryUpdated` event from
+   `0xBDF938149ac6a781F94FAa0ed45E6A0e984c6544`.
 5. **The IM admin key** (currently EOA `0x2e61a91…`, will eventually be
    Safe `0x6dF6f527…`) is reachable for signing.
 6. **Base mainnet ETH for gas** on the deployer wallet. Estimated
@@ -89,7 +89,7 @@ cast send --unlocked --from $IM_ADMIN $IM \
 # Step 3: beneficiary handover (impersonating current beneficiary)
 DOPPLER=0xBDF938149ac6a781F94FAa0ed45E6A0e984c6544
 POOL_ID=0x1d7463c5ce91bdd756546180433b37665c11d33063a55280f8db068f9af2d8cc
-BENEFICIARY=0x...  # known current beneficiary EOA — confirm before running
+BENEFICIARY=0x495fB7ddD383be8030EFC93324Ff078f173eAb2A
 
 cast rpc anvil_impersonateAccount $BENEFICIARY --rpc-url $RPC_URL
 cast send --unlocked --from $BENEFICIARY $DOPPLER \
@@ -206,8 +206,8 @@ After the call lands:
 
 ### Step 3: Doppler beneficiary handover
 
-The current Doppler beneficiary (the EOA that owns the post-launch
-fee stream) calls:
+The current Doppler beneficiary EOA
+(`0x495fB7ddD383be8030EFC93324Ff078f173eAb2A`) calls:
 
 ```bash
 cast send 0xBDF938149ac6a781F94FAa0ed45E6A0e984c6544 \
@@ -216,7 +216,7 @@ cast send 0xBDF938149ac6a781F94FAa0ed45E6A0e984c6544 \
     $ADAPTER \
     --rpc-url https://mainnet.base.org \
     --account <beneficiary-keystore> \
-    --sender 0x<current-beneficiary-eoa>
+    --sender 0x495fB7ddD383be8030EFC93324Ff078f173eAb2A
 ```
 
 After this call lands, all subsequent fee accruals release to the
