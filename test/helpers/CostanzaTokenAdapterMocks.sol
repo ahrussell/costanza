@@ -233,6 +233,12 @@ contract MockFeeDistributor is IFeeDistributor {
     address public reentrantTarget;
     bytes   public reentrantCalldata;
 
+    /// @notice When true, `collectFees` reverts. Lets tests exercise
+    ///         the adapter's bestEffort vs. strict claim paths.
+    bool public collectFeesReverts;
+
+    error UpstreamBroken();
+
     constructor(address _costanzaToken, address _weth, address _initialRecipient) {
         costanzaToken = _costanzaToken;
         weth = _weth;
@@ -272,7 +278,15 @@ contract MockFeeDistributor is IFeeDistributor {
         reentrantCalldata = data;
     }
 
+    /// @notice Toggle whether `collectFees` reverts. Used to test the
+    ///         adapter's strict vs. best-effort claim paths.
+    function setCollectFeesReverts(bool _reverts) external {
+        collectFeesReverts = _reverts;
+    }
+
     function collectFees(bytes32 /* poolId */) external override {
+        if (collectFeesReverts) revert UpstreamBroken();
+
         // Fire the reentrancy hook FIRST so it lands inside the
         // adapter's protected function before fees move.
         if (reentrantTarget != address(0)) {
