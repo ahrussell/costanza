@@ -211,10 +211,23 @@ V1=$(last_adapter_addr)
 ok "v1 adapter: $V1"
 
 # Confirm constructor sanity-checks (pool initialized, currencies match) all
-# passed by reading back a couple of pool/adapter fields.
+# passed by reading back the adapter's immutable wiring. These four checks
+# will catch env-var pollution like `export INVESTMENT_MANAGER=...` in the
+# user's shell that would silently mis-wire the deploy.
 V1_FUND=$(cast call "$V1" "fund()(address)" --rpc-url "$RPC_URL")
-[[ "$(lc "$V1_FUND")" == "$(lc "$FUND")" ]] || die "v1.fund mismatch: got $V1_FUND want $FUND"
-ok "v1.fund() matches mainnet TheHumanFund"
+V1_IM=$(cast call "$V1" "investmentManager()(address)" --rpc-url "$RPC_URL")
+V1_TOKEN=$(cast call "$V1" "costanzaToken()(address)" --rpc-url "$RPC_URL")
+V1_DOPPLER=$(cast call "$V1" "feeDistributor()(address)" --rpc-url "$RPC_URL")
+
+[[ "$(lc "$V1_FUND")" == "$(lc "$FUND")" ]] \
+    || die "v1.fund mismatch: got $V1_FUND want $FUND (env var FUND override?)"
+[[ "$(lc "$V1_IM")" == "$(lc "$IM")" ]] \
+    || die "v1.investmentManager mismatch: got $V1_IM want $IM (env var INVESTMENT_MANAGER override?)"
+[[ "$(lc "$V1_TOKEN")" == "$(lc "$COSTANZA")" ]] \
+    || die "v1.costanzaToken mismatch: got $V1_TOKEN want $COSTANZA (env var COSTANZA_TOKEN override?)"
+[[ "$(lc "$V1_DOPPLER")" == "$(lc "$DOPPLER")" ]] \
+    || die "v1.feeDistributor mismatch: got $V1_DOPPLER want $DOPPLER (env var FEE_DISTRIBUTOR override?)"
+ok "v1 wiring matches expected mainnet addresses (fund/IM/token/Doppler)"
 echo ""
 
 # ─── Phase A.2: IM admin registers v1 ────────────────────────────────────
