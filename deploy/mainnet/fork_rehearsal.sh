@@ -112,31 +112,60 @@ lc() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 # status, dies with the tx hash, and on revert prints a full EVM
 # trace via `cast run` so we can see exactly which call reverted and
 # why. All args after the first are passed straight to cast send.
+#
+# Captures stdout and stderr separately so that warnings cast may
+# emit to stderr (e.g. about gas estimation timing out) don't corrupt
+# the JSON receipt on stdout.
 send_or_die() {
     local label="$1"; shift
-    local out
-    out=$(cast send "$@" --rpc-url "$RPC_URL" --json 2>&1) \
-        || die "$label: cast send raw failure: $out"
+    local stdout_file stderr_file exit_code
+    stdout_file=$(mktemp)
+    stderr_file=$(mktemp)
+    cast send "$@" --rpc-url "$RPC_URL" --json >"$stdout_file" 2>"$stderr_file"
+    exit_code=$?
+
+    if [[ $exit_code -ne 0 ]]; then
+        echo "❌ $label: cast send exited $exit_code" >&2
+        echo "─── cast stderr ───" >&2
+        cat "$stderr_file" >&2
+        echo "─── cast stdout ───" >&2
+        cat "$stdout_file" >&2
+        rm -f "$stdout_file" "$stderr_file"
+        exit 1
+    fi
+
     local status tx_hash
-    status=$(echo "$out" | python3 -c \
-        "import sys, json; d=json.load(sys.stdin); print(d.get('status',''))" 2>/dev/null) || status=""
-    tx_hash=$(echo "$out" | python3 -c \
-        "import sys, json; d=json.load(sys.stdin); print(d.get('transactionHash',''))" 2>/dev/null) || tx_hash=""
+    status=$(python3 -c \
+        "import sys, json; d=json.load(open('$stdout_file')); print(d.get('status',''))" 2>/dev/null) \
+        || status=""
+    tx_hash=$(python3 -c \
+        "import sys, json; d=json.load(open('$stdout_file')); print(d.get('transactionHash',''))" 2>/dev/null) \
+        || tx_hash=""
+
     if [[ "$status" != "0x1" ]]; then
         echo "" >&2
-        echo "❌ $label: tx reverted (status=$status)" >&2
-        echo "   tx hash: $tx_hash" >&2
-        echo "" >&2
-        echo "─── EVM trace (cast run, last 60 lines) ───" >&2
-        # cast run replays the tx with full trace. Needs anvil alive,
-        # which it is — we run this BEFORE the cleanup trap fires.
-        cast run "$tx_hash" --rpc-url "$RPC_URL" --quick 2>&1 | tail -60 >&2 || true
-        echo "─── end trace ───" >&2
+        echo "❌ $label: tx not confirmed successful (status=$status, hash=$tx_hash)" >&2
+        if [[ -z "$status" || -z "$tx_hash" ]]; then
+            echo "   The receipt JSON couldn't be parsed. Raw outputs:" >&2
+            echo "─── cast stdout ───" >&2
+            cat "$stdout_file" >&2
+            echo "─── cast stderr ───" >&2
+            cat "$stderr_file" >&2
+        elif [[ -n "$tx_hash" && "$tx_hash" =~ ^0x ]]; then
+            echo "" >&2
+            echo "─── EVM trace (cast run, last 60 lines) ───" >&2
+            # cast run replays the tx with full trace. Needs anvil alive,
+            # which it is — we run this BEFORE the cleanup trap fires.
+            cast run "$tx_hash" --rpc-url "$RPC_URL" --quick 2>&1 | tail -60 >&2 || true
+            echo "─── end trace ───" >&2
+        fi
         echo "" >&2
         echo "Re-run with anvil left alive for interactive debugging:" >&2
         echo "   trap - EXIT; bash $0 ..." >&2
+        rm -f "$stdout_file" "$stderr_file"
         exit 1
     fi
+    rm -f "$stdout_file" "$stderr_file"
 }
 
 # Read a uint storage slot from a contract. cast prints values with a
