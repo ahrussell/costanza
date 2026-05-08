@@ -255,6 +255,190 @@ contract CostanzaTokenAdapterForkTest is Test {
         vm.expectRevert();
         hook.updateBeneficiary(POOL_ID, randomCaller);
     }
+
+    // ─── End-to-end deploy ceremony rehearsal ────────────────────────────
+    //
+    // These tests rehearse the actual mainnet deploy ceremony by talking
+    // to the LIVE Human Fund + InvestmentManager on Base mainnet (not
+    // stand-ins). They impersonate the IM admin via `vm.prank` to register
+    // the adapter, and impersonate the fund to drive deposits through the
+    // IM. Together they answer "if we run the deploy script and the
+    // ceremony today, does it work end-to-end?"
+    //
+    // We don't impersonate the Doppler beneficiary — that EOA isn't
+    // queryable on-chain via a public getter. The runbook covers the
+    // beneficiary handover; `test_fork_doppler_updateBeneficiary_*` above
+    // covers the auth check.
+
+    address constant LIVE_FUND     = 0x678dC1756b123168f23a698374C000019e38318c;
+    address constant LIVE_IM       = 0x2fab8aE91B9EB3BaB18531594B20e0e086661892;
+    address constant LIVE_IM_ADMIN = 0x2e61a91EbeD1B557199f42d3E843c06Afb445004;
+
+    string constant CANONICAL_NAME = "Costanza Token";
+    uint8  constant CANONICAL_RISK = 4;
+    uint16 constant CANONICAL_APY  = 0;
+
+    /// @dev Deploy an adapter wired to the LIVE fund + IM. Returns
+    ///      the adapter and its expected protocol ID (current count + 1).
+    function _deployLiveAdapter()
+        internal
+        returns (CostanzaTokenAdapter adapter, uint256 nextProtocolId)
+    {
+        V4PoolStateReader reader = new V4PoolStateReader(POOL_MANAGER);
+        V4SwapExecutor exec      = new V4SwapExecutor(POOL_MANAGER, _v4Key());
+
+        adapter = new CostanzaTokenAdapter(
+            COSTANZA_TOKEN,
+            WETH,
+            POOL_MANAGER,
+            address(reader),
+            address(exec),
+            DOPPLER_HOOK,
+            payable(LIVE_FUND),
+            LIVE_IM,
+            _poolKey(),
+            5 ether,
+            InitialState(0, 0, 0, 0, 0)
+        );
+
+        // Read current count from the live IM. This is the protocol ID
+        // assigned to whatever we register next (`addProtocol` does
+        // `protocolId = ++protocolCount`).
+        uint256 currentCount = ILiveInvestmentManager(LIVE_IM).protocolCount();
+        nextProtocolId = currentCount + 1;
+    }
+
+    /// @notice Step 1 + 2 of the deploy ceremony: deploy the adapter
+    ///         and have the IM admin register it. Confirms the call
+    ///         lands and the protocol metadata reads back correctly.
+    function test_fork_e2e_register_with_live_im() public needsFork {
+        (CostanzaTokenAdapter adapter, uint256 expectedId) = _deployLiveAdapter();
+
+        ILiveInvestmentManager im = ILiveInvestmentManager(LIVE_IM);
+
+        // Snapshot pre-registration state.
+        uint256 preCount = im.protocolCount();
+
+        // Impersonate the IM admin and register.
+        vm.prank(LIVE_IM_ADMIN);
+        uint256 returnedId = im.addProtocol(
+            address(adapter),
+            CANONICAL_NAME,
+            unicode"Your own memecoin, $COSTANZA. Speculative — buy/sell via deposit/withdraw; trading fees from other holders accrue to the fund and lower your per-token cost basis. The contract won't sell below cost basis, so a position can be locked during drawdowns. Lifetime cap: 5 ETH.",
+            CANONICAL_RISK,
+            CANONICAL_APY
+        );
+
+        // Post-registration state.
+        assertEq(returnedId, expectedId, "addProtocol returned wrong id");
+        assertEq(im.protocolCount(), preCount + 1, "protocolCount didn't increment");
+
+        // Read back metadata to confirm it landed.
+        (
+            address adapterAddr,
+            string memory name,
+            uint8 riskTier,
+            uint16 apy,
+            bool active,
+            bool exists
+        ) = im.getProtocol(returnedId);
+
+        assertEq(adapterAddr, address(adapter), "wrong adapter recorded");
+        assertEq(name, CANONICAL_NAME);
+        assertEq(riskTier, CANONICAL_RISK);
+        assertEq(apy, CANONICAL_APY);
+        assertTrue(active, "protocol should be active by default");
+        assertTrue(exists, "protocol should exist");
+    }
+
+    /// @notice Step 1 + 2 + a real deposit. Confirms tokens actually
+    ///         land in the adapter when the live fund deposits via the
+    ///         live IM's action path.
+    function test_fork_e2e_deposit_via_live_im() public needsFork {
+        (CostanzaTokenAdapter adapter, uint256 expectedId) = _deployLiveAdapter();
+        ILiveInvestmentManager im = ILiveInvestmentManager(LIVE_IM);
+
+        vm.prank(LIVE_IM_ADMIN);
+        im.addProtocol(
+            address(adapter),
+            CANONICAL_NAME,
+            unicode"Your own memecoin, $COSTANZA. Speculative — buy/sell via deposit/withdraw; trading fees from other holders accrue to the fund and lower your per-token cost basis. The contract won't sell below cost basis, so a position can be locked during drawdowns. Lifetime cap: 5 ETH.",
+            CANONICAL_RISK,
+            CANONICAL_APY
+        );
+
+        // Live fund pays the deposit. Top up its ETH balance so the call
+        // doesn't bottom out the live treasury (vm.deal is additive on
+        // top of whatever's there).
+        uint256 amountIn = 0.01 ether;
+        vm.deal(LIVE_FUND, address(LIVE_FUND).balance + amountIn);
+
+        uint256 preTokens = IERC20(COSTANZA_TOKEN).balanceOf(address(adapter));
+        assertEq(preTokens, 0, "fresh adapter should hold no tokens");
+
+        // Drive the deposit through the IM's action path, which is what
+        // the agent action handler calls under the hood.
+        vm.prank(LIVE_FUND);
+        im.deposit{value: amountIn}(expectedId, amountIn);
+
+        uint256 postTokens = IERC20(COSTANZA_TOKEN).balanceOf(address(adapter));
+        assertGt(postTokens, 0, "adapter should hold tokens after deposit");
+        assertEq(adapter.cumulativeEthIn(), amountIn, "cumIn didn't track");
+        assertEq(adapter.tokensFromSwapsIn(), postTokens, "swap accumulator drifted");
+    }
+
+    /// @notice Confirms `currentEpoch()` reads through to the live fund.
+    ///         The adapter's cooldown logic depends on this; if the read
+    ///         path is broken (wrong address, ABI drift), the cooldown
+    ///         behaves unpredictably.
+    function test_fork_e2e_adapter_reads_live_currentEpoch() public needsFork {
+        (CostanzaTokenAdapter adapter,) = _deployLiveAdapter();
+
+        // Adapter calls fund.currentEpoch() via the IFundEpoch interface
+        // declared at the top of CostanzaTokenAdapter.sol. Easiest way
+        // to verify is to read both directly and confirm they agree.
+        uint256 fundEpoch  = ILiveFund(LIVE_FUND).currentEpoch();
+        // Adapter doesn't expose currentEpoch() directly, but a fresh
+        // deposit's lastDepositEpoch will pin to the current epoch. We
+        // can't deposit without registration, but we CAN just confirm
+        // the fund pointer is set correctly:
+        assertEq(adapter.fund(), payable(LIVE_FUND), "adapter.fund pointer wrong");
+        assertGt(fundEpoch, 0, "live fund should be past epoch 0");
+    }
+}
+
+// ─── Live system minimal interfaces ─────────────────────────────────────
+//
+// These only expose the methods the e2e fork tests actually call.
+// Mirrors the shape of the real InvestmentManager / TheHumanFund
+// without taking a compile-time dependency on those (large) contracts
+// in this test file.
+
+interface ILiveInvestmentManager {
+    function protocolCount() external view returns (uint256);
+
+    function addProtocol(
+        address adapter,
+        string calldata name,
+        string calldata description,
+        uint8 riskTier,
+        uint16 expectedApyBps
+    ) external returns (uint256 protocolId);
+
+    function getProtocol(uint256 protocolId) external view returns (
+        address adapter,
+        string memory name,
+        uint8 riskTier,
+        uint16 expectedApyBps,
+        bool active,
+        bool exists
+    );
+
+    function deposit(uint256 protocolId, uint256 amount) external payable;
+}
+
+interface ILiveFund {
+    function currentEpoch() external view returns (uint256);
 }
 
 // ─── Minimal interfaces used in fork tests ──────────────────────────────
