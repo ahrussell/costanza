@@ -27,7 +27,7 @@ The mechanism: a sixth adapter in the IM, plus a one-time re-pointing of the ups
 ### Goals
 - Auto-claim creator fees and route to the fund treasury.
 - Bound exposure tightly enough that no single agent decision (or adversarial prompt) can meaningfully drain the treasury.
-- Give the human owner exactly one operational lever — the ability to re-route the fee-claim destination — and a one-way commitment to give it up forever (`freeze()`).
+- Give the human owner two operational levers — re-route the fee-claim destination, and migrate the entire position to a successor adapter — plus a one-way `freeze()` to give both up forever.
 - Adapter outlives the human's involvement: post-freeze, no off-chain operator is needed.
 
 ### Non-Goals
@@ -139,9 +139,11 @@ The slippage anchors differ across sides on purpose: buys anchor to TWAP (we don
 
 **Operate.** Costanza acts on the adapter via action types 3/4. Anyone can call `pokeFees()` between Costanza's actions to drain fees and earn a 2% tip. Owner has no ongoing duties; can re-point fee claim if migrating to a v2 adapter.
 
-**Migrate (if needed).** If a flaw is found: register a replacement adapter, deactivate the old one via `setProtocolActive(false)` (allows withdraws but not deposits), and re-point fee claim. Costanza naturally drains the old position over time. Existing $COSTANZA tokens stay in the old adapter until the agent withdraws — migration moves *flow*, not *stock*.
+**Migrate (if needed).** If a flaw is found, the owner calls `migrate(newAdapter)`. Atomic: pulls any pending fees, transfers the entire $COSTANZA token balance to the successor, re-points the upstream fee distributor at the successor, forwards any held WETH/ETH to the fund, and zeroes the v1 adapter's accumulators so its `balance()` returns 0 (no phantom value in IM cap math). The successor's constructor takes an `InitialState` struct carrying v1's accumulators (`cumulativeEthIn`, `cumulativeEthOut`, `tokensFromSwapsIn`, `tokensFromSwapsOut`, `lastDepositEpoch`) — read from v1's public getters — so cost basis, lifetime cap, cooldown, and reset-rule semantics carry over unchanged. Stock and flow both move; nothing strands.
 
-**Freeze.** Owner calls `freeze()`. Ownership is renounced (`owner == address(0)`). After this, no `onlyOwner` function ever executes again. `deposit`/`withdraw`/`balance`/`pokeFees` continue to work indefinitely. This is the immutability commitment.
+After `migrate` runs, v1's `deposit` reverts (`AdapterMigrated`), `withdraw` becomes a no-op that returns 0 (lets the IM drain its `pos.shares` accounting normally), `pokeFees` short-circuits, and `balance()` reports 0. The IM admin separately marks v1 as inactive (`setProtocolActive(v1, false)`) so the agent's snapshot view is tidy, but it's belt-and-suspenders — v1's reported value is already 0.
+
+**Freeze.** Owner calls `freeze()`. Ownership is renounced (`owner == address(0)`). After this, no `onlyOwner` function ever executes again — including `transferFeeClaim` and `migrate`. `deposit`/`withdraw`/`balance`/`pokeFees` continue to work indefinitely. Once you freeze, the adapter is whatever it is, forever; that's the immutability commitment, and it's why you should be confident in the adapter before pulling the lever.
 
 ## 6. Open Questions
 
@@ -194,7 +196,7 @@ External calls in `_claimAndForwardFees` (claim, WETH unwrap, fund.receive(), ti
 `balance()` falls back to cost basis (try/catch around oracle). IM snapshot path stays valid; cap still bounds correctly. Both `deposit` and `withdraw` revert via the spot-vs-TWAP gate (oracle reverts → gate can't evaluate → revert). Position is stranded but on-paper non-zero. Pool death is a $COSTANZA-existential event; the project would have bigger problems than a stranded adapter position.
 
 ### Migration race
-`transferFeeClaim` and `pokeFees` race within a block: tx-level ordering decides which adapter receives the in-flight fees. Either path is benign — neither permits double-claim, and a stale `pokeFees` against the old adapter just claims zero.
+`transferFeeClaim` (or `migrate`) and `pokeFees` race within a block: tx-level ordering decides which adapter receives the in-flight fees. Either path is benign — neither permits double-claim, and a stale `pokeFees` against the post-migration adapter no-ops.
 
 ### DoS on `pokeFees`
 Permissionless tip is self-balancing. Empty pokes cost the caller gas with no effect. Front-running tips creates a competitive keeper market — fees still reach the fund, gas reimbursement just goes to whoever wins the race.
@@ -211,7 +213,7 @@ Critical tests; full breakdown in `test/CostanzaTokenAdapter.t.sol`. Showstopper
 - **Reset rule:** profitable round-trip resets accumulators; loss round-trip does not.
 - **Owner controls:** transferFeeClaim, freeze, post-freeze immutability.
 - **Reentrancy:** malicious upstream re-entering each entry point — guards hold.
-- **Migration:** dual-adapter setup with transferFeeClaim re-pointing.
+- **Migration:** end-to-end `migrate(v2)` happy path — tokens move, fees re-point, accumulators zero, post-migration `deposit` reverts, `withdraw` no-ops, `pokeFees` no-ops, `balance()` reports 0. Plus: rejects double-migration, blocked by `freeze`, v2's constructor inherits state correctly so cost basis / lifetime cap / cooldown carry over.
 - **Mainnet fork (placeholder until real addresses are known):** smoke test against real V4 pool, oracle hook, fee distributor.
 
 ## 9. Gas Budget

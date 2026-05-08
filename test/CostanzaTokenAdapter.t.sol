@@ -106,7 +106,8 @@ contract CostanzaTokenAdapterTest is Test {
             FUND,
             IM,
             key,
-            TEST_MAX_NET_ETH_IN
+            TEST_MAX_NET_ETH_IN,
+            InitialState(0, 0, 0, 0, 0)
         );
 
         // Seed oracle + state reader with a price that matches the
@@ -200,7 +201,7 @@ contract CostanzaTokenAdapterTest is Test {
         new CostanzaTokenAdapter(
             address(0), address(weth), poolManager, address(stateReader),
             address(oracle), address(swapper), address(feeDistributor),
-            FUND, IM, key, TEST_MAX_NET_ETH_IN
+            FUND, IM, key, TEST_MAX_NET_ETH_IN, InitialState(0, 0, 0, 0, 0)
         );
     }
 
@@ -217,7 +218,7 @@ contract CostanzaTokenAdapterTest is Test {
         new CostanzaTokenAdapter(
             address(token), address(weth), poolManager, address(stateReader),
             address(oracle), address(swapper), address(feeDistributor),
-            FUND, IM, bad, TEST_MAX_NET_ETH_IN
+            FUND, IM, bad, TEST_MAX_NET_ETH_IN, InitialState(0, 0, 0, 0, 0)
         );
     }
 
@@ -910,6 +911,227 @@ contract CostanzaTokenAdapterTest is Test {
         assertGt(b, 0);
     }
 
+    // ─── migrate() — owner-driven migration to a successor adapter ───────
+
+    /// @dev Build a v2 adapter that inherits the given InitialState.
+    function _deployV2(InitialState memory init) internal returns (CostanzaTokenAdapter) {
+        PoolKey memory key = PoolKey({
+            currency0: address(0),
+            currency1: address(token),
+            fee: 3000,
+            tickSpacing: 60,
+            hooks: address(0)
+        });
+        return new CostanzaTokenAdapter(
+            address(token),
+            address(weth),
+            poolManager,
+            address(stateReader),
+            address(oracle),
+            address(swapper),
+            address(feeDistributor),
+            FUND,
+            IM,
+            key,
+            TEST_MAX_NET_ETH_IN,
+            init
+        );
+    }
+
+    /// @dev Snapshot v1's accumulators for the v2 deploy.
+    function _snapshotState() internal view returns (InitialState memory) {
+        return InitialState({
+            cumulativeEthIn:    adapter.cumulativeEthIn(),
+            cumulativeEthOut:   adapter.cumulativeEthOut(),
+            tokensFromSwapsIn:  adapter.tokensFromSwapsIn(),
+            tokensFromSwapsOut: adapter.tokensFromSwapsOut(),
+            lastDepositEpoch:   adapter.lastDepositEpoch()
+        });
+    }
+
+    function test_migrate_only_callable_by_owner() public {
+        CostanzaTokenAdapter v2 = _deployV2(InitialState(0, 0, 0, 0, 0));
+        vm.prank(address(0xBADD));
+        vm.expectRevert(
+            abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, address(0xBADD))
+        );
+        adapter.migrate(address(v2));
+    }
+
+    function test_migrate_rejects_zero_address() public {
+        vm.expectRevert(CostanzaTokenAdapter.InvalidConfig.selector);
+        adapter.migrate(address(0));
+    }
+
+    function test_migrate_rejects_self() public {
+        vm.expectRevert(CostanzaTokenAdapter.InvalidConfig.selector);
+        adapter.migrate(address(adapter));
+    }
+
+    function test_migrate_transfers_tokens_to_v2() public {
+        _depositAs(1 ether);
+        // Accumulate some fee tokens too.
+        _seedFees(0, 500 ether);
+        adapter.pokeFees();
+        assertEq(token.balanceOf(address(adapter)), 1500 ether);
+
+        CostanzaTokenAdapter v2 = _deployV2(_snapshotState());
+        adapter.migrate(address(v2));
+
+        assertEq(token.balanceOf(address(adapter)), 0);
+        assertEq(token.balanceOf(address(v2)), 1500 ether);
+    }
+
+    function test_migrate_zeros_v1_accumulators() public {
+        _depositAs(1 ether);
+        CostanzaTokenAdapter v2 = _deployV2(_snapshotState());
+        adapter.migrate(address(v2));
+
+        assertEq(adapter.cumulativeEthIn(), 0);
+        assertEq(adapter.cumulativeEthOut(), 0);
+        assertEq(adapter.tokensFromSwapsIn(), 0);
+        assertEq(adapter.tokensFromSwapsOut(), 0);
+        assertTrue(adapter.migrated());
+    }
+
+    function test_migrate_v1_balance_returns_zero() public {
+        _depositAs(1 ether);
+        CostanzaTokenAdapter v2 = _deployV2(_snapshotState());
+        adapter.migrate(address(v2));
+        // No tokens, zeroed accumulators → balance() reports 0.
+        assertEq(adapter.balance(), 0);
+    }
+
+    function test_migrate_repoints_fee_distributor() public {
+        _depositAs(1 ether);
+        CostanzaTokenAdapter v2 = _deployV2(_snapshotState());
+        adapter.migrate(address(v2));
+        assertEq(feeDistributor.recipient(), address(v2));
+    }
+
+    function test_migrate_pulls_pending_fees_into_migration() public {
+        _depositAs(1 ether);
+        // Seed pending fees in the upstream BEFORE migrate. The
+        // migrate path should claim them so they ride with the move.
+        _seedFees(0.2 ether, 100 ether);
+
+        uint256 fundBefore = FUND.balance;
+        CostanzaTokenAdapter v2 = _deployV2(_snapshotState());
+        adapter.migrate(address(v2));
+
+        // Pending WETH was unwrapped + forwarded to fund.
+        assertEq(FUND.balance - fundBefore, 0.2 ether);
+        // Pending tokens (1100 = 1000 from deposit + 100 fee) all in v2.
+        assertEq(token.balanceOf(address(v2)), 1100 ether);
+    }
+
+    function test_migrate_emits_event_with_state_snapshot() public {
+        _depositAs(1 ether);
+        InitialState memory snap = _snapshotState();
+        CostanzaTokenAdapter v2 = _deployV2(snap);
+
+        vm.expectEmit(true, false, false, true, address(adapter));
+        emit CostanzaTokenAdapter.Migrated(
+            address(v2),
+            1000 ether, // tokens transferred
+            snap.cumulativeEthIn,
+            snap.cumulativeEthOut,
+            snap.tokensFromSwapsIn,
+            snap.tokensFromSwapsOut,
+            snap.lastDepositEpoch
+        );
+        adapter.migrate(address(v2));
+    }
+
+    function test_migrate_double_migration_reverts() public {
+        _depositAs(1 ether);
+        CostanzaTokenAdapter v2 = _deployV2(_snapshotState());
+        adapter.migrate(address(v2));
+
+        CostanzaTokenAdapter v3 = _deployV2(InitialState(0, 0, 0, 0, 0));
+        vm.expectRevert(CostanzaTokenAdapter.AdapterMigrated.selector);
+        adapter.migrate(address(v3));
+    }
+
+    function test_migrate_blocked_after_freeze() public {
+        adapter.freeze();
+        CostanzaTokenAdapter v2 = _deployV2(InitialState(0, 0, 0, 0, 0));
+        vm.expectRevert(
+            abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, address(this))
+        );
+        adapter.migrate(address(v2));
+    }
+
+    function test_post_migration_deposit_reverts() public {
+        CostanzaTokenAdapter v2 = _deployV2(InitialState(0, 0, 0, 0, 0));
+        adapter.migrate(address(v2));
+
+        vm.deal(IM, 0.1 ether);
+        vm.prank(IM);
+        vm.expectRevert(CostanzaTokenAdapter.AdapterMigrated.selector);
+        adapter.deposit{value: 0.1 ether}();
+    }
+
+    function test_post_migration_withdraw_returns_zero() public {
+        _depositAs(1 ether);
+        CostanzaTokenAdapter v2 = _deployV2(_snapshotState());
+        adapter.migrate(address(v2));
+
+        // IM-side post-migration drain — agent or IM.withdrawAll calls
+        // adapter.withdraw(N). Adapter accepts, returns 0.
+        vm.prank(IM);
+        uint256 ethOut = adapter.withdraw(1000 ether);
+        assertEq(ethOut, 0);
+    }
+
+    function test_post_migration_pokeFees_noop() public {
+        CostanzaTokenAdapter v2 = _deployV2(InitialState(0, 0, 0, 0, 0));
+        adapter.migrate(address(v2));
+
+        // Even with fees seeded at the upstream (which will now go to
+        // v2 anyway), pokeFees on v1 is a no-op — short-circuits before
+        // touching the upstream.
+        _seedFees(0.1 ether, 0);
+        adapter.pokeFees();
+        assertEq(address(adapter).balance, 0);
+    }
+
+    function test_v2_inherits_state_correctly() public {
+        // Build state in v1.
+        _depositAs(2 ether); // cumIn=2, tokensFromSwapsIn=2000
+        _setEpoch(10);
+        _withdrawAs(500 ether); // cumOut=0.5, tokensFromSwapsOut=500
+
+        InitialState memory snap = _snapshotState();
+        CostanzaTokenAdapter v2 = _deployV2(snap);
+
+        assertEq(v2.cumulativeEthIn(), 2 ether);
+        assertEq(v2.cumulativeEthOut(), 0.5 ether);
+        assertEq(v2.tokensFromSwapsIn(), 2000 ether);
+        assertEq(v2.tokensFromSwapsOut(), 500 ether);
+        assertEq(v2.lastDepositEpoch(), 1);
+        // Net basis carries over for the lifetime cap and sell floor.
+        assertEq(v2.netEthBasis(), 1.5 ether);
+    }
+
+    function test_v2_lifetime_cap_respects_inherited_basis() public {
+        // v1 builds up to lifetime cap.
+        _depositAs(TEST_MAX_NET_ETH_IN);
+        _setEpoch(100);
+
+        InitialState memory snap = _snapshotState();
+        CostanzaTokenAdapter v2 = _deployV2(snap);
+
+        // v2 inherits netBasis = TEST_MAX_NET_ETH_IN. Cap is full.
+        // Any further deposit on v2 should revert.
+        vm.deal(IM, 1 wei);
+        vm.prank(IM);
+        // (We need to also tell v2 it's the IM address — same constant,
+        // shared between v1 and v2 in the test setup.)
+        vm.expectRevert(CostanzaTokenAdapter.LifetimeCapExceeded.selector);
+        v2.deposit{value: 1 wei}();
+    }
+
     // ─── Adversarial coverage (flash-loan, reentrancy, migration) ────────
 
     /// @dev A2 (flash-loan pool manipulation). An adversary moves spot
@@ -1127,7 +1349,8 @@ contract CostanzaAdapterE2ETest is EpochTest {
             payable(address(fund)),
             address(im),
             key,
-            5 ether
+            5 ether,
+            InitialState(0, 0, 0, 0, 0)
         );
 
         // Seed prices to match swapper rate.

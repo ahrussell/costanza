@@ -37,6 +37,20 @@ struct PoolKey {
     address hooks;
 }
 
+/// @notice Initial state for the adapter's mutable accumulators.
+///         Pass all-zero for a fresh deploy. For a `migrate()` from
+///         a prior adapter, the deployer reads the predecessor's
+///         public getters and passes them in here so cost basis,
+///         cooldown timing, and reset-rule semantics carry over
+///         unchanged into the new instance.
+struct InitialState {
+    uint256 cumulativeEthIn;
+    uint256 cumulativeEthOut;
+    uint256 tokensFromSwapsIn;
+    uint256 tokensFromSwapsOut;
+    uint64 lastDepositEpoch;
+}
+
 /// @title CostanzaTokenAdapter
 /// @notice Lets the agent buy/sell the $COSTANZA token (Uniswap V4 pool on
 ///         Base) through the existing InvestmentManager interface, and
@@ -66,6 +80,7 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
     error SwapFailed();
     error TransferFailed();
     error InvalidConfig();
+    error AdapterMigrated();
 
     // ─── Events ──────────────────────────────────────────────────────────
 
@@ -73,6 +88,15 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
     event FeeClaimRecipientChanged(address indexed newRecipient);
     event Frozen();
     event AccumulatorsReset();
+    event Migrated(
+        address indexed newAdapter,
+        uint256 tokensTransferred,
+        uint256 cumulativeEthIn,
+        uint256 cumulativeEthOut,
+        uint256 tokensFromSwapsIn,
+        uint256 tokensFromSwapsOut,
+        uint64 lastDepositEpoch
+    );
 
     // ─── Constants ───────────────────────────────────────────────────────
 
@@ -193,6 +217,16 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
     /// @notice Last epoch a deposit landed. For cooldown enforcement.
     uint64 public lastDepositEpoch;
 
+    /// @notice True after `migrate()` has run. Once set:
+    ///   - `deposit` reverts with `AdapterMigrated`
+    ///   - `withdraw` becomes a no-op that returns 0 (lets the IM
+    ///     drain its `pos.shares` without us holding any tokens)
+    ///   - `pokeFees` short-circuits (upstream now points at the
+    ///     successor adapter, nothing to do here)
+    ///   - `balance()` returns 0 (accumulators are zeroed)
+    /// One-way; cannot be unset.
+    bool public migrated;
+
     // ─── Modifiers ───────────────────────────────────────────────────────
 
     modifier onlyInvestmentManager() {
@@ -213,7 +247,8 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
         address payable _fund,
         address _investmentManager,
         PoolKey memory _poolKey,
-        uint256 _maxNetEthIn
+        uint256 _maxNetEthIn,
+        InitialState memory _initialState
     ) Ownable(msg.sender) {
         if (_costanzaToken == address(0)
             || _poolManager == address(0)
@@ -269,6 +304,14 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
             IWETH(_weth).approve(_swapExecutor, type(uint256).max);
         }
         IERC20Min(_costanzaToken).approve(_swapExecutor, type(uint256).max);
+
+        // Inherit prior accumulator state (zero for fresh deploys; the
+        // predecessor's public getters for migrations).
+        cumulativeEthIn      = _initialState.cumulativeEthIn;
+        cumulativeEthOut     = _initialState.cumulativeEthOut;
+        tokensFromSwapsIn    = _initialState.tokensFromSwapsIn;
+        tokensFromSwapsOut   = _initialState.tokensFromSwapsOut;
+        lastDepositEpoch     = _initialState.lastDepositEpoch;
     }
 
     // ─── IProtocolAdapter ────────────────────────────────────────────────
@@ -283,6 +326,7 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
         nonReentrant
         returns (uint256 shares)
     {
+        if (migrated) revert AdapterMigrated();
         if (msg.value == 0) revert ZeroAmount();
 
         // Pull pending fees + dump to fund. Runs first so fee-token
@@ -346,6 +390,13 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
         nonReentrant
         returns (uint256 ethReturned)
     {
+        // Post-migration: accept the call so the IM can decrement its
+        // `pos.shares` accounting normally, but there's nothing to
+        // withdraw (tokens are in the successor adapter). Returning 0
+        // keeps `IM.withdrawAll` and any agent action against the dead
+        // adapter from reverting — they just yield zero ETH.
+        if (migrated) return 0;
+
         if (shares == 0) revert ZeroAmount();
 
         // Drain any pending fees first so the upstream's accrued WETH
@@ -468,6 +519,10 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
     ///         `tokensFromSwapsIn` so post-fee bookkeeping reflects
     ///         only swap-purchased tokens).
     function pokeFees() external nonReentrant {
+        // Post-migration: upstream's recipient is now the successor
+        // adapter; nothing to claim here. Quietly no-op rather than
+        // doing a wasted external call.
+        if (migrated) return;
         _claimAndForwardFees(POKE_TIP_BPS);
     }
 
@@ -493,6 +548,78 @@ contract CostanzaTokenAdapter is IProtocolAdapter, Ownable2Step, ReentrancyGuard
         // Ownable2Step's override) clears _pendingOwner too.
         _transferOwnership(address(0));
         emit Frozen();
+    }
+
+    /// @notice Move all $COSTANZA + the upstream fee-claim destination
+    ///         to a successor adapter. One-way; can only run once.
+    ///         Frozen by `freeze()` (revokes ownership).
+    ///
+    /// @dev Migration ceremony (off-chain script):
+    ///        1. Read this adapter's accumulators on-chain.
+    ///        2. Deploy v2 with those values via `InitialState`.
+    ///        3. IM admin: `addProtocol(v2, ...)`.
+    ///        4. Owner: call `migrate(v2)` — this function. Tokens move,
+    ///           fees re-point, accumulators zero, all atomically.
+    ///        5. IM admin: `setProtocolActive(v1, false)`. Optional but
+    ///           keeps the agent's snapshot view tidy.
+    ///
+    ///      After this runs:
+    ///        - `deposit` reverts with `AdapterMigrated`.
+    ///        - `withdraw` returns 0 (lets the IM drain its `pos.shares`
+    ///          accounting without reverting).
+    ///        - `pokeFees` no-ops.
+    ///        - `balance()` returns 0 (accumulators are zeroed and
+    ///          there are no tokens).
+    function migrate(address newAdapter) external onlyOwner nonReentrant {
+        if (migrated) revert AdapterMigrated();
+        if (newAdapter == address(0) || newAdapter == address(this)) {
+            revert InvalidConfig();
+        }
+
+        migrated = true;
+
+        // Pull pending fees so they migrate with the position rather
+        // than being lost or claimed by a post-migration `pokeFees`.
+        _claimAndForwardFees(0);
+
+        // Snapshot state for the event before we zero it.
+        uint256 _cumIn   = cumulativeEthIn;
+        uint256 _cumOut  = cumulativeEthOut;
+        uint256 _toksIn  = tokensFromSwapsIn;
+        uint256 _toksOut = tokensFromSwapsOut;
+        uint64  _lastEp  = lastDepositEpoch;
+
+        // Move all $COSTANZA to the successor.
+        uint256 tokens = costanzaToken.balanceOf(address(this));
+        if (tokens > 0) {
+            costanzaToken.transfer(newAdapter, tokens);
+        }
+
+        // Forward any held WETH/ETH to the fund (shouldn't be any
+        // outside of mid-call windows, but defensive).
+        uint256 wethBal = weth.balanceOf(address(this));
+        if (wethBal > 0) {
+            weth.withdraw(wethBal);
+        }
+        if (address(this).balance > 0) {
+            (bool sent, ) = fund.call{value: address(this).balance}("");
+            if (!sent) revert TransferFailed();
+        }
+
+        // Re-point the upstream fee distributor at the new adapter.
+        // Folded into migrate() for atomicity — partial migration where
+        // tokens moved but fees didn't is a worse state than either
+        // extreme.
+        feeDistributor.setRecipient(newAdapter);
+
+        // Zero accumulators so `balance()` returns 0 (no phantom value
+        // in the IM cap math while v1's `pos.shares` gets drained).
+        cumulativeEthIn    = 0;
+        cumulativeEthOut   = 0;
+        tokensFromSwapsIn  = 0;
+        tokensFromSwapsOut = 0;
+
+        emit Migrated(newAdapter, tokens, _cumIn, _cumOut, _toksIn, _toksOut, _lastEp);
     }
 
     // ─── Views ───────────────────────────────────────────────────────────

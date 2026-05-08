@@ -224,7 +224,8 @@ contract CrossStackHashTest is EpochTest {
             payable(address(fund)),
             address(im),
             key,
-            5 ether
+            5 ether,
+            InitialState(0, 0, 0, 0, 0)
         );
 
         // Seed prices.
