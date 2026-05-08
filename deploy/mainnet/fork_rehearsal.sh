@@ -106,6 +106,36 @@ ok()  { echo "✓ $*"; }
 # Lowercase a string. Portable across bash 3.2 (macOS default) and 4+.
 lc() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 
+# Send a transaction via cast and verify the on-chain receipt status.
+# `cast send` exits 0 even when the tx reverts on-chain (it just means
+# the JSON-RPC call succeeded). This wrapper parses the receipt's
+# status and dies with the tx hash + a `cast call` revert-reason probe
+# if the tx reverted. All args after the first are passed straight to
+# cast send.
+send_or_die() {
+    local label="$1"; shift
+    local out
+    out=$(cast send "$@" --rpc-url "$RPC_URL" --json 2>&1) \
+        || die "$label: cast send raw failure: $out"
+    local status tx_hash
+    status=$(echo "$out" | python3 -c \
+        "import sys, json; d=json.load(sys.stdin); print(d.get('status',''))" 2>/dev/null) || status=""
+    tx_hash=$(echo "$out" | python3 -c \
+        "import sys, json; d=json.load(sys.stdin); print(d.get('transactionHash',''))" 2>/dev/null) || tx_hash=""
+    if [[ "$status" != "0x1" ]]; then
+        echo "❌ $label: tx reverted (status=$status, hash=$tx_hash)" >&2
+        echo "   Diagnostic eth_call (will surface revert reason):" >&2
+        echo "   cast call $@ --rpc-url $RPC_URL" >&2
+        # Try the diagnostic ourselves if possible.
+        local diag
+        diag=$(cast call "$@" --rpc-url "$RPC_URL" 2>&1 | head -5) || true
+        if [[ -n "$diag" ]]; then
+            echo "   $diag" >&2
+        fi
+        exit 1
+    fi
+}
+
 # Read a uint storage slot from a contract. cast prints values with a
 # scientific-notation suffix like "10000000000000000 [1e16]" for human
 # readability — strip everything after the first space so the result
@@ -191,10 +221,10 @@ PRE_PROTO_COUNT=$(read_uint "$IM" "protocolCount()(uint256)")
 echo "protocolCount before: $PRE_PROTO_COUNT"
 
 fund_eoa "$IM_ADMIN"
-cast send --unlocked --from "$IM_ADMIN" "$IM" \
+send_or_die "addProtocol(v1)" \
+    --unlocked --from "$IM_ADMIN" "$IM" \
     "addProtocol(address,string,string,uint8,uint16)" \
-    "$V1" "$ADAPTER_NAME" "$ADAPTER_DESC" "$RISK_TIER" "$APY_BPS" \
-    --rpc-url "$RPC_URL" >/dev/null
+    "$V1" "$ADAPTER_NAME" "$ADAPTER_DESC" "$RISK_TIER" "$APY_BPS"
 ok "addProtocol landed"
 
 POST_PROTO_COUNT=$(read_uint "$IM" "protocolCount()(uint256)")
@@ -208,9 +238,9 @@ echo ""
 
 echo "═══ Phase A.3 — Doppler beneficiary handover ═══"
 fund_eoa "$BENEFICIARY"
-cast send --unlocked --from "$BENEFICIARY" "$DOPPLER" \
-    "updateBeneficiary(bytes32,address)" "$POOL_ID" "$V1" \
-    --rpc-url "$RPC_URL" >/dev/null
+send_or_die "updateBeneficiary(v1)" \
+    --unlocked --from "$BENEFICIARY" "$DOPPLER" \
+    "updateBeneficiary(bytes32,address)" "$POOL_ID" "$V1"
 ok "updateBeneficiary($POOL_ID, $V1) succeeded — Doppler accepts the handover"
 echo ""
 
@@ -221,9 +251,9 @@ fund_eoa "$FUND"
 PRE_TOKENS=$(cast call "$COSTANZA" "balanceOf(address)(uint256)" "$V1" --rpc-url "$RPC_URL" | awk '{print $1}')
 echo "v1 token balance pre-deposit: $PRE_TOKENS"
 
-cast send --unlocked --from "$FUND" --value 0.01ether --gas-limit 2000000 "$IM" \
-    "deposit(uint256,uint256)" "$PROTOCOL_ID" 0.01ether \
-    --rpc-url "$RPC_URL" >/dev/null
+send_or_die "deposit(protocol=$PROTOCOL_ID, 0.01 ETH)" \
+    --unlocked --from "$FUND" --value 0.01ether --gas-limit 2000000 "$IM" \
+    "deposit(uint256,uint256)" "$PROTOCOL_ID" 0.01ether
 ok "deposit(protocol=$PROTOCOL_ID, 0.01 ETH) landed"
 
 POST_TOKENS=$(cast call "$COSTANZA" "balanceOf(address)(uint256)" "$V1" --rpc-url "$RPC_URL" | awk '{print $1}')
@@ -281,10 +311,9 @@ echo ""
 
 echo "═══ Phase B.2 — Migrate v1 → v2 ═══"
 # migrate() is onlyOwner. Deployer is owner of both v1 and v2.
-cast send "$V1" "migrate(address)" "$V2" \
-    --gas-limit 2000000 \
-    --rpc-url "$RPC_URL" \
-    --private-key "$DEPLOYER_PK" >/dev/null
+send_or_die "v1.migrate(v2)" \
+    --gas-limit 2000000 --private-key "$DEPLOYER_PK" \
+    "$V1" "migrate(address)" "$V2"
 ok "v1.migrate($V2) landed"
 
 # Verify token transfer.
@@ -308,23 +337,25 @@ ok "v1 accumulators zeroed"
 
 # Verify Doppler now sees v2 as beneficiary by exercising pokeFees on v2
 # (production code path — production code uses the same pokeFees).
-cast send "$V2" "pokeFees()" --gas-limit 1000000 --rpc-url "$RPC_URL" --private-key "$DEPLOYER_PK" >/dev/null
+send_or_die "v2.pokeFees() post-migrate" \
+    --gas-limit 1000000 --private-key "$DEPLOYER_PK" \
+    "$V2" "pokeFees()"
 ok "v2.pokeFees() runs cleanly post-migrate"
 echo ""
 
 # ─── Phase B.3: IM admin registers v2 + deactivates v1 ───────────────────
 
 echo "═══ Phase B.3 — IM admin registers v2 + deactivates v1 ═══"
-cast send --unlocked --from "$IM_ADMIN" "$IM" \
+send_or_die "addProtocol(v2)" \
+    --unlocked --from "$IM_ADMIN" "$IM" \
     "addProtocol(address,string,string,uint8,uint16)" \
-    "$V2" "$ADAPTER_NAME" "$ADAPTER_DESC" "$RISK_TIER" "$APY_BPS" \
-    --rpc-url "$RPC_URL" >/dev/null
+    "$V2" "$ADAPTER_NAME" "$ADAPTER_DESC" "$RISK_TIER" "$APY_BPS"
 NEW_PROTOCOL_ID=$(read_uint "$IM" "protocolCount()(uint256)")
 ok "v2 registered as protocol #$NEW_PROTOCOL_ID"
 
-cast send --unlocked --from "$IM_ADMIN" "$IM" \
-    "setProtocolActive(uint256,bool)" "$PROTOCOL_ID" false \
-    --rpc-url "$RPC_URL" >/dev/null
+send_or_die "setProtocolActive(v1, false)" \
+    --unlocked --from "$IM_ADMIN" "$IM" \
+    "setProtocolActive(uint256,bool)" "$PROTOCOL_ID" false
 ok "v1 (protocol #$PROTOCOL_ID) deactivated"
 echo ""
 
