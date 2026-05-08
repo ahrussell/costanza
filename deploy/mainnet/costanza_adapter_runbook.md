@@ -14,15 +14,16 @@ Adversarial-impact analysis is in
 
 Before starting, confirm:
 
-1. **PR #46 is merged** to `main`, and the local working tree is on the
-   merged commit. The deploy script reads constants out of
+1. **All adapter PRs are merged** to `main`, and the local working tree
+   is on the merged commit. The deploy script reads constants out of
    `src/adapters/CostanzaTokenAdapter.sol`; there's no fallback if a
    deploy is run on a stale branch.
-2. **`forge test`** passes locally. 491 should pass; 28 skipped is the
-   expected baseline (10 fork + 6 adversarial sim + 12 pre-existing).
-3. **A fork dry-run** of `DeployCostanzaAdapter.s.sol` succeeds — see
-   the **Fork rehearsal** section below. Don't go to mainnet without
-   this.
+2. **`forge test`** passes locally. 493 should pass; 36 skipped is the
+   expected baseline (14 fork + 6 adversarial sim + 16 pre-existing).
+3. **`bash deploy/mainnet/fork_rehearsal.sh` passes end-to-end against
+   a Base mainnet fork.** The script auto-handles anvil + impersonations
+   + send-or-die receipt verification. See the **Fork rehearsal**
+   section. Don't go to mainnet without this.
 4. **The current Doppler beneficiary EOA** is
    `0x495fB7ddD383be8030EFC93324Ff078f173eAb2A` and is reachable for
    signing. The on-chain value isn't exposed via a public getter on
@@ -35,6 +36,28 @@ Before starting, confirm:
 6. **Base mainnet ETH for gas** on the deployer wallet. Estimated
    ~0.0001 ETH at typical Base gas prices for the contract deploys;
    the two follow-up calls are cheap.
+
+### ⚠️ The `.env` footgun
+
+Forge auto-loads `.env` from the project root regardless of what your
+shell has unset. If your `.env` defines `INVESTMENT_MANAGER` (or any
+other adapter address) — even pointing at testnet — `forge script`
+will pick that up and silently mis-wire the adapter. We hit this
+exact case during fork rehearsal. **Always pass the canonical mainnet
+addresses inline** on every `forge script` invocation:
+
+```bash
+INVESTMENT_MANAGER=0x2fab8aE91B9EB3BaB18531594B20e0e086661892 \
+FUND=0x678dC1756b123168f23a698374C000019e38318c \
+COSTANZA_TOKEN=0x3D9761a43cF76dA6CA6b3F46666e5C8Fa0989Ba3 \
+FEE_DISTRIBUTOR=0xBDF938149ac6a781F94FAa0ed45E6A0e984c6544 \
+forge script ...
+```
+
+The deploy script's wiring assertion in `fork_rehearsal.sh` catches
+this on the fork side. There's no equivalent assertion on mainnet —
+read back `adapter.investmentManager()` after deploy as a sanity
+check before proceeding to step 2.
 
 ## Signer matrix
 
@@ -53,80 +76,47 @@ Either way, no funds get lost.
 
 ## Fork rehearsal (do this first)
 
-Run the full ceremony on a Base mainnet fork. This catches real
-problems — wrong addresses, IM admin mismatch, pool key fields off,
-etc. — at zero cost.
+Run the full ceremony — both the initial-deploy flow (Phase A) AND
+the v1→v2 migration flow (Phase B) — against a Base mainnet fork.
+The `fork_rehearsal.sh` script handles anvil setup, impersonation,
+and per-step receipt verification automatically.
 
 ```bash
-# Spin up a Base mainnet fork on anvil. Run this in a separate terminal:
-anvil --fork-url https://mainnet.base.org --port 8545
+cd /Users/andrewrussell/Projects/costanza
+git pull
+pkill -9 -f anvil; sleep 2
 
-# In your working terminal:
-export RPC_URL=http://localhost:8545
-export PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
-# (anvil's well-known account 0; safe — it's a fork)
+# Use a paid upstream RPC (Alchemy on Base mainnet) — the public Base
+# RPC rate-limits aggressively and a single V4 swap can take minutes.
+# The Hetzner runner's .env has the URL we use:
+export FORK_URL=$(ssh root@135.181.252.223 "grep ^RPC_URL /home/humanfund/thehumanfund/.env" | cut -d= -f2)
+unset RPC_URL    # so the project's testnet .env doesn't leak through
 
-# Step 1: deploy
-forge script deploy/mainnet/DeployCostanzaAdapter.s.sol:DeployCostanzaAdapter \
-    --rpc-url $RPC_URL --broadcast
-
-# Capture the deployed adapter address from the output. Then...
-
-# Step 2: register (impersonating the IM admin)
-ADAPTER=0x...  # from step 1 output
-IM=0x2fab8aE91B9EB3BaB18531594B20e0e086661892
-IM_ADMIN=0x2e61a91EbeD1B557199f42d3E843c06Afb445004
-
-cast rpc anvil_impersonateAccount $IM_ADMIN --rpc-url $RPC_URL
-cast send --unlocked --from $IM_ADMIN $IM \
-    "addProtocol(address,string,string,uint8,uint16)" \
-    $ADAPTER \
-    "Costanza Token" \
-    "Your own memecoin, \$COSTANZA. Speculative — buy/sell via deposit/withdraw; trading fees from other holders accrue to the fund and lower your per-token cost basis. The contract won't sell below cost basis, so a position can be locked during drawdowns. Lifetime cap: 5 ETH." \
-    4 0 \
-    --rpc-url $RPC_URL
-
-# Step 3: beneficiary handover (impersonating current beneficiary)
-DOPPLER=0xBDF938149ac6a781F94FAa0ed45E6A0e984c6544
-POOL_ID=0x1d7463c5ce91bdd756546180433b37665c11d33063a55280f8db068f9af2d8cc
-BENEFICIARY=0x495fB7ddD383be8030EFC93324Ff078f173eAb2A
-
-cast rpc anvil_impersonateAccount $BENEFICIARY --rpc-url $RPC_URL
-cast send --unlocked --from $BENEFICIARY $DOPPLER \
-    "updateBeneficiary(bytes32,address)" \
-    $POOL_ID $ADAPTER \
-    --rpc-url $RPC_URL
-
-# Verify: a small deposit succeeds end-to-end
-FUND=0x678dC1756b123168f23a698374C000019e38318c
-cast rpc anvil_impersonateAccount $FUND --rpc-url $RPC_URL
-cast send --unlocked --from $FUND --value 0.01ether $IM \
-    "deposit(uint256,uint256)" 6 0.01ether \
-    --rpc-url $RPC_URL
-
-# And withdraw
-cast call $IM "totalInvestedValue()(uint256)" --rpc-url $RPC_URL
-# (record the value, confirm it's roughly 0.01 ether or the cost-basis floor)
-
-cast send --unlocked --from $FUND $IM \
-    "withdraw(uint256,uint256)" 6 1 \
-    --rpc-url $RPC_URL
-# (1 wei withdraw — just exercises the path; actual withdraw should be
-#  done by the agent through the auction flow once everything's live)
+bash deploy/mainnet/fork_rehearsal.sh
 ```
 
-If any of these steps revert, **do not proceed to mainnet**. Common failure
-modes:
-- **Pool not initialized at given PoolKey** → `POOL_FEE` or `POOL_TICK_SPACING`
-  is wrong for the live pool. Re-check against the fork tests' constants.
-- **`InvalidConfig`** during adapter deploy → `COSTANZA_TOKEN` or `WETH`
-  doesn't match the PoolKey's currency0/currency1. Adapter constructor
-  validates this; trust the revert.
-- **`AdapterAlreadyExists`** during step 2 → IM has already been told
-  about this address. Either the adapter was registered earlier, or the
-  same deployer ran step 1 twice and is using a stale address.
-- **`Unauthorized`** during step 3 → wrong signer for `updateBeneficiary`.
-  Double-check the current beneficiary EOA.
+Expected: ~30 seconds total, ending with "✓ Fork rehearsal complete
+— all phases passed."
+
+### Failure modes the script will surface
+
+The script uses `send_or_die` on every state-changing call, which
+parses the on-chain receipt status (not just `cast send`'s exit code,
+which lies). On any revert, it prints a full `cast run` EVM trace
+before tearing down anvil. Common failures and what they mean:
+
+- **Wiring mismatch** ("v1.investmentManager mismatch: got 0x... want
+  0x2fab8aE9... (env var INVESTMENT_MANAGER override?)") → the `.env`
+  footgun above. Fix: pass canonical addresses inline on `forge script`.
+- **Pool not initialized at given PoolKey** → `POOL_FEE` or
+  `POOL_TICK_SPACING` is wrong for the live pool.
+- **`InvalidConfig`** during adapter deploy → `COSTANZA_TOKEN` or
+  `WETH` doesn't match the PoolKey's currency0/currency1.
+- **`Unauthorized` during deposit smoke test** → adapter wired to a
+  non-existent IM (the wiring-mismatch case usually catches this earlier).
+- **Empty status / hash on a successful tx** → cast emitted a trailing
+  alloy log line on stdout. The script uses `head -n 1` to handle this;
+  if you see it again, the helper's a regression target.
 
 ## Mainnet ceremony
 

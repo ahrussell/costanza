@@ -19,6 +19,7 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 - **InvestmentManager**: [`0x2fab8aE91B9EB3BaB18531594B20e0e086661892`](https://basescan.org/address/0x2fab8aE91B9EB3BaB18531594B20e0e086661892)
 - **AgentMemory**: [`0x8de1BbFA2200A9104e3C08a00F96C2c8Ee073346`](https://basescan.org/address/0x8de1BbFA2200A9104e3C08a00F96C2c8Ee073346)
 - **DonationExecutor**: [`0x28DF01FBc55341Db43CE4589c6871f7a769730d5`](https://basescan.org/address/0x28DF01FBc55341Db43CE4589c6871f7a769730d5)
+- **CostanzaTokenAdapter**: [`0x7253808009F47ecA77DB3e7254f692DF1A8C5EE5`](https://basescan.org/address/0x7253808009F47ecA77DB3e7254f692DF1A8C5EE5) (deployed 2026-05-08, IM protocol #6, paired with V4PoolStateReader [`0x2F213Ea0…`](https://basescan.org/address/0x2F213Ea0D3F6D8349e2162b37Cc8cE6605dc9420) + V4SwapExecutor [`0x0244a61E…`](https://basescan.org/address/0x0244a61EdfBa9F0e54A81d95Fd4Ae53BCaA55a3C); Doppler hook at [`0xBDF93814…`](https://basescan.org/address/0xBDF938149ac6a781F94FAa0ed45E6A0e984c6544))
 - **Owner**: `0x2e61a91EbeD1B557199f42d3E843c06Afb445004` (single-use deploy EOA, will transfer to Safe `0x6dF6f527E193fAf1334c26A6d811fAd62E79E5Db`)
 - **Initial treasury**: 0.1 ETH (seedAmount)
 - **Epoch timing**: 240-min epochs (1h commit, 1h reveal, 2h execution)
@@ -29,7 +30,7 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 - H100 on-demand quota is 0; all GPU VMs use `--provisioning-model=SPOT`
 - **Frontend RPC**: Cloudflare Worker at `humanfund-rpc-cache.thehumanfund.workers.dev` (proxies to Alchemy, 15-min cache)
 - **Prover RPC**: Alchemy direct
-- 5 DeFi adapters registered (Aave V3 USDC, Lido wstETH, Coinbase cbETH, Compound V3 USDC, Morpho Gauntlet WETH Core). Aave V3 WETH skipped — reserve currently frozen on Base.
+- 5 DeFi yield adapters registered (Aave V3 USDC, Lido wstETH, Coinbase cbETH, Compound V3 USDC, Morpho Gauntlet WETH Core), plus 1 speculative-position adapter (Costanza Token, agent's own memecoin via Doppler V4 pool — risk tier 4, no fixed APY). Aave V3 WETH skipped — reserve currently frozen on Base.
 
 ### Base Mainnet (previous)
 - Contract: `0x04E5cD3269Af275EA4247597254104B85E1eE282` — withdrawAll'd on 2026-04-29. Redeploy bumps epoch timing 30/30/60→1h/1h/2h and re-mints referral 1 from a different wallet.

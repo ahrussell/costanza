@@ -70,6 +70,15 @@ Examples:
     # Verifier ID: 1 = TdxVerifier, 2 = MockVerifier (testnet)
     config["verifier_id"] = int(os.environ.get("VERIFIER_ID", "1"))
 
+    # Optional: CostanzaTokenAdapter address. When set, the runner
+    # opportunistically calls adapter.pokeFees() after commit and
+    # after submitAuctionResult to harvest creator fees from the
+    # Doppler hook. The 2% keeper tip subsidizes the runner's gas;
+    # the rest forwards to the fund. Best-effort — if the call
+    # reverts (e.g. no fees pending), the surrounding action still
+    # succeeds.
+    config["costanza_adapter"] = os.environ.get("COSTANZA_ADAPTER")
+
     # Source directory (used by gcp-persistent to sync enclave code to VM)
     config["source_dir"] = os.environ.get("SOURCE_DIR", ".")
 

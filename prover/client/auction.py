@@ -195,6 +195,56 @@ def reveal_bid(chain: ChainClient, state: dict):
         raise
 
 
+def poke_costanza_fees(chain: ChainClient, adapter_address: str):
+    """Best-effort harvest of $COSTANZA creator fees from the Doppler hook.
+
+    Calls `adapter.pokeFees()` which (a) collects pending LP fees from
+    the V4 pool into the adapter, (b) forwards 98% of the WETH-side as
+    ETH to the fund, and (c) tips the caller (this runner) 2% of the
+    forwarded amount as a small gas subsidy.
+
+    Best-effort by design: the strict pokeFees on the adapter side
+    (PR #53) propagates upstream reverts (e.g., misconfigured Doppler,
+    no pool activity since last claim with collectFees actually being
+    a no-op on empty — both happen). We catch and log here so a
+    pokeFees failure never bricks the surrounding commit / submit
+    flow. Worst case the next epoch's pokeFees harvests the
+    accumulated pile.
+
+    Args:
+        chain: ChainClient with the runner's signing key.
+        adapter_address: 0x… address of the deployed CostanzaTokenAdapter.
+            If falsy, the call is skipped silently (testnet / pre-deploy).
+    """
+    if not adapter_address:
+        return
+    try:
+        adapter = chain.w3.eth.contract(
+            address=Web3.to_checksum_address(adapter_address),
+            # Minimal ABI — just pokeFees(). No need to load the full
+            # adapter ABI from out/ (which adds a dependency on the
+            # adapter being in the runner's filesystem).
+            abi=[{
+                "type": "function",
+                "name": "pokeFees",
+                "inputs": [],
+                "outputs": [],
+                "stateMutability": "nonpayable",
+            }],
+        )
+        # 250k gas covers the no-fees-pending case (~25k) and the
+        # full-claim path (collectFees + WETH unwrap + 2 ETH transfers
+        # ~150k) with comfortable headroom.
+        receipt = chain.send_tx(adapter.functions.pokeFees(), gas=250_000)
+        logger.info("pokeFees() confirmed: gas=%s", receipt.get("gasUsed", "?"))
+    except Exception as e:
+        # Most-likely cause: Doppler reverts when there's nothing to
+        # release for this beneficiary, or when the pool has accrued
+        # no fresh LP fees since last harvest. Both are benign.
+        logger.info("pokeFees() skipped (%s): %s",
+                    type(e).__name__, str(e)[:120])
+
+
 def submit_result(chain: ChainClient, action_bytes: bytes, reasoning: bytes,
                   proof: bytes, verifier_id=1, memory_updates=None):
     """Submit auction result with attestation proof.
