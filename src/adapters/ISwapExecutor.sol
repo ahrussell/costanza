@@ -4,11 +4,13 @@ pragma solidity ^0.8.20;
 /// @title ISwapExecutor
 /// @notice Executes a single-pool swap on behalf of the adapter.
 ///
-/// @dev Insulates the adapter from V4 swap plumbing (UniversalRouter
-///      command encoding, PoolManager unlock callbacks, currency-delta
-///      settlement). Production deployment wires a `V4SwapExecutor`
-///      (TBD, separate file) that drives UniversalRouter. Tests use a
-///      mock with a configurable spot rate.
+/// @dev Insulates the adapter from V4 swap plumbing (PoolManager
+///      unlock callbacks, currency-delta settlement). Production
+///      deployment wires `V4SwapExecutor` (see `V4SwapExecutor.sol`),
+///      which drives PoolManager directly via `unlock` rather than
+///      going through UniversalRouter — fewer dependencies, more
+///      predictable gas. Tests use a mock with a configurable spot
+///      rate.
 ///
 ///      The executor is responsible for:
 ///        - moving `amountIn` of `tokenIn` from the adapter to itself
