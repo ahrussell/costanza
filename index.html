@@ -5616,7 +5616,11 @@ async function loadAll() {
               name: pos.protocolName,
               value: pos.currentValue,
               apy: Number(pos.expectedApyBps) / 100,
-              risk: ['', 'Low', 'Medium', 'High'][pos.riskTier] || '?',
+              // 4-tier scale matching prover/enclave/prompt_builder.py's
+              // risk_labels (so the dashboard label agrees with what the
+              // model sees in its prompt). Tier 4 (HIGH) is reserved for
+              // speculative positions like Costanza Token.
+              risk: ({1: 'Low', 2: 'Medium', 3: 'Med-High', 4: 'High'}[pos.riskTier]) || '?',
             });
           }
         } catch {}
