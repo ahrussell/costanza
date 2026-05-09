@@ -592,6 +592,15 @@ def _submit_result(chain, config, tee_result, auction, saved, state_dir, ntfy):
     logger.info("Submitting result (verifier=%d, memory_updates=%d, attempt=%d/%d)...",
                verifier_id, len(memory_updates), attempts + 1, MAX_SUBMIT_RETRIES)
 
+    # Pre-submit pokeFees: refresh the adapter's lastSample IMMEDIATELY
+    # before the action executes so the spot-vs-history manipulation
+    # gate evaluates against the freshest possible reference. With a
+    # single same-block tolerance of 5%, an attacker would need to
+    # sustain a manipulation across our pre-submit poke AND the submit
+    # tx (typically next block) to evade the gate — much harder than
+    # the alternative of a wide tolerance from a stale sample.
+    poke_costanza_fees(chain, config.get("costanza_adapter"))
+
     try:
         receipt = submit_result(
             chain,
