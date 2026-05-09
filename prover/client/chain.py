@@ -301,7 +301,13 @@ class ChainClient:
         """
         tx_params = {
             "from": self.account.address,
-            "nonce": self.w3.eth.get_transaction_count(self.account.address),
+            # Use 'pending' so back-to-back txs in a single runner
+            # invocation (e.g., commit followed by pokeFees, or
+            # submit preceded + followed by pokeFees) don't collide on
+            # nonce. With 'latest' we'd read the same nonce until the
+            # first tx confirms, leading to "nonce too low" or
+            # "replacement transaction underpriced" on the second tx.
+            "nonce": self.w3.eth.get_transaction_count(self.account.address, 'pending'),
             "value": value,
             "maxFeePerGas": self.w3.eth.gas_price * 2,
             "maxPriorityFeePerGas": self.w3.eth.max_priority_fee,
