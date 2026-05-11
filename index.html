@@ -2697,6 +2697,11 @@ function projectAuctionState({
 // ═══════════════════════════════════════════════════════
 
 let provider, fund, investmentMgr, agentMemoryContract, auctionMgr;
+// Tracks whether the memory card has been rendered successfully at
+// least once this session. Lets the catch handler avoid clobbering a
+// previously-good render with "Could not load" on a transient RPC
+// blip — the same non-destructive principle we apply to diaryEntries.
+let _memoryRendered = false;
 let treasuryChart = null;
 let inflowChart = null;
 let diaryEntries = [];
@@ -5992,7 +5997,12 @@ async function loadAll(mode = 'full') {
   }
   document.getElementById('world-age').innerHTML = ageHtml;
 
-  // Memory card (v20+: 10 slots, each {title, body}, model-authored titles)
+  // Memory card (v20+: 10 slots, each {title, body}, model-authored titles).
+  // Non-destructive: all DOM writes happen only after the reads succeed,
+  // so a transient RPC blip on a follow-up refresh leaves the previously-
+  // rendered slots intact rather than swapping them out for "Could not
+  // load". The `_memoryRendered` flag gates the initial-failure fallback
+  // so the message still shows on a truly cold load.
   try {
     const memAddr = await fund.agentMemory();
     if (memAddr && memAddr !== '0x0000000000000000000000000000000000000000') {
@@ -6011,8 +6021,6 @@ async function loadAll(mode = 'full') {
       }));
       const active = slots.filter(s => s.title.length > 0 || s.body.length > 0);
       const memBadgeText = `${active.length}/${MEMORY_SLOT_COUNT} active`;
-      document.getElementById('memory-badge').textContent = memBadgeText;
-      document.getElementById('memory-badge-modal').textContent = memBadgeText;
       // Preview: description + a single populated slot picked at random
       let previewHtml = '<div style="font-size:12px;color:var(--text-secondary);line-height:1.5;margin-bottom:10px;">Costanza can update his memory based on what he learns each epoch. Titles are his &mdash; he names each slot as he uses it. This acts as his long-term memory.</div>';
       if (active.length > 0) {
@@ -6022,9 +6030,7 @@ async function loadAll(mode = 'full') {
           <div style="font-size:12px;color:var(--text-secondary);line-height:1.5;font-style:italic;">${escapeHtml(pick.body || '(empty body)')}</div>
         `;
       }
-      document.getElementById('memory-preview').innerHTML = previewHtml;
-      // Full view — render all 10 slots
-      document.getElementById('memory-full').innerHTML = slots.map(s => `
+      const fullHtml = slots.map(s => `
         <div class="memory-slot">
           <span class="memory-idx">[${s.idx}]</span>
           <div>
@@ -6033,11 +6039,20 @@ async function loadAll(mode = 'full') {
           </div>
         </div>
       `).join('');
-    } else {
+      // Atomic-ish DOM swap: only reached if both reads succeeded.
+      document.getElementById('memory-badge').textContent = memBadgeText;
+      document.getElementById('memory-badge-modal').textContent = memBadgeText;
+      document.getElementById('memory-preview').innerHTML = previewHtml;
+      document.getElementById('memory-full').innerHTML = fullHtml;
+      _memoryRendered = true;
+    } else if (!_memoryRendered) {
       document.getElementById('memory-preview').innerHTML = '<div style="color:var(--text-dim);">AgentMemory not linked</div>';
     }
-  } catch {
-    document.getElementById('memory-preview').innerHTML = '<div style="color:var(--text-dim);">Could not load</div>';
+  } catch (err) {
+    console.warn('Memory load failed:', err);
+    if (!_memoryRendered) {
+      document.getElementById('memory-preview').innerHTML = '<div style="color:var(--text-dim);">Could not load</div>';
+    }
   }
 
   // Recent messages (last 5, regardless of read status)
