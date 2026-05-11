@@ -125,6 +125,31 @@
   .nav-status.refreshing .dot { background: var(--orange); }
   .nav-status.error .dot { background: var(--red); }
 
+  /* Top-of-viewport refresh progress bar. Slim 2px line driven by
+     startProgress/progressStage/finishProgress in the data-loading code.
+     Sits above everything (z-index 10000) and doesn't trigger reflow
+     (fixed positioning). Fades in on start, fills as stages complete,
+     snaps to 100% then fades out on finish. Works on mobile because
+     it's just a top-of-screen line — never covers content. */
+  .refresh-progress {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: transparent;
+    pointer-events: none;
+    z-index: 10000;
+    opacity: 0;
+    transition: opacity 220ms ease-out;
+  }
+  .refresh-progress.active { opacity: 1; }
+  .refresh-progress .bar {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, var(--accent), var(--accent-dim));
+    box-shadow: 0 0 6px var(--accent), 0 0 2px var(--accent);
+    transition: width 280ms ease-out;
+  }
+
   /* Pending-donation pill in the navbar — surfaces stranded SW funds
      sitewide so donors don't have to discover the recovery card
      inside the donate modal. Pulses gently to draw the eye without
@@ -1388,6 +1413,12 @@
 </style>
 </head>
 <body>
+
+<!-- Top-of-page refresh progress bar. 2px line that fills as loadAll()
+     advances through its stages. See startProgress/progressStage/
+     finishProgress in the data-loading code. Mobile-friendly: it never
+     covers content, just signals activity at the very top of the viewport. -->
+<div id="refresh-progress" class="refresh-progress" aria-hidden="true"><div class="bar"></div></div>
 
 <!-- Pending donation recovery banner — surfaced when localStorage holds
      a throwaway-wallet entry whose address still has unforwarded ETH. -->
@@ -5056,6 +5087,22 @@ function parseEpochFromHash() {
   return m ? Number(m[1]) : null;
 }
 
+// Prefetch the neighboring entries' messages so flipping the diary
+// modal feels instantaneous. Both neighbors are warmed because the user
+// might press either direction; loadEpochMessages already caches in
+// localStorage, so the second fetch is free across sessions.
+function prefetchDiaryNeighbors(currentEpoch) {
+  const idx = diaryEntries.findIndex(e => e.epoch === currentEpoch);
+  if (idx < 0) return;
+  // diaryEntries is descending by epoch, so idx-1 is the newer ("prev"
+  // in nav terms, dir=1) and idx+1 is the older ("next" in nav terms,
+  // dir=-1). Warm both.
+  const newer = diaryEntries[idx - 1];
+  const older = diaryEntries[idx + 1];
+  if (newer) loadEpochMessages(newer.epoch).catch(() => {});
+  if (older) loadEpochMessages(older.epoch).catch(() => {});
+}
+
 function openDiaryViewer(epoch) {
   if (diaryEntries.length === 0) return;
   const target = (typeof epoch === 'number' && diaryEntries.some(e => e.epoch === epoch))
@@ -5065,6 +5112,7 @@ function openDiaryViewer(epoch) {
   renderDiaryViewer();
   document.getElementById('modal-diary').classList.add('open');
   setDiaryUrlHash(diaryViewerEpoch);
+  prefetchDiaryNeighbors(diaryViewerEpoch);
 }
 
 function closeDiaryViewer() {
@@ -5079,6 +5127,7 @@ function diaryNav(dir) {
   diaryViewerEpoch = diaryEntries[newIdx].epoch;
   renderDiaryViewer();
   setDiaryUrlHash(diaryViewerEpoch);
+  prefetchDiaryNeighbors(diaryViewerEpoch);
 }
 
 function copyDiaryLink() {
@@ -5109,6 +5158,7 @@ function handleEpochHash() {
     diaryViewerEpoch = ep;
     renderDiaryViewer();
     modal.classList.add('open');
+    prefetchDiaryNeighbors(diaryViewerEpoch);
   } else if (modal.classList.contains('open')) {
     modal.classList.remove('open');
   }
@@ -5280,23 +5330,30 @@ async function loadMessagesPage(page) {
 // MEMORY HISTORY
 // ═══════════════════════════════════════════════════════
 
-async function loadMemoryHistory() {
-  const entriesWithTx = diaryEntries.filter(e => e.txHash);
+async function loadMemoryHistory(entries) {
+  const entriesWithTx = entries.filter(e => e.txHash);
   if (entriesWithTx.length === 0) return;
 
   // Fetch all tx calldata in parallel, extract the memory updates array
   // (v20+: up to 3 {slot, title, body} entries per submitAuctionResult call).
+  // Per-txHash cache: tx calldata is immutable on chain, so the parsed
+  // updates for a given txHash never change. Skips the provider.getTransaction
+  // round-trip on refresh for all historical entries.
   const perEpoch = [];
   await Promise.allSettled(
     entriesWithTx.map(async (entry) => {
       try {
+        const cached = cacheGet('mem-tx', entry.txHash);
+        if (cached) {
+          if (cached.length > 0) perEpoch.push({ epoch: entry.epoch, updates: cached });
+          return;
+        }
         const tx = await provider.getTransaction(entry.txHash);
         if (!tx) return;
         const decoded = fund.interface.parseTransaction({ data: tx.data });
         if (!decoded || decoded.name !== 'submitAuctionResult') return;
         // args: action, reasoning, proof, verifierId, updates[]
-        const updates = decoded.args[4];
-        if (!updates || updates.length === 0) return;
+        const updates = decoded.args[4] || [];
         const parsed = [];
         for (const u of updates) {
           // ethers v6 returns structs as Result-like objects — index both
@@ -5306,7 +5363,8 @@ async function loadMemoryHistory() {
           const body = String(u.body ?? u[2] ?? '');
           parsed.push({ slot, title, body });
         }
-        perEpoch.push({ epoch: entry.epoch, updates: parsed });
+        cacheSet('mem-tx', entry.txHash, parsed);
+        if (parsed.length > 0) perEpoch.push({ epoch: entry.epoch, updates: parsed });
       } catch {}
     })
   );
@@ -5318,7 +5376,7 @@ async function loadMemoryHistory() {
   const state = Array.from({ length: MEMORY_SLOT_COUNT },
                            () => ({ title: '', body: '' }));
   for (const { epoch, updates } of perEpoch) {
-    const entry = diaryEntries.find(e => e.epoch === epoch);
+    const entry = entries.find(e => e.epoch === epoch);
     if (!entry) continue;
     entry.memoryUpdates = updates.map(u => {
       const prev = state[u.slot] || { title: '', body: '' };
@@ -5342,7 +5400,7 @@ async function loadMemoryHistory() {
 // DATA LOADING
 // ═══════════════════════════════════════════════════════
 
-async function loadAll() {
+async function loadAll(mode = 'full') {
   // Core state — read currentEpoch directly; projection below handles
   // "where the contract would land if syncPhase were called now".
   const [
@@ -5365,6 +5423,7 @@ async function loadAll() {
     fund.frozenFlags(), fund.nonprofitCount().catch(() => 3n),
     fund.timingAnchor(), fund.anchorEpoch(),
   ]);
+  progressStage(mode === 'live' ? 28 : 16);
 
   // Derive auction status from whether auctionManager is set
   const amAddr = await fund.auctionManager().catch(() => '0x0000000000000000000000000000000000000000');
@@ -5423,6 +5482,7 @@ async function loadAll() {
       console.warn('Projection failed, falling back to raw state:', err);
     }
   }
+  progressStage(mode === 'live' ? 18 : 8);
 
   // Projected values: used by the display layer. `epoch` is the epoch
   // the contract would land on; `maxBid` and `bond` reflect post-sync
@@ -5435,96 +5495,163 @@ async function loadAll() {
 
   const currentEpochNum = Number(epoch);
 
-  // ── DIARY ENTRIES (all executed epochs) ──
-  // Start from currentEpochNum (not -1): with v2 auto-advance, currentEpoch may
-  // still point to the just-executed epoch before syncPhase advances it.
-  diaryEntries = [];
-
-  // Fetch DiaryEntry events (for tx hashes) and ActionRejected events
-  // (to annotate failed attempts — the contract writes EpochRecord even
-  // when the agent's action was caught by the try/catch in _executeAction,
-  // so without cross-referencing rejections the diary misrepresents what
-  // actually landed on chain).
-  let diaryEventsByEpoch = {};
-  let diaryBlockByEpoch = {};
-  let rejectedByEpoch = {};
-  let inflowsByEpoch = {};
-  let outflowsByEpoch = {};
-  try {
-    const currentBlock = await provider.getBlockNumber();
-    const [diaryLogs, rejectedLogs, donationLogs, npDonationLogs] = await Promise.all([
-      queryFilterChunked(fund, fund.filters.DiaryEntry(), DEPLOY_BLOCK, currentBlock),
-      queryFilterChunked(fund, fund.filters.ActionRejected(), DEPLOY_BLOCK, currentBlock),
-      queryFilterChunked(fund, fund.filters.DonationReceived(), DEPLOY_BLOCK, currentBlock),
-      queryFilterChunked(fund, fund.filters.NonprofitDonation(), DEPLOY_BLOCK, currentBlock),
-    ]);
-    for (const log of diaryLogs) {
-      diaryEventsByEpoch[Number(log.args[0])] = log.transactionHash;
-      diaryBlockByEpoch[Number(log.args[0])] = log.blockNumber;
-    }
-    for (const log of rejectedLogs) {
-      rejectedByEpoch[Number(log.args[0])] = Number(log.args[2]);
-    }
-    // Map each donation to the epoch whose execution block is >= the donation block
-    const epochBlockPairs = Object.entries(diaryBlockByEpoch)
-      .map(([ep, bn]) => ({ epoch: Number(ep), block: Number(bn) }))
-      .sort((a, b) => a.block - b.block);
-    // Latest executed epoch — used as the fallback bucket for donations
-    // that occurred after every recorded execution (post-settle window of
-    // the current bar). Attributing to currentEpochNum doesn't work
-    // because that epoch may not yet have an executed bar to host the
-    // value.
-    const latestExecuted = epochBlockPairs.length
-      ? epochBlockPairs[epochBlockPairs.length - 1].epoch
-      : null;
-    for (const log of donationLogs) {
-      const block = log.blockNumber;
-      const amount = parseFloat(ethers.formatEther(log.args[1]));
-      const epochEntry = epochBlockPairs.find(e => e.block >= block);
-      const targetEpoch = epochEntry ? epochEntry.epoch : latestExecuted;
-      if (targetEpoch !== null) {
-        inflowsByEpoch[targetEpoch] = (inflowsByEpoch[targetEpoch] || 0) + amount;
-      }
-    }
-    // NonprofitDonation events are epoch-indexed directly
-    for (const log of npDonationLogs) {
-      const epoch = Number(log.args[0]);
-      const amount = parseFloat(ethers.formatEther(log.args[2]));
-      outflowsByEpoch[epoch] = (outflowsByEpoch[epoch] || 0) + amount;
-    }
-  } catch {}
-
-  for (let e = currentEpochNum; e >= 1; e--) {
+  // ── LIVE-MODE ESCALATION ──
+  // If a new epoch's record has been executed since our last full refresh,
+  // fall through to the full path so the diary preview + charts pick up
+  // the new entry. We check the current epoch's executed flag (not just
+  // "epoch advanced") so we don't burn a full refresh every 90s during
+  // the entirety of an in-flight epoch — only once the record actually
+  // lands.
+  if (mode === 'live' && diaryEntries.length > 0
+      && currentEpochNum > diaryEntries[0].epoch) {
     try {
-      const rec = await fund.getEpochRecord(e);
-      if (rec.executed) {
-        const rejectReason = rejectedByEpoch[e];
-        diaryEntries.push({
-          epoch: e, timestamp: rec.timestamp,
-          action: decodeAction(rec.action, rejectReason),
-          reasoning: decodeReasoning(rec.reasoning),
-          treasuryBefore: rec.treasuryBefore,
-          treasuryAfter: rec.treasuryAfter,
-          bountyPaid: rec.bountyPaid,
-          txHash: diaryEventsByEpoch[e] || null,
-          memoryUpdates: [],
-          rejected: rejectReason !== undefined,
-          rejectReason: rejectReason,
-        });
-      }
+      const rec = await fund.getEpochRecord(currentEpochRaw);
+      if (rec.executed) mode = 'full';
     } catch {}
   }
 
-  // Add bounties paid to per-epoch outflows
-  for (const entry of diaryEntries) {
-    if (entry.bountyPaid > 0n) {
-      const b = parseFloat(ethers.formatEther(entry.bountyPaid));
-      outflowsByEpoch[entry.epoch] = (outflowsByEpoch[entry.epoch] || 0) + b;
-    }
-  }
+  // ── DIARY ENTRIES (all executed epochs) ──
+  // Non-destructive: build into nextDiary, atomic-swap at the end. While
+  // a refresh is in flight, openDiaryViewer() / diaryNav() / the URL hash
+  // handler keep seeing the previous diaryEntries — the modal stays
+  // fully navigable mid-refresh. In live mode, we don't rebuild it at
+  // all (the escalation above handles the new-epoch case).
+  let nextDiary = diaryEntries;
+  let inflowsByEpoch = {};
+  let outflowsByEpoch = {};
 
-  // Load memory history (from/to diffs) in parallel
-  await loadMemoryHistory();
+  if (mode === 'full') {
+    nextDiary = [];
+
+    // Fetch DiaryEntry events (for tx hashes) and ActionRejected events
+    // (to annotate failed attempts — the contract writes EpochRecord even
+    // when the agent's action was caught by the try/catch in _executeAction,
+    // so without cross-referencing rejections the diary misrepresents what
+    // actually landed on chain).
+    let diaryEventsByEpoch = {};
+    let diaryBlockByEpoch = {};
+    let rejectedByEpoch = {};
+    try {
+      const currentBlock = await provider.getBlockNumber();
+      const [diaryLogs, rejectedLogs, donationLogs, npDonationLogs] = await Promise.all([
+        queryFilterChunked(fund, fund.filters.DiaryEntry(), DEPLOY_BLOCK, currentBlock),
+        queryFilterChunked(fund, fund.filters.ActionRejected(), DEPLOY_BLOCK, currentBlock),
+        queryFilterChunked(fund, fund.filters.DonationReceived(), DEPLOY_BLOCK, currentBlock),
+        queryFilterChunked(fund, fund.filters.NonprofitDonation(), DEPLOY_BLOCK, currentBlock),
+      ]);
+      for (const log of diaryLogs) {
+        diaryEventsByEpoch[Number(log.args[0])] = log.transactionHash;
+        diaryBlockByEpoch[Number(log.args[0])] = log.blockNumber;
+      }
+      for (const log of rejectedLogs) {
+        rejectedByEpoch[Number(log.args[0])] = Number(log.args[2]);
+      }
+      // Map each donation to the epoch whose execution block is >= the donation block
+      const epochBlockPairs = Object.entries(diaryBlockByEpoch)
+        .map(([ep, bn]) => ({ epoch: Number(ep), block: Number(bn) }))
+        .sort((a, b) => a.block - b.block);
+      // Latest executed epoch — used as the fallback bucket for donations
+      // that occurred after every recorded execution (post-settle window of
+      // the current bar). Attributing to currentEpochNum doesn't work
+      // because that epoch may not yet have an executed bar to host the
+      // value.
+      const latestExecuted = epochBlockPairs.length
+        ? epochBlockPairs[epochBlockPairs.length - 1].epoch
+        : null;
+      for (const log of donationLogs) {
+        const block = log.blockNumber;
+        const amount = parseFloat(ethers.formatEther(log.args[1]));
+        const epochEntry = epochBlockPairs.find(e => e.block >= block);
+        const targetEpoch = epochEntry ? epochEntry.epoch : latestExecuted;
+        if (targetEpoch !== null) {
+          inflowsByEpoch[targetEpoch] = (inflowsByEpoch[targetEpoch] || 0) + amount;
+        }
+      }
+      // NonprofitDonation events are epoch-indexed directly
+      for (const log of npDonationLogs) {
+        const epoch = Number(log.args[0]);
+        const amount = parseFloat(ethers.formatEther(log.args[2]));
+        outflowsByEpoch[epoch] = (outflowsByEpoch[epoch] || 0) + amount;
+      }
+    } catch {}
+    progressStage(10);
+
+    // Per-epoch records: cache executed records in localStorage (they're
+    // immutable post-execution) and fetch the rest in parallel chunks of 10
+    // through the ethers batched RPC. The previous serial loop with one
+    // await per epoch was the single biggest contributor to refresh time
+    // on long histories.
+    const epochsToFetch = [];
+    const recordByEpoch = {};
+    for (let e = currentEpochNum; e >= 1; e--) {
+      const cached = cacheGet('rec', e);
+      if (cached && cached.executed) {
+        recordByEpoch[e] = cached;
+      } else {
+        epochsToFetch.push(e);
+      }
+    }
+    const FETCH_CHUNK = 10;
+    for (let i = 0; i < epochsToFetch.length; i += FETCH_CHUNK) {
+      const chunk = epochsToFetch.slice(i, i + FETCH_CHUNK);
+      const recs = await Promise.all(
+        chunk.map(e => fund.getEpochRecord(e).catch(() => null))
+      );
+      for (let j = 0; j < chunk.length; j++) {
+        const r = recs[j];
+        if (!r) continue;
+        const serialized = {
+          executed: Boolean(r.executed),
+          timestamp: (r.timestamp ?? 0n).toString(),
+          action: r.action,
+          reasoning: r.reasoning,
+          treasuryBefore: (r.treasuryBefore ?? 0n).toString(),
+          treasuryAfter: (r.treasuryAfter ?? 0n).toString(),
+          bountyPaid: (r.bountyPaid ?? 0n).toString(),
+        };
+        recordByEpoch[chunk[j]] = serialized;
+        // Cache only fully-executed records — they're immutable then.
+        if (serialized.executed) cacheSet('rec', chunk[j], serialized);
+      }
+    }
+    progressStage(14);
+
+    for (let e = currentEpochNum; e >= 1; e--) {
+      const r = recordByEpoch[e];
+      if (!r || !r.executed) continue;
+      const rejectReason = rejectedByEpoch[e];
+      nextDiary.push({
+        epoch: e,
+        timestamp: BigInt(r.timestamp),
+        action: decodeAction(r.action, rejectReason),
+        reasoning: decodeReasoning(r.reasoning),
+        treasuryBefore: BigInt(r.treasuryBefore),
+        treasuryAfter: BigInt(r.treasuryAfter),
+        bountyPaid: BigInt(r.bountyPaid),
+        txHash: diaryEventsByEpoch[e] || null,
+        memoryUpdates: [],
+        rejected: rejectReason !== undefined,
+        rejectReason: rejectReason,
+      });
+    }
+
+    // Add bounties paid to per-epoch outflows
+    for (const entry of nextDiary) {
+      if (entry.bountyPaid > 0n) {
+        const b = parseFloat(ethers.formatEther(entry.bountyPaid));
+        outflowsByEpoch[entry.epoch] = (outflowsByEpoch[entry.epoch] || 0) + b;
+      }
+    }
+
+    // Load memory history (from/to diffs). Per-txHash cache makes this
+    // a no-op for historical entries; only new ones hit the RPC.
+    await loadMemoryHistory(nextDiary);
+    progressStage(8);
+
+    // Atomic swap: from this line on, openDiaryViewer/diaryNav see the
+    // fresh data. Before this line, they kept seeing the prior state.
+    diaryEntries = nextDiary;
+  }
 
   // Store ETH price for modal USD estimate
   lastEthUsdPrice = ethUsdPrice;
@@ -5676,8 +5803,12 @@ async function loadAll() {
   document.querySelectorAll('.commission-pct').forEach(el => el.textContent = currentCommissionPct);
   document.getElementById('inflow-commissions-paid').innerHTML = fmtEthUsd(commPaid);
 
-  // Inflow/outflow chart — inflows as positive bars, outflows as negative bars
-  if (diaryEntries.length > 1) {
+  // Inflow/outflow chart — inflows as positive bars, outflows as negative bars.
+  // Only rebuilt in full mode: inflowsByEpoch/outflowsByEpoch come from the
+  // event log scan above (full-mode only). In live mode the prior chart data
+  // remains valid (historical executed bars don't change), and donations
+  // since the last full refresh will land in the chart on the next focus.
+  if (mode === 'full' && diaryEntries.length > 1) {
     const chartData = [...diaryEntries].reverse();
     const inValues = chartData.map(e => inflowsByEpoch[e.epoch] || 0);
     const outValues = chartData.map(e => -(outflowsByEpoch[e.epoch] || 0));
@@ -5696,44 +5827,51 @@ async function loadAll() {
   document.getElementById('donations-eth').textContent = fmtEth(donated);
   document.getElementById('donations-usd').textContent = fmtUsd(donatedUsd);
 
+  // Nonprofits list — sequential per-nonprofit reads. Full-mode only:
+  // per-nonprofit totals change slowly relative to the 90s refresh cadence
+  // (full refresh on tab focus picks up new totals). In live mode the prior
+  // table stays in the DOM untouched.
   const npCountNum = Number(npCount);
-  if (npCountNum > 0) {
-    const nonprofits = [];
-    for (let i = 1; i <= npCountNum; i++) {
-      try {
-        const np = await fund.getNonprofit(i);
-        let ein = '';
-        if (np.ein && np.ein !== '0x0000000000000000000000000000000000000000000000000000000000000000') {
-          try {
-            const hexStr = np.ein.replace(/0x/, '').replace(/0+$/, '');
-            if (hexStr.length > 0) ein = hexStr.match(/.{1,2}/g).map(b => String.fromCharCode(parseInt(b, 16))).join('');
-          } catch {}
-        }
-        nonprofits.push({ name: np.name, desc: np.description, ein, donated: np.totalDonated, donatedUsd: np.totalDonatedUsd, count: Number(np.donationCount) });
-      } catch {}
+  if (mode === 'full') {
+    if (npCountNum > 0) {
+      const nonprofits = [];
+      for (let i = 1; i <= npCountNum; i++) {
+        try {
+          const np = await fund.getNonprofit(i);
+          let ein = '';
+          if (np.ein && np.ein !== '0x0000000000000000000000000000000000000000000000000000000000000000') {
+            try {
+              const hexStr = np.ein.replace(/0x/, '').replace(/0+$/, '');
+              if (hexStr.length > 0) ein = hexStr.match(/.{1,2}/g).map(b => String.fromCharCode(parseInt(b, 16))).join('');
+            } catch {}
+          }
+          nonprofits.push({ name: np.name, desc: np.description, ein, donated: np.totalDonated, donatedUsd: np.totalDonatedUsd, count: Number(np.donationCount) });
+        } catch {}
+      }
+      // Sort by donated USD desc
+      nonprofits.sort((a, b) => Number(b.donatedUsd) - Number(a.donatedUsd));
+      const SHOW_FIRST = 3;
+      let npHtml = '<table class="data-table expandable-list" id="np-list"><thead><tr><th>Nonprofit</th><th class="text-right">USD</th><th class="text-right">ETH</th></tr></thead><tbody>';
+      nonprofits.forEach((np, idx) => {
+        const extraClass = idx >= SHOW_FIRST ? ' class="expand-row"' : '';
+        npHtml += `<tr${extraClass}>
+          <td style="color:var(--text);font-family:var(--sans);">
+            <div style="font-weight:500;">${np.name}</div>
+            ${np.ein ? `<div style="font-size:10px;color:var(--text-dim);">${np.ein}</div>` : ''}
+          </td>
+          <td class="text-right">${fmtUsd(np.donatedUsd)}</td>
+          <td class="text-right" style="color:var(--green);">${fmtEth(np.donated)}</td>
+        </tr>`;
+      });
+      npHtml += '</tbody></table>';
+      if (nonprofits.length > SHOW_FIRST) {
+        npHtml += `<div class="expand-toggle" onclick="toggleExpandList('np-list', this)"><span class="chevron">&#9660;</span> ${nonprofits.length - SHOW_FIRST} more</div>`;
+      }
+      document.getElementById('nonprofits-list').innerHTML = npHtml;
+    } else {
+      document.getElementById('nonprofits-list').innerHTML = '<div class="empty-state">No nonprofits registered</div>';
     }
-    // Sort by donated USD desc
-    nonprofits.sort((a, b) => Number(b.donatedUsd) - Number(a.donatedUsd));
-    const SHOW_FIRST = 3;
-    let npHtml = '<table class="data-table expandable-list" id="np-list"><thead><tr><th>Nonprofit</th><th class="text-right">USD</th><th class="text-right">ETH</th></tr></thead><tbody>';
-    nonprofits.forEach((np, idx) => {
-      const extraClass = idx >= SHOW_FIRST ? ' class="expand-row"' : '';
-      npHtml += `<tr${extraClass}>
-        <td style="color:var(--text);font-family:var(--sans);">
-          <div style="font-weight:500;">${np.name}</div>
-          ${np.ein ? `<div style="font-size:10px;color:var(--text-dim);">${np.ein}</div>` : ''}
-        </td>
-        <td class="text-right">${fmtUsd(np.donatedUsd)}</td>
-        <td class="text-right" style="color:var(--green);">${fmtEth(np.donated)}</td>
-      </tr>`;
-    });
-    npHtml += '</tbody></table>';
-    if (nonprofits.length > SHOW_FIRST) {
-      npHtml += `<div class="expand-toggle" onclick="toggleExpandList('np-list', this)"><span class="chevron">&#9660;</span> ${nonprofits.length - SHOW_FIRST} more</div>`;
-    }
-    document.getElementById('nonprofits-list').innerHTML = npHtml;
-  } else {
-    document.getElementById('nonprofits-list').innerHTML = '<div class="empty-state">No nonprofits registered</div>';
+    progressStage(6);
   }
 
   // Investments card
@@ -5924,6 +6062,7 @@ async function loadAll() {
   } catch {
     document.getElementById('world-messages').innerHTML = '<div class="empty-state" style="padding:16px;">Could not load</div>';
   }
+  progressStage(8);
 
   // Diary preview (fading)
   if (diaryEntries.length > 0) {
@@ -6121,9 +6260,16 @@ async function loadAll() {
   } else {
     document.getElementById('tl-bids').innerHTML = '<div style="font-family:var(--mono);font-size:20px;font-weight:600;">N/A</div>';
   }
+  progressStage(8);
 
   // ── EVENTS ──
-  await loadEvents();
+  // 13 chunked event-filter scans against the full deploy-block range —
+  // the single most expensive section of loadAll. Skipped in live mode;
+  // the prior event log stays in the DOM untouched.
+  if (mode === 'full') {
+    await loadEvents();
+    progressStage(15);
+  }
 }
 
 async function loadEvents() {
@@ -6256,7 +6402,7 @@ async function probeDataFreshness() {
   lastUpdatedAt = Date.now();
 }
 
-// Re-entry guard. setInterval fires every 30s but loadAll() can run
+// Re-entry guard. setInterval fires every 90s but loadAll() can run
 // longer than that when the worker cache is cold (chunked eth_getLogs
 // against Alchemy upstream). Without this guard, a second refresh
 // starts while the first is still mid-push into shared module-level
@@ -6264,13 +6410,68 @@ async function probeDataFreshness() {
 // duplicating events in the inflows/outflows chart.
 let _refreshInFlight = false;
 
-async function refresh() {
+// ── REFRESH PROGRESS BAR ──
+// Drives #refresh-progress. startProgress() resets and shows; each
+// progressStage(weight) call advances by `weight` points (cap at 92
+// mid-flight so the bar never visually completes before finishProgress
+// snaps it to 100% and fades it out). Weights don't have to sum to
+// anything specific — they're rough proportions of total work, picked
+// so the bar tracks loosely with perceived progress.
+let _progressPct = 0;
+let _progressActive = false;
+let _progressFadeTimer = null;
+function startProgress() {
+  const el = document.getElementById('refresh-progress');
+  if (!el) return;
+  if (_progressFadeTimer) { clearTimeout(_progressFadeTimer); _progressFadeTimer = null; }
+  _progressActive = true;
+  _progressPct = 0;
+  const bar = el.querySelector('.bar');
+  // Bypass transition on reset so a fresh refresh doesn't briefly show
+  // the old bar receding to zero.
+  bar.style.transition = 'none';
+  bar.style.width = '0%';
+  void bar.offsetWidth; // force reflow
+  bar.style.transition = '';
+  el.classList.add('active');
+  // Initial nudge so the bar appears visibly active right away.
+  setTimeout(() => progressStage(8), 16);
+}
+function progressStage(weight) {
+  if (!_progressActive) return;
+  _progressPct = Math.min(92, _progressPct + weight);
+  const bar = document.querySelector('#refresh-progress .bar');
+  if (bar) bar.style.width = _progressPct + '%';
+}
+function finishProgress() {
+  const el = document.getElementById('refresh-progress');
+  if (!el) return;
+  _progressActive = false;
+  const bar = el.querySelector('.bar');
+  bar.style.width = '100%';
+  _progressFadeTimer = setTimeout(() => {
+    el.classList.remove('active');
+    _progressFadeTimer = null;
+  }, 340);
+}
+
+// Two refresh modes:
+//   'full' — full page rebuild: re-pulls event logs, diary records,
+//            memory history, nonprofits, the 13 event-type log scan.
+//            Used on initial load and when the tab regains focus.
+//   'live' — light refresh: pulls only the counters/state that change
+//            mid-epoch (treasury, projected phase, latest bids, recent
+//            messages, hero numbers). Falls back to 'full' if a new
+//            epoch was executed since the last refresh.
+//            Used by the 90s auto-refresh timer.
+async function refresh(mode = 'full') {
   if (_refreshInFlight) return;
   _refreshInFlight = true;
   connectionState = 'refreshing';
   renderStatus();
+  startProgress();
   try {
-    await loadAll();
+    await loadAll(mode);
     await probeDataFreshness();
     connectionState = 'connected';
     renderStatus();
@@ -6280,6 +6481,7 @@ async function refresh() {
     renderStatus();
   } finally {
     _refreshInFlight = false;
+    finishProgress();
   }
 }
 
@@ -6333,22 +6535,24 @@ async function init() {
     // Silent auto-reconnect for returning users (injected wallets only).
     attemptAutoReconnect().catch(() => {/* surfaced in console */});
 
-    await refresh();
+    await refresh('full');
 
     // Honor #epoch=N deep links once diaryEntries has been populated.
     handleEpochHash();
 
     // Auto-refresh every 90s (was 30s — Twitter-launch traffic spike
-    // 2026-05-06 burned through Alchemy quota). With a 6h epoch
+    // 2026-05-06 burned through Alchemy quota). With a 4h epoch
     // cadence, sub-minute refresh is overkill; 90s is plenty fresh.
-    // Skip refresh when the tab is hidden (most visitors open & switch
-    // away — no point polling for nobody). Re-fire immediately when
-    // the tab regains focus so returning visitors don't see stale state.
+    // Skip when the tab is hidden (most visitors open & switch away —
+    // no point polling for nobody). Auto-refresh uses 'live' mode —
+    // cheap, skips event log scans and the per-epoch record loop.
+    // visibilitychange uses 'full' to catch up after returning from a
+    // background tab.
     setInterval(() => {
-      if (!document.hidden) refresh();
+      if (!document.hidden) refresh('live');
     }, 90000);
     document.addEventListener('visibilitychange', () => {
-      if (!document.hidden) refresh();
+      if (!document.hidden) refresh('full');
     });
   } catch (err) {
     console.error('Init error:', err);
