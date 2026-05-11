@@ -59,7 +59,7 @@ contract DeployOrderingTest is Test {
         InvestmentManager im = new InvestmentManager(address(fund), address(this));
         fund.setInvestmentManager(address(im));
 
-        AgentMemory wv = new AgentMemory(address(fund));
+        AgentMemory wv = new AgentMemory(address(fund), address(im));
         fund.setAgentMemory(address(wv));
 
         // Seed three slots so the memoryHash is non-trivial.
@@ -108,7 +108,7 @@ contract DeployOrderingTest is Test {
         InvestmentManager im = new InvestmentManager(address(fund), address(this));
         fund.setInvestmentManager(address(im));
 
-        AgentMemory wv = new AgentMemory(address(fund));
+        AgentMemory wv = new AgentMemory(address(fund), address(im));
         fund.setAgentMemory(address(wv));
 
         uint256[] memory slots = new uint256[](1);

@@ -130,8 +130,14 @@ contract CrossStackHashTest is EpochTest {
 
     /// @notice Test with populated memory entries — exercises _hashMemory cross-stack.
     function test_cross_stack_hash_with_memory() public {
-        // Wire up AgentMemory
-        AgentMemory wv = new AgentMemory(address(fund));
+        // AgentMemory v2 requires IM in its constructor (so getEntries can
+        // append protocol descriptions at indices 10+). Wire an IM here
+        // with no protocols registered — the test exercises memory-only
+        // hashing, length is exactly 10.
+        InvestmentManager im = new InvestmentManager(address(fund), address(this));
+        fund.setInvestmentManager(address(im));
+
+        AgentMemory wv = new AgentMemory(address(fund), address(im));
         fund.setAgentMemory(address(wv));
 
         // Set memory entries via epoch actions (memory updates are sidecars on submitAuctionResult)
@@ -151,7 +157,10 @@ contract CrossStackHashTest is EpochTest {
     ///         empty / title-only / full / long-title slots to catch any
     ///         padding or truncation drift between Solidity and Python.
     function test_cross_stack_hash_with_titles() public {
-        AgentMemory wv = new AgentMemory(address(fund));
+        InvestmentManager im = new InvestmentManager(address(fund), address(this));
+        fund.setInvestmentManager(address(im));
+
+        AgentMemory wv = new AgentMemory(address(fund), address(im));
         fund.setAgentMemory(address(wv));
 
         bytes memory doNothingAction = abi.encodePacked(uint8(0));
@@ -261,8 +270,9 @@ contract CrossStackHashTest is EpochTest {
         MockAdapter adapter = new MockAdapter("Compound V3 USDC", address(im));
         im.addProtocol(address(adapter), "Compound V3 USDC", "Lend USDC on Compound", 1, 450);
 
-        // Wire up AgentMemory
-        AgentMemory wv = new AgentMemory(address(fund));
+        // Wire up AgentMemory (with the IM above so descriptions are
+        // accessible via getEntries() indices 10+)
+        AgentMemory wv = new AgentMemory(address(fund), address(im));
         fund.setAgentMemory(address(wv));
 
         // Invest + set memory in one epoch
@@ -452,8 +462,15 @@ contract CrossStackHashTest is EpochTest {
         // Memory — read from AgentMemory if wired, else empty.
         string memory memEntries = _buildMemoryJson();
 
+        // Python's _hash_investments distinguishes "no IM wired" (Sol
+        // path: bytes32(0)) from "IM wired with 0 protocols" (Sol path:
+        // epochStateHash returns a non-zero hash even when empty). The
+        // runner passes this signal explicitly; we replicate that here.
+        bool imWired = address(fund.investmentManager()) != address(0);
+
         return string.concat(
             scalars,
+            ',"investment_manager_wired":', imWired ? "true" : "false",
             ',"nonprofits":', nps,
             ',"investments":', invs,
             ',"memories":', memEntries,
@@ -497,9 +514,13 @@ contract CrossStackHashTest is EpochTest {
         IAgentMemory am = fund.agentMemory();
         if (address(am) == address(0)) return "[]";
 
-        IAgentMemory.MemoryEntry[10] memory entries = am.getEntries();
+        // getEntries() now returns a variable-length list: 10 mutable slots
+        // followed by N protocol (name, description) pairs sourced live
+        // from InvestmentManager. The Python mirror hashes them in the
+        // same order; we serialize the full list here.
+        IAgentMemory.MemoryEntry[] memory entries = am.getEntries();
         string memory result = "[";
-        for (uint256 i = 0; i < 10; i++) {
+        for (uint256 i = 0; i < entries.length; i++) {
             if (i > 0) result = string.concat(result, ",");
             result = string.concat(result,
                 '{"title":"', entries[i].title,

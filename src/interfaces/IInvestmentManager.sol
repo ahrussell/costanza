@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
+import "./IProtocolAdapter.sol";
+
 /// @title IInvestmentManager
 /// @notice Interface for the investment manager called by TheHumanFund.
 ///         Manages a portfolio of DeFi protocol positions with bounds checking.
@@ -51,6 +53,26 @@ interface IInvestmentManager {
 
     /// @notice Number of registered protocols.
     function protocolCount() external view returns (uint256);
+
+    /// @notice Auto-getter for the `protocols` storage mapping. Returns the
+    ///         full `ProtocolInfo` struct fields for `protocolId`, INCLUDING
+    ///         the human-readable description.
+    /// @dev    `getProtocol(...)` returns a subset of these fields without
+    ///         `description`; this method exposes the full set so callers
+    ///         (e.g., `AgentMemory.getEntries`) can read the description
+    ///         that's hashed into `memoryHash`. Signature matches the
+    ///         auto-generated getter from the public `protocols` mapping
+    ///         on the concrete `InvestmentManager` contract; the deployed
+    ///         immutable mainnet IM already exposes this selector.
+    function protocols(uint256 protocolId) external view returns (
+        IProtocolAdapter adapter,
+        string memory name,
+        string memory description,
+        uint8 riskTier,
+        uint16 expectedApyBps,
+        bool active,
+        bool exists
+    );
 
     /// @notice Get the current value of a position (from adapter.balance()).
     /// @param protocolId The protocol ID (1-indexed).

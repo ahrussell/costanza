@@ -64,9 +64,12 @@ _IM_ABI = [
 ]
 
 _WV_ABI = [
+    # getEntries() returns a variable-length list of MemoryEntry.
+    # First 10 are mutable agent memory; the rest are read-only protocol
+    # (name, description) pairs sourced live from InvestmentManager.
     {"name": "getEntries", "type": "function", "inputs": [],
      "outputs": [
-         {"type": "tuple[10]", "components": [
+         {"type": "tuple[]", "components": [
              {"name": "title", "type": "string"},
              {"name": "body", "type": "string"},
          ]},
@@ -258,15 +261,23 @@ def read_contract_state(contract, w3, epoch=None):
         pass
 
     # ── Memory (live read — stable between freeze and verify) ─────────────
-    # Each slot is a {title, body} pair. All 10 slots are writable.
+    # Each entry is a {title, body} pair. AgentMemory.getEntries() returns
+    # a variable-length list: slots 0..9 are the agent's mutable memory;
+    # slots 10..(10 + protocolCount - 1) are read-only protocol
+    # (name, description) pairs sourced live from InvestmentManager. The
+    # convention is interpreted by the TEE prompt builder and the
+    # frontend, not here — at this layer, "memories" is just the list of
+    # entries the agentMemory contract serves.
+    #
     # Hash divergence here = REPORTDATA divergence = on-chain submit revert,
     # so don't silently swallow read errors — let them surface immediately.
     state["memories"] = [{"title": "", "body": ""} for _ in range(10)]
     mem_addr = contract.functions.agentMemory().call()
     if mem_addr and mem_addr != "0x0000000000000000000000000000000000000000":
         mem = w3.eth.contract(address=Web3.to_checksum_address(mem_addr), abi=_WV_ABI)
-        # web3.py decodes the tuple[10] return as a list of (title, body)
-        # tuples. Normalize to dicts so the prompt/hasher see a stable shape.
+        # web3.py decodes the variable-length return as a list of
+        # (title, body) tuples. Normalize to dicts so the prompt/hasher
+        # see a stable shape.
         raw = mem.functions.getEntries().call()
         normalized = []
         for entry in raw:
@@ -279,10 +290,11 @@ def read_contract_state(contract, w3, epoch=None):
                 })
             else:
                 normalized.append({"title": "", "body": ""})
-        # Pad / truncate to exactly 10 slots.
-        while len(normalized) < 10:
-            normalized.append({"title": "", "body": ""})
-        state["memories"] = normalized[:10]
+        # Pass the full list through unchanged. The contract's stateHash
+        # hashes whatever getEntries returns; truncating to 10 here would
+        # drop the description entries at positions 10+ and break input
+        # hash parity.
+        state["memories"] = normalized
 
     # ── Donor messages (live, bounded by snap.message_head/count) ────────
     # Individual message slots are immutable once written, and the

@@ -250,44 +250,55 @@ def _hash_investments(investments: list, im_wired: bool = False) -> bytes:
     ))
 
 
-def _hash_memory(policies: list) -> bytes:
+def _hash_memory(entries: list) -> bytes:
     """Replicate AgentMemory.stateHash().
 
-    Solidity:
-        return keccak256(abi.encode(
-            policies[0].title, policies[0].body,
-            policies[1].title, policies[1].body,
-            ...,
-            policies[9].title, policies[9].body
-        ));
+    Solidity (variable-length, rolling per-item hash):
+        bytes32 rolling = bytes32(0);
+        for (uint256 i = 0; i < entries.length; i++) {
+            rolling = keccak256(abi.encode(rolling, i, entries[i].title, entries[i].body));
+        }
+        return keccak256(abi.encode(rolling, entries.length));
 
-    Each slot is a `{title, body}` pair; all 10 slots (0..9) are writable
-    and included in the hash. The model owns the category taxonomy by
-    writing its own titles.
+    Generic over a variable-length list of memory entries. Each entry is
+    `{"title": str, "body": str}`. Whatever semantic convention places
+    things at particular indices (entries[0..9] = mutable slots,
+    entries[10..] = protocol descriptions sourced from InvestmentManager)
+    is irrelevant here — this layer just hashes the list. The convention
+    is decoded by the prompt builder and the frontend, not here.
 
-    Accepts each slot as a dict `{"title": ..., "body": ...}`. Missing
-    fields default to "". Missing slots pad with `{"", ""}`.
+    Position is bound into each rolling hash (the `i` argument), so a
+    malicious runner reordering entries would change every subsequent
+    rolling hash → mismatched memoryHash → submit reverts. This is the
+    same positional-binding pattern as _hash_investments and
+    _hash_nonprofits.
 
-    Zero-length memory → b'\\x00' * 32 (matches bytes32(0) sentinel).
+    Empty list (no agentMemory wired or contract returns nothing)
+        → b'\\x00' * 32 (sentinel — must match TheHumanFund's reading of
+        a zero-address agentMemory pointer).
     """
-    if not policies:
+    if not entries:
         return b"\x00" * 32
-    # Pad / truncate to exactly MEMORY_SLOTS entries.
-    padded = list(policies[:MEMORY_SLOTS])
-    while len(padded) < MEMORY_SLOTS:
-        padded.append({"title": "", "body": ""})
-    items = []
-    for p in padded:
-        if isinstance(p, dict):
-            title = p.get("title", "") or ""
-            body = p.get("body", "") or ""
+
+    rolling = b"\x00" * 32
+    for i, e in enumerate(entries):
+        if isinstance(e, dict):
+            title = e.get("title", "") or ""
+            body = e.get("body", "") or ""
         else:
             # Defensive fallback: legacy flat-string input treated as body.
             title = ""
-            body = p if isinstance(p, str) else ""
-        items.append(("string", title))
-        items.append(("string", body))
-    return _keccak256(_abi_encode(*items))
+            body = e if isinstance(e, str) else ""
+        rolling = _keccak256(_abi_encode(
+            ("bytes32", rolling),
+            ("uint256", i),
+            ("string", title),
+            ("string", body),
+        ))
+    return _keccak256(_abi_encode(
+        ("bytes32", rolling),
+        ("uint256", len(entries)),
+    ))
 
 
 def _hash_messages(donor_messages: list) -> bytes:

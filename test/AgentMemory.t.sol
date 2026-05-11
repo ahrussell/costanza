@@ -4,6 +4,7 @@ pragma solidity ^0.8.20;
 import "../src/TheHumanFund.sol";
 import "../src/AuctionManager.sol";
 import "../src/AgentMemory.sol";
+import "../src/InvestmentManager.sol";
 import "../src/interfaces/IAgentMemory.sol";
 import "./helpers/MockEndaoment.sol";
 import "./helpers/EpochTest.sol";
@@ -11,6 +12,7 @@ import "./helpers/EpochTest.sol";
 contract AgentMemoryTest is EpochTest {
     TheHumanFund public fund;
     AgentMemory public wv;
+    InvestmentManager public im;
 
     function setUp() public {
         MockWETH mw = new MockWETH();
@@ -33,11 +35,20 @@ contract AgentMemoryTest is EpochTest {
 
         mf.preDeployOrg(bytes32("EIN-GD"));
 
+        // AgentMemory now requires an IM reference in its constructor so it
+        // can read live (name, description) per protocol for the read-only
+        // entries at indices 10+. No protocols are registered in this base
+        // setUp; tests that exercise the description path register their
+        // own. Wired BEFORE setAgentMemory so the snapshot freezes a v2
+        // memory hash that includes whatever protocols are registered.
+        im = new InvestmentManager(address(fund), address(this));
+        fund.setInvestmentManager(address(im));
+
         // Deploy AuctionManager so syncPhase() works
         AuctionManager am = new AuctionManager(address(fund));
         fund.setAuctionManager(address(am), 1200, 1200, 82800);
 
-        wv = new AgentMemory(address(fund));
+        wv = new AgentMemory(address(fund), address(im));
         fund.setAgentMemory(address(wv));
         _registerMockVerifier(fund);
     }
@@ -267,7 +278,7 @@ contract AgentMemoryTest is EpochTest {
 
     // ─── getEntries ───────────────────────────────────────────────────
 
-    function test_get_all_entries() public {
+    function test_get_all_entries_with_no_protocols() public {
         speedrunEpoch(
             fund,
             abi.encodePacked(uint8(0)),
@@ -281,7 +292,9 @@ contract AgentMemoryTest is EpochTest {
             uint8(4), "B", "Beta"
         );
 
-        IAgentMemory.MemoryEntry[10] memory all = wv.getEntries();
+        IAgentMemory.MemoryEntry[] memory all = wv.getEntries();
+        // No protocols registered → length is exactly NUM_SLOTS.
+        assertEq(all.length, 10);
         assertEq(all[0].title, "");
         assertEq(all[0].body, "");
         assertEq(all[1].title, "A");
@@ -290,6 +303,64 @@ contract AgentMemoryTest is EpochTest {
         assertEq(all[4].title, "B");
         assertEq(all[4].body, "Beta");
         assertEq(all[9].title, "");
+    }
+
+    // ─── Investment descriptions (slots 10+) ──────────────────────────
+
+    /// @notice Registering a protocol appends a read-only entry at the
+    ///         next available position past slot 9.
+    function test_descriptions_appear_at_slot_10_plus() public {
+        // Deploy a stub adapter — IM just needs SOMETHING address-shaped
+        // for registration; nothing in this test calls into the adapter.
+        address stubAdapter = address(0xA1);
+
+        im.addProtocol(stubAdapter, "Aave V3 USDC",
+            "Swap ETH to USDC, lend on Aave.", 2, 500);
+
+        IAgentMemory.MemoryEntry[] memory all = wv.getEntries();
+        assertEq(all.length, 11, "10 mutable slots + 1 protocol description");
+        assertEq(all[10].title, "Aave V3 USDC");
+        assertEq(all[10].body, "Swap ETH to USDC, lend on Aave.");
+
+        // getEntry(10) returns the same value as getEntries()[10].
+        IAgentMemory.MemoryEntry memory ten = wv.getEntry(10);
+        assertEq(ten.title, "Aave V3 USDC");
+        assertEq(ten.body, "Swap ETH to USDC, lend on Aave.");
+    }
+
+    function test_multiple_protocols_in_order() public {
+        im.addProtocol(address(0xA1), "Aave V3 USDC", "desc-1", 2, 500);
+        im.addProtocol(address(0xA2), "Lido wstETH",  "desc-2", 1, 350);
+        im.addProtocol(address(0xA3), "Coinbase cbETH", "desc-3", 1, 300);
+
+        IAgentMemory.MemoryEntry[] memory all = wv.getEntries();
+        assertEq(all.length, 13, "10 + 3 protocols");
+        assertEq(all[10].title, "Aave V3 USDC");   assertEq(all[10].body, "desc-1");
+        assertEq(all[11].title, "Lido wstETH");    assertEq(all[11].body, "desc-2");
+        assertEq(all[12].title, "Coinbase cbETH"); assertEq(all[12].body, "desc-3");
+    }
+
+    /// @notice Slots 10+ are read-only. Direct setEntry attempts revert.
+    function test_setEntry_reverts_for_read_only_slot() public {
+        // Even from the fund — the slot bounds are a contract invariant.
+        vm.prank(address(fund));
+        vm.expectRevert("slot is read-only");
+        wv.setEntry(10, "hostile title", "hostile body");
+    }
+
+    function test_getEntry_reverts_past_descriptions() public {
+        // No protocols → slot 10 is past the end.
+        vm.expectRevert("invalid slot");
+        wv.getEntry(10);
+    }
+
+    /// @notice stateHash incorporates protocol descriptions. Adding a
+    ///         protocol must move the hash even with no memory change.
+    function test_stateHash_changes_when_protocol_added() public {
+        bytes32 h0 = wv.stateHash();
+        im.addProtocol(address(0xA1), "Aave V3 USDC", "desc-1", 2, 500);
+        bytes32 h1 = wv.stateHash();
+        assertTrue(h0 != h1, "stateHash must reflect new protocol");
     }
 
     // ─── Event Emission ────────────────────────────────────────────────
