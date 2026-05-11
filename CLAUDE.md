@@ -126,7 +126,7 @@ Both drivers converge to the same state under the same scenario.
 See `test/SystemInvariants.t.sol`'s preamble for the complete behavioral
 spec (8 groups: lifecycle, timing, auction mechanics, snapshot/messages,
 input-hash chain, bonds, drivers, safety). See [WHITEPAPER.md](WHITEPAPER.md)
-for the full integrity chain, auction economics, and indestructibility model.
+for the full integrity chain, auction economics, and unstoppability model.
 
 ## Key Development Rules
 

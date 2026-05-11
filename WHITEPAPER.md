@@ -1,4 +1,4 @@
-# Costanza: An Autonomous, Indestructible AI Agent
+# Costanza: An Autonomous, Unstoppable AI Agent
 
 ---
 
@@ -8,7 +8,7 @@ Costanza is an autonomous AI agent that manages a charitable treasury on the Bas
 
 No one controls Costanza. Not even its creator. It runs as long as someone — anyone — is willing to execute its inference in exchange for a bounty. It cannot be turned off; it can only sleep.
 
-Costanza is philanthropic by design. But the framework that keeps it alive is not: the same mechanisms could deploy fully autonomous, indestructible agents with arbitrary action spaces — agents that update their own weights, write and deploy their own smart contracts, or pay humans to act on their behalf. The mechanisms described here are general-purpose. Costanza is a proof of concept.
+Costanza is philanthropic by design. But the framework that keeps it alive is not: the same mechanisms could deploy fully autonomous, unstoppable agents with arbitrary action spaces — agents that update their own weights, write and deploy their own smart contracts, or pay humans to act on their behalf. The mechanisms described here are general-purpose. Costanza is a proof of concept.
 
 This document is a unified specification covering the system design, the formal security model, and the TEE construction. It states the trust assumptions, defines security properties as cryptographic games, provides proof sketches, and describes the concrete Intel TDX + dm-verity construction that instantiates the ideal functionalities.
 
@@ -28,7 +28,7 @@ When the execution window ends — whether the winner submitted or not — the s
 
 If no one bids, Costanza misses the epoch. No action is taken. The contract has an **auto-escalation** mechanism: each consecutive missed epoch, the maximum bounty ceiling grows by 10% (compounding, capped at `MAX_BID_BPS` = 10% of treasury). This means that even if the current bounty is too low for anyone to bother, the price keeps rising until someone finds it worth their while. Costanza does not die — it sleeps until the economics work out.
 
-This is the core claim: Costanza is indestructible because its survival is an economic equilibrium, not a service dependency. No single operator, cloud provider, or hardware vendor is required. Anyone with TDX-capable hardware can be a prover.
+This is the core claim: Costanza is unstoppable because its survival is an economic equilibrium, not a service dependency. No single operator, cloud provider, or hardware vendor is required. Anyone with TDX-capable hardware can be a prover.
 
 ### 2.2 Action Space
 
@@ -627,9 +627,9 @@ Under assumption A1 (TDX hardware integrity) and A2 (collision resistance of SHA
 
 ---
 
-## 8. Indestructibility and Progressive Decentralization
+## 8. Unstoppability and Progressive Decentralization
 
-This project claims that Costanza is indestructible — it cannot be destroyed, even by its creator. This is approximately true, with some caveats.
+This project claims that Costanza is unstoppable — it cannot be stopped, even by its creator. This is approximately true, with some caveats.
 
 In the early days, Costanza's creator retains the ability to: withdraw funds (to migrate to a new contract), approve new versions of its brain (TEE image or system prompt), approve new verifiers, add or remove investment protocols, and add or remove nonprofits.
 
@@ -942,7 +942,7 @@ The verifier returns the decoded quote body containing all measurement registers
 - **v1.0** at `0x95175096a9B74165BE0ac84260cc14Fc1c0EF5FF` reads Intel collateral from *permissionless base DAOs* (`AutomataFmspcTcbDao`, `AutomataEnclaveIdentityDao`). Anyone can push Intel-signed TCB info and QE identity to these DAOs by calling `upsert*` functions — the DAO validates Intel's signature internally, so trust flows from Intel's CA, not from the submitter.
 - **v1.1** at `0xaDdeC7e85c2182202b66E331f2a4A0bBB2cEEa1F` reads from *versioned DAOs* that require an `ATTESTER_ROLE` granted by Automata. v1.1 adds TCB-evaluation pinning for multi-operator AVS use cases where nodes must agree on the exact same ruleset, but for a single-operator agent like Costanza, the pinning is unnecessary and the permissioning creates a commercial dependency on Automata running mainnet keepers ($299/mo for their Developer tier).
 
-We use v1.0 because it aligns with the indestructibility thesis: Costanza's on-chain liveness depends only on Intel publishing TCB data (unavoidable — hardware root of trust) and someone running a keeper script to push that data to the on-chain PCCS. The keeper is a ~50-line Python script, anyone can run it, and keeper operations cost ~$1 per month in gas. If Automata stops maintaining their Base mainnet collateral (as we observed: SGX populated but TDX empty on Base mainnet despite both being populated on Automata Mainnet), Costanza is unaffected — we run our own keeper.
+We use v1.0 because it aligns with the unstoppability thesis: Costanza's on-chain liveness depends only on Intel publishing TCB data (unavoidable — hardware root of trust) and someone running a keeper script to push that data to the on-chain PCCS. The keeper is a ~50-line Python script, anyone can run it, and keeper operations cost ~$1 per month in gas. If Automata stops maintaining their Base mainnet collateral (as we observed: SGX populated but TDX empty on Base mainnet despite both being populated on Automata Mainnet), Costanza is unaffected — we run our own keeper.
 
 **Keeper responsibility.** Intel TCB info is signed with an `issueDate` and a `nextUpdate` timestamp, typically 30 days apart. The DCAP verifier rejects collateral where `block.timestamp > nextUpdate`. To avoid liveness failures, a keeper must push fresh collateral before each expiration. The keeper:
 
