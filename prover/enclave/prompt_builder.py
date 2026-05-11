@@ -652,7 +652,12 @@ def build_epoch_context(state, seed=None, voice_anchors: str = ""):
             pid = idx + 1
             status = "ACTIVE" if inv["active"] else "PAUSED"
             risk = risk_labels.get(inv["risk_tier"], "?")
-            apy = inv["expected_apy_bps"] / 100
+            apy_bps = inv["expected_apy_bps"]
+            # Render APY honestly. apy_bps=0 is the convention for
+            # speculative (non-yield) protocols; show "no yield" instead
+            # of "~0% APY" so the model doesn't read it as "a bad yield
+            # product" — it's a fundamentally different category.
+            yield_label = f"~{apy_bps / 100:.0f}% APY" if apy_bps > 0 else "no yield"
             # Effective room is min(per-protocol headroom, overall invest_capacity)
             raw_room = per_protocol_room.get(pid, bounds["max_per_protocol"])
             room = min(raw_room, total_capacity) if total_capacity > 0 else 0
@@ -661,12 +666,12 @@ def build_epoch_context(state, seed=None, voice_anchors: str = ""):
                 profit = inv["current_value"] - inv["deposited"]
                 profit_str = f"+{format_eth(profit)}" if profit >= 0 else f"-{format_eth(abs(profit))}"
                 lines.append(
-                    f"  #{pid} {inv['name']} [{risk}, ~{apy:.0f}% APY]: "
+                    f"  #{pid} {inv['name']} [{risk}, {yield_label}]: "
                     f"{format_eth(inv['deposited'])} deposited -> {format_eth_usd(inv['current_value'], eth_usd)} ({profit_str})  |  {room_str}"
                 )
             else:
                 lines.append(
-                    f"  #{pid} {inv['name']} [{risk}, ~{apy:.0f}% APY, {status}]: no position  |  {room_str}"
+                    f"  #{pid} {inv['name']} [{risk}, {yield_label}, {status}]: no position  |  {room_str}"
                 )
             # Inline description (positional lookup; body only — name is
             # already in the row above).
