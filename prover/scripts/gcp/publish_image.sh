@@ -95,10 +95,15 @@ fi
 
 # Create source disk from the image. This is essentially a snapshot reference
 # for the disk we'll attach read-only to the publisher VM.
+#
+# pd-ssd matters here: dd-ing the disk to local pd-ssd is read-bound on the
+# source. v3 publish used the default (pd-balanced) and dd took 1h 40m at
+# ~13-27 MB/s; pd-ssd gets 250+ MB/s sustained read, dropping that to ~7 min.
 echo "→ Creating source disk from image ($SRC_DISK)..."
 gcloud compute disks create "$SRC_DISK" \
     --image="$IMG" \
     --zone="$GCP_ZONE" \
+    --type=pd-ssd \
     --project="$GCP_PROJECT" \
     --quiet >/dev/null
 

@@ -26,7 +26,8 @@ The prover client runs on **any Linux machine** — it only needs Python, a clou
 | **AuctionManager** | [`0x976AeAfe1F708e1Ef0d0C0d26203CC4D7503f6EC`](https://basescan.org/address/0x976AeAfe1F708e1Ef0d0C0d26203CC4D7503f6EC) |
 | **Chain** | Base Mainnet (8453) |
 | **RPC** | `https://mainnet.base.org` |
-| **Production image** | Published to public R2 — `https://pub-ed740777c1434c748a0dc239f0c37ee7.r2.dev/<image-name>/disk.tar.gz` (see step 2) |
+| **Current image** | **`costanza-tdx-prover-v3`** — platform key `0xfa5c250b9a370d22bb29c56fae6a9ddb4ed985440ec9f26f11a4996371d2366e` ([measurements](scripts/gcp/costanza-tdx-prover-v3-measurements.txt)) |
+| **Image distribution** | Public R2 — `https://pub-ed740777c1434c748a0dc239f0c37ee7.r2.dev/<image-name>/disk.tar.gz` (see step 2) |
 
 To run as a prover, import the published image into your own GCP project and verify on-chain that its measurements match the registered platform key. Building from source is not currently a supported verification path: OS-level non-determinism (timestamps, package mirrors, kernel module signing) drifts the rootfs hash even with identical inputs, so a from-source build is not guaranteed to produce a byte-identical platform key. The trust path is on-chain measurement match, not build reproducibility.
 
@@ -91,7 +92,7 @@ The inference VM boots from a dm-verity sealed disk image containing the inferen
 export GCP_PROJECT=your-gcp-project
 export GCP_STAGING_BUCKET=gs://your-staging-bucket   # must already exist
 
-bash prover/scripts/gcp/import_image.sh costanza-tdx-prover-v1
+bash prover/scripts/gcp/import_image.sh costanza-tdx-prover-v3
 ```
 
 The script downloads the tarball from R2 (free egress), verifies its SHA256 against the published `metadata.json`, uploads to your GCS staging bucket, creates the GCP image, and prints the next-step verification command. Allow ~15-30 min depending on your network.
@@ -104,12 +105,12 @@ This is the actual trust boundary — SHA256 only catches transit corruption. Th
 
 ```bash
 python prover/scripts/gcp/verify_measurements.py \
-  --image costanza-tdx-prover-v1 \
+  --image costanza-tdx-prover-v3 \
   --verifier 0xfE45dF36FA94f9d119332456E3925cD93B963c93 \
   --rpc-url https://mainnet.base.org
 ```
 
-A green check means the imported image matches what's registered on-chain and you can run as a prover with it. A mismatch means the publisher rotated images — re-import the current one (check the project for the latest version) or open an issue if `metadata.json` references a version that's no longer registered.
+A green check means the imported image matches what's registered on-chain and you can run as a prover with it. A mismatch means the publisher rotated images — re-import the current one (see the **Current image** row at the top of this README) or open an issue if `metadata.json` references a version that's no longer registered.
 
 The script works with hardened dm-verity images (SSH disabled) by reading measurements between `===HUMANFUND_MEASUREMENTS_START===` and `===HUMANFUND_MEASUREMENTS_END===` markers on the serial console.
 
