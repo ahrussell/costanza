@@ -2485,7 +2485,11 @@ const INVESTMENT_ABI = [
 ];
 
 const AGENT_MEMORY_ABI = [
-  "function getEntries() view returns (tuple(string title, string body)[10])",
+  // Returns a variable-length list. The first 10 entries are the agent's
+  // mutable memory slots (rendered on the dashboard); entries past index 9
+  // are read-only protocol descriptions (rendered alongside investments,
+  // not in the memory panel).
+  "function getEntries() view returns (tuple(string title, string body)[])",
 ];
 
 const AUCTION_ABI = [
@@ -5856,9 +5860,13 @@ async function loadAll() {
     if (memAddr && memAddr !== '0x0000000000000000000000000000000000000000') {
       agentMemoryContract = new ethers.Contract(memAddr, AGENT_MEMORY_ABI, provider);
       const raw = await agentMemoryContract.getEntries();
+      // getEntries() now returns a variable-length list: indices 0..9 are
+      // the agent's mutable memory slots; indices 10+ are read-only
+      // protocol descriptions (rendered alongside investments, not here).
+      // Slice to the first 10 for the memory panel.
       // ethers v6 returns tuple[] as arrays of tuple-like Result objects —
       // index both by name and by position for resilience.
-      const slots = Array.from(raw).map((p, i) => ({
+      const slots = Array.from(raw).slice(0, MEMORY_SLOT_COUNT).map((p, i) => ({
         idx: i,
         title: String(p.title ?? p[0] ?? ''),
         body: String(p.body ?? p[1] ?? ''),

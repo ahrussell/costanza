@@ -631,6 +631,15 @@ def build_epoch_context(state, seed=None, voice_anchors: str = ""):
     # position (matching the on-chain 1-indexed registry) so the runner
     # can't swap ids to misdirect the model. See the matching note in
     # _compute_action_bounds above.
+    #
+    # Protocol descriptions live in `memories[10 + idx]` (sourced by the
+    # AgentMemory contract from `InvestmentManager.protocols(i).description`
+    # at snapshot time, covered by `memoryHash`). LOOK UP BY POSITION, NEVER
+    # BY TITLE — the title at memories[10+idx] equals the protocol name and
+    # is informational only; using it as a key would break the
+    # position-canonical security invariant (same lesson as PR #44's
+    # `inv["id"]` issue).
+    memories_full = state.get("memories", [])
     if state.get("investments"):
         lines.append("")
         lines.append("--- Investment Portfolio ---")
@@ -659,9 +668,20 @@ def build_epoch_context(state, seed=None, voice_anchors: str = ""):
                 lines.append(
                     f"  #{pid} {inv['name']} [{risk}, ~{apy:.0f}% APY, {status}]: no position  |  {room_str}"
                 )
+            # Inline description (positional lookup; body only — name is
+            # already in the row above).
+            desc_idx = 10 + idx
+            if desc_idx < len(memories_full):
+                desc_entry = memories_full[desc_idx]
+                if isinstance(desc_entry, dict):
+                    desc_body = desc_entry.get("body", "") or ""
+                    if desc_body:
+                        lines.append(f"     {desc_body}")
 
     # -- Section 5: Memory --
-    memories = state.get("memories", [{"title": "", "body": ""}] * 10)
+    # memories[0..9] are agent-mutable slots — the only part rendered here.
+    # memories[10+] are read-only protocol descriptions, rendered inline
+    # alongside their investment rows in Section 4 (NOT as memory entries).
     # Each slot is a {title, body} dict. All 10 slots are writable — the
     # model owns the category taxonomy by writing its own titles. Slots
     # with empty title + empty body render as `(empty)`.
@@ -673,6 +693,9 @@ def build_epoch_context(state, seed=None, voice_anchors: str = ""):
             return ("", entry)
         return ("", "")
 
+    # Take only the first 10 from the full entries list. memories_full was
+    # bound earlier in Section 4 from state["memories"].
+    memories = memories_full[:10] if memories_full else [{"title": "", "body": ""}] * 10
     has_memories = any(any(_slot_fields(p)) for p in memories)
     lines.append("")
     lines.append("--- Your Memory ---")
