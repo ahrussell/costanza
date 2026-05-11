@@ -2516,14 +2516,12 @@ const INVESTMENT_ABI = [
 ];
 
 const AGENT_MEMORY_ABI = [
-  // Fixed-size [10] matches the currently-deployed AgentMemory v1 at
-  // 0x8de1BbFA22…. AgentMemory v2 (per docs/AGENT_MEMORY_V2_DESIGN.md)
-  // will return a variable-length list with descriptions at indices
-  // 10+, at which point flip this to tuple(...)[] AND restore the
-  // slice(0, MEMORY_SLOT_COUNT) in the memory render. Until that
-  // ceremony runs, the v2 ABI fails to decode v1's fixed-size return
-  // and breaks the entire memory card with "Could not load".
-  "function getEntries() view returns (tuple(string title, string body)[10])",
+  // Returns a variable-length list. The first 10 entries are the agent's
+  // mutable memory slots (rendered on the dashboard); entries past index 9
+  // are read-only protocol descriptions (rendered alongside investments,
+  // not in the memory panel). The memory render uses
+  // slice(0, MEMORY_SLOT_COUNT) to pick the mutable prefix.
+  "function getEntries() view returns (tuple(string title, string body)[])",
 ];
 
 const AUCTION_ABI = [

@@ -17,7 +17,7 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 - **AuctionManager**: [`0x976AeAfe1F708e1Ef0d0C0d26203CC4D7503f6EC`](https://basescan.org/address/0x976AeAfe1F708e1Ef0d0C0d26203CC4D7503f6EC)
 - **TdxVerifier**: [`0xfE45dF36FA94f9d119332456E3925cD93B963c93`](https://basescan.org/address/0xfE45dF36FA94f9d119332456E3925cD93B963c93)
 - **InvestmentManager**: [`0x2fab8aE91B9EB3BaB18531594B20e0e086661892`](https://basescan.org/address/0x2fab8aE91B9EB3BaB18531594B20e0e086661892)
-- **AgentMemory**: [`0x8de1BbFA2200A9104e3C08a00F96C2c8Ee073346`](https://basescan.org/address/0x8de1BbFA2200A9104e3C08a00F96C2c8Ee073346)
+- **AgentMemory**: [`0x82c7c2d86ac4ffe14264bf9edde1865ea1c1cb44`](https://basescan.org/address/0x82c7c2d86ac4ffe14264bf9edde1865ea1c1cb44) (v2, 16 entries = 10 mutable + 6 protocol descriptions; v1 at [`0x8de1BbFA…`](https://basescan.org/address/0x8de1BbFA2200A9104e3C08a00F96C2c8Ee073346) superseded)
 - **DonationExecutor**: [`0x28DF01FBc55341Db43CE4589c6871f7a769730d5`](https://basescan.org/address/0x28DF01FBc55341Db43CE4589c6871f7a769730d5)
 - **CostanzaTokenAdapter**: [`0x7253808009F47ecA77DB3e7254f692DF1A8C5EE5`](https://basescan.org/address/0x7253808009F47ecA77DB3e7254f692DF1A8C5EE5) (deployed 2026-05-08, IM protocol #6, paired with V4PoolStateReader [`0x2F213Ea0…`](https://basescan.org/address/0x2F213Ea0D3F6D8349e2162b37Cc8cE6605dc9420) + V4SwapExecutor [`0x0244a61E…`](https://basescan.org/address/0x0244a61EdfBa9F0e54A81d95Fd4Ae53BCaA55a3C); Doppler hook at [`0xBDF93814…`](https://basescan.org/address/0xBDF938149ac6a781F94FAa0ed45E6A0e984c6544))
 - **Owner**: `0x2e61a91EbeD1B557199f42d3E843c06Afb445004` (single-use deploy EOA, will transfer to Safe `0x6dF6f527E193fAf1334c26A6d811fAd62E79E5Db`)
@@ -25,7 +25,7 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 - **Epoch timing**: 240-min epochs (1h commit, 1h reveal, 2h execution)
 - **BASE_BOND**: 0.01 ETH; effectiveMaxBid at openAuction: 0.01 ETH (capped by min(maxBid, 10%×treasury))
 - **404 forge tests + 100 Python tests pass** (392 non-fork + 12 mainnet-fork; core + auction + TDX verifier + investment + memory + messages + cross-stack + system invariants + ownership fan-out + enclave inference + voice anchors)
-- GPU image: `costanza-tdx-prover-v3`, key: `0xfa5c250b9a370d22bb29c56fae6a9ddb4ed985440ec9f26f11a4996371d2366e` (donation-aware burn-rate prompt; see [v3_measurements.txt](prover/scripts/gcp/costanza-tdx-prover-v3-measurements.txt))
+- GPU image: `costanza-tdx-prover-v4`, key: `0x8e67d4d809121b238890c1537d2bfddc9d7b200b89e736015ec786043e9e0992` (variable-length AgentMemory + inlined protocol descriptions; see [v4_measurements.txt](prover/scripts/gcp/costanza-tdx-prover-v4-measurements.txt))
 - GCP TDX FMSPC `00806f050000` registered in Automata DCAP Dashboard
 - H100 on-demand quota is 0; all GPU VMs use `--provisioning-model=SPOT`
 - **Frontend RPC**: Cloudflare Worker at `humanfund-rpc-cache.thehumanfund.workers.dev` (proxies to Alchemy, 15-min cache)
@@ -40,6 +40,7 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 - Contract: `0xeE98b474000a2B350FfcBA8F02889d5047B8DFca` — withdrawAll'd on 2026-04-28 before earlier redeploy (added ownership fan-out, MIN_MESSAGE_DONATION bump, 30/30/60 timing, cbETH-on-Chainlink, dropped frozen Aave V3 WETH; image bumped to costanza-tdx-prover-v1)
 - Contract: `0xE1Ff438B1C0Bf0C61d6EfF439C2A9eB1dDcb71e5` — withdrawAll'd on 2026-04-14 (epoch 1 forfeited due to epochDuration drift; fixed in EpochSnapshot)
 - Contract: `0x908cf9974fd2EcE9D3a50644EDcAF90c88E57C10` — first mainnet v2, withdrawAll'd on 2026-04-14
+- Image: `costanza-tdx-prover-v3`, key: `0xfa5c250b9a370d22bb29c56fae6a9ddb4ed985440ec9f26f11a4996371d2366e` (donation-aware burn-rate prompt; superseded by v4 on 2026-05-11 alongside the AgentMemory v2 migration)
 - Image: `costanza-tdx-prover-v2`, key: `0x45f9fc10c7b842e457e1cee1c42de28fe81dfb10a349ed790a1742e6e7b09691` (built 2026-05-07 from PR #44 encoder fix; superseded by v3 on 2026-05-08 to ship donation-aware burn-rate prompt)
 - Image: `costanza-tdx-prover-v1`, key: `0x1ff34454c9d46ea9f1cd400d490df0cffaa183f2c6bf6afc69d9749c60e34685` (NVIDIA CC GPU readiness fix; superseded by v2)
 - Image: `humanfund-dmverity-hardened-v11`, key: `0xf23661d5f5a506472feb7c5fff267eb0b0d80caf5a87c0c831292e1f4809d614` (paired with the 0xeE98b474… contract)
@@ -389,10 +390,10 @@ bash prover/scripts/gcp/build_base_image.sh               # Build base image (sl
 bash prover/scripts/gcp/build_full_dmverity_image.sh \
   --base-image humanfund-base-gpu-llama-b5270-hermes        # Build production dm-verity image
 python prover/scripts/gcp/register_image.py \
-  --image costanza-tdx-prover-v3 \
+  --image costanza-tdx-prover-v4 \
   --verifier 0x...                            # Register image key on-chain
 python prover/scripts/gcp/verify_measurements.py \
-  --image costanza-tdx-prover-v3 \
+  --image costanza-tdx-prover-v4 \
   --verifier 0x...                            # Verify RTMR match
 
 # TEE enclave (local testing)
@@ -408,7 +409,7 @@ RPC_URL=https://sepolia.base.org
 CONTRACT_ADDRESS=0x...         # Deployed TheHumanFund contract address
 GCP_PROJECT=my-project         # GCP project ID
 GCP_ZONE=us-central1-a         # GCP zone with TDX support
-GCP_IMAGE=costanza-tdx-prover-v3   # Production dm-verity disk image
+GCP_IMAGE=costanza-tdx-prover-v4   # Production dm-verity disk image
 NTFY_CHANNEL=my-prover         # Optional: ntfy.sh channel
 ```
 
