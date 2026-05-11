@@ -109,7 +109,7 @@ contract DeployTestnet is Script {
         InvestmentManager im = new InvestmentManager(address(fund), deployer);
         fund.setInvestmentManager(address(im));
 
-        AgentMemory wv = new AgentMemory(address(fund));
+        AgentMemory wv = new AgentMemory(address(fund), address(im));
         fund.setAgentMemory(address(wv));
 
         _seedMemory(fund);

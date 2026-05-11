@@ -126,7 +126,7 @@ contract MainnetForkTest is EpochTest {
         im = new InvestmentManager(address(fund), owner);
         fund.setInvestmentManager(address(im));
 
-        wv = new AgentMemory(address(fund));
+        wv = new AgentMemory(address(fund), address(im));
         fund.setAgentMemory(address(wv));
 
         // Register the 5 production adapters pointing at real Base contracts.

@@ -49,7 +49,7 @@ contract DeployForPipelineTest is Script {
         InvestmentManager im = new InvestmentManager(address(fund), deployer);
         fund.setInvestmentManager(address(im));
 
-        AgentMemory mem = new AgentMemory(address(fund));
+        AgentMemory mem = new AgentMemory(address(fund), address(im));
         fund.setAgentMemory(address(mem));
 
         uint256[] memory slots = new uint256[](2);

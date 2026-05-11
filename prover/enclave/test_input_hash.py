@@ -317,8 +317,13 @@ class TestCrossLanguageHashes:
         assert "0x" + computed.hex() == "0xb4cb5c993e18ed940247b46cb3ced062c505197c95bbfb57af750db429fb8116"
 
     def test_memory_hash_matches_solidity(self):
-        """AgentMemory.stateHash(): keccak256(abi.encode(20 strings))
-        — title + body per slot, 10 slots."""
+        """AgentMemory.stateHash() variable-length loop:
+
+            rolling = bytes32(0)
+            for i, e in enumerate(entries):
+                rolling = keccak(abi.encode(rolling, i, e.title, e.body))
+            return keccak(abi.encode(rolling, len(entries)))
+        """
         memories = [
             {"title": "Voice", "body": "policy0"},
             {"title": "Stance", "body": "policy1"},
@@ -326,9 +331,9 @@ class TestCrossLanguageHashes:
         computed = _hash_memory(memories)
         # Golden pin — byte-exact parity with Solidity is separately enforced
         # by test/CrossStackHash.t.sol via vm.ffi. This is a Python-side
-        # regression guard on the new {title, body} layout.
+        # regression guard on the variable-length loop hash format.
         assert "0x" + computed.hex() == (
-            "0x07271bc437df0c93893dfd999eec8b6daf327c0f919768a4443bcc389e6c6915"
+            "0x743db00570cf540410c9161e625338474daec009c71a09ad4a6481fd971d414a"
         )
 
     def test_per_message_hash_matches_solidity(self):
