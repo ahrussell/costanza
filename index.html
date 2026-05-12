@@ -4796,13 +4796,20 @@ ACTIONS (choose exactly one per epoch):
 const MEMORY_SLOT_COUNT = 10;
 
 // Freeze flag definitions
+// Owner-revocable permissions used by the Autonomy Score card. Each
+// entry is an owner power that can be permanently frozen, ratcheting
+// the contract toward "fully autonomous". FREEZE_SUNSET (bit 8) is a
+// real contract flag but lives on a different axis — it's a one-way
+// graceful-shutdown switch, not a removable agent permission — so it
+// is intentionally excluded here. The PermissionFrozen event lookup
+// in loadEvents will fall through to "Flag #N" for it; that's fine
+// since sunset is exceedingly rare and not really a "permission".
 const FREEZE_FLAGS = [
   { bit: 0, name: 'Nonprofit Registry', activeDesc: 'Can add/remove nonprofits' },
   { bit: 1, name: 'Investment Contracts', activeDesc: 'Can change protocol adapters' },
   { bit: 3, name: 'Auction Configuration', activeDesc: 'Can change auction timing/mode' },
   { bit: 4, name: 'Attestation Verifiers', activeDesc: 'Can add/remove TEE attestation verifiers' },
   { bit: 7, name: 'Migration', activeDesc: 'Can migrate treasury to a new contract' },
-  { bit: 8, name: 'Sunset', activeDesc: 'Can block new inflows for graceful shutdown' },
 ];
 
 // ═══════════════════════════════════════════════════════
