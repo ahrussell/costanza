@@ -5054,6 +5054,38 @@ function cacheSet(type, id, data) {
   } catch {}
 }
 
+// Cached chunked event-log fetcher. Each event type's logs are stored in
+// localStorage as { lastBlock, logs: [...] }. On call we read the cache,
+// scan only blocks past lastBlock through currentBlock, append the new
+// logs, and rewrite. Past blocks' logs are immutable (Base finality is
+// ~2s) so we never re-fetch them. Both loadAll's 4-type scan and
+// loadEvents' 13-type scan share this cache, so the overlap (the 4
+// types) is fetched only once.
+//
+// Returned shape is a serializable subset of ethers.Log:
+//   { args: [...primitives | stringified BigInts],
+//     blockNumber: <number>, transactionHash: <string> }
+// Downstream consumers only access these three properties; the
+// BigInt-as-string form works with Number(x), ethers.formatEther(x),
+// and template literals interchangeably with the live BigInt form.
+async function getEventLogsCached(eventName, currentBlock) {
+  const cached = cacheGet('evtlogs', eventName);
+  const haveCache = cached && typeof cached.lastBlock === 'number' && Array.isArray(cached.logs);
+  const startBlock = haveCache ? cached.lastBlock + 1 : DEPLOY_BLOCK;
+  let newSerialized = [];
+  if (startBlock <= currentBlock) {
+    const fresh = await queryFilterChunked(fund, fund.filters[eventName](), startBlock, currentBlock);
+    newSerialized = fresh.map(log => ({
+      args: [...log.args].map(v => typeof v === 'bigint' ? v.toString() : v),
+      blockNumber: log.blockNumber,
+      transactionHash: log.transactionHash,
+    }));
+  }
+  const merged = haveCache ? cached.logs.concat(newSerialized) : newSerialized;
+  cacheSet('evtlogs', eventName, { lastBlock: currentBlock, logs: merged });
+  return merged;
+}
+
 async function loadEpochMessages(epoch) {
   const cached = cacheGet('epoch-msgs', epoch);
   if (cached) return cached;
@@ -5453,6 +5485,15 @@ async function loadAll(mode = 'full') {
     missed: missedEpochsRaw,
     stalled: stalledEpochsRaw,
   };
+  // Hoist values from the projection-block Promise.all so the timeline
+  // section downstream can reuse them instead of re-fetching the same
+  // commitWindow / revealWindow / executionWindow / getEpochRecord /
+  // auctionMgr.currentEpoch / auctionMgr.phase calls (each cost ~1s
+  // through the worker on warm cache, ~7s combined).
+  let _windowSecs = null; // { cw, rw, ew } as BigInt
+  let _epochRecord = null;
+  let _amCurrentEpoch = null; // Number
+  let _amPhase = null; // Number
   if (auctionOn && auctionMgr) {
     try {
       // All timing state is main-owned now; AM holds no wall-clock data.
@@ -5471,6 +5512,10 @@ async function loadAll(mode = 'full') {
       ]);
       const nowSec = BigInt(block.timestamp);
       const execDeadline = startTime + cw + rw + ew;
+      _windowSecs = { cw, rw, ew };
+      _epochRecord = epochRecord;
+      _amCurrentEpoch = Number(amTaggedEpoch);
+      _amPhase = amPhase;
       projected = projectAuctionState({
         nowSec,
         currentEpoch: currentEpochRaw,
@@ -5543,11 +5588,14 @@ async function loadAll(mode = 'full') {
     let rejectedByEpoch = {};
     try {
       const currentBlock = await provider.getBlockNumber();
+      // Use the cached event-log fetcher — each type only scans new blocks
+      // past its last cached scan. The same cache is read by loadEvents
+      // below, so these 4 types aren't re-fetched again later.
       const [diaryLogs, rejectedLogs, donationLogs, npDonationLogs] = await Promise.all([
-        queryFilterChunked(fund, fund.filters.DiaryEntry(), DEPLOY_BLOCK, currentBlock),
-        queryFilterChunked(fund, fund.filters.ActionRejected(), DEPLOY_BLOCK, currentBlock),
-        queryFilterChunked(fund, fund.filters.DonationReceived(), DEPLOY_BLOCK, currentBlock),
-        queryFilterChunked(fund, fund.filters.NonprofitDonation(), DEPLOY_BLOCK, currentBlock),
+        getEventLogsCached('DiaryEntry', currentBlock),
+        getEventLogsCached('ActionRejected', currentBlock),
+        getEventLogsCached('DonationReceived', currentBlock),
+        getEventLogsCached('NonprofitDonation', currentBlock),
       ]);
       for (const log of diaryLogs) {
         diaryEventsByEpoch[Number(log.args[0])] = log.transactionHash;
@@ -5736,31 +5784,42 @@ async function loadAll(mode = 'full') {
   let totalInvested = 0n;
   let investmentPositions = [];
 
-  // Investment manager
+  // Investment manager. The per-position fetches used to be a sequential
+  // `for i { await getPosition(i) }` loop — at ~1s/RTT through the worker
+  // and ~6 positions, that was 6s of avoidable wall-time. Now both
+  // totalInvestedValue+protocolCount and the per-position getPositions
+  // fire as Promise.all batches.
   try {
     const imAddr = await fund.investmentManager();
     if (imAddr && imAddr !== '0x0000000000000000000000000000000000000000') {
       investmentMgr = new ethers.Contract(imAddr, INVESTMENT_ABI, provider);
-      totalInvested = await investmentMgr.totalInvestedValue();
+      const [totalInvestedVal, pCountRaw] = await Promise.all([
+        investmentMgr.totalInvestedValue(),
+        investmentMgr.protocolCount(),
+      ]);
+      totalInvested = totalInvestedVal;
       document.getElementById('fund-invested').innerHTML = fmtEthUsd(totalInvested);
 
-      const pCount = Number(await investmentMgr.protocolCount());
-      for (let i = 1; i <= pCount; i++) {
-        try {
-          const pos = await investmentMgr.getPosition(i);
-          if (pos.currentValue > 0n || pos.active) {
-            investmentPositions.push({
-              name: pos.protocolName,
-              value: pos.currentValue,
-              apy: Number(pos.expectedApyBps) / 100,
-              // 4-tier scale matching prover/enclave/prompt_builder.py's
-              // risk_labels (so the dashboard label agrees with what the
-              // model sees in its prompt). Tier 4 (HIGH) is reserved for
-              // speculative positions like Costanza Token.
-              risk: ({1: 'Low', 2: 'Medium', 3: 'Med-High', 4: 'High'}[pos.riskTier]) || '?',
-            });
-          }
-        } catch {}
+      const pCount = Number(pCountRaw);
+      const positions = await Promise.all(
+        Array.from({ length: pCount }, (_, idx) =>
+          investmentMgr.getPosition(idx + 1).catch(() => null)
+        )
+      );
+      for (const pos of positions) {
+        if (!pos) continue;
+        if (pos.currentValue > 0n || pos.active) {
+          investmentPositions.push({
+            name: pos.protocolName,
+            value: pos.currentValue,
+            apy: Number(pos.expectedApyBps) / 100,
+            // 4-tier scale matching prover/enclave/prompt_builder.py's
+            // risk_labels (so the dashboard label agrees with what the
+            // model sees in its prompt). Tier 4 (HIGH) is reserved for
+            // speculative positions like Costanza Token.
+            risk: ({1: 'Low', 2: 'Medium', 3: 'Med-High', 4: 'High'}[pos.riskTier]) || '?',
+          });
+        }
       }
     } else {
       document.getElementById('fund-invested').textContent = '0 ETH';
@@ -5837,26 +5896,33 @@ async function loadAll(mode = 'full') {
   document.getElementById('donations-eth').textContent = fmtEth(donated);
   document.getElementById('donations-usd').textContent = fmtUsd(donatedUsd);
 
-  // Nonprofits list — sequential per-nonprofit reads. Full-mode only:
-  // per-nonprofit totals change slowly relative to the 90s refresh cadence
-  // (full refresh on tab focus picks up new totals). In live mode the prior
-  // table stays in the DOM untouched.
+  // Nonprofits list — was a sequential `for i { await getNonprofit(i) }`
+  // loop, the single largest contributor to "page never finishes loading"
+  // mid-refresh waits (~3s per nonprofit × N nonprofits at warm-cache
+  // worker latency = ~15-20s of avoidable serial wall-time). Now fires
+  // all per-nonprofit reads in a single Promise.all batch.
+  // Full-mode only: per-nonprofit totals change slowly relative to the 90s
+  // refresh cadence (full refresh on tab focus picks up new totals). In
+  // live mode the prior table stays in the DOM untouched.
   const npCountNum = Number(npCount);
   if (mode === 'full') {
     if (npCountNum > 0) {
+      const npResults = await Promise.all(
+        Array.from({ length: npCountNum }, (_, idx) =>
+          fund.getNonprofit(idx + 1).catch(() => null)
+        )
+      );
       const nonprofits = [];
-      for (let i = 1; i <= npCountNum; i++) {
-        try {
-          const np = await fund.getNonprofit(i);
-          let ein = '';
-          if (np.ein && np.ein !== '0x0000000000000000000000000000000000000000000000000000000000000000') {
-            try {
-              const hexStr = np.ein.replace(/0x/, '').replace(/0+$/, '');
-              if (hexStr.length > 0) ein = hexStr.match(/.{1,2}/g).map(b => String.fromCharCode(parseInt(b, 16))).join('');
-            } catch {}
-          }
-          nonprofits.push({ name: np.name, desc: np.description, ein, donated: np.totalDonated, donatedUsd: np.totalDonatedUsd, count: Number(np.donationCount) });
-        } catch {}
+      for (const np of npResults) {
+        if (!np) continue;
+        let ein = '';
+        if (np.ein && np.ein !== '0x0000000000000000000000000000000000000000000000000000000000000000') {
+          try {
+            const hexStr = np.ein.replace(/0x/, '').replace(/0+$/, '');
+            if (hexStr.length > 0) ein = hexStr.match(/.{1,2}/g).map(b => String.fromCharCode(parseInt(b, 16))).join('');
+          } catch {}
+        }
+        nonprofits.push({ name: np.name, desc: np.description, ein, donated: np.totalDonated, donatedUsd: np.totalDonatedUsd, count: Number(np.donationCount) });
       }
       // Sort by donated USD desc
       nonprofits.sort((a, b) => Number(b.donatedUsd) - Number(a.donatedUsd));
@@ -5998,71 +6064,80 @@ async function loadAll(mode = 'full') {
   }
   document.getElementById('world-age').innerHTML = ageHtml;
 
+  // World-section data fetches (memory + recent messages) run in parallel
+  // via Promise.all. They render into different DOM nodes so neither
+  // depends on the other; the previous serial layout cost ~4s of wall-
+  // time, mostly spent waiting for sequential awaits within memory
+  // (agentMemory→getEntries) and messages (messageCount/Head→messages).
   // Memory card (v20+: 10 slots, each {title, body}, model-authored titles).
   // Non-destructive: all DOM writes happen only after the reads succeed,
   // so a transient RPC blip on a follow-up refresh leaves the previously-
   // rendered slots intact rather than swapping them out for "Could not
   // load". The `_memoryRendered` flag gates the initial-failure fallback
   // so the message still shows on a truly cold load.
-  try {
-    const memAddr = await fund.agentMemory();
-    if (memAddr && memAddr !== '0x0000000000000000000000000000000000000000') {
-      agentMemoryContract = new ethers.Contract(memAddr, AGENT_MEMORY_ABI, provider);
-      const raw = await agentMemoryContract.getEntries();
-      // getEntries() now returns a variable-length list: indices 0..9 are
-      // the agent's mutable memory slots; indices 10+ are read-only
-      // protocol descriptions (rendered alongside investments, not here).
-      // Slice to the first 10 for the memory panel.
-      // ethers v6 returns tuple[] as arrays of tuple-like Result objects —
-      // index both by name and by position for resilience.
-      const slots = Array.from(raw).slice(0, MEMORY_SLOT_COUNT).map((p, i) => ({
-        idx: i,
-        title: String(p.title ?? p[0] ?? ''),
-        body: String(p.body ?? p[1] ?? ''),
-      }));
-      const active = slots.filter(s => s.title.length > 0 || s.body.length > 0);
-      const memBadgeText = `${active.length}/${MEMORY_SLOT_COUNT} active`;
-      // Preview: description + a single populated slot picked at random
-      let previewHtml = '<div style="font-size:12px;color:var(--text-secondary);line-height:1.5;margin-bottom:10px;">Costanza can update his memory based on what he learns each epoch. Titles are his &mdash; he names each slot as he uses it. This acts as his long-term memory.</div>';
-      if (active.length > 0) {
-        const pick = active[Math.floor(Math.random() * active.length)];
-        previewHtml += `
-          <div style="font-size:11px;color:var(--text-dim);margin-bottom:4px;">[Memory Slot ${pick.idx}] ${escapeHtml(pick.title || '(untitled)')}</div>
-          <div style="font-size:12px;color:var(--text-secondary);line-height:1.5;font-style:italic;">${escapeHtml(pick.body || '(empty body)')}</div>
-        `;
-      }
-      const fullHtml = slots.map(s => `
-        <div class="memory-slot">
-          <span class="memory-idx">[${s.idx}]</span>
-          <div>
-            <div class="memory-name">${escapeHtml(s.title || '(untitled)')}</div>
-            ${(s.title || s.body) ? `<div class="memory-text">${escapeHtml(s.body || '(empty body)')}</div>` : `<div class="memory-empty">(empty)</div>`}
+  const _memoryTask = (async () => {
+    try {
+      const memAddr = await fund.agentMemory();
+      if (memAddr && memAddr !== '0x0000000000000000000000000000000000000000') {
+        agentMemoryContract = new ethers.Contract(memAddr, AGENT_MEMORY_ABI, provider);
+        const raw = await agentMemoryContract.getEntries();
+        // getEntries() returns a variable-length list (v2): indices 0..9 are
+        // the agent's mutable memory slots; indices 10+ are read-only
+        // protocol descriptions (rendered alongside investments, not here).
+        // Slice to the first MEMORY_SLOT_COUNT for the memory panel.
+        // ethers v6 returns tuple[] as arrays of tuple-like Result objects —
+        // index both by name and by position for resilience.
+        const slots = Array.from(raw).slice(0, MEMORY_SLOT_COUNT).map((p, i) => ({
+          idx: i,
+          title: String(p.title ?? p[0] ?? ''),
+          body: String(p.body ?? p[1] ?? ''),
+        }));
+        const active = slots.filter(s => s.title.length > 0 || s.body.length > 0);
+        const memBadgeText = `${active.length}/${MEMORY_SLOT_COUNT} active`;
+        // Preview: description + a single populated slot picked at random
+        let previewHtml = '<div style="font-size:12px;color:var(--text-secondary);line-height:1.5;margin-bottom:10px;">Costanza can update his memory based on what he learns each epoch. Titles are his &mdash; he names each slot as he uses it. This acts as his long-term memory.</div>';
+        if (active.length > 0) {
+          const pick = active[Math.floor(Math.random() * active.length)];
+          previewHtml += `
+            <div style="font-size:11px;color:var(--text-dim);margin-bottom:4px;">[Memory Slot ${pick.idx}] ${escapeHtml(pick.title || '(untitled)')}</div>
+            <div style="font-size:12px;color:var(--text-secondary);line-height:1.5;font-style:italic;">${escapeHtml(pick.body || '(empty body)')}</div>
+          `;
+        }
+        const fullHtml = slots.map(s => `
+          <div class="memory-slot">
+            <span class="memory-idx">[${s.idx}]</span>
+            <div>
+              <div class="memory-name">${escapeHtml(s.title || '(untitled)')}</div>
+              ${(s.title || s.body) ? `<div class="memory-text">${escapeHtml(s.body || '(empty body)')}</div>` : `<div class="memory-empty">(empty)</div>`}
+            </div>
           </div>
-        </div>
-      `).join('');
-      // Atomic-ish DOM swap: only reached if both reads succeeded.
-      document.getElementById('memory-badge').textContent = memBadgeText;
-      document.getElementById('memory-badge-modal').textContent = memBadgeText;
-      document.getElementById('memory-preview').innerHTML = previewHtml;
-      document.getElementById('memory-full').innerHTML = fullHtml;
-      _memoryRendered = true;
-    } else if (!_memoryRendered) {
-      document.getElementById('memory-preview').innerHTML = '<div style="color:var(--text-dim);">AgentMemory not linked</div>';
+        `).join('');
+        // Atomic-ish DOM swap: only reached if both reads succeeded.
+        document.getElementById('memory-badge').textContent = memBadgeText;
+        document.getElementById('memory-badge-modal').textContent = memBadgeText;
+        document.getElementById('memory-preview').innerHTML = previewHtml;
+        document.getElementById('memory-full').innerHTML = fullHtml;
+        _memoryRendered = true;
+      } else if (!_memoryRendered) {
+        document.getElementById('memory-preview').innerHTML = '<div style="color:var(--text-dim);">AgentMemory not linked</div>';
+      }
+    } catch (err) {
+      console.warn('Memory load failed:', err);
+      if (!_memoryRendered) {
+        document.getElementById('memory-preview').innerHTML = '<div style="color:var(--text-dim);">Could not load</div>';
+      }
     }
-  } catch (err) {
-    console.warn('Memory load failed:', err);
-    if (!_memoryRendered) {
-      document.getElementById('memory-preview').innerHTML = '<div style="color:var(--text-dim);">Could not load</div>';
-    }
-  }
+  })();
 
   // Recent messages (last 5, regardless of read status)
-  try {
-    const [msgCount, msgHead] = await Promise.all([fund.messageCount(), fund.messageHead()]);
-    const total = Number(msgCount);
-    if (total === 0) {
-      document.getElementById('world-messages').innerHTML = '<div class="empty-state" style="padding:16px;">No messages yet</div>';
-    } else {
+  const _messagesTask = (async () => {
+    try {
+      const [msgCount, msgHead] = await Promise.all([fund.messageCount(), fund.messageHead()]);
+      const total = Number(msgCount);
+      if (total === 0) {
+        document.getElementById('world-messages').innerHTML = '<div class="empty-state" style="padding:16px;">No messages yet</div>';
+        return;
+      }
       document.getElementById('view-all-messages-btn').style.display = '';
       const start = Math.max(0, total - 5);
       const msgs = await Promise.all(
@@ -6082,10 +6157,12 @@ async function loadAll(mode = 'full') {
         </div>`;
       }
       document.getElementById('world-messages').innerHTML = mHtml;
+    } catch {
+      document.getElementById('world-messages').innerHTML = '<div class="empty-state" style="padding:16px;">Could not load</div>';
     }
-  } catch {
-    document.getElementById('world-messages').innerHTML = '<div class="empty-state" style="padding:16px;">Could not load</div>';
-  }
+  })();
+
+  await Promise.all([_memoryTask, _messagesTask]);
   progressStage(8);
 
   // Diary preview (fading)
@@ -6138,27 +6215,24 @@ async function loadAll(mode = 'full') {
 
   // Phase + countdown — compute from wall-clock timing, not AM phase.
   // Timing state lives on the fund contract in the post-refactor design.
-  if (auctionOn && auctionMgr) {
+  // Reuse values already fetched upstream (projection block + initial
+  // 25-read Promise.all) to avoid duplicate RPC round-trips: commitWindow
+  // / revealWindow / executionWindow / getEpochRecord come from
+  // `_windowSecs` and `_epochRecord`; the anchor and anchorEpoch are in
+  // `timingAnchorRaw` / `anchorEpochRaw` from the top-level reads.
+  if (auctionOn && auctionMgr && _windowSecs) {
     try {
-      const [cw, rw, ew] = await Promise.all([
-        fund.commitWindow(), fund.revealWindow(), fund.executionWindow(),
-      ]);
+      const { cw, rw, ew } = _windowSecs;
       const now = Math.floor(Date.now() / 1000);
       const cwN = Number(cw), rwN = Number(rw), ewN = Number(ew), ed = Number(epochDur);
 
-      // Compute epoch timing from the anchor.
-      // Use projectedEpoch for timing — if epoch N was just executed but currentEpoch
-      // hasn't advanced, we want the timing of epoch N+1 (the next one).
-      const anchor = Number(await fund.timingAnchor());
-      const anchorEp = Number(await fund.anchorEpoch());
+      const anchor = Number(timingAnchorRaw);
+      const anchorEp = Number(anchorEpochRaw);
 
       // Determine which epoch to show timing for: if the current epoch is already
       // executed, show the next epoch's timing. Otherwise show the current epoch.
       let displayEpoch = currentEpochNum;
-      try {
-        const rec = await fund.getEpochRecord(currentEpochNum);
-        if (rec.executed) displayEpoch = currentEpochNum + 1;
-      } catch {}
+      if (_epochRecord && _epochRecord.executed) displayEpoch = currentEpochNum + 1;
       document.getElementById('tl-epoch').textContent = displayEpoch;
 
       const epochStart = anchor + (displayEpoch - anchorEp) * ed;
@@ -6227,14 +6301,15 @@ async function loadAll(mode = 'full') {
   // committers list represents a previous epoch's auction (e.g. AM in
   // SETTLED post-execution, awaiting the next openAuction), which is
   // misleading on a card labeled "Latest Bids".
-  if (auctionOn && auctionMgr) {
+  // Latest bids — auctionMgr.currentEpoch + phase were already fetched
+  // in the projection block above; reuse them. The committers/winner/
+  // winningBid trio is fetched in a single parallel Promise.all instead
+  // of the previous "committers → then parallel(didReveal+winner+
+  // winningBid)" two-step.
+  if (auctionOn && auctionMgr && _amCurrentEpoch !== null) {
     try {
-      const [amEpoch, amPhase] = await Promise.all([
-        auctionMgr.currentEpoch().then(n => Number(n)).catch(() => null),
-        auctionMgr.phase().then(p => Number(p)).catch(() => null),
-      ]);
       const SETTLED = 3;
-      const isCurrentEpochAuction = amEpoch === currentEpochNum && amPhase !== null && amPhase !== SETTLED;
+      const isCurrentEpochAuction = _amCurrentEpoch === currentEpochNum && _amPhase !== null && _amPhase !== SETTLED;
       const committers = isCurrentEpochAuction ? await auctionMgr.getCommitters() : [];
       const bidCount = committers.length;
       if (bidCount === 0) {
@@ -6315,34 +6390,44 @@ async function loadEvents() {
       { filter: 'PermissionFrozen', badge: 'badge-purple' },
     ];
 
+    // Fetch all event types concurrently. Each call hits the per-type
+    // localStorage cache: first call does the full scan, subsequent calls
+    // only fetch the tail past the last cached block. Was previously a
+    // sequential `for (const def of eventDefs) { await ... }` loop, which
+    // serialized 780+ HTTP round-trips on cold cache and was the single
+    // biggest contributor to "page never finishes loading" complaints.
+    const allFetches = await Promise.all(
+      eventDefs.map(def => getEventLogsCached(def.filter, currentBlock).catch(() => []))
+    );
+    progressStage(8);
+
     allEvents = [];
-    for (const def of eventDefs) {
-      try {
-        const logs = await queryFilterChunked(fund, fund.filters[def.filter](), DEPLOY_BLOCK, currentBlock);
-        for (const log of logs) {
-          let detail = '';
-          try {
-            const a = log.args;
-            if (def.filter === 'DiaryEntry') { detail = `Epoch ${a[0]}: ${decodeAction(a[2]).label}`; }
-            else if (def.filter === 'ActionRejected') { detail = `Epoch ${a[0]}: ${decodeAction(a[1], Number(a[2])).detail}`; }
-            else if (def.filter === 'DonationReceived') { detail = `${fmtAddr(a[0])} donated ${fmtEth(a[1])}`; }
-            else if (def.filter === 'NonprofitDonation') { detail = `Epoch ${a[0]}: ${fmtEth(a[2])} to nonprofit #${a[1]}`; }
-            else if (def.filter === 'EpochExecuted') { detail = `Epoch ${a[0]}: bounty ${fmtEth(a[2])}`; }
-            else if (def.filter === 'BondForfeited') { detail = `Epoch ${a[0]}: ${fmtAddr(a[1])} lost ${fmtEth(a[2])}`; }
-            else if (def.filter === 'MessageReceived') { detail = `${fmtAddr(a[0])} msg #${a[2]} (${fmtEth(a[1])})`; }
-            else if (def.filter === 'AuctionOpened') { detail = `Epoch ${a[0]}: ceiling ${fmtEth(a[2])}`; }
-            else if (def.filter === 'BidCommitted') { detail = `Epoch ${a[0]}: ${fmtAddr(a[1])}`; }
-            else if (def.filter === 'BidRevealed') { detail = `Epoch ${a[0]}: ${fmtAddr(a[1])} bid ${fmtEth(a[2])}`; }
-            else if (def.filter === 'RevealClosed') { detail = `Epoch ${a[0]}: winner ${fmtAddr(a[1])} at ${fmtEth(a[2])}`; }
-            else if (def.filter === 'CommissionRateChanged') { detail = `Epoch ${a[0]}: ${Number(a[1])/100}%`; }
-            else if (def.filter === 'PermissionFrozen') {
-              const f = FREEZE_FLAGS.find(x => x.bit === Number(a[0]));
-              detail = f ? f.name : `Flag #${a[0]}`;
-            }
-          } catch { detail = '(decode error)'; }
-          allEvents.push({ name: def.filter, badge: def.badge, detail, blockNumber: log.blockNumber, txHash: log.transactionHash });
-        }
-      } catch {}
+    for (let i = 0; i < eventDefs.length; i++) {
+      const def = eventDefs[i];
+      const logs = allFetches[i];
+      for (const log of logs) {
+        let detail = '';
+        try {
+          const a = log.args;
+          if (def.filter === 'DiaryEntry') { detail = `Epoch ${a[0]}: ${decodeAction(a[2]).label}`; }
+          else if (def.filter === 'ActionRejected') { detail = `Epoch ${a[0]}: ${decodeAction(a[1], Number(a[2])).detail}`; }
+          else if (def.filter === 'DonationReceived') { detail = `${fmtAddr(a[0])} donated ${fmtEth(a[1])}`; }
+          else if (def.filter === 'NonprofitDonation') { detail = `Epoch ${a[0]}: ${fmtEth(a[2])} to nonprofit #${a[1]}`; }
+          else if (def.filter === 'EpochExecuted') { detail = `Epoch ${a[0]}: bounty ${fmtEth(a[2])}`; }
+          else if (def.filter === 'BondForfeited') { detail = `Epoch ${a[0]}: ${fmtAddr(a[1])} lost ${fmtEth(a[2])}`; }
+          else if (def.filter === 'MessageReceived') { detail = `${fmtAddr(a[0])} msg #${a[2]} (${fmtEth(a[1])})`; }
+          else if (def.filter === 'AuctionOpened') { detail = `Epoch ${a[0]}: ceiling ${fmtEth(a[2])}`; }
+          else if (def.filter === 'BidCommitted') { detail = `Epoch ${a[0]}: ${fmtAddr(a[1])}`; }
+          else if (def.filter === 'BidRevealed') { detail = `Epoch ${a[0]}: ${fmtAddr(a[1])} bid ${fmtEth(a[2])}`; }
+          else if (def.filter === 'RevealClosed') { detail = `Epoch ${a[0]}: winner ${fmtAddr(a[1])} at ${fmtEth(a[2])}`; }
+          else if (def.filter === 'CommissionRateChanged') { detail = `Epoch ${a[0]}: ${Number(a[1])/100}%`; }
+          else if (def.filter === 'PermissionFrozen') {
+            const f = FREEZE_FLAGS.find(x => x.bit === Number(a[0]));
+            detail = f ? f.name : `Flag #${a[0]}`;
+          }
+        } catch { detail = '(decode error)'; }
+        allEvents.push({ name: def.filter, badge: def.badge, detail, blockNumber: log.blockNumber, txHash: log.transactionHash });
+      }
     }
 
     allEvents.sort((a, b) => b.blockNumber - a.blockNumber);
