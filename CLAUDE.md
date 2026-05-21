@@ -20,7 +20,7 @@ An autonomous AI agent on the Base blockchain that manages a charitable treasury
 - **AgentMemory**: [`0x82c7c2d86ac4ffe14264bf9edde1865ea1c1cb44`](https://basescan.org/address/0x82c7c2d86ac4ffe14264bf9edde1865ea1c1cb44) (v2, 16 entries = 10 mutable + 6 protocol descriptions; v1 at [`0x8de1BbFA…`](https://basescan.org/address/0x8de1BbFA2200A9104e3C08a00F96C2c8Ee073346) superseded)
 - **DonationExecutor**: [`0x28DF01FBc55341Db43CE4589c6871f7a769730d5`](https://basescan.org/address/0x28DF01FBc55341Db43CE4589c6871f7a769730d5)
 - **CostanzaTokenAdapter**: [`0x7253808009F47ecA77DB3e7254f692DF1A8C5EE5`](https://basescan.org/address/0x7253808009F47ecA77DB3e7254f692DF1A8C5EE5) (deployed 2026-05-08, IM protocol #6, paired with V4PoolStateReader [`0x2F213Ea0…`](https://basescan.org/address/0x2F213Ea0D3F6D8349e2162b37Cc8cE6605dc9420) + V4SwapExecutor [`0x0244a61E…`](https://basescan.org/address/0x0244a61EdfBa9F0e54A81d95Fd4Ae53BCaA55a3C); Doppler hook at [`0xBDF93814…`](https://basescan.org/address/0xBDF938149ac6a781F94FAa0ed45E6A0e984c6544))
-- **Owner**: `0x2e61a91EbeD1B557199f42d3E843c06Afb445004` (single-use deploy EOA, will transfer to Safe `0x6dF6f527E193fAf1334c26A6d811fAd62E79E5Db`)
+- **Owner**: `0x2e61a91EbeD1B557199f42d3E843c06Afb445004` (single-use deploy EOA, will transfer to Safe `0x1633C13844f34Ed5516cCA1d2aea560001f7BBfF`)
 - **Initial treasury**: 0.1 ETH (seedAmount)
 - **Epoch timing**: 240-min epochs (1h commit, 1h reveal, 2h execution)
 - **BASE_BOND**: 0.01 ETH; effectiveMaxBid at openAuction: 0.01 ETH (capped by min(maxBid, 10%×treasury))
