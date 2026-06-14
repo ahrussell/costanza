@@ -33,14 +33,15 @@ from .config import load_config
 from .chain import ChainClient
 from .auction import (
     sync_phase, commit_bid, reveal_bid, submit_result, poke_costanza_fees,
-    SubmissionError, MAX_SUBMIT_RETRIES, _match_error, ERROR_SELECTORS,
-    PHASE_NAMES,
+    SubmissionError, MAX_SUBMIT_RETRIES, HALTING_CATEGORIES,
+    _match_error, ERROR_SELECTORS, PHASE_NAMES,
 )
 from .bid_strategy import estimate_bid, clamp_bid
 from .cost_tracker import record_epoch_cost, get_average_costs
 from .state import (
     load as load_state, save as save_state, clear as clear_state,
     save_tee_result, load_tee_result,
+    load_halt, save_halt, clear_halt,
 )
 from .notifier import (
     notify_epoch_started, notify_bid_committed, notify_bid_revealed,
@@ -48,7 +49,7 @@ from .notifier import (
     notify_error, notify_submission_failed, notify_epoch_abandoned,
     notify_epoch_settled, notify_bond_forfeited, notify_bond_claimed,
     notify_cached_submission, notify_low_balance,
-    notify_epoch_skipped, notify_reveal_will_fail,
+    notify_epoch_skipped, notify_reveal_will_fail, notify_verification_halt,
 )
 
 logger = logging.getLogger(__name__)
@@ -232,6 +233,26 @@ def _handle_commit(chain, config, auction, saved, participation, state_dir, ntfy
     # Chain truth: already committed?
     if participation["committed"]:
         logger.info("Already committed for epoch %d (chain-confirmed), waiting for reveal", epoch)
+        return
+
+    # Circuit breaker: a prior submission failed on-chain verification with a
+    # deterministic, non-self-healing error (see auction.HALTING_CATEGORIES).
+    # Committing again would just forfeit another bond on a doomed submit, so
+    # stay dormant until an operator re-approves the image / refreshes
+    # collateral and clears submit_halt.json. Cheap, no bond, no VM.
+    halt = load_halt(state_dir)
+    if halt:
+        logger.error(
+            "HALTED: submission for epoch %s failed verification [%s]; skipping "
+            "commit for epoch %d. Delete submit_halt.json to resume.",
+            halt.get("epoch", "?"), halt.get("category", "?"), epoch,
+        )
+        if not halt.get("notified"):
+            notify_verification_halt(
+                ntfy, halt.get("epoch"), halt.get("category"), halt.get("message", ""),
+            )
+            halt["notified"] = True
+            save_halt(halt, state_dir)
         return
 
     gas_price = chain.get_gas_price()
@@ -620,6 +641,7 @@ def _submit_result(chain, config, tee_result, auction, saved, state_dir, ntfy):
         logger.info("Recorded cost (success): gas=%d, vm=%.1f min", gas_used, vm_minutes)
 
         clear_state(state_dir)
+        clear_halt(state_dir)  # a success clears any prior verification halt
         notify_result_submitted(ntfy, epoch, action_name)
 
         # Opportunistic harvest of $COSTANZA fees right after a
@@ -637,6 +659,19 @@ def _submit_result(chain, config, tee_result, auction, saved, state_dir, ntfy):
             # Record failed run cost (VM was booted, compute was spent)
             vm_minutes = tee_result.get("vm_minutes", 0)
             record_epoch_cost(state_dir, epoch, 0, 0, vm_minutes, success=False)
+            # Deterministic verification failure (e.g. image key no longer
+            # approved after GCP firmware/MRTD drift, expired collateral, or a
+            # hash-binding mismatch) won't self-heal next epoch. Trip the
+            # circuit breaker so _handle_commit stops committing instead of
+            # forfeiting a fresh bond every epoch. Cleared on next success or
+            # by deleting submit_halt.json.
+            if e.category in HALTING_CATEGORIES and not load_halt(state_dir):
+                save_halt({
+                    "epoch": epoch,
+                    "category": e.category,
+                    "message": str(e)[:300],
+                    "notified": False,
+                }, state_dir)
         else:
             save_state(saved, state_dir)
             logger.warning("Submission failed [%s], will retry (%d/%d): %s",

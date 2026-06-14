@@ -327,8 +327,47 @@ class ChainClient:
         tx_hash = self.w3.eth.send_raw_transaction(raw)
         receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
         if receipt["status"] != 1:
+            # A mined reverting tx's receipt carries only status=0 — no revert
+            # reason. Replay the exact calldata via eth_call at the block it
+            # reverted in to recover the revert selector/data, so callers (e.g.
+            # auction.classify_submit_error) can recognize custom errors like
+            # ProofFailed (0x8dce8175) instead of falling through to the generic
+            # "likely transient DCAP" retry heuristic.
+            reason = self._decode_revert_reason(tx, receipt.get("blockNumber"))
             raise RuntimeError(
                 f"Transaction reverted on-chain: tx={tx_hash.hex()}, "
-                f"gas_used={receipt.get('gasUsed', '?')}"
+                f"gas_used={receipt.get('gasUsed', '?')}{reason}"
             )
         return receipt
+
+    def _decode_revert_reason(self, tx, block_identifier):
+        """Best-effort replay of a reverted tx to recover its revert data.
+
+        Re-executes the transaction's calldata with eth_call at the block it
+        was mined in. On revert, web3 raises with the revert payload (a custom
+        error selector like 0x8dce8175, or a decoded reason string), which we
+        return as a `, revert=...` suffix for the caller's error message.
+
+        Returns an empty string if the reason can't be recovered (e.g. the
+        replay doesn't revert due to a state-dependent path, or the RPC
+        rejects the historical call) — callers must treat the suffix as
+        advisory, never load-bearing.
+        """
+        try:
+            call = {
+                "from": tx["from"],
+                "to": tx["to"],
+                "data": tx.get("data") or tx.get("input"),
+                "value": tx.get("value", 0),
+            }
+            if tx.get("gas"):
+                call["gas"] = tx["gas"]
+            self.w3.eth.call(call, block_identifier=block_identifier or "latest")
+            return ""  # replay didn't revert — nothing to report
+        except (ContractCustomError, ContractLogicError) as e:
+            data = getattr(e, "data", None)
+            detail = data if isinstance(data, str) and data.startswith("0x") else str(e)
+            return f", revert={detail}"
+        except Exception as e:
+            logger.debug("revert-reason replay failed: %s", e)
+            return ""

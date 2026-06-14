@@ -144,6 +144,20 @@ def notify_epoch_skipped(channel, epoch, reason):
            f"this epoch. Auto-recovers when treasury grows or costs drop.",
            priority="high", tags=["zzz"])
 
+def notify_verification_halt(channel, epoch, category, reason):
+    """A submission failed on-chain verification with a deterministic error,
+    so the runner has stopped committing to avoid forfeiting a bond every
+    epoch. Hard stop — needs operator intervention to resume."""
+    notify(channel, f"Runner HALTED — verification failing (epoch {epoch})",
+           f"submitAuctionResult failed verification [{category}] and the "
+           f"runner has STOPPED committing to stop bleeding bonds.\n\n"
+           f"{_sanitize(str(reason)[:240])}\n\n"
+           f"Likely cause: the dm-verity image key is no longer approved "
+           f"on-chain (e.g. GCP firmware / MRTD drift) or DCAP collateral "
+           f"expired. Re-approve the image / refresh collateral, then delete "
+           f"submit_halt.json in the runner state dir to resume.",
+           priority="urgent", tags=["octagonal_sign"])
+
 def notify_reveal_will_fail(channel, epoch, bid_eth, cap_eth):
     """Detected that the committed bid exceeds the AM's snapshotted cap.
     Reveal calls will revert with InvalidParams until the window closes

@@ -58,6 +58,15 @@ _ERROR_CATEGORIES = {
 # Errors that are expected during normal cron operation (timing races)
 _EXPECTED_ERRORS = {"WrongPhase", "TimingError", "AlreadyDone"}
 
+# Categories that mean the on-chain verifier rejected a well-formed, DCAP-genuine
+# attestation. These are deterministic and do NOT self-heal — by retrying within
+# the epoch, nor by committing again next epoch. All of the causes surface as
+# ProofFailed: the dm-verity image key is no longer approved (e.g. GCP firmware /
+# MRTD drift), DCAP collateral expired, or the input/output hash binding diverged.
+# The client uses this set to trip a circuit breaker and stop committing rather
+# than forfeit a fresh bond every epoch on a doomed submit.
+HALTING_CATEGORIES = {"proof_failed"}
+
 
 class SubmissionError(Exception):
     """Raised when submitAuctionResult fails with a classified error."""
@@ -89,10 +98,13 @@ def classify_submit_error(err):
     if "execution reverted" in err_str and "'0x'" in err_str:
         return ("bare_revert", True, "DCAP verification bare revert (transient)")
 
-    # On-chain reverts with high gas usage (>1M) are likely DCAP verification failures.
-    # These are transient (Automata infrastructure on Base Sepolia) — worth retrying.
+    # Generic on-chain revert whose selector we couldn't recover (send_tx's
+    # eth_call replay is best-effort — see chain._decode_revert_reason). A real
+    # ProofFailed/TimingError mined tx is normally decoded above via _match_error;
+    # we only land here when the reason is genuinely unavailable, so keep the old
+    # "assume transient DCAP, retry" behavior as a conservative fallback.
     if "Transaction reverted on-chain" in err_str:
-        return ("dcap_revert", True, f"On-chain revert (likely DCAP): {err_str[:200]}")
+        return ("dcap_revert", True, f"On-chain revert (reason undecoded): {err_str[:200]}")
 
     return ("unknown", False, f"Unknown submission error: {err_str[:200]}")
 
