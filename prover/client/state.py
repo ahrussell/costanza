@@ -130,3 +130,55 @@ def load_tee_result(path):
     except (FileNotFoundError, json.JSONDecodeError, IOError) as e:
         logger.warning("Failed to load cached TEE result from %s: %s", path, e)
         return None
+
+
+# ─── Submission halt (circuit breaker) ──────────────────────────────────────
+#
+# Persisted separately from per-epoch state.json so it SURVIVES clear() at
+# epoch rollover. When an on-chain submission fails verification with a
+# deterministic, non-self-healing error (see auction.HALTING_CATEGORIES), the
+# client records a halt here and stops committing in future epochs — otherwise
+# it forfeits a fresh bond every epoch on a doomed submit. Cleared on the next
+# successful submit, or manually by deleting submit_halt.json.
+
+HALT_FILE = "submit_halt.json"
+
+
+def load_halt(state_dir=DEFAULT_STATE_DIR):
+    """Load the submission-halt record, or None if not halted."""
+    halt_file = Path(state_dir) / HALT_FILE
+    if not halt_file.exists():
+        return None
+    try:
+        with open(halt_file) as f:
+            return json.load(f)
+    except (json.JSONDecodeError, IOError):
+        return None
+
+
+def save_halt(record, state_dir=DEFAULT_STATE_DIR):
+    """Atomically persist the submission-halt record."""
+    state_dir = Path(state_dir)
+    state_dir.mkdir(parents=True, exist_ok=True)
+    halt_file = state_dir / HALT_FILE
+
+    fd, tmp_path = tempfile.mkstemp(dir=state_dir, suffix=".tmp")
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump(record, f, indent=2)
+        os.rename(tmp_path, halt_file)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def clear_halt(state_dir=DEFAULT_STATE_DIR):
+    """Remove the submission-halt record (resume committing)."""
+    try:
+        (Path(state_dir) / HALT_FILE).unlink()
+    except FileNotFoundError:
+        pass
