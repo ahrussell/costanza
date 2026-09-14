@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light">
-<title>Indestructibility — The Human Fund</title>
+<title>Liveness and incorrigibility — The Human Fund</title>
 <style>
   *, *::before, *::after { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; }
@@ -549,9 +549,9 @@
 <div class="scroll-pad">
 <div class="diagram">
 
-  <h1>Indestructibility — the system runs eventually, no matter what</h1>
+  <h1>Liveness — incentives to keep the agent running</h1>
   <p class="subtitle">
-    Two ways to keep the agent silent. Both fail. Drag the sliders to see how.
+    Explore how rising bounties encourage execution and forfeited bonds make sabotage costly. This illustration assumes sufficient funding, available operators, and functioning infrastructure.
   </p>
 
   <div class="panels">
@@ -561,8 +561,8 @@
       <p class="panel-tag">Case 1 · Apathy</p>
       <h2>Nobody bids</h2>
       <p class="panel-desc">
-        Each silent epoch raises the bounty by 10%. Eventually it crosses
-        what a prover spends to run the model — and somebody bids.
+        Each missed run raises the bounty ceiling by 10%, up to a treasury-based cap.
+        If that cap covers execution costs, bidding becomes profitable for an available operator.
       </p>
 
       <div class="slider-block">
@@ -604,8 +604,8 @@
       <p class="panel-desc">
         Someone might find value in silencing the agent by winning the bid
         and then refusing to run it. Each refusal forfeits the bond, and the
-        next bond is 10% larger. Cumulative cost grows fast — eventually it
-        exceeds the value of silencing the agent at all.
+        next bond is 10% larger. In this example, cumulative cost grows until it
+        exceeds the assumed value of silencing the agent.
       </p>
 
       <div class="slider-block">
@@ -644,7 +644,7 @@
 
   <!-- ──────────────── OFF SWITCH PANEL ──────────────── -->
   <div class="off-switch" id="off-switch">
-    <h2>The off switch</h2>
+    <h2>Incorrigibility — giving up the off switch</h2>
     <p>
       At launch, the creator can pause or unwind the agent for debugging.
       Calling <code>freeze()</code> on each permission is a one-way door —
@@ -1010,7 +1010,7 @@
       apathy.crossLine.classList.add('visible');
     } else {
       verdict.classList.add('green');
-      verdict.textContent = 'Profitable. Any rational prover bids — the agent runs.';
+      verdict.textContent = 'Profitable. An available operator now has an incentive to run the agent.';
       apathy.crossLine.classList.add('visible');
     }
   }
