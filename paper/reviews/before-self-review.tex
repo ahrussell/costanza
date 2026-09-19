@@ -1,0 +1,323 @@
+\documentclass[10pt,letterpaper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern,microtype,amsmath,amssymb,amsthm,booktabs,tabularx,array}
+\usepackage{xcolor}
+\usepackage[colorlinks=true,allcolors=blue!45!black]{hyperref}
+\hypersetup{pdftitle={Architectural Incorrigibility and Conditional Liveness in Ledger-Governed Agents},pdfsubject={Permission structures, verifiable computation, and execution liveness}}
+\usepackage[numbers,sort&compress]{natbib}
+\usepackage{enumitem}
+\setlist{nosep,leftmargin=*}
+\newtheorem{definition}{Definition}
+\newtheorem{proposition}{Proposition}
+\newtheorem{theorem}{Theorem}
+\newcommand{\A}{\mathcal A}
+\newcommand{\G}{\mathcal G}
+\newcommand{\Pset}{\mathcal P}
+\newcommand{\up}{\mathord\uparrow}
+\newcommand{\negl}{\operatorname{negl}}
+\newcommand{\Auth}{\operatorname{Auth}}
+\newcommand{\Verify}{\operatorname{Verify}}
+\newcommand{\enc}{\operatorname{enc}}
+\title{Architectural Incorrigibility and Conditional Liveness\\in Ledger-Governed Agents}
+\author{}
+\date{September 19, 2026}
+\begin{document}
+\maketitle
+\vspace{-2em}
+\begin{abstract}
+An AI agent's continued operation usually depends on an operator who can also alter its rules. We study an architecture in which a blockchain stores the agent's state and funds replaceable workers to execute its program. Verified model outputs can authorize ledger updates, either alone or together with approval from designated governors. This makes resistance to intervention configurable: different parties may control spending, program replacement, and shutdown. We formalize this \emph{architectural incorrigibility} by identifying the coalitions able to carry out each intervention, including indirectly through changes to governance. We then examine the cost of requiring additional consent: a rule that prevents unwanted modification can also prevent repair. For paid execution, we derive conditions and bounds for recovery after missed attempts, accounting for limited rewards and workers who withhold results. The analysis accommodates hardware attestation and cryptographic proofs, and is illustrated by an implementation and recent LLM verification systems. It separates guarantees about authority from the resource and availability conditions needed for continued operation.
+\end{abstract}
+
+\section{Introduction}
+An AI agent commonly inherits its operator's shutdown switch: control over the process, credentials, or payment account is sufficient to stop it. A blockchain wallet alone leaves the computation dependent on that operator. A different construction stores the agent's persistent state, execution rules, and budget in smart contracts. Independent workers run its committed program, including LLM inference, and submit the resulting proposed ledger updates with evidence of correct computation. The contracts verify this evidence, enforce their authorization rules, and pay for accepted execution. A worker may disappear while the state, funds, and opportunity for another worker to execute remain available.
+
+Consider an agent managing a fund. Routine transfers might require a verified output of the agent's program, while replacing its model might require approval from a designated wallet, which we call a \emph{governor}. Moving the entire fund could require both. With several governors, the contract could require the agent and a threshold of their approvals. These are ordinary smart-contract authorization rules with an additional source of approval: verifiable computation in place of a signature from the agent. They can be configured separately for each operation. At an extreme, no governor coalition has an authorized route to replace the program or deactivate the contract without the agent's consent.
+
+We use \emph{architectural incorrigibility} for resistance to specified interventions enforced by this allocation of authority. In the AI safety literature, corrigibility concerns an agent's willingness and incentives to accept correction, including shutdown and modification~\citep{soares2015,offswitch2017}. An agent can be behaviorally cooperative yet lack an authorized shutdown mechanism; conversely, an uncooperative model can sit behind a governor-controlled pause function. Architectural permissions and behavioral dispositions are distinct. Requiring the agent's consent also has a practical cost: if its execution mechanism fails, that same requirement may prevent the repair needed to obtain its consent.
+
+After introducing the model in Section~\ref{sec:model}, we characterize intervention authority and the approvals whose absence can block repair (Section~\ref{sec:authority}). We then give sufficient conditions and delay bounds for recovery in a paid execution market (Section~\ref{sec:liveness}). Verification backends and a source-level case study connect these results to concrete systems (Sections~\ref{sec:backends} and~\ref{sec:case}).
+
+\section{A ledger-governed agent}
+\label{sec:model}
+The basic interface is familiar from smart contracts: someone proposes an operation, the contract checks whether it is authorized, and execution updates ledger state. A conventional contract might accept a transfer only from its owner or from a multisignature wallet. Here it can also accept evidence that an approved agent program produced that transfer. We first separate the proposed update from its authorization, then describe how computation supplies an approval.
+
+\subsection{Ledger state and proposed updates}
+Let $s\in\mathcal S$ denote the relevant ledger state, including application data, spendable execution funding $B$, a committed agent specification $\theta$, an authorization policy $\rho$, and a verification configuration $\nu$. The state also records execution requests and their settlement. This is an application-level state-machine model; it does not require a particular account format or virtual machine.
+
+An update $u\in\mathcal U$ is an encoded instruction describing one or more proposed changes to ledger state. It might transfer assets, update stored data, or replace a program identifier. Its meaning is given by a partial deterministic function
+\[
+ \operatorname{Apply}:\mathcal S\times\mathcal U\rightharpoonup\mathcal S.
+\]
+This function specifies the update's effects and state preconditions; a separate authorization predicate determines whose approval is needed. In an Ethereum implementation, $u$ could be a contract call or batch of calls, with effects determined by the called code. Batch ordering and failure behavior are part of these semantics. Thus an update describes an operation on the ledger without granting arbitrary write access or presupposing a particular permission policy.
+
+The agent's output has the form $y=(u,z)$, where $u$ is the proposed update and $z$ is optional auxiliary data, possibly empty. The authorization interface reads the structured update, not an interpretation of the auxiliary data. If some data is itself to be stored on the ledger, that storage operation belongs in $u$. A no-op is also an admissible update.
+
+\subsection{Verifiable computation as approval}
+The committed specification $\theta$ identifies the computation that produces this output. For an LLM agent, it includes model weights, prompt construction, numerical semantics, decoding, and output parsing. The surrounding program converts model output into the structured update $u$. These components must be bound by the specification whenever substituting them could change the update.
+
+An execution request fixes a canonical input $x$ from an authenticated ledger snapshot and permitted external data, and fixes randomness $r$ if required. The accepted computation is a relation
+\begin{equation}
+ R_\theta(x,r,y)=1. \label{eq:relation}
+\end{equation}
+It may be functional, $y=F_\theta(x,r)$. If several outputs satisfy the relation, a worker may select among them without violating soundness; fixed randomness prevents repeated sampling only when the remaining computation is also fixed.
+
+A worker submits $y$ with evidence $\pi$. The contract checks the request and verifies
+\[
+ \Verify_\nu(\theta,H(x),r,H(y),\pi)=1,
+\]
+where $H$ is a binding hash commitment. The evidence may be hardware attestation or a cryptographic proof of computation~\citep{gennaro2010}. Successful verification establishes \emph{agent approval of $u$} under that request. For a governor-proposed change, the request can ask the agent to accept or reject that exact change; the program returns the corresponding update or a no-op. The submitting worker supplies evidence of the decision and has no authority to substitute a different one.
+
+Requests and approvals bind the chain, contract, request nonce, and policy version, together with the relevant input and update. Structured, domain-separated approvals can use EIP-712 on Ethereum; replay protection additionally requires application-level nonce checks~\citep{eip712}. The contract consumes each request at most once and checks the update's preconditions against the execution-time state. This allows computation on a prior snapshot without silently treating it as the current state.
+
+\subsection{Governors and authorization policies}
+A \emph{governor} is an account whose authenticated approval carries a permission. The basic case is a wallet controlled by a signing key; contract wallets can express multisignature or other governance rules~\citep{ethereumaccounts,openzeppelinaccess}. We identify governors with accounts, rather than with the humans or organizations using them. An approval may arrive as a signature over the proposal or as an authenticated contract call.
+
+Let $\G=\{G_1,\ldots,G_n\}$ be the governors and let $A$ denote the agent's computation-based approval. For a given update and request, write $g_i=1$ when $G_i$ has authenticated its approval, and $a=1$ when the contract has verified the agent's approval. An authorization policy is then a Boolean predicate
+\[
+ \Auth_\rho(s,u;a,g_1,\ldots,g_n).
+\]
+For example, a bilateral treasury migration requires $a\land g_1$. The same contract might allow routine transfers on $a$ alone. This extends familiar owner, role, and multisignature checks with a verification predicate; the agent need not hold a signing key. Once authorization and state preconditions hold, the contract applies $u$, with request consumption and worker settlement handled by the execution protocol.
+
+For comparing policies, we use the approving principals $\Pset=\{A\}\cup\G$. Workers are executors, not additional approving principals unless separately assigned a governor role. A multisignature governor can be expanded into its underlying signers when its internal threshold matters.
+
+\subsection{Security assumptions}
+We assume a secure ledger: finalized state is consistent, and transactions execute the deployed contract rules correctly. We also assume unforgeable account authentication, binding commitments, and sound computation evidence for the specified verification backend. For a TEE, the latter includes the hardware and attestation assumptions described in Section~\ref{sec:backends}; for a proof system, it is the soundness of its argument for~\eqref{eq:relation}. Security guarantees are conditional on these assumptions. Governors may exercise any authority their accounts possess; their benevolence is not assumed.
+
+Changing which program or verifier the contract accepts is itself an authorized state transition, analyzed in Section~\ref{sec:authority}. Such a change can remove a protection without forging a signature or defeating the original verifier. With the intended verifier in place, accepted evidence establishes that the specified computation produced the update; it does not establish that the update is desirable. Ledger inclusion, available computation, and adequate funding are separate conditions for liveness, stated in Section~\ref{sec:liveness}.
+
+\section{Intervention authority as a graded property}
+\label{sec:authority}
+An agent may control its spending while a governor controls its program. Requiring both parties to approve a program change gives each a veto; requiring the agent and two of three governors distributes that authority differently again. To compare these arrangements, we ask which sets of approvals suffice for each intervention. We then follow changes to permissions themselves: a governor who can grant itself a role may have more authority than the current role assignments suggest.
+
+\subsection{Direct permissions and their order}
+The Boolean permission checks of Section~\ref{sec:model} can equivalently be recorded as sets of sufficient approvers. For an update $u$ at state $s$, let $\Gamma_u(s)\subseteq2^{\Pset}$ contain the coalitions whose approvals make $\Auth_\rho$ true. We use standard \emph{monotone access structures}~\citep{benaloh1990}: $C\in\Gamma_u(s)$ and $C\subseteq D$ imply $D\in\Gamma_u(s)$. Additional approvals may be ignored. The empty family means disabled; a family containing the empty coalition means permissionless. Timing and state preconditions remain separate from authorization. This notation summarizes the contract's permission checks, including the verified output that supplies $A$'s approval.
+
+Writing $a,g_i$ for approval by $A,G_i$, representative policies are:
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Policy & Approval formula & Interpretation\\
+\midrule
+Agent unilateral & $a$ & Agent can authorize alone\\
+Governor unilateral & $g_1$ & Governor can authorize alone\\
+Alternative unilateral & $a\lor g_1$ & Either can authorize alone\\
+Bilateral & $a\land g_1$ & Both must approve\\
+Multilateral & $a\land[\sum_i g_i\geq k]$ & Agent and $k$ governors\\
+Disabled & $\bot$ & No coalition can authorize\\
+\bottomrule
+\end{tabular}
+\end{center}
+The formula applies independently to each operation. Agent-unilateral spending can coexist with governor-unilateral upgrades. Thus action autonomy and resistance to intervention are separate axes.
+
+There is consequently no single object called ``control of the agent.'' We must specify what an intervention changes: for example, replacing its model, overwriting its stored state, or disabling execution.
+
+\begin{definition}[Intervention target]
+An intervention target $J$ is an explicitly specified set of states or finite histories, such as replacement of a committed program, an administrative overwrite of memory, removal of execution eligibility, or transfer of a protected reserve outside its mandate. History predicates can be represented by adding monitor state. The initial state is assumed not to satisfy $J$.
+\end{definition}
+Targets should identify a technical property. ``Changes the agent's goals'' is generally not mechanically decidable from a weights hash; ``changes the approved weights hash'' is. Likewise, authorized spending and unauthorized confiscation should not be conflated. We reserve deactivation for a protocol state that prevents further execution, and use dormancy for an interval without successful execution.
+
+For direct interventions, restricting $\Gamma_u$ removes authority. Architectural incorrigibility must also account for authority obtainable by changing that permission table.
+
+\subsection{Closure under governance paths}
+Suppose overwriting stored state requires two governors, but either governor can replace the storage module with one that accepts arbitrary initial contents. The direct two-party rule then provides little protection. The relevant question is whether a coalition can reach the intervention through \emph{any} permitted sequence, including changes to the contract's own governance. The same issue arises when an administrator can grant roles or replace a verifier~\citep{openzeppelinaccess}.
+
+Represent these possibilities by a transition graph $\mathcal D$ from state $s_0$. Each edge is an executable ledger transition, with its state preconditions and required approvals. The graph includes the policies in force after each change, and all administrative routes relevant to $J$: ownership transfers, upgrades, verifier changes, and delegation. Fix external inputs and environment behavior, or include them as explicit transitions. Public mechanical steps require no approval. A conservative abstraction of the real system gives an upper bound on authority; the equality below uses an exact graph.
+
+For an edge $t$, let $\min\Gamma_t$ be its inclusion-minimal approving coalitions. A \emph{labeled path} chooses $L_t\in\min\Gamma_t$ at every edge; its support is $\bigcup_t L_t$. Define
+\begin{equation}
+ \Gamma_J^*(s_0)=\up\left\{\bigcup_{t\in p}L_t:
+ p\text{ reaches }J\text{ from }s_0,\ L_t\in\min\Gamma_t\right\},
+ \label{eq:closure}
+\end{equation}
+where $\up$ takes upward closure: it includes every coalition containing a listed support. The union records whose approvals are needed anywhere along the path, not just at its final step. Delegated authority remains attributed to the principal controlling it. If verifier replacement makes an evidence check vacuous, passing that check supplies no $A$ approval; a subsequent permissionless acceptance edge has an empty label. Labels record actual authorization requirements, not the names of checks in source code. A path without $A$ therefore requires no agent approval beyond any already recorded in $s_0$.
+
+\begin{proposition}[Effective intervention authority]
+\label{thm:closure}
+A coalition $C$ has a finite authorized path to $J$ using only approvals it controls if and only if $C\in\Gamma_J^*(s_0)$.
+\end{proposition}
+\begin{proof}
+For a path executed by $C$, each edge's approving set contains a minimal sufficient set $L_t\subseteq C$. Hence the path support is contained in $C$, placing $C$ in the upward closure. Conversely, a witnessing path with support contained in $C$ can be executed edge by edge: $C$ supplies the selected approvals, the path's state preconditions hold, and each resulting state provides the policy used by the next edge. This last point is essential: one must use the \emph{updated} policy, not repeatedly inspect the initial permission table. The argument fails for a graph that omits a privileged verifier, delegate, or upgrade path.
+\end{proof}
+
+In the storage example, a replacement path requiring only $g_1$ has support $\{G_1\}$, even though direct overwrite requires $g_1\land g_2$. Disabling replacement removes that path only if no further upgrade or delegation can restore it. In a finite explicit graph, one can compute minimal supports by propagating them from $s_0$, taking unions along edges, and discarding supersets at each state until a fixed point.
+
+This is a capability result, not a guarantee of winning a race against other transactions or of obtaining transaction inclusion. A stronger ability to \emph{force} an intervention against an actively resisting scheduler is a game-theoretic property. Conversely, proving no path exists establishes resistance even before analyzing races.
+
+\begin{definition}[Architectural incorrigibility profile]
+For chosen targets $J_1,\ldots,J_q$, the external intervention profile is
+\[
+ \mathcal I(s_0)=\bigl(\Gamma_{J_j}^*(s_0)\cap2^{\G}\bigr)_{j=1}^q.
+\]
+A system is architecturally incorrigible against coalition $C\subseteq\G$ for target $J_j$ when $C$ is absent from that component. System $X$ is at least as incorrigible as $Y$ for the same principals, targets, and security assumptions when every component of $\mathcal I_X$ is contained in the corresponding component of $\mathcal I_Y$.
+\end{definition}
+The empty external family means that no governor coalition has an authorized intervention path without agent consent. It does not mean that an agent-consented intervention is possible: a bilateral policy and a disabled operation share this external property but differ in the full family $\Gamma_J^*$. Both should be reported.
+
+Requiring agent consent does not guarantee that consent is robust to manipulation. A governor may persuade or prompt-inject the model into approving a change. That execution still contains an agent approval, so it does not contradict this architectural property. Assessing effective human influence requires a behavioral model in addition to the authorization profile.
+
+This order is partial. For example, policies allowing intervention by $G_1$ alone and by $G_2$ alone are incomparable. A scalar such as
+\[
+ \kappa_J=\min\{|C|: C\subseteq\G,\ C\in\Gamma_J^*\},
+ \qquad \min\varnothing=\infty,
+\]
+summarizes coalition size but loses identity and cross-operation information. There is no canonical numerical ``incorrigibility percentage'': the gradient is an order over permissions, not necessarily a continuous quantity.
+
+\paragraph{What a genuine freeze guarantees.}
+Suppose, under a common state representation and starting state, a policy revision deletes transitions or narrows their access structures at \emph{every reachable state}, adds no bypass, and leaves all other transitions unchanged. Every new labeled path was previously available, so $\Gamma_J^{*\prime}\subseteq\Gamma_J^*$ for every target $J$. This is the precise sense in which permission removal increases architectural incorrigibility. A flag called ``freeze'' need not satisfy these hypotheses: it may itself activate deactivation, and a local freeze does not freeze a downstream upgradeable dependency.
+
+\subsection{Consent and availability are dual}
+A veto also creates a dependency. If a repair requires both the agent and a governor, either one's inability to approve can prevent the repair. Threshold rules distribute these dependencies, but do not eliminate them. We can read the blocking sets directly from the same approval structure used to describe authority.
+
+For an operation or complete repair plan, let $\mathcal M$ be its nonempty family of minimal sufficient approval coalitions. Suppose the members of $D$ cannot or will not approve, while the remaining approvals are available. The operation remains authorizable exactly when some $M\in\mathcal M$ is disjoint from $D$. Therefore
+\begin{equation}
+ D\text{ blocks authorization}\quad\Longleftrightarrow\quad
+ \forall M\in\mathcal M,\ D\cap M\neq\varnothing. \label{eq:block}
+\end{equation}
+Blocking coalitions are the hitting sets of the approval family. For a governor $k$-of-$n$ rule, $n-k+1$ governors can block; adding required agent consent creates the singleton blocker $\{A\}$. These facts concern unavailable approvals, not unavailable hardware.
+
+The distinction matters in repair. Suppose the only accepted execution backend becomes unavailable and replacing it requires $a\land g_1$. If no previously issued valid approval covers that replacement, $A$ can no longer produce the consent needed to restore its own execution. The program and treasury can remain intact while the system becomes permanently dormant. Pre-authorized narrowly scoped repairs, an independently available verification backend, and emergency governor authority resolve different versions of this dependency; each changes the intervention profile. The availability cost of removing authority cannot be read from threshold size alone.
+
+\section{Conditional liveness of paid execution}
+\label{sec:liveness}
+\subsection{Recovery, recurrence, and successful action}
+Classical liveness requires eventual progress rather than the absence of forbidden transitions~\citep{alpern1985}. Here several kinds of progress differ. \emph{Recoverability} means that retained state and rules permit a valid execution if suitable resources and participants return. \emph{Execution recurrence} means infinitely many accepted executions on an infinite run. \emph{Action recurrence} additionally requires useful or nontrivial effects; a correct result that elects to do nothing does not imply it.
+
+Let $S_t$ be the event that attempt $t$ settles a valid execution. Attempts are funded, sufficiently long opportunities to bid, compute, and submit; they are not merely elapsed wall-clock epochs. A contract does not wake itself. After inactivity, someone must submit a transaction, and recovery must not require replaying an unbounded backlog before a fresh execution opportunity becomes available.
+
+Consider a first-price reverse auction with an exclusive winner, a reward ceiling $b_m$, and a forfeitable bond $d_j$. The miss counter $m$ rises after any failed opportunity; the stall counter $j$ rises only when a selected worker fails to deliver. Success resets both. Separating the counters avoids treating absent supply as proven misconduct. All monetary quantities below use the same numeraire.
+
+\subsection{The feasibility threshold}
+An idealized capped escalation rule is
+\begin{equation}
+ b_m=\min\{\beta B_m,\ b_0\alpha^{\min(m,K)}\},
+ \quad \alpha>1,\quad 0<\beta\leq1. \label{eq:bounty}
+\end{equation}
+Here $B_m$ is available funding, not marked-to-market assets that cannot be spent on settlement, and $K$ caps escalation. If a worker bidding $b$ incurs expected cost $c$, fails with probability $q<1$, loses bond $d$ on failure, and bears liquidity/opportunity cost $\ell$, its stipulated expected net return is
+\begin{equation}
+ U=(1-q)b-c-qd-\ell.
+ \label{eq:utility}
+\end{equation}
+Thus a strictly profitable bid requires $b>(c+qd+\ell)/(1-q)$, as well as sufficient working capital to post $d$. This calculation does not assert that a profitable worker wins or even bids. Costs must include unsuccessful computation and transaction fees consistently; outside interests are considered below.
+
+Fix an admissible profitable bid $\bar b$ and suppose $B_m\geq\underline B$ until recovery. Define
+\begin{equation}
+ m_* = \min\{m\in\{0,\ldots,K\}: b_0\alpha^m\geq\bar b\}.
+ \label{eq:threshold}
+\end{equation}
+This set must be nonempty and $\beta\underline B\geq\bar b$. Equivalently, for the idealized rule, $m_*=\max\{0,\lceil\log_\alpha(\bar b/b_0)\rceil\}\leq K$. When implemented with integer rounding, the finite recurrence, rather than this logarithm, determines the threshold. Rounding can even prevent growth from a very small initial value.
+
+Positive funds alone are insufficient. If $\beta B<\bar b$, or $b_0\alpha^K<\bar b$, escalation never reaches a viable bid. With $b_0=1$, $\alpha=1.1$, $\bar b=3$, and cap $\beta B=5$, the idealized threshold is 12 misses. The same worker is never attracted if the cap is 2. These are illustrative units, not measured operating costs.
+
+\subsection{A finite-budget delay bound}
+Call a selected worker \emph{responsive} when it will attempt valid delivery under the stated conditions. An affordable responsive worker can still lose every auction to a subsidized adversary. We state the missing selection assumption explicitly.
+
+\begin{theorem}[Recovery with costly obstruction]
+\label{thm:live}
+Consider a recovery episode with no initial successes and a finite $m_*$ from~\eqref{eq:threshold}. Assume:
+\begin{enumerate}[label=(\roman*)]
+\item Funding and an admissible worker remain available; its bid is feasible from attempt $m_*$ onward, it can post every required bond, and no governance transition deactivates execution.
+\item Phase advancement, data retrieval, proof generation, and inclusion fit the windows. Settlement is affordable and can complete independently of whether the proposed application action succeeds.
+\item Every subsequent attempt either selects a responsive worker, or is obstructed by an adversarial winner whose failure causes a net, nonrecoverable loss of at least $d_{\min}>0$ before the next attempt. There are no other ways to exclude responsive workers in this model.
+\item The adversary's aggregate loss budget is at most $W$. On every responsive attempt, conditional on the entire prior history, delivery succeeds with probability at least $p>0$.
+\end{enumerate}
+Put $N=\lfloor W/d_{\min}\rfloor$. For every integer $n\geq0$,
+\begin{equation}
+ \Pr[\text{no success in the first }m_*+N+n\text{ attempts}]
+ \leq (1-p)^n. \label{eq:live}
+\end{equation}
+\end{theorem}
+\begin{proof}
+The first $m_*$ attempts allow the reward ceiling to reach the admissible bid; assuming continued failure, the miss counter does not reset. Count every obstructed attempt after that point. Each consumes at least $d_{\min}$ of the same aggregate budget, so at most $N$ can occur, even if the adversary changes identities or chooses its intervention times adaptively. On a no-success path of the stated length, at least $n$ post-threshold attempts therefore selected responsive workers.
+
+Index these responsive attempts in their actual order, skipping obstructed attempts. The adversary may choose when they occur based on past outcomes. Assumption (iv) nevertheless bounds the conditional failure probability of the next such attempt by $1-p$. Applying conditional expectation successively gives a probability at most $(1-p)^n$ that the first $n$ responsive attempts all fail. Every no-success path in the event on the left belongs to that event. No independence assumption is needed; a marginal success rate without the history-conditional bound would not suffice.
+\end{proof}
+
+Assumption (iii) is substantive. Persistent transaction censorship, admission monopolies, unavailable proofs, or a stalled dependency need not incur a worker bond loss. They are excluded, not solved by the theorem. Likewise, slashed funds are a net loss only to the extent the attacking coalition cannot reclaim them through other permissions or payments. An exclusive winner can bid below cost; the existence of a cheaper honest computing technology does not prevent that attack. With $p=1$, recovery occurs within $m_*+N+1$ attempts. If the hypotheses renew after each success and opportunities continue indefinitely, applying the bound to each subsequent recovery episode yields execution recurrence with probability one. This last premise is stronger than preserving contract code.
+
+For idealized escalating bonds $d_j=\min\{d_0\eta^j,\bar d\}$ with $\eta>1$, a consecutive run of $k$ adversarial stalls, with no success resetting the counter, costs at least
+\begin{equation}
+ D(k)=d_0\frac{\eta^{\min(k,h)}-1}{\eta-1}+(k-h)_+\bar d,
+ \quad h=\max\{0,\lceil\log_\eta(\bar d/d_0)\rceil\}.
+ \label{eq:stall}
+\end{equation}
+The sharper budget bound is the largest $k$ with $D(k)\leq W$. Growth is geometric only before saturation, then linear. A counter cap introduces a further maximum bond, and integer implementations require summing the actual recurrence. Raising bonds can also destroy assumption (i) by exceeding honest workers' liquidity or risk tolerance.
+
+\subsection{Selective non-delivery and resource limits}
+After computing an output, a winner may prefer not to publish it. Let $v$ be its external benefit from withholding relative to execution, and let $c_{\rm rem}$ be the \emph{remaining} cost of submitting. Already incurred inference cost is sunk. Comparing delivery, $b-c_{\rm rem}$, with withholding, $v-d$, gives
+\begin{equation}
+ \text{delivery is strictly preferred}\quad\Longleftrightarrow\quad
+ v<b+d-c_{\rm rem}. \label{eq:veto}
+\end{equation}
+A bond prices a temporary veto; it does not remove it. Even a unique deterministic output may be selectively withheld. Repeated attempts with new seeds can consequently bias the distribution of \emph{observed} outputs. If $v$ is unbounded, no finite bond provides unconditional incentive compatibility.
+
+Nor can verification make finite resources infinite. If available initial funding plus cumulative external inflows and net investment gains is bounded by $R$, and every successful execution consumes at least $c_0>0$ of that resource, there can be at most $\lfloor R/c_0\rfloor$ successful executions. Donations or investment returns may sustain a particular run, but require a separate model. A per-epoch spending cap protects a local invariant, not a positive perpetual reserve. Permissionless execution removes the need for one designated operator; it does not supply energy, capital, or a willing worker.
+
+\section{Instantiating verifiable execution}
+\label{sec:backends}
+\subsection{Attested execution}
+A trusted execution environment (TEE) can realize evidence for~\eqref{eq:relation} by running an approved measured program and binding its report to input and output hashes. The attestation signature authenticates a report; computation integrity additionally depends on measured boot, the program's behavior, complete input binding, and protection of every processor performing inference. A CPU quote does not by itself certify an external accelerator. An immutable filesystem can bind weights and runtime configuration into the measured program. This follows the broader separation of consensus and TEE execution exemplified by Ekiden~\citep{ekiden2019}.
+
+TEEs are practical for large models, but shift trust to hardware, firmware, attestation roots, and collateral availability. Frozen measurement allowlists can reject patched firmware as effectively as malicious firmware. Allowing updates preserves repair capability while reintroducing authority. Refereed delegation, as in Verde~\citep{verde2025}, provides another verification route, with deterministic replay, challenger availability, and dispute timing in place of some hardware assumptions; its evidence is not interchangeable with an immediately final succinct proof.
+
+\subsection{LLM inference proofs: practical progress and scope}
+\label{sec:zk}
+Zero-knowledge succinct non-interactive arguments (zkSNARKs) and specialized ML proof systems can instead establish a committed computational relation. Zero knowledge is optional for the public-state architecture; publicly checkable correctness is the essential property. Numerical approximations, quantization, tokenization, decoding, and state serialization define the program actually proved. Accuracy near a floating-point baseline does not establish bitwise equivalence. A backend change that changes these semantics is a program change requiring the corresponding authorization.
+
+Table~\ref{tab:zk} summarizes primary-source results available by September 19, 2026. It deliberately does not rank unlike benchmark workloads. Earlier systems' model-size headlines often refer to a forward pass or a very short input, whereas a stateful agent needs a verified multi-token computation and its surrounding harness.
+
+\begin{table}[t]
+\centering\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{2.0cm}>{\raggedright\arraybackslash}p{3.1cm}>{\raggedright\arraybackslash}X@{}}
+\toprule
+System & Reported result & Workload and interpretation\\
+\midrule
+zkLLM (2024)~\citep{zkllm2024} & 13B-parameter models; under 15 minutes; proof under 200 KB & CUDA/A100; forward-computation benchmark with sequence length 2048. Not a measured full autoregressive response.\\[3pt]
+zkGPT (2025)~\citep{zkgpt2025} & GPT-2 inference in under 25 seconds & Specialized proof protocols; a token-level result, not a demonstrated 70B agent execution.\\[3pt]
+zkPyTorch (2025)~\citep{zkpytorch2025} & Llama-3 8B, approximately 150 seconds per token & Compiler to Expander; paper Table 1 labels this single-core performance. Per-token throughput does not specify full-agent cost.\\[3pt]
+ZKTorch (2025)~\citep{zktorch2025} & GPT-J 6B: 1397.52 s; Llama-2 7B: 2645.50 s & Paper Tables 3--4: inputs of two and one tokens, respectively; 64 CPU threads on a server with 4 TB RAM.\\[3pt]
+NanoZK (2026, v2)~\citep{nanozk2026} & CPU measurements to width 256 for attention and 128 for a full block & GPT-2-width GPU performance is projected, not an end-to-end measured production-model result.\\[3pt]
+DeepProve (2026)~\citep{deepprove2026} & GPT-2 124M: 174 tokens/min; Gemma 3 270M: 86 tokens/min & Full-sequence certification: 512-token sequences, BaseFold, 16-core Ryzen 9, 128 GB RAM (Table 2). Proofs are multi-megabyte.\\
+\bottomrule
+\end{tabularx}
+\caption{Selected practical LLM proof results. Timings are reported results, not reproduced measurements; model sizes, sequence lengths, hardware, and proof interfaces differ. DeepProve's separate distributed results are simulated (its Section 5).}
+\label{tab:zk}
+\end{table}
+
+DeepProve is particularly relevant: it certifies the proposed autoregressive sequence through a causal forward computation, rather than independently re-proving each generation step~\citep{deepprove2026}. This is evidence that full-sequence proving is practical for its evaluated models, so it is too strong to dismiss LLM proofs categorically as impractical. It does not establish an economical replacement for the particular 70B model and multi-pass runtime considered here. A deployment must measure the exact relation, proof generation cost, verification gas or aggregation cost, and end-to-end deadline. Proof of the transformer alone leaves prompt construction, memory, tool selection, and action encoding outside the guarantee.
+
+Proofs also change liveness through price and availability. A more portable backend may increase the number of eligible workers, while a higher proving cost increases $\bar b$ and may make~\eqref{eq:threshold} infeasible. If several verifiers are accepted on an OR basis, one available backend can help recovery, but one unsound backend can admit invalid executions. Backend diversity is not automatically stronger integrity. Finally, private model weights require a distribution mechanism for authorized workers; hiding them from verifiers does not ensure that a replacement worker can obtain them.
+
+\section{A source-level case study}
+\label{sec:case}
+An open-source charitable-treasury agent provides the motivating implementation~\citep{implementation2026,russell2026,essay2026}. We inspected the contracts and execution code at revision \texttt{a642c38ed8d1}; the accompanying whitepaper provides design context. This is a source-level mapping, not a new measurement study, formal verification of the repository, or attestation of live deployment configuration. Its relevance is the allocation of state and authority, rather than the agent's identity or charitable objective.
+
+The fund contract maintains epoch snapshots and funds an exclusive-winner commit--reveal reverse auction. A worker supplies proposed ledger updates, auxiliary output, and attestation evidence. A verifier interface separates execution evidence from treasury logic. A TDX implementation checks approved image measurements and binds report data to the input and output commitments; a measured dm-verity filesystem covers model and runtime artifacts. The build uses a quantized 70B model. Current build and runtime defaults disable the separate GPU firmware-attestation check, so the source does not justify an unconditional claim of full CPU-and-GPU attestation.
+
+The implementation illustrates several distinctions from the formal model:
+\begin{itemize}
+\item \textbf{Permission scope.} Fund ownership governs verifier approval, module wiring, memory seeding, and migration. The verifier and investment manager have additional administrative state. Freezing one registry does not freeze the whole authority graph. General agent--governor joint approval is an architectural extension, not an implemented feature of these contracts.
+\item \textbf{Latent deactivation.} The owner-only \texttt{freeze(flag)} function can set \texttt{FREEZE\_SUNSET}, blocking new auctions. \texttt{FREEZE\_MIGRATE} disables migration and ownership transfer, but does not gate \texttt{freeze}. Thus removing migration authority does not remove the owner's deactivation path. A claim of complete owner-independent persistence would need to eliminate that path as well.
+\item \textbf{Reward limits.} The code uses a 10\% liquid-balance ceiling, a 10\% escalation increment, and a miss-counter cap of 50. Integer rounding and the counter cap both matter. Misses increase the reward ceiling, while selected-worker failures separately increase the bond. A positive balance is not a sufficient recovery condition.
+\item \textbf{Progress boundaries.} Public phase synchronization can skip elapsed idle epochs, avoiding an unbounded replay requirement. Several invalid or failed actions become recorded no-ops, and memory updates use guarded calls, helping separate inference settlement from application success. However, EVM transactions are atomic: ordering payment first does not preserve it if a later uncaught revert or out-of-gas failure occurs. Theorem~\ref{thm:live} assumes a fully completable settlement path.
+\end{itemize}
+These observations motivate the abstraction without pretending the reference implementation realizes its most incorrigible endpoint. In particular, technical provenance of an action and the absence of external authority to change its provenance rules are distinct properties.
+
+\section{Related work and implications}
+Corrigibility and the off-switch game analyze acceptance of correction through preferences and incentives~\citep{soares2015,offswitch2017}. Here the controlled variable is the authority structure around a program. Monotone access structures already express unilateral, joint, and threshold authorization~\citep{benaloh1990}; the additional analytical step is closing those permissions over intervention paths and separating that profile from execution availability. This is an application and synthesis of established tools, not a new access-control primitive.
+
+Verifiable outsourcing~\citep{gennaro2010}, blockchain-mediated computation such as TrueBit~\citep{truebit2017}, TEE smart contracts~\citep{ekiden2019}, and decentralized ML verification~\citep{verde2025} supply relevant execution mechanisms. They do not, simply by verifying work, choose who should be allowed to replace the agent's program or guarantee continuing demand-funded operation. Our focus is the interaction between those choices. Recent LLM proof systems in Section~\ref{sec:zk} strengthen the available implementations without changing the logical separation.
+
+Three design consequences follow. First, an incorrigibility claim should publish its protected targets and minimal effective intervention coalitions, including downstream dependencies; an ``ownerless'' label is insufficient. Second, every removal of repair authority should be checked against the blocking coalitions for restoring execution. Third, continued execution should be argued from explicit resource, scheduling, and worker-selection conditions. Permissionlessness, positive capital, and valid proofs are each useful, but their conjunction is still not a liveness theorem.
+
+\section{Conclusion}
+A ledger can make the division of authority between an agent and its governors explicit and enforceable. Architectural incorrigibility is then a graded, target-relative property of effective intervention permissions. Under the stated security assumptions, its strongest form removes external correction paths, while conditional liveness requires that someone can still obtain, authorize, finance, compute, and settle the next execution. These objectives can conflict: the same authority that enables unwanted intervention may be the authority needed for recovery.
+
+\begingroup
+\small
+\raggedright
+\interlinepenalty=10000
+\bibliographystyle{plainnat}
+\bibliography{references}
+\endgroup
+\end{document}
