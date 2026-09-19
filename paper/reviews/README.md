@@ -1,5 +1,10 @@
 # Reader review and revision record
 
+**Version note:** These two rounds concern the version committed as `958aa6e`.
+The later author-directed reframing and abstract review are recorded in
+[authorization-revision.md](authorization-revision.md). The earlier reports and
+resolution record below are retained as history.
+
 Two review rounds were completed with three subagents, respectively reading as
 an educated nontechnical reader, a software engineer, and an academic in formal
 methods/access control. The primary editor also reviewed the full manuscript
@@ -85,3 +90,14 @@ The revised PDF compiles without warnings and has 12 pages, including 21
 references. All pages were visually inspected, with affected pages rendered
 again after layout changes. Citation keys and cross-references resolve; the
 source bundle contains the current manuscript and all six reader reports.
+
+## September 20 independent audits
+
+- [Proof audit and repairs](proof-audit-2026-09-20.md)
+- [Bibliography metadata, links, and chronology](bibliography-audit-2026-09-20.md)
+- [Submission venue assessment](venue-assessment-2026-09-20.md)
+
+These were performed by separate subagents at the author's request. The parent
+reviewed and incorporated the proof and citation corrections, revised the final
+discussion, and checked the rebuilt artifact. They are agent reviews, not external
+human peer reviews or machine-checked proofs.

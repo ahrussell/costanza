@@ -1,7 +1,11 @@
-# Architectural Incorrigibility and Conditional Liveness in Ledger-Governed Agents
+# Verifiable Inference as Agent Authorization: Architectural Incorrigibility and Liveness
 
 `main.tex` and `references.bib` are the editable manuscript. The compiled paper is
 `../output/pdf/architectural-incorrigibility.pdf`.
+
+`AGENTS.md` records the author's writing conventions for future revisions:
+formal proof blocks with explicitly named objects and reductions, intuition
+outside proofs, and self-contained definitions with accessible section openings.
 
 Build from any directory:
 
@@ -22,15 +26,44 @@ path may not survive a restart. No system TeX installation is required if a
 Tectonic binary is supplied. Build intermediates go to `../tmp/pdfs/build/`.
 
 The author field is intentionally blank for the author to finalize. The article
-format is venue-neutral. Literature was checked through September 19, 2026.
+format is venue-neutral. Literature and publication metadata were checked through September 20, 2026.
 
 ## Scope
 
-The paper presents an architectural model, elementary permission characterizations,
-and a conditional liveness theorem. It does not claim an auction equilibrium,
+The paper presents verified inference as agent authorization without an agent-held
+private key, a reduction of authorization forgery to ledger and computation
+security, configurable self-modification permissions, and a conditional recovery theorem for scheduled
+execution against costly obstruction. It does not claim an auction equilibrium,
 perpetual operation, a new proof system, machine-checked proofs, or a new empirical
-evaluation. The code discussion is a source-level case study at the cited revision;
-no mainnet configuration or performance claims were independently measured.
+evaluation. The contribution concerns the full architecture; the Hermes 4 70B,
+Base, and Intel TDX implementation illustrates its execution flow. The paper does
+not infer retained deployment permissions from functions present in source code.
+The authorization analysis gives explicit security games and a separate reduction
+for hashed proof statements using knowledge soundness and collision resistance.
+Its term is "verified agent authorization", not "agent signature". AuthForge is a
+numbered definition, parameterized by the ledger, authorization state machine, and
+verification scheme. It makes no worker-market or governor-role assumptions.
+The authorization state machine is a numbered definition separating settlement
+from its validation predicate, instantiated first by a signature check and then
+by computation verification. Both authorization and ledger experiments use explicitly defined initialization,
+protocol-transition, and replay algorithms, with an explicit full-content
+registration journal, typed execution records, and
+winning predicates. Theorem 1 uses an exact simulation rather than a hybrid game. Its general
+reduction retains the verification-call factor Q; a separate corollary removes
+that loss when correctness of an output can be decided in polynomial time.
+Ledger histories, finalized observations, agreement, persistence, and execution
+validity are defined in the main text, alongside the contract-correctness premise.
+Governance is modeled as a labelled transition system, distinguishing reachable
+states from those reachable without reference-agent approval. Incorrigibility is
+defined relative to an instance, initial state, governor coalition, and target;
+profiles compare the coalitions that retain intervention paths without consent.
+The liveness model defines the probability space, pre-outcome histories,
+selection and success indicators, and net adversarial losses. The proof derives
+its count from the total-loss budget and conditions on each responsive selection.
+A separate corollary proves the calendar-time and recurrence consequences under
+their additional assumptions.
+Rocky is credited as prior art for verified inference directing transactions;
+the comparison focuses on self-modification policies and the execution market.
 
 `SOURCE_NOTES.md` records the evidence behind implementation and benchmark claims
 and explains material departures from the whitepaper. These notes are for editing
@@ -39,3 +72,13 @@ and are not included in the paper.
 `reviews/README.md` records two rounds of reader reviews and their resolutions.
 The six individual reviews and the pre-review manuscript are retained there for
 comparison; none are included in the compiled paper.
+
+The subsequent author-directed revision is recorded in
+`reviews/authorization-revision.md`. The earlier reader reports describe the
+previous version; their final page counts and emphasis are historical.
+
+The September 20 audit reports cover [proofs](reviews/proof-audit-2026-09-20.md),
+[all bibliography entries](reviews/bibliography-audit-2026-09-20.md), and
+[submission venues](reviews/venue-assessment-2026-09-20.md). The venue assessment
+is advice, not a submission or an acceptance prediction. The conclusion now
+discusses operational agency and the AI-safety implications of enforced consent.
