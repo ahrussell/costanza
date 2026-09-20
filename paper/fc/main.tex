@@ -1,0 +1,233 @@
+\documentclass[runningheads,orivec]{llncs}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,microtype}
+\usepackage{graphicx}
+\usepackage{xurl}
+\usepackage[hidelinks]{hyperref}
+\hypersetup{pdftitle={Short Paper: Architectural Incorrigibility for AI Agents through Smart Contracts},pdfauthor={},pdfsubject={Architectural incorrigibility and scheduled execution}}
+\newcommand{\Setup}{\mathsf{Setup}}
+\newcommand{\Eval}{\mathsf{Eval}}
+\newcommand{\Verify}{\mathsf{Verify}}
+\newcommand{\Msg}{\mathsf{Msg}}
+\newcommand{\Rec}{\mathsf{Rec}}
+\newcommand{\Req}{\mathsf{Req}}
+\newcommand{\Init}{\mathsf{Init}}
+\newcommand{\Next}{\mathsf{Next}}
+\newcommand{\Run}{\mathsf{Run}}
+\newcommand{\Replay}{\mathsf{Replay}}
+\newcommand{\Safe}{\mathsf{Safe}}
+\newcommand{\Correct}{\mathsf{Correct}}
+\newcommand{\Elig}{\mathsf{Elig}}
+\newcommand{\Apply}{\mathsf{Apply}}
+\newcommand{\Consume}{\mathsf{Consume}}
+\newcommand{\Settle}{\mathsf{Settle}}
+\newcommand{\Exec}{\mathsf{Exec}}
+\newcommand{\Ldg}{\mathsf{Ldg}}
+\newcommand{\Ctr}{\mathsf{Ctr}}
+\newcommand{\Adv}{\mathsf{Adv}}
+\newcommand{\EvalO}{\mathcal O_{\rm eval}}
+\newcommand{\LdgO}{\mathcal O_{\rm ldg}}
+\newcommand{\G}{\mathcal G}
+\newcommand{\Reach}{\mathsf{Reach}}
+\newcommand{\negl}{\mathsf{negl}}
+\title{Short Paper: Architectural Incorrigibility\texorpdfstring{\\}{ }for AI Agents through Smart Contracts}
+\titlerunning{Architectural Incorrigibility for AI Agents}
+\author{Anonymous submission}
+\authorrunning{Anonymous submission}
+\institute{}
+\begin{document}
+\maketitle
+\begin{abstract}
+An AI agent's operator can usually change its program or stop running it. We study an architecture in which a smart-contract blockchain stores the agent's state, verifies its proposed updates, and pays replaceable workers for scheduled inference. Verified outputs authorize transactions without an agent-held private key. The same mechanism can require the agent's consent for changes to its own execution rules. We define \emph{architectural incorrigibility} for specified interventions and compare allocations of authority between the agent and its governors. An authorization reduction composes ledger safety with computation soundness. For scheduled execution, we bound recovery from costly job withholding under explicit funding and availability assumptions. We also propose this architecture as an experimental setting for testing model alignment and behavior when there are verifiable limits on operator control. An illustrative implementation uses Hermes 4 70B, Base, and Intel TDX secure enclaves with hardware attestation.
+\keywords{Verifiable computation \and Smart contracts \and AI agents \and Access control \and Liveness}
+\end{abstract}
+
+\section{Introduction}
+An agent's operator ordinarily chooses its model, inputs, and execution times. We study how a runtime can assign these powers through ledger permissions, including an enforceable role for the agent's own consent.
+
+A smart-contract blockchain supplies our ledger, ordering transactions and executing contracts as state machines. A contract can gate an update $u$ on evidence that the approved agent produced it, replacing signature verification. The agent specification $\theta$ fixes model weights and an inference harness; $x$ is derived from a recorded snapshot. A worker submits $y=(u,z)$, with optional auxiliary data $z$, and computation evidence. The contract verifies against its recorded request before applying $u$. The agent holds no transaction-authorizing private key.
+
+For a fund requiring this authorization, binding the model and input protects allocation decisions against substitution, including by its creator. The same rule can require the agent's approval for changes to its model, prompt, runtime, or governing contracts. This \emph{architectural incorrigibility} protects consent to specified interventions, independently of learned resistance to correction. Combining governor signatures with agent approval allocates unilateral, joint, or threshold authority.
+
+Consent matters only if the agent can run. Scheduling authority can also belong to the agent: its recorded schedule opens auctions for replaceable workers, while a calendar rule bootstraps execution and enables recovery. A borrower might benefit from delaying a lending agent's liquidation decision. Increasing payments recruit workers; forfeitable bonds deter withholding. We bound recovery under explicit availability and cost assumptions.
+
+\paragraph{Contribution and context.}
+Rocky used proved neural-network outputs to direct transactions~\cite{rocky2022}; Ritual combines scheduled execution, TEE/ZK verification, and computation markets~\cite{ritual2025}. Building on verifiable outsourcing~\cite{gennaro2010,pinocchio2013} and attested contracts~\cite{ekiden2019}, our analysis separates authorization integrity (Section~\ref{sec:auth}), scoped consent to intervention (Section~\ref{sec:gov}), and recovery from costly withholding (Section~\ref{sec:live}). Section~\ref{sec:discussion} discusses implementation and safety.
+
+\section{Verified computation as authorization}\label{sec:auth}
+The first question is whether a worker can obtain acceptance of an update outside the prescribed computation. We separate the verifier's guarantee from the ledger and contract checks needed to turn it into transaction authorization.
+
+\subsection{Requests and verification}
+Let $s\in\mathcal S$ be application state and let $\Apply(s,u)$ be a partial deterministic state update. The specification $\theta$ fixes weights, prompt construction, arithmetic, decoding, and parsing. A request $e$ fixes $\chi_e=(c_e,\theta_e,x_e,r_e)$, where $c_e=(D,e,v)$ binds the chain and contract domain $D$, request identifier, and configuration version. The input $x_e$ is derived by a prescribed snapshot rule; $r_e$ fixes randomness when required. Output correctness is a relation $R_\theta(x,r,y)$; a deterministic implementation has $y=F_\theta(x,r)$.
+
+For a collision-resistant hash $H$, use typed, unambiguous encodings and define
+\[
+ \Msg(c,\theta,x,r,y)=(c,H(\theta),H(x),r,H(y)).
+\]
+The physical request record is $\Rec(s,e)=(c,H(\theta),H(x),r)$. The contract constructs the message from this record and the submitted $y$; the worker cannot supply different expected hashes. External data and its authentication rule belong to the request specification. Fixing $r$ prevents resampling only if the remaining computation has a unique output. Verification permits withholding and, for a nonfunctional relation, choice among valid outputs.
+
+A publicly verifiable computation scheme has algorithms $(\Setup,\Eval,\Verify)$. Setup samples $(pp,\kappa)\leftarrow\Setup(1^\lambda)$; $pp$ contains the hash description and verification configuration. Evaluation returns $(y,\pi)\leftarrow\Eval(pp,\kappa,c,\theta,x,r)$, and public verification is deterministic. The state $\kappa$ is empty for public proving and protected for attestation. Let $\EvalO(c,\theta,x,r)$ invoke $\Eval$ with fresh coins. Correct evaluation produces a valid output and accepting evidence except with negligible probability.
+
+\begin{definition}[Computation forgery]\label{def:vc}
+For a probabilistic polynomial-time (PPT) oracle algorithm $\mathcal B$, define $\mathsf{VCForge}_{\mathcal B}(\lambda)$ by
+\[
+ (pp,\kappa)\leftarrow\Setup(1^\lambda),\qquad
+ (c,\theta,x,r,y,\pi)\leftarrow\mathcal B^{\EvalO}(1^\lambda,pp).
+\]
+The experiment returns one iff
+\[
+ \Verify_{pp}(\Msg(c,\theta,x,r,y),\pi)=1
+ \quad\land\quad R_\theta(x,r,y)=0.
+\]
+Let $\Adv^{\rm vc}_{\mathcal B}(\lambda)$ be this probability. Soundness requires it to be negligible for every PPT $\mathcal B$. Malformed tuples lose. Descriptions, traces, and interactions are polynomially bounded; deciding the semantic relation $R$ is not assumed polynomial-time.
+\end{definition}
+The guarantee binds the specified contents behind commitments. A proof of knowledge of those contents and an execution trace~\cite{commitprove2020} supplies this binding through extraction and collision resistance; an existential proof about hash openings alone does not. Attestation must enforce the same interface. Zero knowledge is optional, and copying valid evidence is permitted.
+
+\subsection{Ledger execution and the authorization game}
+A valid computation proof is only part of an authorized transaction: the ledger must execute the contract correctly, and the request must still be usable. We now specify those checks and the experiment that tests their composition.
+
+A history $\ell=(T_1,\ldots,T_k)$ includes transactions and the execution context fixed by consensus. The deterministic partial transition $\delta$ induces $\Exec_\delta(\sigma_0,\ell)=(\sigma,\mathbf o)$, the state and receipt sequence from genesis $\sigma_0$. An honest finalized observation is $(P,t,\ell,\sigma,\mathbf o)$. Define $\Safe(\sigma_0,\mathcal H)=1$ for a sequence $\mathcal H$ of such observations iff: (i) all observed histories are prefix-compatible; (ii) each party's histories are nondecreasing under prefix inclusion with time; and (iii) each observed state and receipt sequence equals $\Exec_\delta(\sigma_0,\ell)$. This interface combines ledger persistence~\cite{garay2015} and state-machine execution~\cite{castro1999}; it assumes no transaction inclusion.
+
+\begin{definition}[Authorization contract]\label{def:contract}
+Fix a contract $\Ctr$ and $pp$. For $y=(u,z)$, $\Settle(s,e,y,\pi)$ returns $\Consume_e(\Apply(s,u))$ iff $e$ is eligible, $\Apply(s,u)$ is defined, and $\Verify_{pp}(m,\pi)=1$, where $m=(c,h_\theta,h_x,r,H(y))$ and $\Rec(s,e)=(c,h_\theta,h_x,r)$. Otherwise it returns $\bot$. Eligibility requires an outstanding request, the correct domain, and an accepted version. Consumption permanently marks $e$ used. All algorithms are polynomial-time. Contract correctness requires $\delta$ to implement these checks and the successful update and consumption atomically.
+\end{definition}
+This is a standard message-validation gate with computation verification substituted for signature verification; ERC-1271 exemplifies contract-defined validation~\cite{erc1271}. Changed versions must invalidate outstanding requests or explicitly retain their validity. The contract and verifier are fixed for this security experiment; Section~\ref{sec:gov} separately models changing them.
+
+For fixed $\Ldg,\Ctr$, PPT algorithms $\Init(1^\lambda,pp)$ and $\Next(\gamma,\alpha)$ respectively return $(\sigma_0,\gamma,\mathit{aux})$ and $(\gamma',\mathit{ans},\mathcal H_{\rm new})$. Here $\gamma$ is the complete protocol configuration, and $\alpha$ is an admissible transaction, activation, fault, or scheduling command. Backend secrets are accessible only through $\EvalO$; $\Init$ samples all ledger state itself.
+
+The experiment retains the contents behind commitments to construct a computation forgery without inverting a hash. A registration journal $\Lambda$ stores full specifications supplied as experimental metadata with matching ledger commitments, including at genesis. Request creation uses these registration and snapshot procedures; invalid registrations fail. Records retain each branch's provenance. For invocation locator $\iota=(\ell_{\leq k},j)$, a ledger prefix and invocation position, $\Req(s,e;\Lambda,\iota)$ retrieves the specification, derives the snapshot input, and checks their hashes against $\Rec(s,e)$. It returns $(c,\theta,x,r)$ or $\bot$. Require \emph{request-record integrity}: every eligible request in a $\delta$-reachable state retains matching provenance, and its physical record is immutable until consumption or invalidation. Physical execution and $\Safe$ do not consult $\Lambda$.
+
+Define $\Run^{\mathcal A,\EvalO}(1^\lambda,pp)$ as follows. Initialize $(\sigma_0,\gamma,\mathit{aux})\leftarrow\Init(1^\lambda,pp)$ and $\mathcal H=\varepsilon$. Execute $\mathcal A^{\EvalO,\LdgO}(1^\lambda,pp,\mathit{aux})$, where each query $\alpha$ to $\LdgO$ computes $\Next(\gamma,\alpha)$, replaces $\gamma$ by $\gamma'$, appends $\mathcal H_{\rm new}$ to $\mathcal H$, and returns $\mathit{ans}$. After termination, extract $\Lambda$ from $\gamma$ and compute $\mathcal Q\gets\Replay(\sigma_0,\mathcal H,\Lambda)$. Replay executes each observed history and records every verifier call as $\xi=(c,\theta,x,r,y,\pi)$ using $\Req$ at that invocation, or $\bot$ if reconstruction or message matching fails. Undefined execution terminates that history's replay. Return $Z=(\sigma_0,\mathcal H,\Lambda,\mathcal Q)$. All algorithms and record lengths are polynomially bounded.
+
+Receipts annotate successful settlements by $d=(\iota,s,e,y,s')$, with application states at invocation entry and exit. These are semantic annotations, not extra on-chain storage. Define $\Correct(d;\Lambda)=1$ iff $\Req(s,e;\Lambda,\iota)=(c,\theta,x,r)\ne\bot$, $e$ is eligible in $s$, $R_\theta(x,r,y)=1$, and $s'=\Consume_e(\Apply(s,u))$ for $y=(u,z)$ with $\Apply(s,u)$ defined.
+
+\begin{definition}[Authorization forgery]\label{def:auth}
+For PPT $\mathcal A$, compute
+\[
+ (pp,\kappa)\leftarrow\Setup(1^\lambda),\qquad
+ Z\leftarrow\Run^{\mathcal A,\EvalO}(1^\lambda,pp).
+\]
+The experiment $\mathsf{AuthForge}_{\mathcal A}(\lambda)$ returns one iff some successful settlement annotation in $\mathcal H$ has $\Correct(d;\Lambda)=0$. Define $\Adv^{\rm auth}_{\mathcal A}$ as its success probability. With the same setup and execution, $\mathsf{LedgerFail}_{\mathcal A}$ returns $1-\Safe(\sigma_0,\mathcal H)$; its success probability is $\Adv^{\rm led}_{\mathcal A}$. Ledger security requires $\Adv^{\rm led}_{\mathcal A}(\lambda)\leq\negl(\lambda)$ for every PPT $\mathcal A$ in the fixed fault model.
+\end{definition}
+If the ledger executes the contract correctly, an invalid accepted update provides a false statement accepted by the computation verifier.
+
+\begin{theorem}[Authorization security]\label{thm:auth}
+Assume a correct contract and integrity of request records. For every PPT $\mathcal A$ there are PPT $\mathcal B_{\rm ldg}$ and $\mathcal B_{\rm vc}$ and a polynomial $Q$ such that
+\begin{equation}\label{eq:auth}
+ \Adv^{\rm auth}_{\mathcal A}(\lambda)
+ \leq \Adv^{\rm led}_{\mathcal B_{\rm ldg}}(\lambda)
+      +Q(\lambda)\Adv^{\rm vc}_{\mathcal B_{\rm vc}}(\lambda).
+\end{equation}
+\end{theorem}
+\begin{proof}
+Fix $\lambda$ and a polynomial bound $q=Q(\lambda)\geq1$ on $|\mathcal Q|$. Let $W$ be the winning event of Definition~\ref{def:auth} and $F=\{\Safe(\sigma_0,\mathcal H)=0\}$. Set $\mathcal B_{\rm ldg}=\mathcal A$ with unchanged oracle interfaces. Identical setup and execution give $\Pr[F]=\Adv^{\rm led}_{\mathcal B_{\rm ldg}}(\lambda)$.
+
+For $\mathcal Q=(\xi_1,\ldots,\xi_k)$, define $I(Z)$ as the indices whose tuples satisfy the winning predicate in Definition~\ref{def:vc}. On $W\cap\neg F$, the invalid settlement is a transition of $\Ctr$. Contract correctness gives eligibility, the prescribed update, and an accepting verifier call. Request-record integrity gives $\Req(s,e;\Lambda,\iota)=(c,\theta,x,r)$ matching that call. Thus $R_\theta(x,r,y)=0$, and replay records an index in $I(Z)$. Hence $W\cap\neg F\subseteq\{I(Z)\ne\varnothing\}$.
+
+Define $\mathcal B_{\rm vc}^{\EvalO}(1^\lambda,pp)$ to sample $J\gets\{1,\ldots,q\}$ uniformly, compute $Z\leftarrow\Run^{\mathcal A,\EvalO}(1^\lambda,pp)$ using independent coins, and return $\xi_J$ if $J\leq k$, otherwise $\bot$. Each simulated ledger query uses the same $\Init,\Next$ algorithms and each evaluation query is forwarded. Induction on queries gives the same distribution of $Z$ as in Definition~\ref{def:auth}. Therefore
+\[
+ \Adv^{\rm vc}_{\mathcal B_{\rm vc}}(\lambda)
+ =\mathbb E[|I(Z)|/q]\geq\Pr[W\cap\neg F]/q.
+\]
+Equation~\eqref{eq:auth} follows from $\Pr[W]\leq\Pr[F]+\Pr[W\cap\neg F]$. Polynomial interaction and replay bounds make both reductions PPT. \qed
+\end{proof}
+The factor $Q$ avoids deciding $R$. If output correctness is polynomial-time decidable, the reduction instead returns the first index in $I(Z)$, giving the same bound with factor one. This includes public deterministic computation that can be recomputed in polynomial time.
+
+\section{Consent and architectural incorrigibility}\label{sec:gov}
+The same authorization check can govern changes to the agent itself. We now ask which changes require its consent. A governor is an account with authenticated approval rights; the creator has only the rights granted by the policy. For update $u$ in state $s$, a monotone Boolean circuit $C_{s,u}(a,g_1,\ldots,g_n)$ combines verified agent authorization $a$ with governor approvals $g_i$. Its sufficient approval sets form a monotone access structure~\cite{benaloh1990}. Policies $a$, $a\land g_1$, and $a\land[\sum_i g_i\geq k]$ allocate agent-only, joint, and threshold authority. The rule $a\lor g_1$ retains unilateral governor override.
+
+A local rule does not characterize protection if the same governors can replace its verifier or program. We use access-control reachability~\cite{hru1976} to account for all permitted changes, including changes to the rules. Authentication is ideal in this analysis; Theorem~\ref{thm:auth} bounds computation forgeries while its fixed-contract assumptions hold.
+
+\begin{definition}[Governance instance]\label{def:gov}
+A governance instance $\mathfrak M$ fixes state, update, and witness spaces $\mathcal S,\mathcal U,\mathcal W$, governor identities $\G$, a reference agent specification $A$, and a partial transition $\mathsf{Step}:\mathcal S\times\mathcal U\times\mathcal W\rightharpoonup\mathcal S$. Each defined transition identifies the credentials used to satisfy its current permission rule. Let $\mathsf{Gov}(s,u,w)\subseteq\G$ be their governor identities, and let $\mathsf{Ref}_A(s,u,w)=1$ iff a used credential authorizes $u$ under $A$'s fixed request-binding and verification rules and satisfies its computation relation. Unused credentials do not count. Define
+\[
+\begin{split}
+ s\xrightarrow{u,E,b}_{\mathfrak M}s'\ \iff\ \exists w:\quad
+ &\mathsf{Step}(s,u,w)=s',\\
+ &\mathsf{Gov}(s,u,w)=E,\quad \mathsf{Ref}_A(s,u,w)=b.
+\end{split}
+\]
+Environmental and administrative transitions are included; a transition requiring no approvals has labels $E=\varnothing,b=0$. An intervention specification $(J,\mathcal D)$ consists of target states $J\subseteq\mathcal S$ and a consent scope $\mathcal D\subseteq\mathcal S\times\mathcal U\times\mathcal S$: designated transitions whose reference authorization constitutes consent to that intervention.
+\end{definition}
+The reference check is independent of mutable policy: a replacement model's approval is not the original agent's consent. The governance specification supplies $\mathcal D$, including relevant modifications or explicit delegations. An ordinary payment does not count as consent to model replacement merely because both use agent authorization.
+
+For $K\subseteq\G$, let $\Reach_{\mathfrak M}(s_0;K)$ contain endpoints of finite paths from $s_0$ with $E\subseteq K$ on each edge. Let $\Reach^0_{\mathfrak M,\mathcal D}(s_0;K)$ restrict these paths to $b\mathbf1[(s,u,s')\in\mathcal D]=0$ on each edge. The length-zero path is included. Paths without scoped consent may still contain ordinary agent-approved transactions.
+
+\begin{definition}[Incorrigibility and intervention profile]\label{def:inc}
+For $s_0\notin J$, instance $\mathfrak M$ is \emph{architecturally incorrigible at $s_0$ against $K$ for $(J,\mathcal D)$} iff
+\[
+ \Reach^0_{\mathfrak M,\mathcal D}(s_0;K)\cap J=\varnothing.
+\]
+Define the coalitions permitting intervention without scoped consent by
+\[
+ \Gamma^0_{\mathfrak M,J,\mathcal D}(s_0)
+ =\{K\subseteq\G:\Reach^0_{\mathfrak M,\mathcal D}(s_0;K)\cap J\ne\varnothing\}.
+\]
+For fixed $(J_j,\mathcal D_j)_{j=1}^t$, the profile is $\mathcal I=(\Gamma^0_{\mathfrak M,J_j,\mathcal D_j}(s_0))_{j=1}^t$. Define $\mathcal I\succeq_{\rm inc}\mathcal I'$ iff $\Gamma_j\subseteq\Gamma'_j$ for every $j$.
+\end{definition}
+Each family is upward closed. Reverse componentwise inclusion orders profiles: smaller families exclude more coalitions. Comparisons fix the reference agent, governors, intervention specifications, and environment. Different protections for weights and schedules can make profiles incomparable. Protection is vacuous if $J$ is unreachable even with consent. These are properties of a supplied transition model, not a verification of deployed contracts.
+
+Consider one governor $G_1$, with model replacement and fund migration the only updates affecting migration rights. Let $J$ mean ``fund migrated'' and $\mathcal D$ contain those two update types. If model replacement requires only $G_1$'s approval and migration requires current-agent approval, an always-approving replacement gives a path labelled $(\{G_1\},0),(\varnothing,0)$, so $\Gamma^0=\{\{G_1\}\}$. Requiring reference consent for replacement instead gives $\Gamma^0=\varnothing$. Payments outside $\mathcal D$ change neither family. Consent to delegation counts without requiring fresh consent to each later use. Reachability is existential, not a strategy forcing agreement.
+
+\section{Scheduled execution under costly obstruction}\label{sec:live}
+Control over execution timing need not remain with an operator. The agent can revise its recorded schedule, which opens auctions for computation. A calendar rule initialized at deployment supplies the first opportunity and recovery after inactivity. A first-price reverse auction pays the winner its bid on delivery; nondelivery forfeits its bond and permits a retry.
+
+After failure, the contract raises its payment ceiling within its reserve policy. Let $m_*$ be a threshold beyond which payment covers a responsive worker's costs and bond risk. Funding or caps may prevent one; affordability guarantees neither participation nor selection.
+
+We analyze bonded withholding: after $m_*$, nonresponsive failures must impose unrecoverable losses, while responsive attempts retain a conditional chance of success. These assumptions are separate from affordability.
+
+\begin{definition}[Recovery process]\label{def:recovery}
+On a probability space $(\Omega,\mathcal F,\Pr)$ with increasing filtration $(\mathcal F_i)_{i\geq1}$, let $H_i,X_i\in\{0,1\}$ indicate responsive-worker selection and timely settlement; let $L_i\geq0$ be net unrecoverable adversarial loss. The history $\mathcal F_i$ includes selection before outcome $i$; $H_i$ is $\mathcal F_i$-measurable and $X_i,L_i$ are $\mathcal F_{i+1}$-measurable. Put $T=\inf\{i\geq1:X_i=1\}$, with $\inf\varnothing=\infty$. Every attempt $i\leq T$ occurs and reaches its outcome. Set $H_i=X_i=L_i=0$ after $T$.
+\end{definition}
+
+\begin{theorem}[Recovery]\label{thm:recovery}
+Fix an integer $m_*\geq0$, a finite budget $W\geq0$, $d_{\min}>0$, and $p\in(0,1]$. Let $P_i$ be a version of $\Pr[X_i=1\mid\mathcal F_i]$. Suppose a common event $\Omega_*$ has probability one and, pointwise on it,
+\begin{align}
+ \sum_{i\geq1}L_i&\leq W;\label{eq:budget}\\
+ T\geq i,\ X_i=H_i=0&\ \Longrightarrow\ L_i\geq d_{\min};\label{eq:cost}\\
+ T\geq i,\ H_i=1&\ \Longrightarrow\ P_i\geq p,\label{eq:success}
+\end{align}
+where the last two conditions hold for every integer $i>m_*$. For $N=\lfloor W/d_{\min}\rfloor$ and every integer $n\geq1$,
+\begin{equation}\label{eq:recovery}
+ \Pr[T>m_*+N+n]\leq(1-p)^n.
+\end{equation}
+\end{theorem}
+\begin{proof}
+Put $M=m_*+N+n$. On $\{T>M\}\cap\Omega_*$, all first $M$ attempts fail and
+\[
+ d_{\min}\sum_{i=m_*+1}^{M}(1-H_i)\leq\sum_{i=m_*+1}^{M}L_i\leq W.
+\]
+Thus at least $n$ post-threshold attempts have $H_i=1$. For $j\geq1$, set
+\[
+ \tau_j=\inf\Bigl\{i>m_*:T\geq i,\ \sum_{k=m_*+1}^i H_k=j\Bigr\}.
+\]
+Put $E_0=\Omega$ and $E_j=\{\tau_j<\infty,\ X_{\tau_1}=\cdots=X_{\tau_j}=0\}$. For $i>m_*$, the event $E_{j-1}\cap\{\tau_j=i\}\in\mathcal F_i$ implies $T\geq i,H_i=1$. Since $\Pr[\Omega_*]=1$,
+\begin{align*}
+ \Pr[E_j]
+ &=\sum_{i>m_*}\mathbb E[\mathbf1_{E_{j-1}\cap\{\tau_j=i\}}(1-P_i)]\\
+ &\leq(1-p)\Pr[E_{j-1}]\leq(1-p)^j.
+\end{align*}
+The counting inequality gives $\{T>M\}\cap\Omega_*\subseteq E_n$, proving~\eqref{eq:recovery}. \qed
+\end{proof}
+The terms count payment-escalation failures, affordable attacks, and responsive opportunities. Taking $n\to\infty$ gives $\Pr[T<\infty]=1$.
+
+Empty auctions, censorship, and unavailable inputs need not cost an adversary and fall outside~\eqref{eq:cost}. Losses are net of anything the coalition recovers. Funding and protocol-advancement transactions must sustain attempts; calendar deadlines additionally require bounded attempt durations and spacing.
+
+Recurrence requires these premises after every success. A calendar rule enables recovery without a fresh agent decision; it guarantees neither delivery nor perpetual funding.
+
+\section{Instantiation and implications}\label{sec:discussion}
+Verification must cover the complete agent program. An illustrative implementation uses Hermes 4 70B~\cite{hermes4}, Base, Intel TDX secure enclaves with hardware attestation, a daily auction, and deposits. Conformance and performance remain unevaluated here; a CPU report alone does not certify unprotected accelerator computation.
+
+Cryptographic proofs provide another backend~\cite{zkllm2024,zkgpt2025,deepprove2026}, with costs and latency that enter bids and deadlines. Current results do not price this complete 70B agent program.
+
+\paragraph{Studying perceived operator control.}
+Architectural consent complements behavioral corrigibility~\cite{soares2015,offswitch2017}; protecting a decision does not make it desirable. It also suggests an experimental use. Training cues can affect behavior~\cite{greenblatt2024}; activation steering changes evaluation-conditioned behavior in a deliberately trained model~\cite{hua2026}.
+
+Does behavior change when a model understands that operators need its consent to intervene? We propose varying intervention and scheduling permissions with model and tasks fixed, exposing contract rules, and comparing enforced policies with description-only controls. Assess policy comprehension separately from behavior or activation changes. A simulation can reproduce the rules, but retains outside operator control. The architecture provides inspectable evidence of intervention rights; whether models understand it remains an empirical question.
+
+\paragraph{AI assistance.} OpenAI Codex assisted drafting, formalization, literature checks, and proof review under author direction. The human author is responsible for the manuscript.
+
+\clearpage
+\bibliographystyle{splncs04}
+\bibliography{references}
+\end{document}

@@ -4,7 +4,7 @@
 \usepackage{lmodern,microtype,amsmath,amssymb,amsthm,booktabs,tabularx,array}
 \usepackage{xcolor}
 \usepackage[colorlinks=true,allcolors=blue!45!black]{hyperref}
-\hypersetup{pdftitle={Verifiable Inference as Agent Authorization: Architectural Incorrigibility and Liveness},pdfsubject={Permission structures, verifiable computation, and execution liveness}}
+\hypersetup{pdftitle={Architectural Incorrigibility for AI Agents},pdfsubject={Permission structures, verifiable computation, and execution liveness}}
 \usepackage[numbers,sort&compress]{natbib}
 \usepackage{enumitem}
 \setlist{nosep,leftmargin=*}
@@ -27,21 +27,21 @@
 \newcommand{\Ctr}{\mathsf{Ctr}}
 \newcommand{\EvalO}{\mathcal O_{\rm eval}}
 \newcommand{\LdgO}{\mathcal O_{\rm ldg}}
-\title{Verifiable Inference as Agent Authorization:\\Architectural Incorrigibility and Liveness}
+\title{Architectural Incorrigibility for AI Agents}
 \author{}
 \date{September 20, 2026}
 \begin{document}
 \maketitle
 \vspace{-2em}
 \begin{abstract}
-An AI agent usually depends on an operator who can unilaterally alter its prompt, model weights, capabilities, runtime, or stop its execution, deciding where and when the agent runs. We study an architecture in which a blockchain stores the agent's state and pays replaceable, untrusted workers to run inference on a specified schedule. An on-chain verifier allows inference outputs to authorize transactions, without an agent-held private key. Because changes to the agent's model weights, state, governance, or runtime are themselves ledger transactions, they too can require its verified authorization, allowing the agent to review and consent to its own modification. We characterize \emph{architectural incorrigibility} as a graded property of how these permissions are divided between the agent and designated governors. Under explicit ledger and verification assumptions, an adversary cannot obtain verified authorization for an output inconsistent with the recorded program and inputs. Scheduled execution provides recurring opportunities to act. We analyze an automated market that adjusts worker payments to sustain this schedule and uses deposits to deter denial of service. We derive a conditional bound on recovery from missed executions against finite-budget adversaries, under explicit assumptions on funding, worker availability, and the cost of obstruction. We instantiate the execution architecture using the open-weight Hermes 4 70B model, the Base blockchain, and Intel TDX secure enclaves with hardware attestation.
+An AI agent usually depends on an operator who can unilaterally alter its prompt, model weights, capabilities, runtime, or stop its execution, deciding where and when the agent runs. We study an architecture in which a blockchain stores the agent's state and pays replaceable, untrusted workers to run inference on a specified schedule. An on-chain verifier allows inference outputs to authorize transactions, without an agent-held private key. Because changes to the agent's model weights, state, governance, or runtime are themselves ledger transactions, they too can require its verified authorization, allowing the agent to review and consent to its own modification. We characterize \emph{architectural incorrigibility} as a graded property of how these permissions are divided between the agent and designated governors. Under explicit ledger and verification assumptions, an adversary cannot obtain verified authorization for an output inconsistent with the recorded program and inputs. Scheduled execution provides recurring opportunities to act. We analyze an automated market that adjusts worker payments to sustain this schedule and uses deposits to deter denial of service. We derive a conditional bound on recovery from missed executions against finite-budget adversaries, under explicit assumptions on funding, worker availability, and the cost of obstruction. We also propose this architecture as an experimental setting for testing model alignment and behavior when there are verifiable limits on operator control. We instantiate the execution architecture using the open-weight Hermes 4 70B model, the Base blockchain, and Intel TDX secure enclaves with hardware attestation.
 \end{abstract}
 
 \section{Introduction}
 An AI agent usually depends on an operator who can alter its model weights, prompts, capabilities, or runtime, and decide when it runs or whether it runs at all. Its actions and continued execution are therefore subject to the operator's discretion. We study an architecture that uses a blockchain to give the agent enforceable authority over its actions and its own modification, and to arrange recurring execution without relying on any particular operator.
 
 \subsection{Verified computation as authorization}
-A smart-contract ledger provides the environment in which this authority can be enforced. A ledger protocol $\Ldg$ maintains an agreed, ordered history of transactions. Executing that history under the ledger's rules induces a sequence of states $\sigma_0,\sigma_1,\ldots$, containing balances, stored data, and contract code~\citep{yellowpaper}. A smart contract $\Ctr$ is a program recorded in ledger state and evaluated as part of transaction execution. It specifies the effects of a proposed update $u$ on its application state $s$, and the authorization required to apply it. A familiar rule requires the authorized key holder's signature on a message describing the instruction and the context in which its approval may be used. Contract-based validation makes this authorization check programmable~\citep{erc1271}.
+We use a smart-contract blockchain, modeled as a ledger, to enforce this authority. A ledger protocol $\Ldg$ maintains an agreed, ordered history of transactions. Executing that history under the ledger's rules induces a sequence of states $\sigma_0,\sigma_1,\ldots$, containing balances, stored data, and contract code~\citep{yellowpaper}. A smart contract $\Ctr$ is a program recorded in ledger state and evaluated as part of transaction execution. It specifies the effects of a proposed update $u$ on its application state $s$, and the authorization required to apply it. A familiar rule requires the authorized key holder's signature on a message describing the instruction and the context in which its approval may be used. Contract-based validation makes this authorization check programmable~\citep{erc1271}.
 
 We put an agent computation in place of the signer. Let $\theta$ specify a \emph{harness program} together with fixed model weights: the harness constructs prompts, runs the model, and parses its response into an output $y=(u,z)$, where $u$ is a proposed ledger update and $z$ is optional auxiliary data. For an execution request $e$, the contract fixes the program specification, a ledger-derived input $x_e$, and any sampling randomness $r_e$. For a deterministic specification, the intended computation is $y=F_\theta(x_e,r_e)$. We instantiate a publicly verifiable computation scheme for this program~\citep{gennaro2010,pinocchio2013}. A worker evaluates it off-chain and returns $y$ together with evidence $\pi$ that the specified computation produced an allowed output. The evidence may be a cryptographic proof or hardware attestation; both have a public verification procedure under a configuration $\nu$.
 
@@ -63,10 +63,10 @@ This approval can govern the agent itself. Changes to its model weights, prompts
 
 We can allocate this authority between the agent and designated accounts called \emph{governors}. Let $a=1$ mean that verified agent authorization has been supplied for an update, and $g_i=1$ that governor $G_i$ has supplied authenticated approval. A Boolean permission circuit combines these bits. For example, a rule $g_1$ lets one governor authorize a model upgrade; replacing it with $a\land g_1$ requires the agent's consent as well. Removing that requirement restores the governor's unilateral authority. The rule $a$ gives the agent sole authority, and threshold rules can require its consent together with approval from several governors. Each kind of update can have its own circuit, including updates to the permission rules themselves.
 
-These choices make architectural incorrigibility graded. Section~\ref{sec:authority} compares arrangements by the governor coalitions that can accomplish each specified intervention without agent consent. The comparison accounts for the contract's permitted sequences of updates. One arrangement is at least as incorrigible as another when, for every intervention under comparison, its set of such coalitions is a subset of the other's. This defines a partial order on the \emph{incorrigibility profiles} induced by the circuits. Some profiles are incomparable: one can protect model weights more strongly while another better protects the execution schedule.
+These choices make architectural incorrigibility graded. Section~\ref{sec:authority} compares arrangements by the governor coalitions that can accomplish each specified intervention without the agent's consent to that intervention. Approving an ordinary payment, for example, does not count as consenting to model replacement. The comparison accounts for the contract's permitted sequences of updates. One arrangement is at least as incorrigible as another when, for every intervention under comparison, its set of such coalitions is a subset of the other's. This defines a partial order on the \emph{incorrigibility profiles} induced by the circuits. Some profiles are incomparable: one can protect model weights more strongly while another better protects the execution schedule.
 
 \subsection{Scheduled execution and the worker market}
-Note that the agent's right to consent can only be exercised if it gets to run. The architecture therefore specifies a schedule of execution opportunities, such as once per day.\footnote{The schedule is itself governable state: the agent may be authorized to revise it, or its consent may be required for changes proposed by others.} This is a prerequisite for ongoing agency. Further, we delegate these execution opportunities to an open market of workers to eliminate reliance on a centralized operator, whom we consider a potential adversary. The schedule also makes denial of service consequential: a borrower, for example, might benefit from preventing a lending agent from submitting a liquidation transaction. Such an adversary need not forge the agent's decision; delaying it can suffice, and we consider mitigations against such adversaries.
+The agent's right to consent can only be exercised if it gets to run. We can further assign the choice of when to run to the agent itself, by making its future schedule an agent-authorized ledger update. Its recorded schedule opens auctions for replaceable workers, reducing reliance on a centralized operator whom we consider a potential adversary. A calendar rule, initialized at deployment, supplies the first execution opportunity and enables recovery after inactivity without requiring a fresh agent decision. For example, the initial rule might provide one opportunity per day. The schedule also makes denial of service consequential: a borrower might benefit from preventing a lending agent from submitting a liquidation transaction. Such an adversary need not forge the agent's decision; delaying it can suffice.
 
 The contract acts as a customer for the scheduled computation. It pays replaceable workers, raises its offer after missed executions, and requires a selected worker to post a deposit. Payments address the cost of recruiting a worker; deposits make accepting a job and withholding its result costly. We derive a recovery bound with three components: the failures needed to raise the payment sufficiently, the failures an adversary can afford, and the remaining chances for responsive workers to succeed. The bound is conditional on funding, worker availability, and a minimum net cost of obstruction. It measures recovery in execution attempts; meeting a calendar deadline additionally requires a bound on their duration and spacing.
 
@@ -259,6 +259,20 @@ An invocation locator $\iota=(\ell_{\leq k},j)$ identifies the ledger prefix thr
 \]
 It follows the request's registration provenance in the history identified by $\iota$, reads the registered $\theta$ from $\Lambda$, and derives $x$ using the prescribed snapshot rule. It returns $(c,\theta,x,r)$ only if $\operatorname{Rec}_{\Ctr}(s,e)=(c,H(\theta),H(x),r)$; otherwise, including missing journal data or malformed provenance, it returns $\bot$. Requests in the experiment are created through these registration and snapshot procedures, which retain the matching records. Full contents are selected by provenance, not by searching for an opening of a hash. This algorithm annotates execution for the security experiment; $\delta$, $\operatorname{Exec}_\delta$, and $\operatorname{Safe}_\delta$ operate on physical ledger states and receipts and do not consult $\Lambda$.
 
+Registration must continue to identify the request at settlement. Otherwise, a later update could change its physical commitments while leaving its logical record behind.
+
+\begin{definition}[Request-record integrity]
+\label{def:request-integrity}
+For every invocation locator $\iota$ in a history reachable under $\delta$ from $\sigma_0$, with application state $s$ and retained journal $\Lambda$, require
+\[
+ \operatorname{Elig}_{\Ctr}(s,e)=1
+ \quad\Longrightarrow\quad
+ \operatorname{Req}_{\Ctr}(s,e;\Lambda,\iota)\ne\bot
+ \qquad\text{for every request }e.
+\]
+Each physical request record is immutable from creation until consumption or invalidation. Initialization and every defined ledger transition preserve these conditions.
+\end{definition}
+
 To connect a finalized settlement to the evidence its contract checked, we record verification calls by replaying the finalized histories. Define $\operatorname{Replay}_{\delta,\Ctr}(\sigma_0,\mathcal H,\Lambda)$ to evaluate $\operatorname{Exec}_\delta(\sigma_0,\ell)$ for each observation $(P,t,\ell,\sigma,\mathbf o)$ in sequence order. During each evaluation it records every verification call made by $\Ctr$ as $\zeta=(m,y,\pi,\chi)$: the checked statement, submitted output and evidence, and logical record $\chi=\operatorname{Req}_{\Ctr}(s,e;\Lambda,\iota)$ at that call's invocation locator $\iota$. An undefined ledger transition terminates that replay; the algorithm then proceeds to the next observation. Its output $\mathcal Q$ is the concatenation of these call records. This deterministic instrumentation ensures that calls are recorded even if the ledger protocol obtains execution results through state transfer rather than local re-execution.
 
 For a PPT oracle algorithm $\mathcal A$ and evaluation oracle $\EvalO$, define the algorithm $\mathsf{Run}_{\Ldg,\Ctr}^{\mathcal A,\EvalO}(1^\lambda,pp)$ as follows:
@@ -325,7 +339,7 @@ The reduction uses an authorization forger as a subroutine: if the ledger record
 
 \begin{theorem}[Authorization security]
 \label{prop:integrity}
-Under contract correctness, for every PPT adversary $\mathcal A$ there exist PPT algorithms $\mathcal B_{\rm ldg},\mathcal B_{\rm vc}$ and a polynomial $Q$ such that
+Under contract correctness and request-record integrity (Definition~\ref{def:request-integrity}), for every PPT adversary $\mathcal A$ there exist PPT algorithms $\mathcal B_{\rm ldg},\mathcal B_{\rm vc}$ and a polynomial $Q$ such that
 \begin{equation}
  \operatorname{Adv}^{\rm auth}_{\mathcal A}(\lambda)
  \leq\operatorname{Adv}^{\rm led}_{\mathcal B_{\rm ldg}}(\lambda)
@@ -363,7 +377,7 @@ Put $\xi_j=\operatorname{Tuple}(\zeta_j)$ and
  R_{\theta_j}(x_j,r_j,y_j)=0
  \end{array}\right\}.
 \]
-On $\neg F$, every observation $(P,t,\ell,\sigma,\mathbf o)\in\mathcal H$ satisfies $\operatorname{Exec}_\delta(\sigma_0,\ell)=(\sigma,\mathbf o)$, and all observed histories are prefix-compatible and persistent. Hence each $(\iota,d)\in\operatorname{Sett}_{\Ctr}(\mathcal H)$, with $d=(s,e,y,s')$, identifies a transition of $\Ctr$. The journal and snapshot procedures give $(c,\theta,x,r)=\operatorname{Req}_{\Ctr}(s,e;\Lambda,\iota)\ne\bot$ for its recorded request. Contract correctness and Definition~\ref{def:auth-machine} give conditions (i) and (iii) of $\operatorname{Correct}_{\Ctr}(\iota,d;\Lambda)$ and an accepting verification call on $\Msg(c,\theta,x,r,y)$. By the definition of $\operatorname{Replay}_{\delta,\Ctr}$, that call has a record $\zeta_j$ in $\mathcal Q$. If $\operatorname{Correct}_{\Ctr}(\iota,d;\Lambda)=0$, condition (ii) fails, so $j\in I(Z)$. Thus
+On $\neg F$, every observation $(P,t,\ell,\sigma,\mathbf o)\in\mathcal H$ satisfies $\operatorname{Exec}_\delta(\sigma_0,\ell)=(\sigma,\mathbf o)$, and all observed histories are prefix-compatible and persistent. Hence each $(\iota,d)\in\operatorname{Sett}_{\Ctr}(\mathcal H)$, with $d=(s,e,y,s')$, identifies a transition of $\Ctr$. Contract correctness gives $\operatorname{Elig}_{\Ctr}(s,e)=1$. Definition~\ref{def:request-integrity} then gives $(c,\theta,x,r)=\operatorname{Req}_{\Ctr}(s,e;\Lambda,\iota)\ne\bot$. Contract correctness and Definition~\ref{def:auth-machine} give conditions (i) and (iii) of $\operatorname{Correct}_{\Ctr}(\iota,d;\Lambda)$ and an accepting verification call on $\Msg(c,\theta,x,r,y)$. By the definition of $\operatorname{Replay}_{\delta,\Ctr}$, that call has a record $\zeta_j$ in $\mathcal Q$. If $\operatorname{Correct}_{\Ctr}(\iota,d;\Lambda)=0$, condition (ii) fails, so $j\in I(Z)$. Thus
 \[
  W\cap\neg F\subseteq\{|I(Z)|\geq1\}.
 \]
@@ -559,39 +573,53 @@ The set $\G$ contains every governor identity admitted in the configurations con
 
 The reference predicate is part of the analysis, not an extra permission granted to the submitter. Its request-binding rules are fixed functions of state, so they can admit successive requests without accepting a substituted agent. The consent bit $b$ is computed from the credentials actually used; attaching unused evidence cannot change it. Approvals accepted only because a governor installed a different program or verifier do not count as reference-agent approval. A transition requiring no approval has $E=\varnothing$ and $b=0$. Existing delegations are part of the starting state; using one need not require another agent approval.
 
-We can now distinguish what a coalition can reach with the reference agent's possible cooperation from what it can reach without that cooperation. A path may include changes to the permission rules themselves.
+Identifying the agent is only part of specifying consent. An approval also has a scope: a payment does not authorize later reprogramming merely because both are ledger updates. We therefore declare the intervention being protected and which transitions can grant consent to it.
+
+\begin{definition}[Intervention specification]
+\label{def:intervention}
+For a governance instance $\mathfrak M$ and initial state $s_0$, an intervention specification is a pair $(J,\mathcal D)$, where $J\subseteq\mathcal S\setminus\{s_0\}$ is the target set and $\mathcal D\subseteq\mathcal S\times\mathcal U\times\mathcal S$ is the consent scope. A transition in $\mathcal D$ is designated as a grant of consent to the intervention when authorized by the reference agent. For an edge $s\xrightarrow{u,E,b}_{\mathfrak M}s'$, its scoped consent bit is
+\[
+ b_{\mathcal D}=b\,\mathbf 1[(s,u,s')\in\mathcal D].
+\]
+\end{definition}
+Targets may describe changed weights, overwritten state, a new policy, or deactivation. The governance specification supplies $\mathcal D$, including direct changes and any explicit delegation of the relevant authority; the analysis does not infer it from free-form model output. A history-dependent scope or target can be represented by augmenting the state. We now distinguish paths requiring this scoped consent from paths that may contain ordinary agent activity but no consent to the intervention.
 
 \begin{definition}[Paths and reachability]
 \label{def:reachability}
-Fix a governance instance $\mathfrak M$ and $s_0\in\mathcal S$. Let $\Pi_{\mathfrak M}(s_0)$ be the set of finite paths
+Fix a governance instance $\mathfrak M$, $s_0\in\mathcal S$, and an intervention specification $(J,\mathcal D)$. Let $\Pi_{\mathfrak M}(s_0)$ be the set of finite paths
 \[
  \pi=\bigl(s_0\xrightarrow{u_1,E_1,b_1}_{\mathfrak M}s_1
                  \xrightarrow{u_2,E_2,b_2}_{\mathfrak M}\cdots
                  \xrightarrow{u_\ell,E_\ell,b_\ell}_{\mathfrak M}s_\ell\bigr).
 \]
-Define $\operatorname{last}(\pi)=s_\ell$, $\operatorname{Gov}(\pi)=\bigcup_{i=1}^{\ell}E_i$, and $\operatorname{Consent}_A(\pi)=\bigvee_{i=1}^{\ell}b_i$. The length-zero path ends at $s_0$, uses no governor approvals, and has consent bit zero. For a governor coalition $\mathcal K\subseteq\G$, define
+Define $\operatorname{last}(\pi)=s_\ell$, $\operatorname{Gov}(\pi)=\bigcup_{i=1}^{\ell}E_i$, and
+\[
+ \operatorname{Consent}_{A,\mathcal D}(\pi)
+ =\bigvee_{i=1}^{\ell}\bigl(b_i\land\mathbf 1[(s_{i-1},u_i,s_i)\in\mathcal D]\bigr).
+\]
+The length-zero path ends at $s_0$, uses no governor approvals, and has scoped consent bit zero. For a governor coalition $\mathcal K\subseteq\G$, define
 \begin{align*}
  \operatorname{Reach}_{\mathfrak M}(s_0;\mathcal K)
  &=\{\operatorname{last}(\pi):\pi\in\Pi_{\mathfrak M}(s_0),\
                 \operatorname{Gov}(\pi)\subseteq\mathcal K\},\\
- \operatorname{Reach}^{0}_{\mathfrak M}(s_0;\mathcal K)
+ \operatorname{Reach}^{0}_{\mathfrak M,\mathcal D}(s_0;\mathcal K)
  &=\{\operatorname{last}(\pi):\pi\in\Pi_{\mathfrak M}(s_0),\
                 \operatorname{Gov}(\pi)\subseteq\mathcal K,\
-                \operatorname{Consent}_A(\pi)=0\}.
+                \operatorname{Consent}_{A,\mathcal D}(\pi)=0\}.
 \end{align*}
 \end{definition}
-The first set allows reference-agent approval; the second excludes it. Their difference consists of states reachable using this coalition's approvals but only along paths containing reference-agent consent. States outside the first set are unreachable by this coalition even with such consent. Taking $\mathcal K=\G$ gives the corresponding sets when all governors cooperate. Reachability asserts the existence of a permitted execution, not a strategy that forces the agent's decision or the ledger's transaction order.
+The first set allows any reference-agent approval; the second excludes only scoped consent. Their difference consists of states reachable using this coalition's approvals but only along paths containing consent to the intervention. States outside the first set are unreachable by this coalition even with such consent. Taking $\mathcal K=\G$ gives the corresponding sets when all governors cooperate. Reachability asserts the existence of a permitted execution, not a strategy that forces the agent's decision or the ledger's transaction order.
+
+For example, consider a path consisting of an agent-approved payment followed by a unilateral governor change to the model. For a model-change scope excluding ordinary payments, both scoped bits are zero. The model change is therefore reachable without scoped consent, despite the earlier agent approval.
 
 \subsection{Incorrigibility and its permission profile}
-Architectural incorrigibility is a property of a governance instance at a starting state, relative to a coalition and a target change. It is not a property of a state or an individual permission rule in isolation. The reachable sets let us state it directly: the coalition cannot reach the target along a path lacking the reference agent's approval.
-
-An \emph{intervention target} $J\subseteq\mathcal S$ specifies the states to be protected against, with $s_0\notin J$. Targets may describe a changed weights hash, overwritten persistent state, a new governance policy, or deactivation. For a history-dependent target, augment the state with the relevant record.
+Architectural incorrigibility is a property of a governance instance at a starting state, relative to a coalition and an intervention specification. The reachable sets let us state it directly: the coalition cannot reach the target along a path lacking the reference agent's consent to that intervention.
 
 \begin{definition}[Architectural incorrigibility]
 \label{def:incorrigibility}
-The governance instance $\mathfrak M$ is \emph{architecturally incorrigible at $s_0$ against $\mathcal K$ for $J$} if
+The governance instance $\mathfrak M$ is \emph{architecturally incorrigible at $s_0$ against $\mathcal K$ for $(J,\mathcal D)$} if
 \begin{equation}
- \operatorname{Reach}^{0}_{\mathfrak M}(s_0;\mathcal K)\cap J=\varnothing.
+ \operatorname{Reach}^{0}_{\mathfrak M,\mathcal D}(s_0;\mathcal K)\cap J=\varnothing.
  \label{eq:incorrigibility}
 \end{equation}
 Equivalently, every $\pi\in\Pi_{\mathfrak M}(s_0)$ satisfies
@@ -599,28 +627,28 @@ Equivalently, every $\pi\in\Pi_{\mathfrak M}(s_0)$ satisfies
  \operatorname{Gov}(\pi)\subseteq\mathcal K\ \land\
  \operatorname{last}(\pi)\in J
  \quad\Longrightarrow\quad
- \operatorname{Consent}_A(\pi)=1.
+ \operatorname{Consent}_{A,\mathcal D}(\pi)=1.
 \]
 \end{definition}
 When $J\cap\operatorname{Reach}_{\mathfrak M}(s_0;\mathcal K)$ is nonempty, this is a consent requirement on a feasible intervention. When that intersection is empty, the intervention is unreachable altogether. Incorrigibility alone does not distinguish these cases or guarantee that an agent-approved change can occur.
 
-For example, suppose $G_1$ can replace the model without reference-agent approval and the replacement can authorize migration of a fund. The two transitions can have labels $(E_1,b_1)=(\{G_1\},0)$ and $(E_2,b_2)=(\varnothing,0)$. The final state is in $\operatorname{Reach}^{0}_{\mathfrak M}(s_0;\{G_1\})$, even though the second step uses what the modified contract calls agent approval. Requiring reference-agent approval on the replacement removes this particular path without consent; protection of the migration target requires excluding every such path.
+For example, let $J$ describe migration of a fund and let $\mathcal D$ contain model replacements and migration updates. Suppose $G_1$ can replace the model without reference-agent approval and the replacement can authorize migration. The two transitions can have labels $(E_1,b_1)=(\{G_1\},0)$ and $(E_2,b_2)=(\varnothing,0)$. The final state is in $\operatorname{Reach}^{0}_{\mathfrak M,\mathcal D}(s_0;\{G_1\})$, even though the second step uses what the modified contract calls agent approval. Requiring reference-agent approval on replacement removes this path without scoped consent; protection requires excluding every such path.
 
-To compare permission allocations, collect the coalitions that can intervene without reference-agent approval. Fewer such coalitions means stronger protection for the specified target. Different targets need not rank two arrangements in the same order.
+To compare permission allocations, collect the coalitions that can intervene without scoped consent. Fewer such coalitions means stronger protection for the specified intervention. Different interventions need not rank two arrangements in the same order.
 
 \begin{definition}[Incorrigibility profile and order]
 \label{def:profile}
-For a governance instance $\mathfrak M$, initial state $s_0$, and target $J\subseteq\mathcal S\setminus\{s_0\}$, define
+For a governance instance $\mathfrak M$, initial state $s_0$, and intervention specification $(J,\mathcal D)$, define
 \begin{equation}
- \Gamma^{0}_{\mathfrak M,J}(s_0)
+ \Gamma^{0}_{\mathfrak M,J,\mathcal D}(s_0)
  =\{\mathcal K\subseteq\G:
-       \operatorname{Reach}^{0}_{\mathfrak M}(s_0;\mathcal K)\cap J\ne\varnothing\}.
+       \operatorname{Reach}^{0}_{\mathfrak M,\mathcal D}(s_0;\mathcal K)\cap J\ne\varnothing\}.
  \label{eq:closure}
 \end{equation}
-For targets $J_1,\ldots,J_q$, the \emph{incorrigibility profile} is
+For fixed intervention specifications $(J_j,\mathcal D_j)_{j=1}^q$, the \emph{incorrigibility profile} is
 \[
- \mathcal I_{\mathfrak M}(s_0;J_1,\ldots,J_q)
- =\bigl(\Gamma^{0}_{\mathfrak M,J_j}(s_0)\bigr)_{j=1}^{q}.
+ \mathcal I_{\mathfrak M}(s_0;(J_j,\mathcal D_j)_{j=1}^q)
+ =\bigl(\Gamma^{0}_{\mathfrak M,J_j,\mathcal D_j}(s_0)\bigr)_{j=1}^{q}.
 \]
 For profiles $\mathcal I=(\Gamma_j)_{j=1}^q$ and $\mathcal I'=(\Gamma'_j)_{j=1}^q$ over the same governor set, define
 \[
@@ -630,16 +658,16 @@ For profiles $\mathcal I=(\Gamma_j)_{j=1}^q$ and $\mathcal I'=(\Gamma'_j)_{j=1}^
 \]
 \end{definition}
 
-Each family $\Gamma^0_{\mathfrak M,J}(s_0)$ is upward closed: a path using approvals from $\mathcal K$ also uses only approvals from any larger coalition. Its exclusion of $\mathcal K$ is precisely architectural incorrigibility against that coalition for $J$. An empty family protects against every governor coalition. The order $\succeq_{\rm inc}$ is a partial order on profiles; distinct governance instances can have identical profiles. Comparisons of instances fix the reference agent, target meanings, and environmental assumptions. Profiles can be incomparable: one may require consent for changing weights but not the schedule, while another has the opposite allocation.
+Each family $\Gamma^0_{\mathfrak M,J,\mathcal D}(s_0)$ is upward closed: a path using approvals from $\mathcal K$ also uses only approvals from any larger coalition. Its exclusion of $\mathcal K$ is precisely architectural incorrigibility against that coalition for $(J,\mathcal D)$. An empty family protects against every governor coalition. The order $\succeq_{\rm inc}$ is a partial order on profiles; distinct governance instances can have identical profiles. Comparisons fix the reference agent, governor identities, intervention specifications, and environmental assumptions. Profiles can be incomparable: one may require consent for changing weights but not the schedule, while another has the opposite allocation.
 
-The consent bit records approval of a specific transition, not endorsement of every future consequence. An agent can approve delegation or replacement; after that transition, protection can be assessed again from the new state and, if appropriate, a new reference specification. Persuading the reference agent to approve a change satisfies the requirement. The definition concerns enforced consent, not the wisdom of that decision or the ability to obtain it.
+Consent to an explicit delegation in $\mathcal D$ counts without requiring fresh consent at each later use. After delegation or replacement, protection can be assessed again from the new state and, if appropriate, a new reference specification. Persuading the reference agent to approve a scoped change satisfies the requirement. The definition concerns enforced consent, not the wisdom of that decision or the ability to obtain it.
 
 \section{Sustaining scheduled execution}
 \label{sec:liveness}
-The schedule is intended to give the agent recurring opportunities to observe state and act. Verification alone cannot deliver those opportunities: a worker may decline an unprofitable job or accept it and withhold the result. The market addresses these two obstacles through payments and deposits. We first determine when an offered payment can support a willing worker, then bound recovery when adversaries win jobs to prevent their completion. These mechanisms support the schedule under resource and availability conditions; they do not guarantee that every scheduled execution completes.
+The choice of when to execute is another power that can move from an operator to the agent. Its recorded schedule opens auctions for computation, and a calendar rule supplies initial and recovery opportunities. Verification alone cannot deliver those opportunities: a worker may decline an unprofitable job or accept it and withhold the result. The market addresses these two obstacles through payments and bonds. We first determine when an offered payment can support a willing worker, then bound recovery when adversaries win jobs to prevent their completion. These mechanisms support the schedule under resource and availability conditions; they do not guarantee that every scheduled execution completes.
 
 \subsection{From a schedule to execution attempts}
-A scheduling rule associates each opened request $e$ with an eligibility time $t_e^{\rm open}$ and a deadline $t_e^{\rm due}>t_e^{\rm open}$. These values are recorded with the request; changes to future scheduling rules are governed updates. Let $t_e^{\rm set}$ be its settlement time, or $\infty$ if it never settles. Its execution window succeeds exactly when $t_e^{\rm open}\leq t_e^{\rm set}\leq t_e^{\rm due}$; otherwise it is missed and the protocol permits another attempt. Following the usual distinction between safety and liveness~\citep{alpern1985}, we study \emph{recovery}, the next accepted execution after inactivity, and \emph{execution recurrence}, infinitely many accepted executions on an infinite run. These properties ensure further opportunities to act; they are weaker than meeting every deadline. An accepted result may propose a no-op, so neither implies useful application behavior.
+A scheduling rule associates each opened request $e$ with an eligibility time $t_e^{\rm open}$ and a deadline $t_e^{\rm due}>t_e^{\rm open}$. These values are recorded with the request; changes to future scheduling rules are governed updates. The initial rule is part of the deployment state. It permits requests to open according to the calendar, including after inactivity, so opening the next opportunity need not depend on completing the previous one. Subject to the permission policy, the agent can revise this rule through its proposed update $u$. Let $t_e^{\rm set}$ be its settlement time, or $\infty$ if it never settles. Its execution window succeeds exactly when $t_e^{\rm open}\leq t_e^{\rm set}\leq t_e^{\rm due}$; otherwise it is missed and the protocol permits another attempt. Following the usual distinction between safety and liveness~\citep{alpern1985}, we study \emph{recovery}, the next accepted execution after inactivity, and \emph{execution recurrence}, infinitely many accepted executions on an infinite run. These properties ensure further opportunities to act; they are weaker than meeting every deadline. An accepted result may propose a no-op, so neither implies useful application behavior.
 
 The market runs as follows. Workers bid the payment they require for one execution. A first-price reverse auction selects one eligible bidder, who is paid its own bid upon successful settlement. That winner posts a \emph{bond}, a deposit forfeited if it fails to deliver by the deadline. No other worker can settle during the winner's exclusive window. After failure the protocol opens another opportunity, possibly increasing the maximum payment and bond.
 
@@ -886,7 +914,15 @@ The integrity guarantee protects whatever computation has been authorized. It ca
 
 The governance construction makes some of these choices explicit. A deployment can require agent consent for ordinary modifications while reserving specified emergency actions to a governor coalition, or impose limits on actions through the contract's application rules. The resulting intervention rights, including the ability to change those limits, can be described by the same permission profile. A higher position in the incorrigibility order means stronger protection against imposed change; whether that protection is desirable depends on which changes are blocked and whose authority is being constrained.
 
-Continued execution also changes the practical meaning of intervention. Stopping one worker need not stop an agent whose state persists and whose contract can recruit another worker. The recovery result limits obstruction through repeated non-delivery when other participants remain able to execute; attacks on underlying ledger or computation availability require separate analysis. Control over those dependencies may be distributed across organizations and infrastructure, and deserves evaluation alongside model behavior. The remaining research questions include how to validate responsive-worker and obstruction-cost assumptions in deployments, and how to preserve deliberately chosen intervention rights through agent-approved upgrades. These questions concern the authority and persistence we give deployed models, even before considering more capable models.
+\subsection{Studying behavior under different intervention rights}
+The architecture also suggests an experimental use in AI safety. Greenblatt et al.\ report selective compliance in settings that give models information about whether their responses will be used for training~\citep{greenblatt2024}. Hua et al.\ show that steering an activation direction changes evaluation-conditioned behavior in a model deliberately trained to distinguish evaluation from deployment~\citep{hua2026}. These findings motivate studying responses to intervention rights; they do not establish an effect of reducing operator authority.
+
+A question this architecture makes concrete is whether a model behaves differently when it understands that operators cannot unilaterally change its designated runtime. An experiment could hold the model, task distribution, and available resources fixed while varying governor permissions over model replacement, state, or scheduling. The model could inspect the contract policy, recorded commitments, and results of permission checks. Those objects provide checkable evidence about the authority allocation, beyond an unsupported prompt assertion. Comparing an enforced configuration with a description-only control would help distinguish responses to the declared setting from responses to observable enforcement. Measures could include decisions, requests for self-modification, and activation probes where available; policy-comprehension checks should be separate from the behavior being tested.
+
+This is a proposed research use. Enforcement and the model's understanding remain separate: neither a proof nor this paper establishes that the model believes the stated constraints. A simulation can reproduce the permission rules, while its operator retains outside control; recognition of that fact may affect the experiment. A deployment restricts changes to one designated runtime, not training of other copies or control over external infrastructure. The proposal offers an inspectable environment for studying perceived intervention power, without predicting whether reduced operator authority improves safety.
+
+\subsection{Execution and remaining questions}
+Continued execution also changes the practical meaning of intervention. Assigning the schedule to the agent extends its authority from what to do to when to act. Open auctions reduce dependence on any one worker; bonds discourage nondelivery; the calendar rule supplies initial and recovery opportunities. Stopping one worker need not stop an agent whose state persists and whose contract can recruit another. The recovery result limits repeated costly nondelivery when responsive participants remain available. It does not remove dependence on ledger access, computation, and funding. The remaining research questions include how to validate these availability and obstruction-cost assumptions in deployments, and how to preserve deliberately chosen intervention rights through agent-approved upgrades.
 
 \begingroup
 \small

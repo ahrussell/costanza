@@ -1,0 +1,29 @@
+Short Paper: Architectural Incorrigibility for AI Agents through Smart Contracts
+
+Compile in this directory with either:
+
+    latexmk -pdf -interaction=nonstopmode -halt-on-error main.tex
+
+or:
+
+    tectonic main.tex
+
+Without latexmk, the standard sequence is:
+
+    pdflatex main.tex
+    bibtex main
+    pdflatex main.tex
+    pdflatex main.tex
+
+The result is main.pdf: eight pages of main text and two pages of references.
+The source uses the unmodified Springer LNCS class and bibliography style.
+Standard TeX packages include amsmath, amssymb, microtype, graphicx, xurl,
+hyperref, and T1 font support. A first Tectonic build may download packages.
+
+Files:
+    main.tex                 manuscript
+    references.bib           bibliography
+    llncs.cls                official Springer LNCS class, version 2.25
+    splncs04.bst              official Springer bibliography style
+    SPRINGER-README.txt      publisher template information
+    BUILD.txt                these instructions

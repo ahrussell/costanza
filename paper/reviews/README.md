@@ -1,5 +1,11 @@
 # Reader review and revision record
 
+The latest author-directed changes are recorded in
+[Consent, scheduling, and safety revision](consent-and-safety-revision-2026-09-20.md).
+That revision ports the FC proof repairs into the full paper and adds a sourced
+experimental-use proposal. It received local consistency and artifact checks,
+not a new independent subagent audit.
+
 **Version note:** These two rounds concern the version committed as `958aa6e`.
 The later author-directed reframing and abstract review are recorded in
 [authorization-revision.md](authorization-revision.md). The earlier reports and

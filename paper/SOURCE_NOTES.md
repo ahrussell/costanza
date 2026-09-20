@@ -1,5 +1,33 @@
 # Source and editorial notes
 
+## September 20 addition: situational behavior and intervention rights
+
+- **Greenblatt et al., Alignment Faking in Large Language Models** (2024),
+  [arXiv:2412.14093](https://arxiv.org/abs/2412.14093) and the
+  [Anthropic research account](https://www.anthropic.com/research/alignment-faking).
+  This supports the behavioral claim about training information and selective
+  compliance. It is not cited as an activation study. No published proceedings
+  version was located; the bibliography retains the preprint.
+- **Hua, Qin, Marks, and Nanda, Steering Evaluation-Aware Language Models to Act
+  Like They Are Deployed**, [ICLR 2026 proceedings](https://proceedings.iclr.cc/paper_files/paper/2026/hash/9334fd3a5170dbfe74eae4755f6c5f89-Abstract-Conference.html).
+  The primary paper tests activation steering in a model deliberately trained
+  for evaluation-conditioned behavior. The published version replaces an arXiv
+  or workshop citation. It does not establish that arbitrary deployed models
+  identify their context correctly.
+
+The proposed experiment is ours: vary intervention or scheduling permissions,
+hold model and tasks fixed, expose inspectable policy evidence, and compare
+enforcement with description-only controls. Assess policy comprehension
+separately from behavior and activation changes. Neither source tests this
+architecture or reduced operator authority. Both manuscripts present this as a
+research direction, with simulation and external-control limitations.
+
+The scheduling discussion concerns the general architecture, including
+agent-authorized changes to future scheduling rules. It is not a new claim that
+the illustrative deployment implements all such governance options.
+
+---
+
 Checked September 19, 2026. These are supporting notes, not manuscript text.
 
 ## Repository evidence

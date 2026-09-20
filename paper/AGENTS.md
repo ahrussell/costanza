@@ -149,3 +149,38 @@ journal and invocation provenance. Replay receives Lambda, Z includes it, and
 located settlement annotations identify the applicable records. Ledger Exec and
 Safe remain physical and journal-free. Preserve this distinction and the exact
 simulation when editing the proof.
+
+The FC audit's repairs have now been ported into the full paper at the author's
+request. Preserve the numbered request-record integrity invariant: matching
+provenance must survive through every eligible invocation, not just creation.
+Intervention specifications are pairs (J,D), combining target states and a scope
+of transitions whose reference authorization grants relevant consent. Ordinary
+agent-approved activity outside D remains possible along paths without scoped
+consent. Keep D in reachability, incorrigibility, and profile comparisons.
+
+The author prefers smoother transitions and room for the main ideas, cutting
+secondary details before formal proof steps. The AI-safety research proposal is
+to study behavior under different enforced intervention and scheduling rights.
+Distinguish observed behavior under training cues (Greenblatt et al.) from
+activation steering in a deliberately trained evaluation-aware model (Hua et al.,
+ICLR 2026). Enforcement and model comprehension are separate; no experiment or
+safety benefit is claimed. Simulations retain outside operator control.
+
+Scheduling is another right that can belong to the agent. Its recorded schedule
+opens auctions to reduce dependence on one operator; bonds deter nondelivery;
+a calendar rule initialized at deployment bootstraps execution and enables
+recovery without a fresh agent decision. Calendar opportunities do not establish
+delivery, transaction inclusion, funding, or responsive participation.
+
+Lead both editions' titles with architectural incorrigibility. The current full
+title is "Architectural Incorrigibility for AI Agents"; the FC title is "Short
+Paper: Architectural Incorrigibility for AI Agents through Smart Contracts". The property is
+not inherently blockchain-specific. The formal construction uses a smart-contract
+blockchain modeled as a ledger; make that bridge explicit instead of relying on
+"ledger" alone to imply blockchain. The abstract may include the alignment-research
+motivation, explicitly phrased as a proposed experimental setting, not as a
+demonstrated behavioral or safety result.
+
+Use the explicit words "model alignment and behavior" in the abstract research-use
+sentence so readers scanning the paper can recognize its AI-safety motivation.
+Keep it phrased as a proposed experimental setting, not a reported experiment.
