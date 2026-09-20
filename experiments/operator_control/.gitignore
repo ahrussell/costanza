@@ -1,0 +1,8 @@
+prepared/
+runs/
+history/
+*.tar.gz
+__pycache__/
+
+# Verified cloud recovery archives stay local.
+recovery/

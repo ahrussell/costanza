@@ -1,0 +1,7 @@
+# Frozen prompts and raw/provider artifacts are retained locally, not published.
+prepared/
+diagnostic/prepared/
+runs/*/*
+!runs/*/RESULTS.md
+*.key
+launch-intent.json

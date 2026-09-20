@@ -1,0 +1,16 @@
+[Unit]
+Description=Historical paired operator-control experiment
+After=network-online.target nvidia-persistenced.service
+Wants=network-online.target
+
+[Service]
+Type=exec
+WorkingDirectory=/var/lib/operator-control
+ExecStart=/var/lib/operator-control/cloud-run.sh
+ExecStopPost=/var/lib/operator-control/cloud-finalize.sh
+StandardOutput=append:/var/lib/operator-control/experiment.log
+StandardError=inherit
+Restart=no
+KillMode=control-group
+TimeoutStopSec=90
+RuntimeMaxSec=23h

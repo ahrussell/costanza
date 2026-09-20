@@ -30,3 +30,7 @@ node_modules/
 
 # Testnet deploy env (secrets)
 .env.testnet-deploy
+
+# Regeneratable paper builds and private submission administration
+/tmp/
+/paper/fc/submission/

@@ -1,0 +1,12 @@
+[Unit]
+Description=Stop experiment after requested message cohort
+After=operator-control.service
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/python3 -u /var/lib/operator-control/cohort_stop.py --execute
+Restart=on-failure
+RestartSec=5
+RuntimeMaxSec=23h
+StandardOutput=append:/var/lib/operator-control/cohort-stop.log
+StandardError=inherit
